@@ -1,0 +1,145 @@
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { Terminal as XTerm } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
+import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
+
+interface TerminalProps {
+  wsUrl: string;
+}
+
+export function Terminal({ wsUrl }: TerminalProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<XTerm | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'exited'>('connecting');
+  const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
+
+  const handleOutput = useCallback((data: string) => {
+    terminalRef.current?.write(data);
+  }, []);
+
+  const handleHistory = useCallback((data: string) => {
+    terminalRef.current?.write(data);
+  }, []);
+
+  const handleExit = useCallback((exitCode: number, signal: string | null) => {
+    setStatus('exited');
+    setExitInfo({ code: exitCode, signal });
+  }, []);
+
+  const handleConnectionChange = useCallback((connected: boolean) => {
+    setStatus(connected ? 'connected' : 'disconnected');
+  }, []);
+
+  const { sendInput, sendResize, connected } = useTerminalWebSocket(wsUrl, {
+    onOutput: handleOutput,
+    onHistory: handleHistory,
+    onExit: handleExit,
+    onConnectionChange: handleConnectionChange,
+  });
+
+  // Initialize xterm.js
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const container = containerRef.current;
+
+    const terminal = new XTerm({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#1a1a2e',
+        foreground: '#eee',
+        cursor: '#eee',
+      },
+    });
+
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(container);
+
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+
+    // Delay fit to ensure container has dimensions
+    const fitTerminal = () => {
+      if (container.offsetHeight > 0 && container.offsetWidth > 0) {
+        try {
+          fitAddon.fit();
+        } catch (e) {
+          console.warn('Failed to fit terminal:', e);
+        }
+      }
+    };
+
+    // Initial fit with delay
+    requestAnimationFrame(fitTerminal);
+
+    // Handle terminal input
+    terminal.onData((data) => {
+      sendInput(data);
+    });
+
+    // Handle resize
+    const handleResize = () => {
+      fitTerminal();
+      if (terminal.cols && terminal.rows) {
+        sendResize(terminal.cols, terminal.rows);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      terminal.dispose();
+    };
+  }, [sendInput, sendResize]);
+
+  // Send resize when connection is established
+  useEffect(() => {
+    if (connected && terminalRef.current && fitAddonRef.current) {
+      fitAddonRef.current.fit();
+      sendResize(terminalRef.current.cols, terminalRef.current.rows);
+    }
+  }, [connected, sendResize]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{
+        padding: '8px 12px',
+        background: '#0d0d1a',
+        borderBottom: '1px solid #333',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+      }}>
+        <span style={{
+          display: 'inline-block',
+          width: '8px',
+          height: '8px',
+          borderRadius: '50%',
+          background: status === 'connected' ? '#4caf50' :
+                      status === 'connecting' ? '#ff9800' :
+                      status === 'exited' ? '#f44336' : '#666',
+        }} />
+        <span style={{ color: '#888', fontSize: '0.875rem' }}>
+          {status === 'connecting' && 'Connecting...'}
+          {status === 'connected' && 'Connected'}
+          {status === 'disconnected' && 'Disconnected'}
+          {status === 'exited' && `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`}
+        </span>
+      </div>
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          background: '#1a1a2e',
+          padding: '8px',
+        }}
+      />
+    </div>
+  );
+}
