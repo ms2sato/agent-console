@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Claude Code - xterm.js PoC</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #1a1a2e;
+      font-family: sans-serif;
+    }
+    h1 {
+      color: #888;
+      font-size: 1.2rem;
+      margin-bottom: 10px;
+    }
+    #terminal {
+      width: 100%;
+      height: calc(100vh - 80px);
+    }
+    #status {
+      color: #666;
+      font-size: 0.8rem;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Claude Code - xterm.js PoC</h1>
+  <div id="terminal"></div>
+  <div id="status">Connecting...</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script>
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#1a1a2e',
+        foreground: '#eee',
+      }
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    // WebSocket connection
+    const ws = new WebSocket(`ws://${location.host}`);
+    const status = document.getElementById('status');
+
+    ws.onopen = () => {
+      status.textContent = 'Connected';
+      // Send initial size
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'output') {
+        term.write(msg.data);
+      } else if (msg.type === 'exit') {
+        status.textContent = `Claude exited (code: ${msg.exitCode})`;
+      }
+    };
+
+    ws.onclose = () => {
+      status.textContent = 'Disconnected';
+    };
+
+    ws.onerror = (err) => {
+      status.textContent = 'Connection error';
+    };
+
+    // Send input to server
+    term.onData((data) => {
+      ws.send(JSON.stringify({ type: 'input', data }));
+    });
+
+    // Handle resize
+    window.addEventListener('resize', () => {
+      fitAddon.fit();
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    });
+  </script>
+</body>
+</html>

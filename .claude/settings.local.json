@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(pnpm install)",
+      "Bash(pnpm --filter @agents-web-console/shared build:*)",
+      "Bash(timeout 5 pnpm:*)",
+      "Bash(pnpm --filter @agents-web-console/client typecheck:*)",
+      "Bash(pnpm vite:*)",
+      "Bash(pnpm vite build:*)",
+      "Bash(pnpm --filter @agents-web-console/server typecheck:*)",
+      "Bash(git init:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
