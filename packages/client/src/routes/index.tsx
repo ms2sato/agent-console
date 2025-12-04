@@ -1,7 +1,7 @@
-import { createFileRoute, useNavigate, Link } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchSessions, deleteSession } from '../lib/api';
+import { fetchSessions, deleteSession, createSession } from '../lib/api';
 import type { Session } from '@agents-web-console/shared';
 
 export const Route = createFileRoute('/')(  {
@@ -9,9 +9,9 @@ export const Route = createFileRoute('/')(  {
 });
 
 function DashboardPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [cwd, setCwd] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['sessions'],
@@ -26,12 +26,21 @@ function DashboardPage() {
     },
   });
 
-  const handleStartSession = () => {
-    navigate({
-      to: '/sessions/$sessionId',
-      params: { sessionId: 'new' },
-      search: cwd ? { cwd } : undefined,
-    });
+  const handleStartSession = async () => {
+    setIsCreating(true);
+    try {
+      const { session } = await createSession(cwd || undefined);
+      // Immediately invalidate queries to show the new session
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      // Open in new tab
+      window.open(`/sessions/${session.id}`, '_blank');
+      setCwd('');
+    } catch (err) {
+      console.error('Failed to create session:', err);
+      alert('Failed to create session');
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const handleDeleteSession = (sessionId: string) => {
@@ -56,8 +65,12 @@ function DashboardPage() {
             onChange={(e) => setCwd(e.target.value)}
             className="input flex-1"
           />
-          <button onClick={handleStartSession} className="btn btn-primary">
-            Start Claude Code
+          <button
+            onClick={handleStartSession}
+            disabled={isCreating}
+            className="btn btn-primary disabled:opacity-50"
+          >
+            {isCreating ? 'Starting...' : 'Start Claude Code'}
           </button>
         </div>
         <p className="mt-2 text-xs text-gray-500">

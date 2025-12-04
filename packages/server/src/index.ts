@@ -36,12 +36,8 @@ app.get('/api/sessions', (c) => {
 
 // Create a new session
 app.post('/api/sessions', async (c) => {
-  const body = await c.req.json<{ worktreePath: string; repositoryId?: string }>();
-  const { worktreePath, repositoryId = 'default' } = body;
-
-  if (!worktreePath) {
-    return c.json({ error: 'worktreePath is required' }, 400);
-  }
+  const body = await c.req.json<{ worktreePath?: string; repositoryId?: string }>();
+  const { worktreePath = process.cwd(), repositoryId = 'default' } = body;
 
   // Create session without WebSocket initially
   // The WebSocket connection will attach to it later

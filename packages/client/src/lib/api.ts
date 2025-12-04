@@ -18,7 +18,7 @@ export async function fetchSessions(): Promise<SessionsResponse> {
   return res.json();
 }
 
-export async function createSession(worktreePath: string, repositoryId?: string): Promise<CreateSessionResponse> {
+export async function createSession(worktreePath?: string, repositoryId?: string): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
