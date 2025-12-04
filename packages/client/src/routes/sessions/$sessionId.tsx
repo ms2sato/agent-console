@@ -25,11 +25,7 @@ function TerminalPage() {
     : `ws://${window.location.hostname}:3457/ws/terminal/${sessionId}`;
 
   return (
-    <div style={{
-      flex: 1,
-      display: 'flex',
-      flexDirection: 'column',
-    }}>
+    <div className="flex-1 flex flex-col">
       <Terminal wsUrl={wsUrl} />
     </div>
   );

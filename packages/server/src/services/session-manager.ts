@@ -105,6 +105,34 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Update the callbacks for a session (used when WebSocket reconnects)
+   */
+  attachCallbacks(
+    id: string,
+    onData: (data: string) => void,
+    onExit: (exitCode: number, signal: string | null) => void
+  ): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+
+    session.onData = onData;
+    session.onExit = onExit;
+    return true;
+  }
+
+  /**
+   * Detach callbacks (set to no-op) when WebSocket disconnects
+   */
+  detachCallbacks(id: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+
+    session.onData = () => {};
+    session.onExit = () => {};
+    return true;
+  }
+
   getAllSessions(): Session[] {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
   }

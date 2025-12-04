@@ -34,7 +34,7 @@ app.get('/api/sessions', (c) => {
   return c.json({ sessions });
 });
 
-// Create a new session (for Phase 1, we'll use a simple approach)
+// Create a new session
 app.post('/api/sessions', async (c) => {
   const body = await c.req.json<{ worktreePath: string; repositoryId?: string }>();
   const { worktreePath, repositoryId = 'default' } = body;
@@ -55,7 +55,19 @@ app.post('/api/sessions', async (c) => {
   return c.json({ session }, 201);
 });
 
-// WebSocket endpoint for terminal
+// Delete a session
+app.delete('/api/sessions/:id', (c) => {
+  const sessionId = c.req.param('id');
+  const success = sessionManager.killSession(sessionId);
+
+  if (!success) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
+  return c.json({ success: true });
+});
+
+// WebSocket endpoint for terminal (reconnect to existing session)
 app.get(
   '/ws/terminal/:sessionId',
   upgradeWebSocket((c) => {
@@ -77,6 +89,19 @@ app.get(
 
         console.log(`Terminal WebSocket connected for session: ${sessionId}`);
 
+        // Attach callbacks to receive real-time output
+        sessionManager.attachCallbacks(
+          sessionId,
+          (data) => {
+            const msg: TerminalServerMessage = { type: 'output', data };
+            ws.send(JSON.stringify(msg));
+          },
+          (exitCode, signal) => {
+            const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
+            ws.send(JSON.stringify(msg));
+          }
+        );
+
         // Send buffered output (history) on reconnection
         const history = sessionManager.getOutputBuffer(sessionId);
         if (history) {
@@ -92,7 +117,8 @@ app.get(
       },
       onClose() {
         console.log(`Terminal WebSocket disconnected for session: ${sessionId}`);
-        // Note: We don't kill the session here - it persists for reconnection
+        // Detach callbacks but keep session alive
+        sessionManager.detachCallbacks(sessionId);
       },
     };
   })

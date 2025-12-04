@@ -106,40 +106,23 @@ export function Terminal({ wsUrl }: TerminalProps) {
     }
   }, [connected, sendResize]);
 
+  const statusColor =
+    status === 'connected' ? 'bg-green-500' :
+    status === 'connecting' ? 'bg-yellow-500' :
+    status === 'exited' ? 'bg-red-500' : 'bg-gray-500';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{
-        padding: '8px 12px',
-        background: '#0d0d1a',
-        borderBottom: '1px solid #333',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-      }}>
-        <span style={{
-          display: 'inline-block',
-          width: '8px',
-          height: '8px',
-          borderRadius: '50%',
-          background: status === 'connected' ? '#4caf50' :
-                      status === 'connecting' ? '#ff9800' :
-                      status === 'exited' ? '#f44336' : '#666',
-        }} />
-        <span style={{ color: '#888', fontSize: '0.875rem' }}>
+    <div className="flex flex-col h-full">
+      <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3">
+        <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
+        <span className="text-gray-500 text-sm">
           {status === 'connecting' && 'Connecting...'}
           {status === 'connected' && 'Connected'}
           {status === 'disconnected' && 'Disconnected'}
           {status === 'exited' && `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`}
         </span>
       </div>
-      <div
-        ref={containerRef}
-        style={{
-          flex: 1,
-          background: '#1a1a2e',
-          padding: '8px',
-        }}
-      />
+      <div ref={containerRef} className="flex-1 bg-slate-800 p-2" />
     </div>
   );
 }
