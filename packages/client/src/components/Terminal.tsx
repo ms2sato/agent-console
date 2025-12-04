@@ -4,16 +4,25 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
 
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
+
 interface TerminalProps {
   wsUrl: string;
+  onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
+  hideStatusBar?: boolean;
 }
 
-export function Terminal({ wsUrl }: TerminalProps) {
+export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'exited'>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
+
+  // Notify parent of status changes
+  useEffect(() => {
+    onStatusChange?.(status, exitInfo ?? undefined);
+  }, [status, exitInfo, onStatusChange]);
 
   const handleOutput = useCallback((data: string) => {
     terminalRef.current?.write(data);
@@ -112,17 +121,19 @@ export function Terminal({ wsUrl }: TerminalProps) {
     status === 'exited' ? 'bg-red-500' : 'bg-gray-500';
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3">
-        <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
-        <span className="text-gray-500 text-sm">
-          {status === 'connecting' && 'Connecting...'}
-          {status === 'connected' && 'Connected'}
-          {status === 'disconnected' && 'Disconnected'}
-          {status === 'exited' && `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`}
-        </span>
-      </div>
-      <div ref={containerRef} className="flex-1 bg-slate-800 p-2" />
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      {!hideStatusBar && (
+        <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3 shrink-0">
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
+          <span className="text-gray-500 text-sm">
+            {status === 'connecting' && 'Connecting...'}
+            {status === 'connected' && 'Connected'}
+            {status === 'disconnected' && 'Disconnected'}
+            {status === 'exited' && `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`}
+          </span>
+        </div>
+      )}
+      <div ref={containerRef} className="flex-1 min-h-0 bg-slate-800 p-2 overflow-hidden" />
     </div>
   );
 }

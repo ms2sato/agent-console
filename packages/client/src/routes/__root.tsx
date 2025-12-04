@@ -6,7 +6,7 @@ export const Route = createRootRoute({
 
 function RootLayout() {
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <header style={{
         padding: '12px 20px',
         borderBottom: '1px solid #333',
@@ -26,7 +26,7 @@ function RootLayout() {
           Claude Code Web Console
         </Link>
       </header>
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '0 1.5rem' }}>
         <Outlet />
       </main>
     </div>
