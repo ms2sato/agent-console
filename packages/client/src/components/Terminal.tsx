@@ -91,6 +91,25 @@ export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps
       sendInput(data);
     });
 
+    // Handle special key events
+    terminal.attachCustomKeyEventHandler((event) => {
+      // Skip IME composition events (Japanese input, etc.)
+      if (event.isComposing) {
+        return true; // Let IME handle it
+      }
+
+      // Handle Shift+Enter for multi-line input
+      if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Send soft newline for multi-line input
+        sendInput('\x0a');
+        return false; // Prevent terminal from handling
+      }
+
+      return true; // Allow default handling for other keys
+    });
+
     // Handle resize
     const handleResize = () => {
       fitTerminal();
