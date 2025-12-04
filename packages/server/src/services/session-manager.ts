@@ -136,6 +136,90 @@ export class SessionManager {
     return persistenceService.getSessionMetadata(id);
   }
 
+  /**
+   * Restart a dead session with the same ID
+   * Used when user clicks Continue or New Session in reconnection UI
+   */
+  restartSession(
+    id: string,
+    onData: (data: string) => void,
+    onExit: (exitCode: number, signal: string | null) => void,
+    continueConversation: boolean = false
+  ): Session | null {
+    // Check if session is already active
+    if (this.sessions.has(id)) {
+      console.log(`Session ${id} is already active, cannot restart`);
+      return null;
+    }
+
+    // Get metadata from persistence
+    const metadata = persistenceService.getSessionMetadata(id);
+    if (!metadata) {
+      console.log(`No metadata found for session ${id}`);
+      return null;
+    }
+
+    const startedAt = new Date().toISOString();
+
+    // Use -c flag to continue previous conversation
+    const args = continueConversation ? ['-c'] : [];
+
+    const ptyProcess = pty.spawn('claude', args, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: metadata.worktreePath,
+      env: process.env as Record<string, string>,
+    });
+
+    const session: InternalSession = {
+      id,
+      pty: ptyProcess,
+      outputBuffer: '',
+      worktreePath: metadata.worktreePath,
+      repositoryId: metadata.repositoryId,
+      status: 'running',
+      startedAt,
+      onData,
+      onExit,
+    };
+
+    ptyProcess.onData((data) => {
+      // Buffer output for reconnection
+      session.outputBuffer += data;
+      if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
+        session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_SIZE);
+      }
+      session.onData(data);
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      session.status = 'stopped';
+      const signalStr = signal !== undefined ? String(signal) : null;
+      session.onExit(exitCode, signalStr);
+      this.unpersistSession(id);
+    });
+
+    this.sessions.set(id, session);
+
+    // Update persistence with new PID
+    this.updatePersistedSession(id, ptyProcess.pid, startedAt);
+
+    console.log(`Session restarted: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
+
+    return this.toPublicSession(session);
+  }
+
+  private updatePersistedSession(id: string, pid: number, startedAt: string): void {
+    const sessions = persistenceService.loadSessions();
+    const idx = sessions.findIndex(s => s.id === id);
+    if (idx >= 0) {
+      sessions[idx].pid = pid;
+      sessions[idx].createdAt = startedAt;
+      persistenceService.saveSessions(sessions);
+    }
+  }
+
   getOutputBuffer(id: string): string {
     const session = this.sessions.get(id);
     return session?.outputBuffer ?? '';

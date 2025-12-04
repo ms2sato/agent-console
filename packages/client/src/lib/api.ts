@@ -54,6 +54,21 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
   return res.json();
 }
 
+export async function restartSession(
+  sessionId: string,
+  continueConversation: boolean = false
+): Promise<CreateSessionResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ continueConversation }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to restart session: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
     method: 'DELETE',

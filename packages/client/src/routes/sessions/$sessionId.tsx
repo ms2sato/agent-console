@@ -1,7 +1,7 @@
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect } from 'react';
 import { Terminal } from '../../components/Terminal';
-import { getSessionMetadata, createSession, type SessionMetadata } from '../../lib/api';
+import { getSessionMetadata, restartSession, type SessionMetadata } from '../../lib/api';
 
 interface TerminalSearchParams {
   cwd?: string;
@@ -26,7 +26,6 @@ type PageState =
 function TerminalPage() {
   const { sessionId } = Route.useParams();
   const { cwd } = Route.useSearch();
-  const navigate = useNavigate();
   const [state, setState] = useState<PageState>({ type: 'loading' });
 
   useEffect(() => {
@@ -66,13 +65,10 @@ function TerminalPage() {
 
     setState({ type: 'restarting' });
     try {
-      const { session } = await createSession(
-        state.metadata.worktreePath,
-        state.metadata.repositoryId,
-        continueConversation
-      );
-      // Navigate to the new session
-      navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
+      await restartSession(sessionId, continueConversation);
+      // Session restarted with same ID - just switch to active state
+      const wsUrl = `ws://${window.location.hostname}:3457/ws/terminal/${sessionId}`;
+      setState({ type: 'active', wsUrl });
     } catch (error) {
       console.error('Failed to restart session:', error);
       alert(error instanceof Error ? error.message : 'Failed to restart session');

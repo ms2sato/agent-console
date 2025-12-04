@@ -91,6 +91,26 @@ app.get('/api/sessions/:id/metadata', (c) => {
   return c.json({ error: 'Session not found' }, 404);
 });
 
+// Restart a dead session (reuse same session ID)
+app.post('/api/sessions/:id/restart', async (c) => {
+  const sessionId = c.req.param('id');
+  const body = await c.req.json<{ continueConversation?: boolean }>();
+  const { continueConversation = false } = body;
+
+  const session = sessionManager.restartSession(
+    sessionId,
+    () => {}, // onData placeholder - will be replaced by WebSocket
+    () => {}, // onExit placeholder - will be replaced by WebSocket
+    continueConversation
+  );
+
+  if (!session) {
+    return c.json({ error: 'Session not found or already active' }, 404);
+  }
+
+  return c.json({ session });
+});
+
 // Delete a session
 app.delete('/api/sessions/:id', (c) => {
   const sessionId = c.req.param('id');
