@@ -3,8 +3,10 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
-import type { TerminalServerMessage } from '@agents-web-console/shared';
+import type { TerminalServerMessage, CreateWorktreeRequest } from '@agents-web-console/shared';
 import { sessionManager } from './services/session-manager.js';
+import { repositoryManager } from './services/repository-manager.js';
+import { worktreeService } from './services/worktree-service.js';
 import {
   handleTerminalMessage,
 } from './websocket/terminal-handler.js';
@@ -61,6 +63,156 @@ app.delete('/api/sessions/:id', (c) => {
   }
 
   return c.json({ success: true });
+});
+
+// ========== Repository API ==========
+
+// Get all repositories
+app.get('/api/repositories', (c) => {
+  const repositories = repositoryManager.getAllRepositories();
+  return c.json({ repositories });
+});
+
+// Register a repository
+app.post('/api/repositories', async (c) => {
+  const body = await c.req.json<{ path: string }>();
+  const { path } = body;
+
+  if (!path) {
+    return c.json({ error: 'path is required' }, 400);
+  }
+
+  try {
+    const repository = repositoryManager.registerRepository(path);
+    return c.json({ repository }, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: message }, 400);
+  }
+});
+
+// Unregister a repository
+app.delete('/api/repositories/:id', (c) => {
+  const repoId = c.req.param('id');
+  const success = repositoryManager.unregisterRepository(repoId);
+
+  if (!success) {
+    return c.json({ error: 'Repository not found' }, 404);
+  }
+
+  return c.json({ success: true });
+});
+
+// ========== Worktree API ==========
+
+// Get worktrees for a repository
+app.get('/api/repositories/:id/worktrees', (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    return c.json({ error: 'Repository not found' }, 404);
+  }
+
+  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  return c.json({ worktrees });
+});
+
+// Create a worktree
+app.post('/api/repositories/:id/worktrees', async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    return c.json({ error: 'Repository not found' }, 404);
+  }
+
+  const body = await c.req.json<CreateWorktreeRequest>();
+  const { branch, baseBranch, autoStartSession } = body;
+
+  if (!branch) {
+    return c.json({ error: 'branch is required' }, 400);
+  }
+
+  const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
+
+  if (result.error) {
+    return c.json({ error: result.error }, 400);
+  }
+
+  // Get the created worktree info
+  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  const worktree = worktrees.find(wt => wt.path === result.worktreePath);
+
+  // Optionally start a session
+  let session = null;
+  if (autoStartSession && worktree) {
+    session = sessionManager.createSession(
+      worktree.path,
+      repoId,
+      () => {},
+      () => {}
+    );
+  }
+
+  return c.json({ worktree, session }, 201);
+});
+
+// Delete a worktree
+app.delete('/api/repositories/:id/worktrees/*', async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    return c.json({ error: 'Repository not found' }, 404);
+  }
+
+  // Get worktree path from URL (everything after /worktrees/)
+  const url = new URL(c.req.url);
+  const pathMatch = url.pathname.match(/\/worktrees\/(.+)$/);
+  const worktreePath = pathMatch ? decodeURIComponent(pathMatch[1]) : '';
+
+  if (!worktreePath) {
+    return c.json({ error: 'worktree path is required' }, 400);
+  }
+
+  // Check for force flag in query
+  const force = c.req.query('force') === 'true';
+
+  // Kill any sessions running in this worktree
+  const sessions = sessionManager.getAllSessions();
+  for (const session of sessions) {
+    if (session.worktreePath === worktreePath) {
+      if (!force) {
+        return c.json({
+          error: 'Session is running in this worktree. Use force=true to terminate.',
+          sessionId: session.id
+        }, 409);
+      }
+      sessionManager.killSession(session.id);
+    }
+  }
+
+  const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+
+  if (!result.success) {
+    return c.json({ error: result.error }, 400);
+  }
+
+  return c.json({ success: true });
+});
+
+// Get branches for a repository
+app.get('/api/repositories/:id/branches', (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    return c.json({ error: 'Repository not found' }, 404);
+  }
+
+  const branches = worktreeService.listBranches(repo.path);
+  return c.json(branches);
 });
 
 // WebSocket endpoint for terminal (reconnect to existing session)
