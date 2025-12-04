@@ -20,14 +20,36 @@ export async function fetchSessions(): Promise<SessionsResponse> {
   return res.json();
 }
 
-export async function createSession(worktreePath?: string, repositoryId?: string): Promise<CreateSessionResponse> {
+export async function createSession(
+  worktreePath?: string,
+  repositoryId?: string,
+  continueConversation: boolean = false
+): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repositoryId }),
+    body: JSON.stringify({ worktreePath, repositoryId, continueConversation }),
   });
   if (!res.ok) {
     throw new Error(`Failed to create session: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export interface SessionMetadata {
+  id: string;
+  worktreePath: string;
+  repositoryId: string;
+  isActive: boolean;
+}
+
+export async function getSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/metadata`);
+  if (res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to get session metadata: ${res.statusText}`);
   }
   return res.json();
 }

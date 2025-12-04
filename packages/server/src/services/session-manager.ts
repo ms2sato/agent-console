@@ -1,6 +1,7 @@
 import * as pty from 'node-pty';
 import { v4 as uuidv4 } from 'uuid';
 import type { Session, SessionStatus } from '@agents-web-console/shared';
+import { persistenceService, type PersistedSession } from './persistence-service.js';
 
 interface InternalSession {
   id: string;
@@ -19,16 +20,64 @@ const MAX_BUFFER_SIZE = 100000; // 100KB
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
 
+  constructor() {
+    this.cleanupOrphanProcesses();
+  }
+
+  /**
+   * Kill orphan processes from previous server run
+   * Note: We keep session metadata for reconnection UI
+   */
+  private cleanupOrphanProcesses(): void {
+    const persistedSessions = persistenceService.loadSessions();
+
+    for (const session of persistedSessions) {
+      try {
+        // Check if process exists and kill it
+        process.kill(session.pid, 0); // 0 = check if process exists
+        process.kill(session.pid, 'SIGTERM');
+        console.log(`Killed orphan process: PID ${session.pid} (session ${session.id})`);
+      } catch {
+        // Process doesn't exist, that's fine
+      }
+    }
+
+    // Keep session metadata for reconnection UI
+    // Metadata will be cleared when user creates new session or explicitly dismisses
+    console.log(`Orphan process cleanup completed (${persistedSessions.length} sessions preserved for reconnection)`);
+  }
+
+  private persistSession(session: InternalSession): void {
+    const sessions = persistenceService.loadSessions();
+    const persisted: PersistedSession = {
+      id: session.id,
+      worktreePath: session.worktreePath,
+      repositoryId: session.repositoryId,
+      pid: session.pty.pid,
+      createdAt: session.startedAt,
+    };
+    sessions.push(persisted);
+    persistenceService.saveSessions(sessions);
+  }
+
+  private unpersistSession(id: string): void {
+    persistenceService.removeSession(id);
+  }
+
   createSession(
     worktreePath: string,
     repositoryId: string,
     onData: (data: string) => void,
-    onExit: (exitCode: number, signal: string | null) => void
+    onExit: (exitCode: number, signal: string | null) => void,
+    continueConversation: boolean = false
   ): Session {
     const id = uuidv4();
     const startedAt = new Date().toISOString();
 
-    const ptyProcess = pty.spawn('claude', [], {
+    // Use -c flag to continue previous conversation
+    const args = continueConversation ? ['-c'] : [];
+
+    const ptyProcess = pty.spawn('claude', args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -62,11 +111,14 @@ export class SessionManager {
       // signal can be a number (signal code) or undefined
       const signalStr = signal !== undefined ? String(signal) : null;
       session.onExit(exitCode, signalStr);
+      // Remove from persistence when session ends
+      this.unpersistSession(id);
     });
 
     this.sessions.set(id, session);
+    this.persistSession(session);
 
-    console.log(`Session created: ${id} (PID: ${ptyProcess.pid})`);
+    console.log(`Session created: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
 
     return this.toPublicSession(session);
   }
@@ -74,6 +126,14 @@ export class SessionManager {
   getSession(id: string): Session | undefined {
     const session = this.sessions.get(id);
     return session ? this.toPublicSession(session) : undefined;
+  }
+
+  /**
+   * Get metadata for a session that may no longer be active
+   * Used for reconnection UI
+   */
+  getSessionMetadata(id: string): PersistedSession | undefined {
+    return persistenceService.getSessionMetadata(id);
   }
 
   getOutputBuffer(id: string): string {
@@ -101,6 +161,7 @@ export class SessionManager {
 
     session.pty.kill();
     this.sessions.delete(id);
+    this.unpersistSession(id);
     console.log(`Session killed: ${id}`);
     return true;
   }

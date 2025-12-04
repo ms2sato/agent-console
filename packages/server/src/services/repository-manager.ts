@@ -2,9 +2,32 @@ import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Repository } from '@agents-web-console/shared';
+import { persistenceService } from './persistence-service.js';
 
 export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
+
+  constructor() {
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    const persisted = persistenceService.loadRepositories();
+    for (const repo of persisted) {
+      // Validate that the path still exists
+      if (fs.existsSync(repo.path)) {
+        this.repositories.set(repo.id, repo);
+        console.log(`Loaded repository: ${repo.name} (${repo.id})`);
+      } else {
+        console.log(`Skipped missing repository: ${repo.name} (${repo.path})`);
+      }
+    }
+  }
+
+  private saveToDisk(): void {
+    const repos = Array.from(this.repositories.values());
+    persistenceService.saveRepositories(repos);
+  }
 
   registerRepository(repoPath: string): Repository {
     // Resolve to absolute path
@@ -39,6 +62,7 @@ export class RepositoryManager {
     };
 
     this.repositories.set(id, repository);
+    this.saveToDisk();
     console.log(`Repository registered: ${name} (${id})`);
 
     return repository;
@@ -49,6 +73,7 @@ export class RepositoryManager {
     if (!repo) return false;
 
     this.repositories.delete(id);
+    this.saveToDisk();
     console.log(`Repository unregistered: ${repo.name} (${id})`);
     return true;
   }

@@ -38,8 +38,16 @@ app.get('/api/sessions', (c) => {
 
 // Create a new session
 app.post('/api/sessions', async (c) => {
-  const body = await c.req.json<{ worktreePath?: string; repositoryId?: string }>();
-  const { worktreePath = process.cwd(), repositoryId = 'default' } = body;
+  const body = await c.req.json<{
+    worktreePath?: string;
+    repositoryId?: string;
+    continueConversation?: boolean;
+  }>();
+  const {
+    worktreePath = process.cwd(),
+    repositoryId = 'default',
+    continueConversation = false,
+  } = body;
 
   // Create session without WebSocket initially
   // The WebSocket connection will attach to it later
@@ -47,10 +55,40 @@ app.post('/api/sessions', async (c) => {
     worktreePath,
     repositoryId,
     () => {}, // onData placeholder - will be replaced by WebSocket
-    () => {}  // onExit placeholder - will be replaced by WebSocket
+    () => {}, // onExit placeholder - will be replaced by WebSocket
+    continueConversation
   );
 
   return c.json({ session }, 201);
+});
+
+// Get session metadata (for reconnection UI)
+app.get('/api/sessions/:id/metadata', (c) => {
+  const sessionId = c.req.param('id');
+
+  // First check if session is active
+  const activeSession = sessionManager.getSession(sessionId);
+  if (activeSession) {
+    return c.json({
+      id: activeSession.id,
+      worktreePath: activeSession.worktreePath,
+      repositoryId: activeSession.repositoryId,
+      isActive: true,
+    });
+  }
+
+  // Check persisted metadata for dead sessions
+  const metadata = sessionManager.getSessionMetadata(sessionId);
+  if (metadata) {
+    return c.json({
+      id: metadata.id,
+      worktreePath: metadata.worktreePath,
+      repositoryId: metadata.repositoryId,
+      isActive: false,
+    });
+  }
+
+  return c.json({ error: 'Session not found' }, 404);
 });
 
 // Delete a session
