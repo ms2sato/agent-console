@@ -43,15 +43,35 @@ export interface SessionMetadata {
   isActive: boolean;
 }
 
+export class ServerUnavailableError extends Error {
+  constructor() {
+    super('Server is unavailable');
+    this.name = 'ServerUnavailableError';
+  }
+}
+
 export async function getSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/metadata`);
-  if (res.status === 404) {
-    return null;
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/metadata`);
+    if (res.status === 404) {
+      return null;
+    }
+    // 500/502/503/504 likely means server is down (Vite proxy returns 500 when backend is unavailable)
+    if (res.status >= 500) {
+      throw new ServerUnavailableError();
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to get session metadata: ${res.statusText}`);
+    }
+    return res.json();
+  } catch (error) {
+    // Network error - server is likely down
+    // TypeError is thrown when fetch fails due to network issues
+    if (error instanceof TypeError) {
+      throw new ServerUnavailableError();
+    }
+    throw error;
   }
-  if (!res.ok) {
-    throw new Error(`Failed to get session metadata: ${res.statusText}`);
-  }
-  return res.json();
 }
 
 export async function restartSession(

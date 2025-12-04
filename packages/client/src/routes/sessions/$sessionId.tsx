@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
-import { getSessionMetadata, restartSession, type SessionMetadata } from '../../lib/api';
+import { getSessionMetadata, restartSession, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
 
 interface TerminalSearchParams {
   cwd?: string;
@@ -21,6 +21,7 @@ type PageState =
   | { type: 'active'; wsUrl: string; metadata: SessionMetadata }
   | { type: 'disconnected'; metadata: SessionMetadata }
   | { type: 'not_found' }
+  | { type: 'server_unavailable' }
   | { type: 'restarting' };
 
 function extractBranchName(worktreePath: string): string {
@@ -72,7 +73,11 @@ function TerminalPage() {
         }
       } catch (error) {
         console.error('Failed to check session:', error);
-        setState({ type: 'not_found' });
+        if (error instanceof ServerUnavailableError) {
+          setState({ type: 'server_unavailable' });
+        } else {
+          setState({ type: 'not_found' });
+        }
       }
     };
 
@@ -102,6 +107,34 @@ function TerminalPage() {
       <div className="flex-1 flex items-center justify-center">
         <div className="text-gray-400">
           {state.type === 'loading' ? 'Loading...' : 'Restarting session...'}
+        </div>
+      </div>
+    );
+  }
+
+  // Server unavailable state
+  if (state.type === 'server_unavailable') {
+    const handleRetry = () => {
+      setState({ type: 'loading' });
+      // Re-trigger the effect by changing state
+      window.location.reload();
+    };
+
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="card text-center max-w-md">
+          <h2 className="text-xl font-semibold mb-4">Server Unavailable</h2>
+          <p className="text-gray-400 mb-6">
+            Cannot connect to the server. Please ensure the server is running.
+          </p>
+          <div className="flex gap-3 justify-center">
+            <button onClick={handleRetry} className="btn btn-primary">
+              Retry
+            </button>
+            <Link to="/" className="btn bg-slate-600 hover:bg-slate-500 no-underline">
+              Dashboard
+            </Link>
+          </div>
         </div>
       </div>
     );
