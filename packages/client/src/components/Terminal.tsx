@@ -41,7 +41,7 @@ export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps
     setStatus(connected ? 'connected' : 'disconnected');
   }, []);
 
-  const { sendInput, sendResize, connected } = useTerminalWebSocket(wsUrl, {
+  const { sendInput, sendResize, sendImage, connected } = useTerminalWebSocket(wsUrl, {
     onOutput: handleOutput,
     onHistory: handleHistory,
     onExit: handleExit,
@@ -99,13 +99,40 @@ export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps
       }
     };
 
+    // Handle paste with image detection
+    const handlePaste = (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          event.preventDefault();
+          const blob = item.getAsFile();
+          if (!blob) continue;
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = reader.result as string;
+            // Remove data URL prefix (e.g., "data:image/png;base64,")
+            const base64Data = base64.split(',')[1];
+            sendImage(base64Data, item.type);
+          };
+          reader.readAsDataURL(blob);
+          return; // Only handle first image
+        }
+      }
+      // If no image, let xterm handle normal text paste
+    };
+
+    container.addEventListener('paste', handlePaste);
     window.addEventListener('resize', handleResize);
 
     return () => {
+      container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
       terminal.dispose();
     };
-  }, [sendInput, sendResize]);
+  }, [sendInput, sendResize, sendImage]);
 
   // Send resize when connection is established
   useEffect(() => {

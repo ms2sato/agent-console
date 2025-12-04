@@ -31,7 +31,8 @@ export interface Session {
 // ターミナル用（セッション個別接続）
 export type TerminalClientMessage =
   | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number };
+  | { type: 'resize'; cols: number; rows: number }
+  | { type: 'image'; data: string; mimeType: string }; // base64 encoded image
 
 export type TerminalServerMessage =
   | { type: 'output'; data: string }

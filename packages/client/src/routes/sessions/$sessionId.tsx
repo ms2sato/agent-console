@@ -47,7 +47,7 @@ function TerminalPage() {
       const wsUrl = `ws://${window.location.hostname}:3457/ws/terminal-new${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
       const newMetadata: SessionMetadata = {
         id: 'new',
-        worktreePath: cwd || process.cwd?.() || '/',
+        worktreePath: cwd || '(server default)',
         repositoryId: 'default',
         isActive: true,
       };

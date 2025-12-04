@@ -1,6 +1,10 @@
 import type { WSContext } from 'hono/ws';
 import type { TerminalClientMessage, TerminalServerMessage } from '@agents-web-console/shared';
 import { sessionManager } from '../services/session-manager.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 export function handleTerminalConnection(
   ws: WSContext,
@@ -32,6 +36,27 @@ export function handleTerminalConnection(
   }
 }
 
+// Directory for storing uploaded images
+const IMAGE_UPLOAD_DIR = join(tmpdir(), 'agents-web-console-images');
+
+// Ensure image upload directory exists
+try {
+  mkdirSync(IMAGE_UPLOAD_DIR, { recursive: true });
+} catch {
+  // Directory may already exist
+}
+
+function getExtensionFromMimeType(mimeType: string): string {
+  const mimeMap: Record<string, string> = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/bmp': 'bmp',
+  };
+  return mimeMap[mimeType] || 'png';
+}
+
 export function handleTerminalMessage(
   _ws: WSContext,
   sessionId: string,
@@ -48,6 +73,22 @@ export function handleTerminalMessage(
       case 'resize':
         sessionManager.resize(sessionId, parsed.cols, parsed.rows);
         break;
+      case 'image': {
+        // Save image to temp file
+        const ext = getExtensionFromMimeType(parsed.mimeType);
+        const filename = `${randomUUID()}.${ext}`;
+        const filePath = join(IMAGE_UPLOAD_DIR, filename);
+
+        // Decode base64 and write to file
+        const buffer = Buffer.from(parsed.data, 'base64');
+        writeFileSync(filePath, buffer);
+
+        console.log(`Image saved: ${filePath}`);
+
+        // Send file path to PTY stdin (Claude Code will read the image)
+        sessionManager.writeInput(sessionId, filePath);
+        break;
+      }
     }
   } catch (e) {
     console.error('Invalid terminal message:', e);

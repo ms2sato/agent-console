@@ -11,6 +11,7 @@ interface UseTerminalWebSocketOptions {
 interface UseTerminalWebSocketReturn {
   sendInput: (data: string) => void;
   sendResize: (cols: number, rows: number) => void;
+  sendImage: (data: string, mimeType: string) => void;
   connected: boolean;
 }
 
@@ -79,5 +80,12 @@ export function useTerminalWebSocket(
     }
   }, []);
 
-  return { sendInput, sendResize, connected };
+  const sendImage = useCallback((data: string, mimeType: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const msg: TerminalClientMessage = { type: 'image', data, mimeType };
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
+  return { sendInput, sendResize, sendImage, connected };
 }
