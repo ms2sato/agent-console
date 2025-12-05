@@ -3,6 +3,7 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { homedir } from 'node:os';
 import type { TerminalServerMessage, CreateWorktreeRequest, ClaudeActivityState, DashboardServerMessage } from '@agents-web-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from './services/session-manager.js';
@@ -28,7 +29,12 @@ app.get('/health', (c) => {
 
 // API routes
 app.get('/api', (c) => {
-  return c.json({ message: 'Claude Code Web Console API' });
+  return c.json({ message: 'Agents Web Console API' });
+});
+
+// Get server config
+app.get('/api/config', (c) => {
+  return c.json({ homeDir: homedir() });
 });
 
 // Get all sessions

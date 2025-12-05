@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { getSessionMetadata, restartSession, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
+import { formatPath } from '../../lib/path';
 import type { ClaudeActivityState } from '@agents-web-console/shared';
 
 interface TerminalSearchParams {
@@ -31,6 +32,39 @@ function extractBranchName(worktreePath: string): string {
   return parts[parts.length - 1] || 'unknown';
 }
 
+function extractProjectName(worktreePath: string): string {
+  // Path format: ~/.agents-web-console/worktrees/{org}/{repo}/{branch}
+  // or: ~/.agents-web-console/worktrees/{repo}/{branch}
+  // Branch is always the last part, repo is second to last
+  const parts = worktreePath.split('/').filter(Boolean);
+  return parts[parts.length - 2] || 'project';
+}
+
+// Generate favicon based on activity state
+function generateFavicon(state: ClaudeActivityState, bounce: number = 0): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+
+  // Color based on state
+  const color = state === 'active' ? '#3b82f6' :  // blue
+                state === 'asking' ? '#eab308' :   // yellow
+                '#6b7280';                         // gray (idle/unknown)
+
+  // Bounce effect: move circle up and down (y: 22 to 10)
+  const y = state === 'active' ? 22 - (12 * bounce) : 16;
+
+  // Draw circle
+  ctx.beginPath();
+  ctx.arc(16, y, 10, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  return canvas.toDataURL('image/png');
+}
+
 function TerminalPage() {
   const { sessionId } = Route.useParams();
   const { cwd } = Route.useSearch();
@@ -47,6 +81,63 @@ function TerminalPage() {
   const handleActivityChange = useCallback((state: ClaudeActivityState) => {
     setActivityState(state);
   }, []);
+
+  // Update page title and favicon based on state
+  useEffect(() => {
+    if (state.type !== 'active' && state.type !== 'disconnected') return;
+
+    const branchName = extractBranchName(state.metadata.worktreePath);
+    const projectName = extractProjectName(state.metadata.worktreePath);
+    document.title = `${branchName}@${projectName} - Agents Web Console`;
+
+    // Cleanup: restore default title on unmount
+    return () => {
+      document.title = 'Agents Web Console';
+    };
+  }, [state]);
+
+  // Update favicon based on activity state (with animation for active)
+  useEffect(() => {
+    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+
+    // Animate favicon when active
+    if (activityState === 'active') {
+      let frame = 0;
+      const interval = setInterval(() => {
+        // Bouncing ball effect using absolute sine
+        const bounce = Math.abs(Math.sin(frame * 0.12));
+        const faviconUrl = generateFavicon(activityState, bounce);
+        if (faviconUrl && link) {
+          link.href = faviconUrl;
+        }
+        frame++;
+      }, 40);
+
+      return () => {
+        clearInterval(interval);
+        if (link) {
+          link.href = '/favicon.ico';
+        }
+      };
+    }
+
+    // Static favicon for non-active states
+    const faviconUrl = generateFavicon(activityState);
+    if (faviconUrl) {
+      link.href = faviconUrl;
+    }
+
+    return () => {
+      if (link) {
+        link.href = '/favicon.ico';
+      }
+    };
+  }, [activityState]);
 
   useEffect(() => {
     // For 'new' session, use the /ws/terminal-new endpoint directly
@@ -173,7 +264,7 @@ function TerminalPage() {
             The session has been disconnected (server may have restarted).
           </p>
           <p className="text-sm text-gray-500 mb-6 font-mono bg-slate-800 p-2 rounded">
-            {state.metadata.worktreePath}
+            {formatPath(state.metadata.worktreePath)}
           </p>
           <div className="flex gap-3 justify-center">
             <button
@@ -220,7 +311,7 @@ function TerminalPage() {
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
         <span className="text-gray-500 text-xs font-mono truncate flex-1">
-          {state.metadata.worktreePath}
+          {formatPath(state.metadata.worktreePath)}
         </span>
         {/* Activity state indicator */}
         {activityState !== 'unknown' && (
@@ -235,8 +326,8 @@ function TerminalPage() {
           </span>
         )}
         <span className="flex items-center gap-2 text-gray-400 text-xs shrink-0">
-          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
           {statusText}
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
         </span>
       </div>
     </div>

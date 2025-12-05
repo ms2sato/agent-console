@@ -2,6 +2,20 @@ import type { Session, Repository, Worktree, CreateWorktreeRequest } from '@agen
 
 const API_BASE = '/api';
 
+// ========== Config API ==========
+
+export interface ConfigResponse {
+  homeDir: string;
+}
+
+export async function fetchConfig(): Promise<ConfigResponse> {
+  const res = await fetch(`${API_BASE}/config`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch config: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 // ========== Sessions API ==========
 
 export interface SessionsResponse {

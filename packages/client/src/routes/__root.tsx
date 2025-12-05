@@ -23,10 +23,10 @@ function RootLayout() {
             fontWeight: 'bold',
           }}
         >
-          Claude Code Web Console
+          Agents Web Console
         </Link>
       </header>
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '0 1.5rem' }}>
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <Outlet />
       </main>
     </div>
