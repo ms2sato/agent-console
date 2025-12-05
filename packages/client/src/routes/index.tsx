@@ -534,6 +534,10 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
 
   return (
     <div className="flex items-center gap-3 p-2 bg-slate-800 rounded">
+      {/* Index number */}
+      <span className="w-6 text-center text-sm font-mono text-gray-400 shrink-0">
+        {worktree.index !== undefined ? worktree.index : '-'}
+      </span>
       <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium flex items-center gap-2">

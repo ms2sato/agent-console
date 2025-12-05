@@ -13,6 +13,7 @@ export interface Worktree {
   head: string;         // HEADコミットハッシュ
   isMain: boolean;      // メインworktreeか
   repositoryId: string; // 親リポジトリID
+  index?: number;       // 連番（1から。メインには割り当てない）
 }
 
 // ========== セッション ==========

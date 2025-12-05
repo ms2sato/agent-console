@@ -9,6 +9,156 @@ const getWorktreeBaseDir = () => {
   return process.env.WORKTREE_BASE_DIR || path.join(os.homedir(), '.agents-web-console', 'worktrees');
 };
 
+// ========== Index Management ==========
+interface IndexStore {
+  // Map of worktree path -> index number
+  indexes: Record<string, number>;
+}
+
+/**
+ * Load index store for a repository
+ */
+function loadIndexStore(repoWorktreeDir: string): IndexStore {
+  const indexFile = path.join(repoWorktreeDir, '.worktree-indexes.json');
+  try {
+    if (fs.existsSync(indexFile)) {
+      return JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('Failed to load index store:', e);
+  }
+  return { indexes: {} };
+}
+
+/**
+ * Save index store for a repository
+ */
+function saveIndexStore(repoWorktreeDir: string, store: IndexStore): void {
+  const indexFile = path.join(repoWorktreeDir, '.worktree-indexes.json');
+  try {
+    fs.writeFileSync(indexFile, JSON.stringify(store, null, 2));
+  } catch (e) {
+    console.error('Failed to save index store:', e);
+  }
+}
+
+/**
+ * Allocate the next available index (fills gaps)
+ */
+function allocateIndex(store: IndexStore): number {
+  const usedIndexes = new Set(Object.values(store.indexes));
+  let index = 1;
+  while (usedIndexes.has(index)) {
+    index++;
+  }
+  return index;
+}
+
+/**
+ * Get index for a worktree path
+ */
+function getIndexForPath(store: IndexStore, worktreePath: string): number | undefined {
+  return store.indexes[worktreePath];
+}
+
+// ========== Template Functionality ==========
+
+/**
+ * Find templates directory for a repository
+ * Priority: 1. .git-wt/ in repo root  2. ~/.agents-web-console/templates/<owner>/<repo>/
+ */
+function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
+  // Check repo-local templates
+  const localTemplates = path.join(repoPath, '.git-wt');
+  if (fs.existsSync(localTemplates) && fs.statSync(localTemplates).isDirectory()) {
+    return localTemplates;
+  }
+
+  // Check global templates in .agents-web-console/templates/
+  const globalTemplates = path.join(os.homedir(), '.agents-web-console', 'templates', orgRepo);
+  if (fs.existsSync(globalTemplates) && fs.statSync(globalTemplates).isDirectory()) {
+    return globalTemplates;
+  }
+
+  return null;
+}
+
+/**
+ * Substitute template variables in content
+ * Supports: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
+ * Also supports arithmetic: {{WORKTREE_NUM + 3000}}
+ */
+function substituteVariables(
+  content: string,
+  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
+): string {
+  // Handle arithmetic expressions like {{WORKTREE_NUM + 3000}}
+  content = content.replace(/\{\{WORKTREE_NUM\s*([+\-*/])\s*(\d+)\}\}/g, (_match, op, num) => {
+    const n = parseInt(num, 10);
+    switch (op) {
+      case '+': return String(vars.worktreeNum + n);
+      case '-': return String(vars.worktreeNum - n);
+      case '*': return String(vars.worktreeNum * n);
+      case '/': return String(Math.floor(vars.worktreeNum / n));
+      default: return String(vars.worktreeNum);
+    }
+  });
+
+  // Simple substitutions
+  content = content.replace(/\{\{WORKTREE_NUM\}\}/g, String(vars.worktreeNum));
+  content = content.replace(/\{\{BRANCH\}\}/g, vars.branch);
+  content = content.replace(/\{\{REPO\}\}/g, vars.repo);
+  content = content.replace(/\{\{WORKTREE_PATH\}\}/g, vars.worktreePath);
+
+  return content;
+}
+
+/**
+ * Copy template files to worktree with variable substitution
+ */
+function copyTemplateFiles(
+  templatesDir: string,
+  worktreePath: string,
+  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
+): string[] {
+  const copiedFiles: string[] = [];
+
+  function copyRecursive(srcDir: string, destDir: string) {
+    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      // Skip .DS_Store
+      if (entry.name === '.DS_Store') continue;
+
+      const srcPath = path.join(srcDir, entry.name);
+      const destPath = path.join(destDir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!fs.existsSync(destPath)) {
+          fs.mkdirSync(destPath, { recursive: true });
+        }
+        copyRecursive(srcPath, destPath);
+      } else {
+        // Read, substitute, and write
+        const content = fs.readFileSync(srcPath, 'utf-8');
+        const substituted = substituteVariables(content, vars);
+
+        // Ensure parent directory exists
+        const destParent = path.dirname(destPath);
+        if (!fs.existsSync(destParent)) {
+          fs.mkdirSync(destParent, { recursive: true });
+        }
+
+        fs.writeFileSync(destPath, substituted);
+        copiedFiles.push(path.relative(worktreePath, destPath));
+      }
+    }
+  }
+
+  copyRecursive(templatesDir, worktreePath);
+  return copiedFiles;
+}
+
 /**
  * Extract org/repo from git remote URL
  * Examples:
@@ -51,7 +201,13 @@ export class WorktreeService {
         encoding: 'utf-8',
       });
 
-      return this.parsePorcelainOutput(output, repositoryId, repoPath);
+      // Get org/repo for index store path
+      const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+      const baseDir = getWorktreeBaseDir();
+      const repoWorktreeDir = path.join(baseDir, orgRepo);
+      const indexStore = loadIndexStore(repoWorktreeDir);
+
+      return this.parsePorcelainOutput(output, repositoryId, repoPath, indexStore);
     } catch (error) {
       console.error('Failed to list worktrees:', error);
       return [];
@@ -61,7 +217,12 @@ export class WorktreeService {
   /**
    * Parse git worktree list --porcelain output
    */
-  private parsePorcelainOutput(output: string, repositoryId: string, mainRepoPath: string): Worktree[] {
+  private parsePorcelainOutput(
+    output: string,
+    repositoryId: string,
+    mainRepoPath: string,
+    indexStore: IndexStore
+  ): Worktree[] {
     const worktrees: Worktree[] = [];
     const entries = output.trim().split('\n\n');
 
@@ -87,12 +248,15 @@ export class WorktreeService {
       }
 
       if (worktreePath) {
+        const isMain = worktreePath === mainRepoPath;
         worktrees.push({
           path: worktreePath,
           branch,
           head,
-          isMain: worktreePath === mainRepoPath,
+          isMain,
           repositoryId,
+          // Only non-main worktrees have an index
+          index: isMain ? undefined : getIndexForPath(indexStore, worktreePath),
         });
       }
     }
@@ -107,7 +271,7 @@ export class WorktreeService {
     repoPath: string,
     branch: string,
     baseBranch?: string
-  ): Promise<{ worktreePath: string; error?: string }> {
+  ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: .worktrees/{org}/{repo}/{branch}
     // Falls back to repo directory name if remote URL cannot be parsed
     const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
@@ -119,6 +283,10 @@ export class WorktreeService {
     if (!fs.existsSync(repoWorktreeDir)) {
       fs.mkdirSync(repoWorktreeDir, { recursive: true });
     }
+
+    // Allocate index before creating worktree
+    const indexStore = loadIndexStore(repoWorktreeDir);
+    const newIndex = allocateIndex(indexStore);
 
     return new Promise((resolve) => {
       let command: string;
@@ -138,8 +306,30 @@ export class WorktreeService {
           return;
         }
 
-        console.log(`Worktree created: ${worktreePath}`);
-        resolve({ worktreePath });
+        // Save index assignment
+        indexStore.indexes[worktreePath] = newIndex;
+        saveIndexStore(repoWorktreeDir, indexStore);
+
+        console.log(`Worktree created: ${worktreePath} (index: ${newIndex})`);
+
+        // Copy template files
+        const templatesDir = findTemplatesDir(repoPath, orgRepo);
+        let copiedFiles: string[] = [];
+
+        if (templatesDir) {
+          const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
+          copiedFiles = copyTemplateFiles(templatesDir, worktreePath, {
+            worktreeNum: newIndex,
+            branch,
+            repo: repoName,
+            worktreePath,
+          });
+          if (copiedFiles.length > 0) {
+            console.log(`Template files copied: ${copiedFiles.join(', ')}`);
+          }
+        }
+
+        resolve({ worktreePath, index: newIndex, copiedFiles });
       });
     });
   }
@@ -152,6 +342,11 @@ export class WorktreeService {
     worktreePath: string,
     force: boolean = false
   ): Promise<{ success: boolean; error?: string }> {
+    // Get org/repo for index store
+    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+    const baseDir = getWorktreeBaseDir();
+    const repoWorktreeDir = path.join(baseDir, orgRepo);
+
     return new Promise((resolve) => {
       const forceFlag = force ? ' --force' : '';
       const command = `git worktree remove "${worktreePath}"${forceFlag}`;
@@ -163,7 +358,13 @@ export class WorktreeService {
           return;
         }
 
-        console.log(`Worktree removed: ${worktreePath}`);
+        // Remove index assignment
+        const indexStore = loadIndexStore(repoWorktreeDir);
+        const removedIndex = indexStore.indexes[worktreePath];
+        delete indexStore.indexes[worktreePath];
+        saveIndexStore(repoWorktreeDir, indexStore);
+
+        console.log(`Worktree removed: ${worktreePath} (index ${removedIndex} freed)`);
         resolve({ success: true });
       });
     });
