@@ -648,6 +648,12 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
         </div>
       )}
 
+      {sessions.length === 0 && !showAddSession && (
+        <p className="text-sm text-gray-500">
+          Start a Claude session in any directory without setting up a worktree.
+        </p>
+      )}
+
       {sessions.length > 0 && (
         <div className="flex flex-col gap-3">
           {sessions.map((session) => (
