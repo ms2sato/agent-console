@@ -1,7 +1,8 @@
 import * as pty from 'node-pty';
 import { v4 as uuidv4 } from 'uuid';
-import type { Session, SessionStatus } from '@agents-web-console/shared';
+import type { Session, SessionStatus, ClaudeActivityState } from '@agents-web-console/shared';
 import { persistenceService, type PersistedSession } from './persistence-service.js';
+import { ActivityDetector } from './activity-detector.js';
 
 interface InternalSession {
   id: string;
@@ -10,18 +11,29 @@ interface InternalSession {
   worktreePath: string;
   repositoryId: string;
   status: SessionStatus;
+  activityState: ClaudeActivityState;
   startedAt: string;
   onData: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
+  onActivityChange?: (state: ClaudeActivityState) => void;
+  activityDetector: ActivityDetector;
 }
 
 const MAX_BUFFER_SIZE = 100000; // 100KB
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
+  private globalActivityCallback?: (sessionId: string, state: ClaudeActivityState) => void;
 
   constructor() {
     this.cleanupOrphanProcesses();
+  }
+
+  /**
+   * Set a global callback for all activity state changes (for dashboard broadcast)
+   */
+  setGlobalActivityCallback(callback: (sessionId: string, state: ClaudeActivityState) => void): void {
+    this.globalActivityCallback = callback;
   }
 
   /**
@@ -85,6 +97,16 @@ export class SessionManager {
       env: process.env as Record<string, string>,
     });
 
+    // Create activity detector for this session
+    const activityDetector = new ActivityDetector({
+      onStateChange: (state) => {
+        session.activityState = state;
+        session.onActivityChange?.(state);
+        // Broadcast to all dashboard clients
+        this.globalActivityCallback?.(id, state);
+      },
+    });
+
     const session: InternalSession = {
       id,
       pty: ptyProcess,
@@ -92,9 +114,11 @@ export class SessionManager {
       worktreePath,
       repositoryId,
       status: 'running',
+      activityState: 'idle',
       startedAt,
       onData,
       onExit,
+      activityDetector,
     };
 
     ptyProcess.onData((data) => {
@@ -103,11 +127,16 @@ export class SessionManager {
       if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
         session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_SIZE);
       }
+
+      // Process output for activity detection
+      session.activityDetector.processOutput(data);
+
       session.onData(data);
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       session.status = 'stopped';
+      session.activityDetector.dispose();
       // signal can be a number (signal code) or undefined
       const signalStr = signal !== undefined ? String(signal) : null;
       session.onExit(exitCode, signalStr);
@@ -172,6 +201,16 @@ export class SessionManager {
       env: process.env as Record<string, string>,
     });
 
+    // Create activity detector for this session
+    const activityDetector = new ActivityDetector({
+      onStateChange: (state) => {
+        session.activityState = state;
+        session.onActivityChange?.(state);
+        // Broadcast to all dashboard clients
+        this.globalActivityCallback?.(id, state);
+      },
+    });
+
     const session: InternalSession = {
       id,
       pty: ptyProcess,
@@ -179,9 +218,11 @@ export class SessionManager {
       worktreePath: metadata.worktreePath,
       repositoryId: metadata.repositoryId,
       status: 'running',
+      activityState: 'idle',
       startedAt,
       onData,
       onExit,
+      activityDetector,
     };
 
     ptyProcess.onData((data) => {
@@ -190,11 +231,16 @@ export class SessionManager {
       if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
         session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_SIZE);
       }
+
+      // Process output for activity detection
+      session.activityDetector.processOutput(data);
+
       session.onData(data);
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       session.status = 'stopped';
+      session.activityDetector.dispose();
       const signalStr = signal !== undefined ? String(signal) : null;
       session.onExit(exitCode, signalStr);
       this.unpersistSession(id);
@@ -228,6 +274,19 @@ export class SessionManager {
   writeInput(id: string, data: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
+
+    // Debug: log input data
+    console.log(`[SessionManager] writeInput: ${JSON.stringify(data)}`);
+
+    // Check if this is a submit (CR = Enter) or cancel (ESC)
+    if (data.includes('\r') || data === '\x1b') {
+      // User pressed Enter to submit or ESC to cancel - clear typing flag immediately
+      session.activityDetector.clearUserTyping();
+    } else {
+      // Regular typing - set typing flag
+      session.activityDetector.setUserTyping();
+    }
+
     session.pty.write(data);
     return true;
   }
@@ -256,13 +315,15 @@ export class SessionManager {
   attachCallbacks(
     id: string,
     onData: (data: string) => void,
-    onExit: (exitCode: number, signal: string | null) => void
+    onExit: (exitCode: number, signal: string | null) => void,
+    onActivityChange?: (state: ClaudeActivityState) => void
   ): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
 
     session.onData = onData;
     session.onExit = onExit;
+    session.onActivityChange = onActivityChange;
     return true;
   }
 
@@ -275,7 +336,16 @@ export class SessionManager {
 
     session.onData = () => {};
     session.onExit = () => {};
+    session.onActivityChange = undefined;
     return true;
+  }
+
+  /**
+   * Get activity state for a session
+   */
+  getActivityState(id: string): ClaudeActivityState | undefined {
+    const session = this.sessions.get(id);
+    return session?.activityState;
   }
 
   getAllSessions(): Session[] {
@@ -288,6 +358,7 @@ export class SessionManager {
       worktreePath: session.worktreePath,
       repositoryId: session.repositoryId,
       status: session.status,
+      activityState: session.activityState,
       pid: session.pty.pid,
       startedAt: session.startedAt,
     };

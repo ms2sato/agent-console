@@ -1,11 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { TerminalClientMessage, TerminalServerMessage } from '@agents-web-console/shared';
+import type { TerminalClientMessage, TerminalServerMessage, ClaudeActivityState } from '@agents-web-console/shared';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string) => void;
   onHistory: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
+  onActivity?: (state: ClaudeActivityState) => void;
 }
 
 interface UseTerminalWebSocketReturn {
@@ -45,6 +46,9 @@ export function useTerminalWebSocket(
             break;
           case 'exit':
             optionsRef.current.onExit(msg.exitCode, msg.signal);
+            break;
+          case 'activity':
+            optionsRef.current.onActivity?.(msg.state);
             break;
         }
       } catch (e) {

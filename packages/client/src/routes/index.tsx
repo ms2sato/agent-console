@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   fetchSessions,
@@ -12,7 +12,60 @@ import {
   createWorktree,
   deleteWorktree,
 } from '../lib/api';
-import type { Session, Repository, Worktree } from '@agents-web-console/shared';
+import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
+import type { Session, Repository, Worktree, ClaudeActivityState } from '@agents-web-console/shared';
+
+// Request notification permission on load
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+// Show browser notification
+function showNotification(title: string, body: string, sessionId?: string) {
+  console.log(`[showNotification] permission=${Notification.permission}, title=${title}`);
+  if ('Notification' in window && Notification.permission === 'granted') {
+    const notification = new Notification(title, {
+      body,
+      icon: '/favicon.ico',
+      tag: sessionId || 'claude-notification', // Prevent duplicate notifications
+    });
+    console.log('[showNotification] Notification created');
+    // Click to focus the session
+    if (sessionId) {
+      notification.onclick = () => {
+        window.open(`/sessions/${sessionId}`, '_blank');
+        notification.close();
+      };
+    }
+  } else {
+    console.log('[showNotification] Permission not granted, skipping');
+  }
+}
+
+// Activity state badge component
+function ActivityBadge({ state }: { state?: ClaudeActivityState }) {
+  if (!state || state === 'unknown') return null;
+
+  const styles = {
+    asking: 'bg-yellow-500/20 text-yellow-400',
+    active: 'bg-blue-500/20 text-blue-400',
+    idle: 'bg-gray-500/20 text-gray-400',
+  };
+
+  const labels = {
+    asking: 'Waiting',
+    active: 'Working',
+    idle: 'Idle',
+  };
+
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state]}`}>
+      {labels[state]}
+    </span>
+  );
+}
 
 export const Route = createFileRoute('/')({
   component: DashboardPage,
@@ -22,6 +75,70 @@ function DashboardPage() {
   const queryClient = useQueryClient();
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [newRepoPath, setNewRepoPath] = useState('');
+  // Track activity states locally for real-time updates
+  const [activityStates, setActivityStates] = useState<Record<string, ClaudeActivityState>>({});
+  // Track previous states for detecting completion (active → idle)
+  const prevStatesRef = useRef<Record<string, ClaudeActivityState>>({});
+
+  // Request notification permission on component mount
+  useEffect(() => {
+    requestNotificationPermission();
+  }, []);
+
+  // Handle WebSocket sync (initializes prevStatesRef from server state)
+  const handleSessionsSync = useCallback((sessions: Array<{ id: string; activityState: ClaudeActivityState }>) => {
+    console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
+    for (const session of sessions) {
+      console.log(`[Sync] ${session.id}: ${session.activityState}`);
+      prevStatesRef.current[session.id] = session.activityState;
+      setActivityStates(prev => ({ ...prev, [session.id]: session.activityState }));
+    }
+  }, []);
+
+  // Handle real-time activity updates via WebSocket
+  // Note: ActivityDetector handles debouncing and sticky state transitions server-side
+  const handleActivityUpdate = useCallback((sessionId: string, state: ClaudeActivityState) => {
+    const prevState = prevStatesRef.current[sessionId];
+    const now = Date.now();
+
+    console.log(`[Activity] ${sessionId}: ${prevState} → ${state}`);
+
+    // Update local state
+    setActivityStates(prev => ({ ...prev, [sessionId]: state }));
+    prevStatesRef.current[sessionId] = state;
+
+    // Skip notifications if this is the first state update (session just started)
+    if (!prevState) {
+      console.log('[Notification] Skipped: initial state');
+      return;
+    }
+
+    // Send notification for 'asking' state (Claude needs input)
+    if (state === 'asking' && prevState !== 'asking') {
+      console.log('[Notification] Triggering: asking state');
+      showNotification(
+        'Claude needs your input',
+        'A session is waiting for your response.',
+        `asking-${sessionId}-${now}`
+      );
+    }
+
+    // Send notification for completion (active → idle)
+    if (prevState === 'active' && state === 'idle') {
+      console.log('[Notification] Triggering: work completed');
+      showNotification(
+        'Claude completed work',
+        'A session has finished its task.',
+        `completed-${sessionId}-${now}`
+      );
+    }
+  }, []);
+
+  // Connect to dashboard WebSocket for real-time updates
+  useDashboardWebSocket({
+    onSync: handleSessionsSync,
+    onActivity: handleActivityUpdate,
+  });
 
   const { data: reposData } = useQuery({
     queryKey: ['repositories'],
@@ -33,6 +150,12 @@ function DashboardPage() {
     queryFn: fetchSessions,
     refetchInterval: 5000,
   });
+
+  // Merge server session data with local real-time activity states
+  const sessions = (sessionsData?.sessions ?? []).map(session => ({
+    ...session,
+    activityState: activityStates[session.id] ?? session.activityState,
+  }));
 
   const registerMutation = useMutation({
     mutationFn: registerRepository,
@@ -51,7 +174,6 @@ function DashboardPage() {
   });
 
   const repositories = reposData?.repositories ?? [];
-  const sessions = sessionsData?.sessions ?? [];
 
   const handleAddRepo = async () => {
     if (!newRepoPath.trim()) return;
@@ -351,11 +473,12 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     <div className="flex items-center gap-3 p-2 bg-slate-800 rounded">
       <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium">
+        <div className="text-sm font-medium flex items-center gap-2">
           {worktree.branch}
           {worktree.isMain && (
-            <span className="ml-2 text-xs text-gray-500">(main)</span>
+            <span className="text-xs text-gray-500">(main)</span>
           )}
+          {session && <ActivityBadge state={session.activityState} />}
         </div>
         <div className="text-xs text-gray-500 truncate">{worktree.path}</div>
       </div>
@@ -416,8 +539,9 @@ function SessionCard({ session }: SessionCardProps) {
     <div className="card flex items-center gap-4">
       <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap">
-          {session.worktreePath}
+        <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
+          <span className="truncate">{session.worktreePath}</span>
+          <ActivityBadge state={session.activityState} />
         </div>
         <div className="text-xs text-gray-500 mt-1">
           PID: {session.pid} | Started: {new Date(session.startedAt).toLocaleString()}

@@ -18,11 +18,19 @@ export interface Worktree {
 // ========== セッション ==========
 export type SessionStatus = 'running' | 'idle' | 'stopped';
 
+// Claude Code の活動状態（出力パースで検出）
+export type ClaudeActivityState =
+  | 'active'    // 作業中（出力継続）
+  | 'idle'      // 待機中（プロンプト表示）
+  | 'asking'    // 質問待ち（AskUserQuestion / 許可プロンプト）
+  | 'unknown';  // 不明
+
 export interface Session {
   id: string;           // UUID
   worktreePath: string; // worktreeパス（cwd）
   repositoryId: string; // 親リポジトリID
   status: SessionStatus;
+  activityState?: ClaudeActivityState; // Claude Code の活動状態
   pid?: number;
   startedAt: string;    // ISO 8601
 }
@@ -37,13 +45,16 @@ export type TerminalClientMessage =
 export type TerminalServerMessage =
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number; signal: string | null }
-  | { type: 'history'; data: string };
+  | { type: 'history'; data: string }
+  | { type: 'activity'; state: ClaudeActivityState };
 
 // ダッシュボード用（全体通知）
 export type DashboardServerMessage =
+  | { type: 'sessions-sync'; sessions: Array<{ id: string; activityState: ClaudeActivityState }> }
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
+  | { type: 'session-activity'; sessionId: string; activityState: ClaudeActivityState }
   | { type: 'worktree-created'; worktree: Worktree }
   | { type: 'worktree-deleted'; worktreePath: string }
   | { type: 'repository-added'; repository: Repository }

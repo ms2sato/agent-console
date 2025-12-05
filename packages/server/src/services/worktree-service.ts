@@ -1,11 +1,43 @@
 import { execSync, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import type { Worktree } from '@agents-web-console/shared';
 
 // Worktree base directory (can be overridden by WORKTREE_BASE_DIR env var)
 const getWorktreeBaseDir = () => {
-  return process.env.WORKTREE_BASE_DIR || path.join(process.cwd(), '.worktrees');
+  return process.env.WORKTREE_BASE_DIR || path.join(os.homedir(), '.agents-web-console', 'worktrees');
+};
+
+/**
+ * Extract org/repo from git remote URL
+ * Examples:
+ *   git@github.com:ms2sato/agents-web-console.git -> ms2sato/agents-web-console
+ *   https://github.com/anthropics/claude-code.git -> anthropics/claude-code
+ */
+const getOrgRepoFromRemote = (repoPath: string): string | null => {
+  try {
+    const remoteUrl = execSync('git remote get-url origin', {
+      cwd: repoPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    // SSH format: git@github.com:org/repo.git
+    const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
+    if (sshMatch) {
+      return sshMatch[1];
+    }
+
+    // HTTPS format: https://github.com/org/repo.git
+    const httpsMatch = remoteUrl.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/);
+    if (httpsMatch) {
+      return httpsMatch[1];
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 };
 
 export class WorktreeService {
@@ -76,10 +108,11 @@ export class WorktreeService {
     branch: string,
     baseBranch?: string
   ): Promise<{ worktreePath: string; error?: string }> {
-    // Generate worktree path: .worktrees/{repo-name}/{branch}
-    const repoName = path.basename(repoPath);
+    // Generate worktree path: .worktrees/{org}/{repo}/{branch}
+    // Falls back to repo directory name if remote URL cannot be parsed
+    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
     const baseDir = getWorktreeBaseDir();
-    const repoWorktreeDir = path.join(baseDir, repoName);
+    const repoWorktreeDir = path.join(baseDir, orgRepo);
     const worktreePath = path.join(repoWorktreeDir, branch);
 
     // Ensure base directory exists

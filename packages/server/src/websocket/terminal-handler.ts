@@ -34,6 +34,13 @@ export function handleTerminalConnection(
     };
     ws.send(JSON.stringify(historyMsg));
   }
+
+  // Send current activity state
+  const activityMsg: TerminalServerMessage = {
+    type: 'activity',
+    state: session.activityState,
+  };
+  ws.send(JSON.stringify(activityMsg));
 }
 
 // Directory for storing uploaded images

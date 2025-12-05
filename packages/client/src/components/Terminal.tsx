@@ -3,16 +3,18 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
+import type { ClaudeActivityState } from '@agents-web-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
 interface TerminalProps {
   wsUrl: string;
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
+  onActivityChange?: (state: ClaudeActivityState) => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps) {
+export function Terminal({ wsUrl, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -41,11 +43,16 @@ export function Terminal({ wsUrl, onStatusChange, hideStatusBar }: TerminalProps
     setStatus(connected ? 'connected' : 'disconnected');
   }, []);
 
+  const handleActivity = useCallback((state: ClaudeActivityState) => {
+    onActivityChange?.(state);
+  }, [onActivityChange]);
+
   const { sendInput, sendResize, sendImage, connected } = useTerminalWebSocket(wsUrl, {
     onOutput: handleOutput,
     onHistory: handleHistory,
     onExit: handleExit,
     onConnectionChange: handleConnectionChange,
+    onActivity: handleActivity,
   });
 
   // Initialize xterm.js
