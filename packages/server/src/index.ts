@@ -9,6 +9,7 @@ import type { WSContext } from 'hono/ws';
 import { sessionManager } from './services/session-manager.js';
 import { repositoryManager } from './services/repository-manager.js';
 import { worktreeService } from './services/worktree-service.js';
+import { shellManager } from './services/shell-manager.js';
 import {
   handleTerminalMessage,
 } from './websocket/terminal-handler.js';
@@ -451,6 +452,58 @@ app.get(
         if (sessionId) {
           console.log(`Terminal disconnected, session preserved: ${sessionId}`);
           // Don't kill session - it persists for reconnection
+        }
+      },
+    };
+  })
+);
+
+// ========== Shell WebSocket (regular terminal) ==========
+// Creates a new shell instance for the given session's working directory
+app.get(
+  '/ws/shell',
+  upgradeWebSocket((c) => {
+    const cwd = c.req.query('cwd') || process.cwd();
+    let shellId: string | null = null;
+
+    return {
+      onOpen(_event, ws) {
+        shellId = shellManager.createShell(
+          cwd,
+          (data) => {
+            const msg: TerminalServerMessage = { type: 'output', data };
+            ws.send(JSON.stringify(msg));
+          },
+          (exitCode, signal) => {
+            const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
+            ws.send(JSON.stringify(msg));
+          }
+        );
+        console.log(`Shell WebSocket connected: ${shellId}`);
+      },
+      onMessage(event) {
+        if (!shellId) return;
+
+        try {
+          const msgStr = typeof event.data === 'string' ? event.data : event.data.toString();
+          const parsed = JSON.parse(msgStr);
+
+          switch (parsed.type) {
+            case 'input':
+              shellManager.writeInput(shellId, parsed.data);
+              break;
+            case 'resize':
+              shellManager.resize(shellId, parsed.cols, parsed.rows);
+              break;
+          }
+        } catch (e) {
+          console.error('Invalid shell message:', e);
+        }
+      },
+      onClose() {
+        if (shellId) {
+          shellManager.destroyShell(shellId);
+          console.log(`Shell WebSocket disconnected: ${shellId}`);
         }
       },
     };

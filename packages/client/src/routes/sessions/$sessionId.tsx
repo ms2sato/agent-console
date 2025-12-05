@@ -26,6 +26,16 @@ type PageState =
   | { type: 'server_unavailable' }
   | { type: 'restarting' };
 
+// Tab types
+type TabType = 'claude' | 'shell';
+
+interface Tab {
+  id: string;
+  type: TabType;
+  name: string;
+  wsUrl: string;
+}
+
 function extractBranchName(worktreePath: string): string {
   // Extract last directory name as branch hint
   const parts = worktreePath.split('/');
@@ -72,6 +82,11 @@ function TerminalPage() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const [activityState, setActivityState] = useState<ClaudeActivityState>('unknown');
+
+  // Tab management
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [shellCounter, setShellCounter] = useState(1);
 
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
     setConnectionStatus(status);
@@ -138,6 +153,52 @@ function TerminalPage() {
       }
     };
   }, [activityState]);
+
+  // Initialize tabs when state becomes active
+  useEffect(() => {
+    if (state.type === 'active' && tabs.length === 0) {
+      const claudeTab: Tab = {
+        id: 'claude',
+        type: 'claude',
+        name: 'Claude',
+        wsUrl: state.wsUrl,
+      };
+      setTabs([claudeTab]);
+      setActiveTabId('claude');
+    }
+  }, [state, tabs.length]);
+
+  // Add a new shell tab
+  const addShellTab = useCallback(() => {
+    if (state.type !== 'active') return;
+
+    const shellId = `shell-${shellCounter}`;
+    const shellWsUrl = `ws://${window.location.hostname}:3457/ws/shell?cwd=${encodeURIComponent(state.metadata.worktreePath)}`;
+    const newTab: Tab = {
+      id: shellId,
+      type: 'shell',
+      name: `Shell ${shellCounter}`,
+      wsUrl: shellWsUrl,
+    };
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(shellId);
+    setShellCounter(prev => prev + 1);
+  }, [state, shellCounter]);
+
+  // Close a tab
+  const closeTab = useCallback((tabId: string) => {
+    // Don't allow closing the Claude tab
+    if (tabId === 'claude') return;
+
+    setTabs(prev => {
+      const newTabs = prev.filter(t => t.id !== tabId);
+      // If closing the active tab, switch to Claude
+      if (activeTabId === tabId) {
+        setActiveTabId('claude');
+      }
+      return newTabs;
+    });
+  }, [activeTabId]);
 
   useEffect(() => {
     // For 'new' session, use the /ws/terminal-new endpoint directly
@@ -302,19 +363,75 @@ function TerminalPage() {
     connectionStatus === 'disconnected' ? 'Disconnected' :
     `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
 
+  const activeTab = tabs.find(t => t.id === activeTabId);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <Terminal wsUrl={state.wsUrl} onStatusChange={handleStatusChange} onActivityChange={handleActivityChange} hideStatusBar />
+      {/* Tab bar */}
+      <div className="bg-slate-900 border-b border-slate-700 flex items-center shrink-0">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTabId(tab.id)}
+            className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
+              tab.id === activeTabId
+                ? 'bg-slate-800 text-white'
+                : 'text-gray-400'
+            }`}
+          >
+            <span className={`inline-block w-2 h-2 rounded-full ${
+              tab.type === 'claude' ? 'bg-blue-500' : 'bg-green-500'
+            }`} />
+            {tab.name}
+            {tab.type === 'shell' && (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id);
+                }}
+                className="ml-1 text-gray-500 hover:text-white cursor-pointer"
+              >
+                x
+              </span>
+            )}
+          </button>
+        ))}
+        <button
+          onClick={addShellTab}
+          className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-800"
+          title="Add shell tab"
+        >
+          +
+        </button>
       </div>
+
+      {/* Terminal panels - render all but only show active */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
+        {tabs.map(tab => (
+          <div
+            key={tab.id}
+            className={`absolute inset-0 flex flex-col ${
+              tab.id === activeTabId ? 'z-10' : 'z-0 invisible'
+            }`}
+          >
+            <Terminal
+              wsUrl={tab.wsUrl}
+              onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
+              onActivityChange={tab.type === 'claude' ? handleActivityChange : undefined}
+              hideStatusBar
+            />
+          </div>
+        ))}
+      </div>
+
       {/* Status bar at bottom */}
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
         <span className="text-gray-500 text-xs font-mono truncate flex-1">
           {formatPath(state.metadata.worktreePath)}
         </span>
-        {/* Activity state indicator */}
-        {activityState !== 'unknown' && (
+        {/* Activity state indicator (only for Claude tab) */}
+        {activeTab?.type === 'claude' && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             activityState === 'asking' ? 'bg-yellow-500/20 text-yellow-400' :
             activityState === 'active' ? 'bg-blue-500/20 text-blue-400' :
