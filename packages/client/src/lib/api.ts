@@ -45,7 +45,8 @@ export async function createSession(
     body: JSON.stringify({ worktreePath, repositoryId, continueConversation }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to create session: ${res.statusText}`);
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to create session');
   }
   return res.json();
 }
@@ -98,7 +99,8 @@ export async function restartSession(
     body: JSON.stringify({ continueConversation }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to restart session: ${res.statusText}`);
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to restart session');
   }
   return res.json();
 }
@@ -108,7 +110,8 @@ export async function deleteSession(sessionId: string): Promise<void> {
     method: 'DELETE',
   });
   if (!res.ok) {
-    throw new Error(`Failed to delete session: ${res.statusText}`);
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to delete session');
   }
 }
 

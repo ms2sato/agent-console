@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { DashboardServerMessage, ClaudeActivityState } from '@agents-web-console/shared';
 
 interface UseDashboardWebSocketOptions {
@@ -10,21 +10,33 @@ interface UseDashboardWebSocketReturn {
   connected: boolean;
 }
 
+// Reconnection settings
+const INITIAL_RETRY_DELAY = 1000; // 1 second
+const MAX_RETRY_DELAY = 30000; // 30 seconds
+const JITTER_FACTOR = 0.3; // ±30% randomization
+
 export function useDashboardWebSocket(
   options: UseDashboardWebSocketOptions = {}
 ): UseDashboardWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const optionsRef = useRef(options);
+  const retryCountRef = useRef(0);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unmountedRef = useRef(false);
+
   optionsRef.current = options;
 
-  useEffect(() => {
+  const connect = useCallback(() => {
+    if (unmountedRef.current) return;
+
     const wsUrl = `ws://${window.location.hostname}:3457/ws/dashboard`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setConnected(true);
+      retryCountRef.current = 0; // Reset retry count on success
       console.log('Dashboard WebSocket connected');
     };
 
@@ -49,16 +61,42 @@ export function useDashboardWebSocket(
     ws.onclose = () => {
       setConnected(false);
       console.log('Dashboard WebSocket disconnected');
+
+      // Schedule reconnection with exponential backoff
+      if (!unmountedRef.current) {
+        const baseDelay = Math.min(
+          INITIAL_RETRY_DELAY * Math.pow(2, retryCountRef.current),
+          MAX_RETRY_DELAY
+        );
+        // Add jitter to prevent thundering herd
+        const jitter = baseDelay * JITTER_FACTOR * (Math.random() * 2 - 1);
+        const delay = Math.round(baseDelay + jitter);
+
+        console.log(`Dashboard WebSocket reconnecting in ${delay}ms (attempt ${retryCountRef.current + 1})`);
+        retryTimeoutRef.current = setTimeout(() => {
+          retryCountRef.current++;
+          connect();
+        }, delay);
+      }
     };
 
     ws.onerror = (error) => {
       console.error('Dashboard WebSocket error:', error);
     };
+  }, []);
+
+  useEffect(() => {
+    unmountedRef.current = false;
+    connect();
 
     return () => {
-      ws.close();
+      unmountedRef.current = true;
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+      }
+      wsRef.current?.close();
     };
-  }, []);
+  }, [connect]);
 
   return { connected };
 }

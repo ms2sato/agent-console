@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { homedir } from 'node:os';
+import { resolve as resolvePath } from 'node:path';
 import type { TerminalServerMessage, CreateWorktreeRequest, ClaudeActivityState, DashboardServerMessage } from '@agents-web-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from './services/session-manager.js';
@@ -236,10 +237,18 @@ app.delete('/api/repositories/:id/worktrees/*', async (c) => {
   // Get worktree path from URL (everything after /worktrees/)
   const url = new URL(c.req.url);
   const pathMatch = url.pathname.match(/\/worktrees\/(.+)$/);
-  const worktreePath = pathMatch ? decodeURIComponent(pathMatch[1]) : '';
+  const rawWorktreePath = pathMatch ? decodeURIComponent(pathMatch[1]) : '';
 
-  if (!worktreePath) {
+  if (!rawWorktreePath) {
     return c.json({ error: 'worktree path is required' }, 400);
+  }
+
+  // Canonicalize path to prevent path traversal attacks
+  const worktreePath = resolvePath(rawWorktreePath);
+
+  // Verify this is actually a worktree of this repository
+  if (!worktreeService.isWorktreeOf(repo.path, worktreePath)) {
+    return c.json({ error: 'Invalid worktree path for this repository' }, 400);
   }
 
   // Check for force flag in query
