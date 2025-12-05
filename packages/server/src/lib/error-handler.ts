@@ -1,0 +1,49 @@
+import type { Context, MiddlewareHandler } from 'hono';
+import { ApiError } from './errors.js';
+
+/**
+ * Error response format
+ */
+interface ErrorResponse {
+  error: string;
+  code?: string;
+}
+
+/**
+ * Error handler middleware for Hono
+ * Catches ApiError instances and formats them consistently
+ */
+export const errorHandler: MiddlewareHandler = async (c, next) => {
+  try {
+    await next();
+  } catch (error) {
+    return handleError(c, error);
+  }
+};
+
+/**
+ * Format error response based on error type
+ */
+function handleError(c: Context, error: unknown): Response {
+  if (error instanceof ApiError) {
+    const body: ErrorResponse = {
+      error: error.message,
+    };
+    return c.json(body, error.statusCode as 400 | 404 | 409 | 500);
+  }
+
+  // Log unexpected errors
+  console.error('Unexpected error:', error);
+
+  // Return generic error for non-API errors
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  return c.json({ error: message }, 500);
+}
+
+/**
+ * Hono's onError handler (alternative approach)
+ * Can be used with app.onError()
+ */
+export function onApiError(error: Error, c: Context): Response {
+  return handleError(c, error);
+}

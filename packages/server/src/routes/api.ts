@@ -1,0 +1,272 @@
+import { Hono } from 'hono';
+import { homedir } from 'node:os';
+import { resolve as resolvePath } from 'node:path';
+import type { CreateWorktreeRequest } from '@agents-web-console/shared';
+import { sessionManager } from '../services/session-manager.js';
+import { repositoryManager } from '../services/repository-manager.js';
+import { worktreeService } from '../services/worktree-service.js';
+import { NotFoundError, ValidationError, ConflictError } from '../lib/errors.js';
+
+const api = new Hono();
+
+// API info
+api.get('/', (c) => {
+  return c.json({ message: 'Agents Web Console API' });
+});
+
+// Get server config
+api.get('/config', (c) => {
+  return c.json({ homeDir: homedir() });
+});
+
+// ========== Sessions API ==========
+
+// Get all sessions
+api.get('/sessions', (c) => {
+  const sessions = sessionManager.getAllSessions();
+  return c.json({ sessions });
+});
+
+// Create a new session
+api.post('/sessions', async (c) => {
+  const body = await c.req.json<{
+    worktreePath?: string;
+    repositoryId?: string;
+    continueConversation?: boolean;
+  }>();
+  const {
+    worktreePath = process.cwd(),
+    repositoryId = 'default',
+    continueConversation = false,
+  } = body;
+
+  // Create session without WebSocket initially
+  // The WebSocket connection will attach to it later
+  const session = sessionManager.createSession(
+    worktreePath,
+    repositoryId,
+    () => {}, // onData placeholder - will be replaced by WebSocket
+    () => {}, // onExit placeholder - will be replaced by WebSocket
+    continueConversation
+  );
+
+  return c.json({ session }, 201);
+});
+
+// Get session metadata (for reconnection UI)
+api.get('/sessions/:id/metadata', (c) => {
+  const sessionId = c.req.param('id');
+
+  // First check if session is active
+  const activeSession = sessionManager.getSession(sessionId);
+  if (activeSession) {
+    return c.json({
+      id: activeSession.id,
+      worktreePath: activeSession.worktreePath,
+      repositoryId: activeSession.repositoryId,
+      isActive: true,
+    });
+  }
+
+  // Check persisted metadata for dead sessions
+  const metadata = sessionManager.getSessionMetadata(sessionId);
+  if (metadata) {
+    return c.json({
+      id: metadata.id,
+      worktreePath: metadata.worktreePath,
+      repositoryId: metadata.repositoryId,
+      isActive: false,
+    });
+  }
+
+  throw new NotFoundError('Session');
+});
+
+// Restart a dead session (reuse same session ID)
+api.post('/sessions/:id/restart', async (c) => {
+  const sessionId = c.req.param('id');
+  const body = await c.req.json<{ continueConversation?: boolean }>();
+  const { continueConversation = false } = body;
+
+  const session = sessionManager.restartSession(
+    sessionId,
+    () => {}, // onData placeholder - will be replaced by WebSocket
+    () => {}, // onExit placeholder - will be replaced by WebSocket
+    continueConversation
+  );
+
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  return c.json({ session });
+});
+
+// Delete a session
+api.delete('/sessions/:id', (c) => {
+  const sessionId = c.req.param('id');
+  const success = sessionManager.killSession(sessionId);
+
+  if (!success) {
+    throw new NotFoundError('Session');
+  }
+
+  return c.json({ success: true });
+});
+
+// ========== Repository API ==========
+
+// Get all repositories
+api.get('/repositories', (c) => {
+  const repositories = repositoryManager.getAllRepositories();
+  return c.json({ repositories });
+});
+
+// Register a repository
+api.post('/repositories', async (c) => {
+  const body = await c.req.json<{ path: string }>();
+  const { path } = body;
+
+  if (!path) {
+    throw new ValidationError('path is required');
+  }
+
+  try {
+    const repository = repositoryManager.registerRepository(path);
+    return c.json({ repository }, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ValidationError(message);
+  }
+});
+
+// Unregister a repository
+api.delete('/repositories/:id', (c) => {
+  const repoId = c.req.param('id');
+  const success = repositoryManager.unregisterRepository(repoId);
+
+  if (!success) {
+    throw new NotFoundError('Repository');
+  }
+
+  return c.json({ success: true });
+});
+
+// ========== Worktree API ==========
+
+// Get worktrees for a repository
+api.get('/repositories/:id/worktrees', (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  return c.json({ worktrees });
+});
+
+// Create a worktree
+api.post('/repositories/:id/worktrees', async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const body = await c.req.json<CreateWorktreeRequest>();
+  const { branch, baseBranch, autoStartSession } = body;
+
+  if (!branch) {
+    throw new ValidationError('branch is required');
+  }
+
+  const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
+
+  if (result.error) {
+    throw new ValidationError(result.error);
+  }
+
+  // Get the created worktree info
+  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  const worktree = worktrees.find(wt => wt.path === result.worktreePath);
+
+  // Optionally start a session
+  let session = null;
+  if (autoStartSession && worktree) {
+    session = sessionManager.createSession(
+      worktree.path,
+      repoId,
+      () => {},
+      () => {}
+    );
+  }
+
+  return c.json({ worktree, session }, 201);
+});
+
+// Delete a worktree
+api.delete('/repositories/:id/worktrees/*', async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  // Get worktree path from URL (everything after /worktrees/)
+  const url = new URL(c.req.url);
+  const pathMatch = url.pathname.match(/\/worktrees\/(.+)$/);
+  const rawWorktreePath = pathMatch ? decodeURIComponent(pathMatch[1]) : '';
+
+  if (!rawWorktreePath) {
+    throw new ValidationError('worktree path is required');
+  }
+
+  // Canonicalize path to prevent path traversal attacks
+  const worktreePath = resolvePath(rawWorktreePath);
+
+  // Verify this is actually a worktree of this repository
+  if (!worktreeService.isWorktreeOf(repo.path, worktreePath)) {
+    throw new ValidationError('Invalid worktree path for this repository');
+  }
+
+  // Check for force flag in query
+  const force = c.req.query('force') === 'true';
+
+  // Kill any sessions running in this worktree
+  const sessions = sessionManager.getAllSessions();
+  for (const session of sessions) {
+    if (session.worktreePath === worktreePath) {
+      if (!force) {
+        throw new ConflictError('Session is running in this worktree. Use force=true to terminate.');
+      }
+      sessionManager.killSession(session.id);
+    }
+  }
+
+  const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+
+  if (!result.success) {
+    throw new ValidationError(result.error || 'Failed to remove worktree');
+  }
+
+  return c.json({ success: true });
+});
+
+// Get branches for a repository
+api.get('/repositories/:id/branches', (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const branches = worktreeService.listBranches(repo.path);
+  return c.json(branches);
+});
+
+export { api };
