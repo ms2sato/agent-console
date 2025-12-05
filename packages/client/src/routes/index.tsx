@@ -23,22 +23,20 @@ function requestNotificationPermission() {
 }
 
 // Show browser notification
-function showNotification(title: string, body: string, sessionId?: string) {
+function showNotification(title: string, body: string, sessionId: string, tag: string) {
   console.log(`[showNotification] permission=${Notification.permission}, title=${title}`);
   if ('Notification' in window && Notification.permission === 'granted') {
     const notification = new Notification(title, {
       body,
       icon: '/favicon.ico',
-      tag: sessionId || 'claude-notification', // Prevent duplicate notifications
+      tag, // Prevent duplicate notifications
     });
     console.log('[showNotification] Notification created');
     // Click to focus the session
-    if (sessionId) {
-      notification.onclick = () => {
-        window.open(`/sessions/${sessionId}`, '_blank');
-        notification.close();
-      };
-    }
+    notification.onclick = () => {
+      window.open(`/sessions/${sessionId}`, '_blank');
+      notification.close();
+    };
   } else {
     console.log('[showNotification] Permission not granted, skipping');
   }
@@ -79,6 +77,17 @@ function DashboardPage() {
   const [activityStates, setActivityStates] = useState<Record<string, ClaudeActivityState>>({});
   // Track previous states for detecting completion (active → idle)
   const prevStatesRef = useRef<Record<string, ClaudeActivityState>>({});
+  // Track when each session entered 'active' state (for minimum working time check)
+  const activeStartTimeRef = useRef<Record<string, number>>({});
+  // Track last notification time per session (for cooldown)
+  const lastNotificationTimeRef = useRef<Record<string, number>>({});
+
+  // Notification thresholds
+  const MIN_WORKING_TIME_MS = 5000; // 5 seconds minimum working time
+  const NOTIFICATION_COOLDOWN_MS = 30000; // 30 seconds between notifications
+
+  // Keep sessions data in ref for notification context
+  const sessionsRef = useRef<Session[]>([]);
 
   // Request notification permission on component mount
   useEffect(() => {
@@ -107,30 +116,80 @@ function DashboardPage() {
     setActivityStates(prev => ({ ...prev, [sessionId]: state }));
     prevStatesRef.current[sessionId] = state;
 
+    // Track when session enters 'active' state
+    if (state === 'active' && prevState !== 'active') {
+      activeStartTimeRef.current[sessionId] = now;
+      console.log(`[Activity] ${sessionId}: Started working at ${now}`);
+    }
+
     // Skip notifications if this is the first state update (session just started)
     if (!prevState) {
       console.log('[Notification] Skipped: initial state');
       return;
     }
 
-    // Send notification for 'asking' state (Claude needs input)
-    if (state === 'asking' && prevState !== 'asking') {
-      console.log('[Notification] Triggering: asking state');
-      showNotification(
-        'Claude needs your input',
-        'A session is waiting for your response.',
-        `asking-${sessionId}-${now}`
-      );
+    // Only notify when page is hidden (user is not looking)
+    if (document.visibilityState !== 'hidden') {
+      console.log('[Notification] Skipped: page is visible');
+      return;
     }
 
-    // Send notification for completion (active → idle)
-    if (prevState === 'active' && state === 'idle') {
-      console.log('[Notification] Triggering: work completed');
-      showNotification(
-        'Claude completed work',
-        'A session has finished its task.',
-        `completed-${sessionId}-${now}`
-      );
+    // Check cooldown (don't notify same session too frequently)
+    const lastNotification = lastNotificationTimeRef.current[sessionId] || 0;
+    if (now - lastNotification < NOTIFICATION_COOLDOWN_MS) {
+      console.log(`[Notification] Skipped: cooldown (${now - lastNotification}ms < ${NOTIFICATION_COOLDOWN_MS}ms)`);
+      return;
+    }
+
+    // Check if session was working long enough
+    const activeStartTime = activeStartTimeRef.current[sessionId] || 0;
+    const workingTime = now - activeStartTime;
+    const wasWorkingLongEnough = prevState === 'active' && workingTime >= MIN_WORKING_TIME_MS;
+
+    // Send notification for work completion (active → idle or active → asking)
+    if (prevState === 'active' && (state === 'idle' || state === 'asking')) {
+      if (!wasWorkingLongEnough) {
+        console.log(`[Notification] Skipped: working time too short (${workingTime}ms < ${MIN_WORKING_TIME_MS}ms)`);
+        return;
+      }
+
+      lastNotificationTimeRef.current[sessionId] = now;
+
+      // Get session info for notification body
+      const session = sessionsRef.current.find(s => s.id === sessionId);
+      const worktreePath = session?.worktreePath || '';
+      // Extract project name and branch from path
+      // Format: ~/.agents-web-console/worktrees/{org}/{repo}/{branch} or /path/to/project
+      const pathParts = worktreePath.split('/').filter(Boolean);
+      const isWorktree = worktreePath.includes('.agents-web-console/worktrees');
+      let projectInfo: string;
+      if (isWorktree && pathParts.length >= 2) {
+        // Last part is branch, second-to-last is repo (or org/repo)
+        const branch = pathParts[pathParts.length - 1];
+        const repo = pathParts[pathParts.length - 2];
+        projectInfo = `${repo} (${branch})`;
+      } else {
+        // Main repo - just use directory name
+        projectInfo = pathParts[pathParts.length - 1] || 'Unknown';
+      }
+
+      if (state === 'idle') {
+        console.log('[Notification] Triggering: work completed');
+        showNotification(
+          'Claude completed work',
+          `${projectInfo} - Work completed`,
+          sessionId,
+          `completed-${sessionId}-${now}`
+        );
+      } else if (state === 'asking') {
+        console.log('[Notification] Triggering: waiting for input');
+        showNotification(
+          'Claude needs your input',
+          `${projectInfo} - Waiting for input`,
+          sessionId,
+          `asking-${sessionId}-${now}`
+        );
+      }
     }
   }, []);
 
@@ -156,6 +215,11 @@ function DashboardPage() {
     ...session,
     activityState: activityStates[session.id] ?? session.activityState,
   }));
+
+  // Keep sessionsRef in sync for notification context
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   const registerMutation = useMutation({
     mutationFn: registerRepository,
