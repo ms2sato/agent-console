@@ -353,12 +353,13 @@ function TerminalPage() {
   const branchName = extractBranchName(state.metadata.worktreePath);
 
   const statusColor =
-    connectionStatus === 'connected' ? 'bg-green-500' :
-    connectionStatus === 'connecting' ? 'bg-yellow-500' :
+    connectionStatus === 'connected' && activityState !== 'unknown' ? 'bg-green-500' :
+    connectionStatus === 'connected' || connectionStatus === 'connecting' ? 'bg-yellow-500' :
     connectionStatus === 'exited' ? 'bg-red-500' : 'bg-gray-500';
 
   const statusText =
     connectionStatus === 'connecting' ? 'Connecting...' :
+    connectionStatus === 'connected' && activityState === 'unknown' ? 'Starting Claude...' :
     connectionStatus === 'connected' ? 'Connected' :
     connectionStatus === 'disconnected' ? 'Disconnected' :
     `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
