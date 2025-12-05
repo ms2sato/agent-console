@@ -172,7 +172,7 @@ export class WorktreeService {
   /**
    * List branches in a repository
    */
-  listBranches(repoPath: string): { local: string[]; remote: string[] } {
+  listBranches(repoPath: string): { local: string[]; remote: string[]; defaultBranch: string | null } {
     try {
       // Get local branches
       const localOutput = execSync('git branch --format="%(refname:short)"', {
@@ -188,10 +188,40 @@ export class WorktreeService {
       });
       const remote = remoteOutput.trim().split('\n').filter(Boolean);
 
-      return { local, remote };
+      // Get default branch from remote HEAD
+      const defaultBranch = this.getDefaultBranch(repoPath);
+
+      return { local, remote, defaultBranch };
     } catch (error) {
       console.error('Failed to list branches:', error);
-      return { local: [], remote: [] };
+      return { local: [], remote: [], defaultBranch: null };
+    }
+  }
+
+  /**
+   * Get the default branch name from remote origin
+   */
+  getDefaultBranch(repoPath: string): string | null {
+    try {
+      const output = execSync('git symbolic-ref refs/remotes/origin/HEAD', {
+        cwd: repoPath,
+        encoding: 'utf-8',
+      });
+      // refs/remotes/origin/main -> main
+      return output.trim().replace('refs/remotes/origin/', '');
+    } catch {
+      // Fallback: check if main or master exists
+      try {
+        execSync('git rev-parse --verify main', { cwd: repoPath, stdio: 'ignore' });
+        return 'main';
+      } catch {
+        try {
+          execSync('git rev-parse --verify master', { cwd: repoPath, stdio: 'ignore' });
+          return 'master';
+        } catch {
+          return null;
+        }
+      }
     }
   }
 

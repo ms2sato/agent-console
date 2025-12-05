@@ -147,6 +147,7 @@ export interface WorktreesResponse {
 export interface BranchesResponse {
   local: string[];
   remote: string[];
+  defaultBranch: string | null;
 }
 
 export interface CreateWorktreeResponse {

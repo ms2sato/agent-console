@@ -38,7 +38,7 @@ export function handleTerminalConnection(
   // Send current activity state
   const activityMsg: TerminalServerMessage = {
     type: 'activity',
-    state: session.activityState,
+    state: session.activityState ?? 'idle',
   };
   ws.send(JSON.stringify(activityMsg));
 }

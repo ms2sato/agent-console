@@ -5,6 +5,7 @@ import {
   fetchSessions,
   fetchRepositories,
   fetchWorktrees,
+  fetchBranches,
   registerRepository,
   unregisterRepository,
   createSession,
@@ -354,6 +355,14 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     queryFn: () => fetchWorktrees(repository.id),
   });
 
+  const { data: branchesData } = useQuery({
+    queryKey: ['branches', repository.id],
+    queryFn: () => fetchBranches(repository.id),
+    enabled: showCreateWorktree, // Only fetch when modal is open
+  });
+
+  const defaultBranch = branchesData?.defaultBranch || 'main';
+
   const createWorktreeMutation = useMutation({
     mutationFn: (params: { branch: string; baseBranch?: string }) =>
       createWorktree(repository.id, {
@@ -381,7 +390,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     try {
       await createWorktreeMutation.mutateAsync({
         branch: newBranch.trim(),
-        baseBranch: isNewBranch ? baseBranch.trim() || 'main' : undefined,
+        baseBranch: isNewBranch ? baseBranch.trim() || defaultBranch : undefined,
       });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to create worktree');
@@ -433,7 +442,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             {isNewBranch && (
               <input
                 type="text"
-                placeholder="Base branch (default: main)"
+                placeholder={`Base branch (default: ${defaultBranch})`}
                 value={baseBranch}
                 onChange={(e) => setBaseBranch(e.target.value)}
                 className="input"
@@ -540,7 +549,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         <div className="text-sm font-medium flex items-center gap-2">
           {worktree.branch}
           {worktree.isMain && (
-            <span className="text-xs text-gray-500">(main)</span>
+            <span className="text-xs text-gray-500">(primary)</span>
           )}
           {session && <ActivityBadge state={session.activityState} />}
         </div>
