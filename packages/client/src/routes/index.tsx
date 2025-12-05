@@ -321,19 +321,8 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Orphan Sessions (sessions without a registered repository) */}
-      {sessions.filter((s) => s.repositoryId === 'default').length > 0 && (
-        <div className="mt-8">
-          <h2 className="mb-4 text-lg font-medium text-gray-400">Other Sessions</h2>
-          <div className="flex flex-col gap-3">
-            {sessions
-              .filter((s) => s.repositoryId === 'default')
-              .map((session) => (
-                <SessionCard key={session.id} session={session} />
-              ))}
-          </div>
-        </div>
-      )}
+      {/* Quick Sessions (sessions without a registered repository) */}
+      <QuickSessionsSection sessions={sessions.filter((s) => s.repositoryId === 'default')} />
     </div>
   );
 }
@@ -584,6 +573,88 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+interface QuickSessionsSectionProps {
+  sessions: Session[];
+}
+
+function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
+  const queryClient = useQueryClient();
+  const [showAddSession, setShowAddSession] = useState(false);
+  const [newPath, setNewPath] = useState('');
+  const [isStarting, setIsStarting] = useState(false);
+
+  const handleStartSession = async () => {
+    if (!newPath.trim()) return;
+    setIsStarting(true);
+    try {
+      const { session } = await createSession(newPath.trim(), 'default');
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setShowAddSession(false);
+      setNewPath('');
+      window.open(`/sessions/${session.id}`, '_blank');
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to start session');
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-medium text-gray-400">Quick Sessions</h2>
+        <button
+          onClick={() => setShowAddSession(true)}
+          className="btn text-sm bg-slate-700 hover:bg-slate-600"
+        >
+          + Quick Start
+        </button>
+      </div>
+
+      {showAddSession && (
+        <div className="card mb-4 bg-slate-800">
+          <h3 className="text-sm font-medium mb-3">Start Session in Any Directory</h3>
+          <div className="flex gap-3 items-center">
+            <input
+              type="text"
+              placeholder="Path (e.g., /path/to/project)"
+              value={newPath}
+              onChange={(e) => setNewPath(e.target.value)}
+              className="input flex-1"
+              onKeyDown={(e) => e.key === 'Enter' && handleStartSession()}
+              autoFocus
+            />
+            <button
+              onClick={handleStartSession}
+              disabled={isStarting}
+              className="btn btn-primary text-sm"
+            >
+              {isStarting ? 'Starting...' : 'Start'}
+            </button>
+            <button
+              onClick={() => {
+                setShowAddSession(false);
+                setNewPath('');
+              }}
+              className="btn btn-danger text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {sessions.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {sessions.map((session) => (
+            <SessionCard key={session.id} session={session} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
