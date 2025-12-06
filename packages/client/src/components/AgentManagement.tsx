@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { AgentDefinition } from '@agents-web-console/shared';
+import type { AgentDefinition } from '@agent-console/shared';
 import { registerAgent, unregisterAgent } from '../lib/api';
 import { useAgents } from './AgentSelector';
 

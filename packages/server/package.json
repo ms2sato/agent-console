@@ -1,5 +1,5 @@
 {
-  "name": "@agents-web-console/server",
+  "name": "@agent-console/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agents-web-console/shared": "workspace:*",
+    "@agent-console/shared": "workspace:*",
     "@hono/node-server": "^1.13.7",
     "@hono/node-ws": "^1.0.4",
     "hono": "^4.6.13",

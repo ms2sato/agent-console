@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { AgentDefinition } from '@agents-web-console/shared';
+import type { AgentDefinition } from '@agent-console/shared';
 import { fetchAgents } from '../lib/api';
 
 interface AgentSelectorProps {

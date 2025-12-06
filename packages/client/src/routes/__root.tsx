@@ -39,7 +39,7 @@ function RootLayout() {
             fontWeight: 'bold',
           }}
         >
-          Agents Web Console
+          Agent Console
         </Link>
       </header>
       <main style={{ flex: 1, overflow: 'auto' }}>

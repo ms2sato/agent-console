@@ -1,5 +1,5 @@
 import type { WSContext } from 'hono/ws';
-import type { TerminalClientMessage, TerminalServerMessage } from '@agents-web-console/shared';
+import type { TerminalClientMessage, TerminalServerMessage } from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,7 +44,7 @@ export function handleTerminalConnection(
 }
 
 // Directory for storing uploaded images
-const IMAGE_UPLOAD_DIR = join(tmpdir(), 'agents-web-console-images');
+const IMAGE_UPLOAD_DIR = join(tmpdir(), 'agent-console-images');
 
 // Ensure image upload directory exists
 try {

@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { AgentDefinition } from '@agents-web-console/shared';
+import type { AgentDefinition } from '@agent-console/shared';
 
-// Config directory: ~/.agents-web-console/
-const CONFIG_DIR = path.join(os.homedir(), '.agents-web-console');
+// Config directory: ~/.agent-console/
+const CONFIG_DIR = path.join(os.homedir(), '.agent-console');
 const REPOSITORIES_FILE = path.join(CONFIG_DIR, 'repositories.json');
 const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
 const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');

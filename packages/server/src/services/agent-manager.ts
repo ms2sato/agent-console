@@ -3,7 +3,7 @@ import type {
   AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
-} from '@agents-web-console/shared';
+} from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
 import { claudeCodeAgent, CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
 

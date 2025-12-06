@@ -6,7 +6,7 @@ import type {
   AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
-} from '@agents-web-console/shared';
+} from '@agent-console/shared';
 
 const API_BASE = '/api';
 

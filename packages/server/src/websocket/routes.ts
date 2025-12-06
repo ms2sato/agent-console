@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { TerminalServerMessage, ClaudeActivityState, DashboardServerMessage } from '@agents-web-console/shared';
+import type { TerminalServerMessage, ClaudeActivityState, DashboardServerMessage } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { shellManager } from '../services/shell-manager.js';

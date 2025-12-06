@@ -3,10 +3,10 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { Repository } from '@agents-web-console/shared';
+import type { Repository } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
 
-const CONFIG_DIR = path.join(os.homedir(), '.agents-web-console');
+const CONFIG_DIR = path.join(os.homedir(), '.agent-console');
 
 /**
  * Extract org/repo from git remote URL

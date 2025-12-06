@@ -17,7 +17,7 @@ import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
-import type { Session, Repository, Worktree, ClaudeActivityState } from '@agents-web-console/shared';
+import type { Session, Repository, Worktree, ClaudeActivityState } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -163,9 +163,9 @@ function DashboardPage() {
       const session = sessionsRef.current.find(s => s.id === sessionId);
       const worktreePath = session?.worktreePath || '';
       // Extract project name and branch from path
-      // Format: ~/.agents-web-console/worktrees/{org}/{repo}/{branch} or /path/to/project
+      // Format: ~/.agent-console/worktrees/{org}/{repo}/{branch} or /path/to/project
       const pathParts = worktreePath.split('/').filter(Boolean);
-      const isWorktree = worktreePath.includes('.agents-web-console/worktrees');
+      const isWorktree = worktreePath.includes('.agent-console/worktrees');
       let projectInfo: string;
       if (isWorktree && pathParts.length >= 2) {
         // Last part is branch, second-to-last is repo (or org/repo)

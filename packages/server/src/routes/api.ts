@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
-import type { CreateWorktreeRequest, CreateAgentRequest, UpdateAgentRequest } from '@agents-web-console/shared';
+import type { CreateWorktreeRequest, CreateAgentRequest, UpdateAgentRequest } from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
@@ -12,7 +12,7 @@ const api = new Hono();
 
 // API info
 api.get('/', (c) => {
-  return c.json({ message: 'Agents Web Console API' });
+  return c.json({ message: 'Agent Console API' });
 });
 
 // Get server config

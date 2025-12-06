@@ -52,7 +52,7 @@ export interface CreateAgentRequest {
 **Modify**: `packages/server/src/services/persistence-service.ts`
 - Add `PersistedAgent` interface
 - Add `loadAgents()` / `saveAgents()` methods
-- Store in `~/.agents-web-console/agents.json`
+- Store in `~/.agent-console/agents.json`
 
 ### 2.2 Create AgentManager Service
 **New file**: `packages/server/src/services/agent-manager.ts`

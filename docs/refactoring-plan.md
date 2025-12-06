@@ -1,4 +1,4 @@
-# Refactoring Plan for agents-web-console
+# Refactoring Plan for agent-console
 
 ## Overview
 

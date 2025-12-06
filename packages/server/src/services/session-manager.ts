@@ -1,6 +1,6 @@
 import * as pty from 'node-pty';
 import { v4 as uuidv4 } from 'uuid';
-import type { Session, SessionStatus, ClaudeActivityState } from '@agents-web-console/shared';
+import type { Session, SessionStatus, ClaudeActivityState } from '@agent-console/shared';
 import { persistenceService, type PersistedSession } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';

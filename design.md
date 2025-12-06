@@ -210,7 +210,7 @@ WS /ws/dashboard            - ダッシュボード通知
 ## プロジェクト構造
 
 ```
-agents-web-console/
+agent-console/
 ├── package.json              # ワークスペースルート
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json

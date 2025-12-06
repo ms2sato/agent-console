@@ -4,14 +4,14 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Mock the config directory to use a temp directory for tests
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agents-web-console-test-' + Date.now());
+const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-test-' + Date.now());
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>();
   return {
     ...actual,
     existsSync: vi.fn((filePath: string) => {
-      if (filePath.includes('agents-web-console-test')) {
+      if (filePath.includes('agent-console-test')) {
         return actual.existsSync(filePath);
       }
       return actual.existsSync(filePath);

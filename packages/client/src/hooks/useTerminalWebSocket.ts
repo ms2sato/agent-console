@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { TerminalClientMessage, TerminalServerMessage, ClaudeActivityState } from '@agents-web-console/shared';
+import type { TerminalClientMessage, TerminalServerMessage, ClaudeActivityState } from '@agent-console/shared';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string) => void;

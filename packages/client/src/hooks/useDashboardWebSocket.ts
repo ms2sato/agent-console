@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { DashboardServerMessage, ClaudeActivityState } from '@agents-web-console/shared';
+import type { DashboardServerMessage, ClaudeActivityState } from '@agent-console/shared';
 
 interface UseDashboardWebSocketOptions {
   onSync?: (sessions: Array<{ id: string; activityState: ClaudeActivityState }>) => void;

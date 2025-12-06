@@ -14,7 +14,7 @@ importers:
 
   packages/client:
     dependencies:
-      '@agents-web-console/shared':
+      '@agent-console/shared':
         specifier: workspace:*
         version: link:../shared
       '@tanstack/react-query':
@@ -81,7 +81,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@agents-web-console/shared':
+      '@agent-console/shared':
         specifier: workspace:*
         version: link:../shared
       '@hono/node-server':

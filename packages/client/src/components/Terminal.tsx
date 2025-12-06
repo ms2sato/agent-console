@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
-import type { ClaudeActivityState } from '@agents-web-console/shared';
+import type { ClaudeActivityState } from '@agent-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 

@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { getSessionMetadata, restartSession, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
 import { formatPath } from '../../lib/path';
-import type { ClaudeActivityState } from '@agents-web-console/shared';
+import type { ClaudeActivityState } from '@agent-console/shared';
 
 interface TerminalSearchParams {
   cwd?: string;
@@ -43,8 +43,8 @@ function extractBranchName(worktreePath: string): string {
 }
 
 function extractProjectName(worktreePath: string): string {
-  // Path format: ~/.agents-web-console/worktrees/{org}/{repo}/{branch}
-  // or: ~/.agents-web-console/worktrees/{repo}/{branch}
+  // Path format: ~/.agent-console/worktrees/{org}/{repo}/{branch}
+  // or: ~/.agent-console/worktrees/{repo}/{branch}
   // Branch is always the last part, repo is second to last
   const parts = worktreePath.split('/').filter(Boolean);
   return parts[parts.length - 2] || 'project';
@@ -103,11 +103,11 @@ function TerminalPage() {
 
     const branchName = extractBranchName(state.metadata.worktreePath);
     const projectName = extractProjectName(state.metadata.worktreePath);
-    document.title = `${branchName}@${projectName} - Agents Web Console`;
+    document.title = `${branchName}@${projectName} - Agent Console`;
 
     // Cleanup: restore default title on unmount
     return () => {
-      document.title = 'Agents Web Console';
+      document.title = 'Agent Console';
     };
   }, [state]);
 
@@ -375,7 +375,7 @@ function TerminalPage() {
           to="/"
           className="px-4 py-2 text-white font-bold text-sm hover:bg-slate-800 no-underline border-r border-slate-700"
         >
-          Agents Web Console
+          Agent Console
         </Link>
         {/* Tabs */}
         {tabs.map(tab => (

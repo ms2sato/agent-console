@@ -3,7 +3,7 @@
  *
  * All Claude Code specific configuration is centralized here.
  */
-import type { AgentDefinition } from '@agents-web-console/shared';
+import type { AgentDefinition } from '@agent-console/shared';
 
 export const CLAUDE_CODE_AGENT_ID = 'claude-code-builtin';
 

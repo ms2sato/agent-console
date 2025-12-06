@@ -5,12 +5,12 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Create test config directory to avoid polluting real config
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agents-web-console-api-test-' + Date.now());
+const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-api-test-' + Date.now());
 const TEST_REPO_DIR = path.join(os.tmpdir(), 'test-api-repo-' + Date.now());
 
 // Mock persistence service to use test directory
 vi.mock('../services/persistence-service.js', () => {
-  const testConfigDir = path.join(os.tmpdir(), 'agents-web-console-api-test-' + Date.now());
+  const testConfigDir = path.join(os.tmpdir(), 'agent-console-api-test-' + Date.now());
   const reposFile = path.join(testConfigDir, 'repositories.json');
 
   return {
@@ -109,7 +109,7 @@ function createTestApp() {
   app.get('/health', (c) => c.json({ status: 'ok' }));
 
   // API info
-  app.get('/api', (c) => c.json({ message: 'Agents Web Console API' }));
+  app.get('/api', (c) => c.json({ message: 'Agent Console API' }));
 
   // Config
   app.get('/api/config', (c) => c.json({ homeDir: os.homedir() }));
@@ -226,7 +226,7 @@ describe('API Integration Tests', () => {
       expect(res.status).toBe(200);
 
       const body = await res.json();
-      expect(body).toEqual({ message: 'Agents Web Console API' });
+      expect(body).toEqual({ message: 'Agent Console API' });
     });
   });
 

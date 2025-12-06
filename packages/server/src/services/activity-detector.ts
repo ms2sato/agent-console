@@ -1,4 +1,4 @@
-import type { ClaudeActivityState, AgentActivityPatterns } from '@agents-web-console/shared';
+import type { ClaudeActivityState, AgentActivityPatterns } from '@agent-console/shared';
 
 // ANSI escape sequence removal regex
 const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;

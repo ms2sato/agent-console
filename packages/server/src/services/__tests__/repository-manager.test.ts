@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { Repository } from '@agents-web-console/shared';
+import type { Repository } from '@agent-console/shared';
 
 // Create a testable RepositoryManager that doesn't use the singleton persistence service
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agents-web-console-repo-test-' + Date.now());
+const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-repo-test-' + Date.now());
 const TEST_REPO_DIR = path.join(os.tmpdir(), 'test-git-repo-' + Date.now());
 
 class TestPersistenceService {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ActivityDetector } from '../activity-detector.js';
-import type { ClaudeActivityState, AgentActivityPatterns } from '@agents-web-console/shared';
+import type { ClaudeActivityState, AgentActivityPatterns } from '@agent-console/shared';
 
 // Claude Code asking patterns (same as in agent-manager.ts)
 const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
