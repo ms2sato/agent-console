@@ -153,8 +153,7 @@ export class SessionManager {
       // signal can be a number (signal code) or undefined
       const signalStr = signal !== undefined ? String(signal) : null;
       session.onExit(exitCode, signalStr);
-      // Remove from persistence when session ends
-      this.unpersistSession(id);
+      // Keep session metadata for restart - only remove on explicit delete
     });
 
     this.sessions.set(id, session);
@@ -266,7 +265,7 @@ export class SessionManager {
       session.activityDetector.dispose();
       const signalStr = signal !== undefined ? String(signal) : null;
       session.onExit(exitCode, signalStr);
-      this.unpersistSession(id);
+      // Keep session metadata for restart - only remove on explicit delete
     });
 
     this.sessions.set(id, session);
