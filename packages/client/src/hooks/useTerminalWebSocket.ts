@@ -26,47 +26,66 @@ export function useTerminalWebSocket(
   optionsRef.current = options;
 
   useEffect(() => {
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    let cancelled = false;
 
-    ws.onopen = () => {
-      setConnected(true);
-      optionsRef.current.onConnectionChange(true);
-    };
+    // Small delay to handle React Strict Mode's double-mount behavior
+    // This ensures the first mount/unmount cycle completes before connecting
+    const timeoutId = setTimeout(() => {
+      if (cancelled) return;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg: TerminalServerMessage = JSON.parse(event.data);
-        switch (msg.type) {
-          case 'output':
-            optionsRef.current.onOutput(msg.data);
-            break;
-          case 'history':
-            optionsRef.current.onHistory(msg.data);
-            break;
-          case 'exit':
-            optionsRef.current.onExit(msg.exitCode, msg.signal);
-            break;
-          case 'activity':
-            optionsRef.current.onActivity?.(msg.state);
-            break;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (cancelled) {
+          ws?.close();
+          return;
         }
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e);
-      }
-    };
+        setConnected(true);
+        optionsRef.current.onConnectionChange(true);
+      };
 
-    ws.onclose = () => {
-      setConnected(false);
-      optionsRef.current.onConnectionChange(false);
-    };
+      ws.onmessage = (event) => {
+        try {
+          const msg: TerminalServerMessage = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'output':
+              optionsRef.current.onOutput(msg.data);
+              break;
+            case 'history':
+              optionsRef.current.onHistory(msg.data);
+              break;
+            case 'exit':
+              optionsRef.current.onExit(msg.exitCode, msg.signal);
+              break;
+            case 'activity':
+              optionsRef.current.onActivity?.(msg.state);
+              break;
+          }
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e);
+        }
+      };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
+      ws.onclose = () => {
+        if (!cancelled) {
+          setConnected(false);
+          optionsRef.current.onConnectionChange(false);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+    }, 0);
 
     return () => {
-      ws.close();
+      cancelled = true;
+      clearTimeout(timeoutId);
+      if (ws) {
+        ws.close();
+      }
     };
   }, [wsUrl]);
 

@@ -1,33 +1,14 @@
-import type { ClaudeActivityState } from '@agents-web-console/shared';
+import type { ClaudeActivityState, AgentActivityPatterns } from '@agents-web-console/shared';
 
 // ANSI escape sequence removal regex
 const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-
-// Detection patterns for Claude Code states
-const ASKING_PATTERNS = [
-  // Selection menu footer (most reliable - appears on all permission prompts)
-  /Enter to select.*Tab.*navigate.*Esc to cancel/i,
-
-  // Permission prompts - Claude Code style
-  /Do you want to.*\?/i,              // "Do you want to create/edit/run..." prompts
-  /\[y\].*\[n\]/i,                    // Yes/No selection
-  /\[a\].*always/i,                   // Always allow option
-  /Allow.*\?/i,                       // "Allow X?" prompts
-
-  // AskUserQuestion patterns
-  /\[A\].*\[B\]/,                     // A/B selection
-  /\[1\].*\[2\]/,                     // Numbered selection
-
-  // Selection box with prompt
-  /╰─+╯\s*>\s*$/,                     // Box bottom + prompt
-];
 
 
 export interface ActivityDetectorOptions {
   bufferSize?: number;        // Max buffer size (default: 1000)
   debounceMs?: number;        // Debounce time (default: 300ms)
   onStateChange?: (state: ClaudeActivityState) => void;
+  activityPatterns?: AgentActivityPatterns; // Optional patterns from agent definition
 }
 
 export class ActivityDetector {
@@ -52,12 +33,28 @@ export class ActivityDetector {
   // Threshold: number of outputs in window to consider "active"
   private readonly activeCountThreshold: number = 20;
   // How long with no output to transition to idle (ms)
-  private readonly noOutputIdleMs: number = 2000;
+  // Increased from 2000 to 5000 because TUI apps like Claude Code
+  // continuously redraw even when "idle", preventing shorter timeouts
+  private readonly noOutputIdleMs: number = 5000;
+
+  // Flag to suppress rate-based detection after entering asking state
+  // (TUI redraws should not trigger active while waiting for user input)
+  private suppressRateDetection: boolean = false;
+
+  // Pattern-based detection: compiled regex patterns from agent definition
+  private askingPatterns: RegExp[] = [];
 
   constructor(options: ActivityDetectorOptions = {}) {
     this.bufferSize = options.bufferSize ?? 1000;
     this.debounceMs = options.debounceMs ?? 300;
     this.onStateChange = options.onStateChange;
+
+    // Compile asking patterns if provided
+    if (options.activityPatterns?.askingPatterns) {
+      this.askingPatterns = options.activityPatterns.askingPatterns.map(
+        pattern => new RegExp(pattern, 'i')
+      );
+    }
   }
 
   /**
@@ -94,9 +91,9 @@ export class ActivityDetector {
 
     console.log(`[ActivityDetector] Output count: ${outputCount} in ${this.rateWindowMs}ms window`);
 
-    // Count-based state transitions (skip if user is typing)
-    if (outputCount >= this.activeCountThreshold && !this.userTyping) {
-      // High output count → active (even from asking state)
+    // Count-based state transitions (skip if user is typing or rate detection is suppressed)
+    if (outputCount >= this.activeCountThreshold && !this.userTyping && !this.suppressRateDetection) {
+      // High output count → active (but not from asking state when suppressed)
       if (this.currentState !== 'active') {
         this.setState('active');
       }
@@ -141,9 +138,15 @@ export class ActivityDetector {
 
   /**
    * Check if any asking pattern matches the buffer
+   * Returns false if no patterns are configured (rate-based detection only)
    */
   private hasAskingPattern(text: string): boolean {
-    for (const pattern of ASKING_PATTERNS) {
+    // Skip pattern-based detection if no patterns configured
+    if (this.askingPatterns.length === 0) {
+      return false;
+    }
+
+    for (const pattern of this.askingPatterns) {
       if (pattern.test(text)) {
         return true;
       }
@@ -169,6 +172,14 @@ export class ActivityDetector {
       return;
     }
 
+    // If currently in asking state but no asking pattern found,
+    // transition to idle (e.g., after ESC dismissed the prompt)
+    if (this.currentState === 'asking') {
+      console.log(`[ActivityDetector] No asking pattern found, transitioning from asking to idle`);
+      this.setState('idle');
+      return;
+    }
+
     // Idle detection is handled by scheduleIdleCheck() (5 seconds no output)
   }
 
@@ -180,10 +191,12 @@ export class ActivityDetector {
       console.log(`[ActivityDetector] State change: ${this.currentState} → ${newState}`);
       this.currentState = newState;
 
-      // Clear output history when entering asking state
-      // (UI redraws during asking should not count towards active detection)
+      // When entering asking state, suppress rate-based detection
+      // (TUI redraws during asking should not trigger active)
       if (newState === 'asking') {
         this.outputHistory = [];
+        this.suppressRateDetection = true;
+        console.log(`[ActivityDetector] Rate detection suppressed (entering asking state)`);
       }
 
       this.onStateChange?.(newState);
@@ -238,10 +251,11 @@ export class ActivityDetector {
   /**
    * Called when user presses Enter (submit) or ESC (cancel)
    * Clears userTyping flag immediately and checks for state transition
+   * @param fromEsc - true if triggered by ESC key (cancel), false for Enter (submit)
    */
-  clearUserTyping(): void {
+  clearUserTyping(fromEsc: boolean = false): void {
     this.userTyping = false;
-    console.log(`[ActivityDetector] User typing: OFF (submit)`);
+    console.log(`[ActivityDetector] User typing: OFF (${fromEsc ? 'cancel' : 'submit'})`);
 
     // Clear existing timer
     if (this.userTypingTimer) {
@@ -249,7 +263,27 @@ export class ActivityDetector {
       this.userTypingTimer = null;
     }
 
-    // Always transition to idle first, let processOutput() handle active transition
+    // When ESC is pressed while in 'asking' state:
+    // - Clear buffer so old asking patterns don't persist
+    // - Re-enable rate detection
+    // - Transition to idle (Claude will trigger active if it starts working)
+    if (fromEsc && this.currentState === 'asking') {
+      console.log(`[ActivityDetector] Clearing buffer and re-enabling rate detection (ESC in asking state)`);
+      this.buffer = '';
+      this.suppressRateDetection = false;
+      // Don't return early - let it transition to idle below
+    }
+
+    // When Enter is pressed while in 'asking' state, clear the buffer
+    // so old asking patterns don't trigger detection after user responds
+    // Also re-enable rate detection since user has responded
+    if (!fromEsc && this.currentState === 'asking') {
+      console.log(`[ActivityDetector] Clearing buffer and re-enabling rate detection (Enter in asking state)`);
+      this.buffer = '';
+      this.suppressRateDetection = false;
+    }
+
+    // For Enter (submit), transition to idle first, let processOutput() handle active transition
     if (this.currentState !== 'idle') {
       this.setState('idle');
     }
@@ -271,6 +305,7 @@ export class ActivityDetector {
     this.lastOutputTime = 0;
     this.outputHistory = [];
     this.userTyping = false;
+    this.suppressRateDetection = false;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;

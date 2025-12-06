@@ -1,3 +1,6 @@
+// ========== Agent ==========
+export * from './types/agent.js';
+
 // ========== リポジトリ ==========
 export interface Repository {
   id: string;           // UUID
@@ -34,6 +37,7 @@ export interface Session {
   activityState?: ClaudeActivityState; // Claude Code の活動状態
   pid?: number;
   startedAt: string;    // ISO 8601
+  agentId?: string;     // 使用するAgent ID（未指定時はデフォルトAgent）
 }
 
 // ========== WebSocket メッセージ ==========
@@ -70,6 +74,7 @@ export interface CreateWorktreeRequest {
   branch: string;           // 既存ブランチ名 or 新規ブランチ名
   baseBranch?: string;      // 新規ブランチの場合のベース
   autoStartSession?: boolean;
+  agentId?: string;         // autoStartSession時に使用するAgent ID
 }
 
 export interface DeleteWorktreeRequest {
@@ -79,6 +84,7 @@ export interface DeleteWorktreeRequest {
 export interface CreateSessionRequest {
   worktreePath: string;
   repositoryId: string;
+  agentId?: string;         // 使用するAgent ID（未指定時はデフォルトAgent）
 }
 
 // ========== API レスポンス ==========

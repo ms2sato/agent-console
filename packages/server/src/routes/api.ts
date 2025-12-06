@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
-import type { CreateWorktreeRequest } from '@agents-web-console/shared';
+import type { CreateWorktreeRequest, CreateAgentRequest, UpdateAgentRequest } from '@agents-web-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
+import { agentManager } from '../services/agent-manager.js';
 import { NotFoundError, ValidationError, ConflictError } from '../lib/errors.js';
 
 const api = new Hono();
@@ -33,11 +34,13 @@ api.post('/sessions', async (c) => {
     worktreePath?: string;
     repositoryId?: string;
     continueConversation?: boolean;
+    agentId?: string;
   }>();
   const {
     worktreePath = process.cwd(),
     repositoryId = 'default',
     continueConversation = false,
+    agentId,
   } = body;
 
   // Create session without WebSocket initially
@@ -47,7 +50,8 @@ api.post('/sessions', async (c) => {
     repositoryId,
     () => {}, // onData placeholder - will be replaced by WebSocket
     () => {}, // onExit placeholder - will be replaced by WebSocket
-    continueConversation
+    continueConversation,
+    agentId
   );
 
   return c.json({ session }, 201);
@@ -85,14 +89,15 @@ api.get('/sessions/:id/metadata', (c) => {
 // Restart a dead session (reuse same session ID)
 api.post('/sessions/:id/restart', async (c) => {
   const sessionId = c.req.param('id');
-  const body = await c.req.json<{ continueConversation?: boolean }>();
-  const { continueConversation = false } = body;
+  const body = await c.req.json<{ continueConversation?: boolean; agentId?: string }>();
+  const { continueConversation = false, agentId } = body;
 
   const session = sessionManager.restartSession(
     sessionId,
     () => {}, // onData placeholder - will be replaced by WebSocket
     () => {}, // onExit placeholder - will be replaced by WebSocket
-    continueConversation
+    continueConversation,
+    agentId
   );
 
   if (!session) {
@@ -177,7 +182,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
   }
 
   const body = await c.req.json<CreateWorktreeRequest>();
-  const { branch, baseBranch, autoStartSession } = body;
+  const { branch, baseBranch, autoStartSession, agentId } = body;
 
   if (!branch) {
     throw new ValidationError('branch is required');
@@ -200,7 +205,9 @@ api.post('/repositories/:id/worktrees', async (c) => {
       worktree.path,
       repoId,
       () => {},
-      () => {}
+      () => {},
+      false, // continueConversation
+      agentId
     );
   }
 
@@ -267,6 +274,84 @@ api.get('/repositories/:id/branches', (c) => {
 
   const branches = worktreeService.listBranches(repo.path);
   return c.json(branches);
+});
+
+// ========== Agents API ==========
+
+// Get all agents
+api.get('/agents', (c) => {
+  const agents = agentManager.getAllAgents();
+  return c.json({ agents });
+});
+
+// Get a single agent
+api.get('/agents/:id', (c) => {
+  const agentId = c.req.param('id');
+  const agent = agentManager.getAgent(agentId);
+
+  if (!agent) {
+    throw new NotFoundError('Agent');
+  }
+
+  return c.json({ agent });
+});
+
+// Register a new agent
+api.post('/agents', async (c) => {
+  const body = await c.req.json<CreateAgentRequest>();
+  const { name, command, description, icon, activityPatterns } = body;
+
+  if (!name || !command) {
+    throw new ValidationError('name and command are required');
+  }
+
+  const agent = agentManager.registerAgent({
+    name,
+    command,
+    description,
+    icon,
+    activityPatterns,
+  });
+
+  return c.json({ agent }, 201);
+});
+
+// Update an agent
+api.patch('/agents/:id', async (c) => {
+  const agentId = c.req.param('id');
+  const body = await c.req.json<UpdateAgentRequest>();
+
+  const agent = agentManager.updateAgent(agentId, body);
+
+  if (!agent) {
+    throw new NotFoundError('Agent');
+  }
+
+  return c.json({ agent });
+});
+
+// Delete an agent
+api.delete('/agents/:id', (c) => {
+  const agentId = c.req.param('id');
+
+  // Check if agent exists
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    throw new NotFoundError('Agent');
+  }
+
+  // Built-in agents cannot be deleted
+  if (agent.isBuiltIn) {
+    throw new ValidationError('Built-in agents cannot be deleted');
+  }
+
+  const success = agentManager.unregisterAgent(agentId);
+
+  if (!success) {
+    throw new ValidationError('Failed to delete agent');
+  }
+
+  return c.json({ success: true });
 });
 
 export { api };

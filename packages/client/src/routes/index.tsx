@@ -15,6 +15,8 @@ import {
 } from '../lib/api';
 import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
+import { AgentSelector } from '../components/AgentSelector';
+import { AgentManagement } from '../components/AgentManagement';
 import type { Session, Repository, Worktree, ClaudeActivityState } from '@agents-web-console/shared';
 
 // Request notification permission on load
@@ -323,6 +325,12 @@ function DashboardPage() {
 
       {/* Quick Sessions (sessions without a registered repository) */}
       <QuickSessionsSection sessions={sessions.filter((s) => s.repositoryId === 'default')} />
+
+      {/* Settings Section */}
+      <div className="mt-8">
+        <h2 className="text-lg font-medium text-gray-400 mb-4">Settings</h2>
+        <AgentManagement />
+      </div>
     </div>
   );
 }
@@ -339,6 +347,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const [newBranch, setNewBranch] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [isNewBranch, setIsNewBranch] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -354,11 +363,12 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const defaultBranch = branchesData?.defaultBranch || 'main';
 
   const createWorktreeMutation = useMutation({
-    mutationFn: (params: { branch: string; baseBranch?: string }) =>
+    mutationFn: (params: { branch: string; baseBranch?: string; agentId?: string }) =>
       createWorktree(repository.id, {
         branch: params.branch,
         baseBranch: params.baseBranch,
         autoStartSession: true,
+        agentId: params.agentId,
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['worktrees', repository.id] });
@@ -366,6 +376,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       setShowCreateWorktree(false);
       setNewBranch('');
       setBaseBranch('');
+      setSelectedAgentId(undefined);
       // Open terminal in new tab if session was created
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
@@ -381,6 +392,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       await createWorktreeMutation.mutateAsync({
         branch: newBranch.trim(),
         baseBranch: isNewBranch ? baseBranch.trim() || defaultBranch : undefined,
+        agentId: selectedAgentId,
       });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to create worktree');
@@ -438,6 +450,14 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                 className="input"
               />
             )}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Agent:</span>
+              <AgentSelector
+                value={selectedAgentId}
+                onChange={setSelectedAgentId}
+                className="flex-1"
+              />
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={handleCreateWorktree}
@@ -451,6 +471,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                   setShowCreateWorktree(false);
                   setNewBranch('');
                   setBaseBranch('');
+                  setSelectedAgentId(undefined);
                 }}
                 className="btn btn-danger text-sm"
               >
@@ -590,15 +611,17 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
   const [showAddSession, setShowAddSession] = useState(false);
   const [newPath, setNewPath] = useState('');
   const [isStarting, setIsStarting] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
 
   const handleStartSession = async () => {
     if (!newPath.trim()) return;
     setIsStarting(true);
     try {
-      const { session } = await createSession(newPath.trim(), 'default');
+      const { session } = await createSession(newPath.trim(), 'default', false, selectedAgentId);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowAddSession(false);
       setNewPath('');
+      setSelectedAgentId(undefined);
       window.open(`/sessions/${session.id}`, '_blank');
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to start session');
@@ -622,32 +645,43 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
       {showAddSession && (
         <div className="card mb-4 bg-slate-800">
           <h3 className="text-sm font-medium mb-3">Start Session in Any Directory</h3>
-          <div className="flex gap-3 items-center">
+          <div className="flex flex-col gap-3">
             <input
               type="text"
               placeholder="Path (e.g., /path/to/project)"
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
-              className="input flex-1"
+              className="input"
               onKeyDown={(e) => e.key === 'Enter' && handleStartSession()}
               autoFocus
             />
-            <button
-              onClick={handleStartSession}
-              disabled={isStarting}
-              className="btn btn-primary text-sm"
-            >
-              {isStarting ? 'Starting...' : 'Start'}
-            </button>
-            <button
-              onClick={() => {
-                setShowAddSession(false);
-                setNewPath('');
-              }}
-              className="btn btn-danger text-sm"
-            >
-              Cancel
-            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Agent:</span>
+              <AgentSelector
+                value={selectedAgentId}
+                onChange={setSelectedAgentId}
+                className="flex-1"
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleStartSession}
+                disabled={isStarting}
+                className="btn btn-primary text-sm"
+              >
+                {isStarting ? 'Starting...' : 'Start'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddSession(false);
+                  setNewPath('');
+                  setSelectedAgentId(undefined);
+                }}
+                className="btn btn-danger text-sm"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,11 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { AgentActivityPatterns } from '@agents-web-console/shared';
 
 // Config directory: ~/.agents-web-console/
 const CONFIG_DIR = path.join(os.homedir(), '.agents-web-console');
 const REPOSITORIES_FILE = path.join(CONFIG_DIR, 'repositories.json');
 const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
+const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
 
 export interface PersistedRepository {
   id: string;
@@ -20,6 +22,17 @@ export interface PersistedSession {
   repositoryId: string;
   pid: number;
   createdAt: string;
+}
+
+export interface PersistedAgent {
+  id: string;
+  name: string;
+  command: string;
+  description?: string;
+  icon?: string;
+  isBuiltIn: boolean;
+  registeredAt: string;
+  activityPatterns?: AgentActivityPatterns;
 }
 
 function ensureConfigDir(): void {
@@ -88,6 +101,32 @@ export class PersistenceService {
   // Clear all sessions (used after cleanup)
   clearSessions(): void {
     this.saveSessions([]);
+  }
+
+  // ========== Agents ==========
+
+  loadAgents(): PersistedAgent[] {
+    return safeRead<PersistedAgent[]>(AGENTS_FILE, []);
+  }
+
+  saveAgents(agents: PersistedAgent[]): void {
+    atomicWrite(AGENTS_FILE, JSON.stringify(agents, null, 2));
+  }
+
+  getAgent(agentId: string): PersistedAgent | undefined {
+    const agents = this.loadAgents();
+    return agents.find(a => a.id === agentId);
+  }
+
+  removeAgent(agentId: string): boolean {
+    const agents = this.loadAgents();
+    const agent = agents.find(a => a.id === agentId);
+    if (!agent || agent.isBuiltIn) {
+      return false; // Cannot remove built-in agents
+    }
+    const filtered = agents.filter(a => a.id !== agentId);
+    this.saveAgents(filtered);
+    return true;
   }
 }
 

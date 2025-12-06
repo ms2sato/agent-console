@@ -1,4 +1,12 @@
-import type { Session, Repository, Worktree, CreateWorktreeRequest } from '@agents-web-console/shared';
+import type {
+  Session,
+  Repository,
+  Worktree,
+  CreateWorktreeRequest,
+  AgentDefinition,
+  CreateAgentRequest,
+  UpdateAgentRequest,
+} from '@agents-web-console/shared';
 
 const API_BASE = '/api';
 
@@ -37,12 +45,13 @@ export async function fetchSessions(): Promise<SessionsResponse> {
 export async function createSession(
   worktreePath?: string,
   repositoryId?: string,
-  continueConversation: boolean = false
+  continueConversation: boolean = false,
+  agentId?: string
 ): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repositoryId, continueConversation }),
+    body: JSON.stringify({ worktreePath, repositoryId, continueConversation, agentId }),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
@@ -91,12 +100,13 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
 
 export async function restartSession(
   sessionId: string,
-  continueConversation: boolean = false
+  continueConversation: boolean = false,
+  agentId?: string
 ): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/restart`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ continueConversation }),
+    body: JSON.stringify({ continueConversation, agentId }),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
@@ -216,5 +226,70 @@ export async function deleteWorktree(
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to delete worktree');
+  }
+}
+
+// ========== Agents API ==========
+
+export interface AgentsResponse {
+  agents: AgentDefinition[];
+}
+
+export interface AgentResponse {
+  agent: AgentDefinition;
+}
+
+export async function fetchAgents(): Promise<AgentsResponse> {
+  const res = await fetch(`${API_BASE}/agents`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch agents: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchAgent(agentId: string): Promise<AgentResponse> {
+  const res = await fetch(`${API_BASE}/agents/${agentId}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch agent: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function registerAgent(request: CreateAgentRequest): Promise<AgentResponse> {
+  const res = await fetch(`${API_BASE}/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to register agent');
+  }
+  return res.json();
+}
+
+export async function updateAgent(
+  agentId: string,
+  request: UpdateAgentRequest
+): Promise<AgentResponse> {
+  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to update agent');
+  }
+  return res.json();
+}
+
+export async function unregisterAgent(agentId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to unregister agent');
   }
 }

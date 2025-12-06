@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Session, SessionStatus, ClaudeActivityState } from '@agents-web-console/shared';
 import { persistenceService, type PersistedSession } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
+import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 
 interface InternalSession {
   id: string;
@@ -10,6 +11,7 @@ interface InternalSession {
   outputBuffer: string;
   worktreePath: string;
   repositoryId: string;
+  agentId: string;
   status: SessionStatus;
   activityState: ClaudeActivityState;
   startedAt: string;
@@ -81,15 +83,24 @@ export class SessionManager {
     repositoryId: string,
     onData: (data: string) => void,
     onExit: (exitCode: number, signal: string | null) => void,
-    continueConversation: boolean = false
+    continueConversation: boolean = false,
+    agentId?: string
   ): Session {
     const id = uuidv4();
     const startedAt = new Date().toISOString();
 
-    // Use -c flag to continue previous conversation
-    const args = continueConversation ? ['-c'] : [];
+    // Resolve agent - use provided agentId or default to Claude Code
+    const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
+    const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
-    const ptyProcess = pty.spawn('claude', args, {
+    // Build command arguments
+    // Note: -c flag is Claude Code specific, other agents may not support it
+    const args: string[] = [];
+    if (agent.id === CLAUDE_CODE_AGENT_ID && continueConversation) {
+      args.push('-c');
+    }
+
+    const ptyProcess = pty.spawn(agent.command, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -97,7 +108,7 @@ export class SessionManager {
       env: process.env as Record<string, string>,
     });
 
-    // Create activity detector for this session
+    // Create activity detector for this session with agent-specific patterns
     const activityDetector = new ActivityDetector({
       onStateChange: (state) => {
         session.activityState = state;
@@ -105,6 +116,7 @@ export class SessionManager {
         // Broadcast to all dashboard clients
         this.globalActivityCallback?.(id, state);
       },
+      activityPatterns: agent.activityPatterns,
     });
 
     const session: InternalSession = {
@@ -113,6 +125,7 @@ export class SessionManager {
       outputBuffer: '',
       worktreePath,
       repositoryId,
+      agentId: agent.id,
       status: 'running',
       activityState: 'idle',
       startedAt,
@@ -173,7 +186,8 @@ export class SessionManager {
     id: string,
     onData: (data: string) => void,
     onExit: (exitCode: number, signal: string | null) => void,
-    continueConversation: boolean = false
+    continueConversation: boolean = false,
+    agentId?: string
   ): Session | null {
     // Check if session is already active
     if (this.sessions.has(id)) {
@@ -190,10 +204,17 @@ export class SessionManager {
 
     const startedAt = new Date().toISOString();
 
-    // Use -c flag to continue previous conversation
-    const args = continueConversation ? ['-c'] : [];
+    // Resolve agent - use provided agentId or default to Claude Code
+    const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
+    const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
-    const ptyProcess = pty.spawn('claude', args, {
+    // Build command arguments
+    const args: string[] = [];
+    if (agent.id === CLAUDE_CODE_AGENT_ID && continueConversation) {
+      args.push('-c');
+    }
+
+    const ptyProcess = pty.spawn(agent.command, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -201,7 +222,7 @@ export class SessionManager {
       env: process.env as Record<string, string>,
     });
 
-    // Create activity detector for this session
+    // Create activity detector for this session with agent-specific patterns
     const activityDetector = new ActivityDetector({
       onStateChange: (state) => {
         session.activityState = state;
@@ -209,6 +230,7 @@ export class SessionManager {
         // Broadcast to all dashboard clients
         this.globalActivityCallback?.(id, state);
       },
+      activityPatterns: agent.activityPatterns,
     });
 
     const session: InternalSession = {
@@ -217,6 +239,7 @@ export class SessionManager {
       outputBuffer: '',
       worktreePath: metadata.worktreePath,
       repositoryId: metadata.repositoryId,
+      agentId: agent.id,
       status: 'running',
       activityState: 'idle',
       startedAt,
@@ -278,10 +301,17 @@ export class SessionManager {
     // Debug: log input data
     console.log(`[SessionManager] writeInput: ${JSON.stringify(data)}`);
 
-    // Check if this is a submit (CR = Enter) or cancel (ESC)
-    if (data.includes('\r') || data === '\x1b') {
-      // User pressed Enter to submit or ESC to cancel - clear typing flag immediately
-      session.activityDetector.clearUserTyping();
+    // Check if this is a submit (CR = Enter), cancel (ESC), or focus event
+    if (data.includes('\r')) {
+      // User pressed Enter to submit - clear typing flag immediately
+      session.activityDetector.clearUserTyping(false);
+    } else if (data === '\x1b') {
+      // User pressed ESC to cancel - clear typing flag but handle 'asking' state specially
+      session.activityDetector.clearUserTyping(true);
+    } else if (data === '\x1b[I' || data === '\x1b[O') {
+      // Focus in/out events from xterm - ignore for activity detection
+      // These are not user typing, just terminal focus reporting
+      console.log(`[SessionManager] Ignoring focus event: ${JSON.stringify(data)}`);
     } else {
       // Regular typing - set typing flag
       session.activityDetector.setUserTyping();
@@ -361,6 +391,7 @@ export class SessionManager {
       activityState: session.activityState,
       pid: session.pty.pid,
       startedAt: session.startedAt,
+      agentId: session.agentId,
     };
   }
 }

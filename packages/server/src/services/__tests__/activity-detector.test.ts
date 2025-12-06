@@ -1,6 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ActivityDetector } from '../activity-detector.js';
-import type { ClaudeActivityState } from '@agents-web-console/shared';
+import type { ClaudeActivityState, AgentActivityPatterns } from '@agents-web-console/shared';
+
+// Claude Code asking patterns (same as in agent-manager.ts)
+const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
+  askingPatterns: [
+    'Enter to select.*Tab.*navigate.*Esc to cancel',
+    'Do you want to.*\\?',
+    '\\[y\\].*\\[n\\]',
+    '\\[a\\].*always',
+    'Allow.*\\?',
+    '\\[A\\].*\\[B\\]',
+    '\\[1\\].*\\[2\\]',
+    '╰─+╯\\s*>\\s*$',
+  ],
+};
 
 describe('ActivityDetector', () => {
   let detector: ActivityDetector;
@@ -11,6 +25,7 @@ describe('ActivityDetector', () => {
     stateChanges = [];
     detector = new ActivityDetector({
       onStateChange: (state) => stateChanges.push(state),
+      activityPatterns: CLAUDE_CODE_PATTERNS,
     });
   });
 
