@@ -37,7 +37,7 @@ class MockPersistenceService {
 // Extracted cleanup logic for testing
 function cleanupOrphanProcesses(
   persistenceService: MockPersistenceService,
-  currentServerPid: number,
+  _currentServerPid: number,
   isProcessAlive: (pid: number) => boolean,
   killProcess: (pid: number) => void
 ): { killed: string[]; preserved: string[]; warnings: string[] } {
