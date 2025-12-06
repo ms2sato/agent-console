@@ -29,19 +29,6 @@ Backend (Node.js)              Frontend (Browser)
 - Resize events must be propagated to PTY (`claude.resize(cols, rows)`)
 - Output buffering enables reconnection without losing history
 
-## Running the PoC
-
-```bash
-node poc-xterm-server.js /path/to/git/repo
-# Opens on http://localhost:3457
-```
-
-## Project Files
-
-- `poc-pty.js` - Direct PTY control (CLI mode)
-- `poc-xterm-server.js` - WebSocket server serving xterm.js client
-- `poc-xterm.html` - Browser UI with xterm.js
-
 ## WebSocket Message Protocol
 
 Client → Server:
