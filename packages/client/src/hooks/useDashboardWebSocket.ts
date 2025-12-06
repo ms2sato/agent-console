@@ -30,7 +30,7 @@ export function useDashboardWebSocket(
   const connect = useCallback(() => {
     if (unmountedRef.current) return;
 
-    const wsUrl = `ws://${window.location.hostname}:3457/ws/dashboard`;
+    const wsUrl = `ws://${window.location.host}/ws/dashboard`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

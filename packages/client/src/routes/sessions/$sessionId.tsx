@@ -173,7 +173,7 @@ function TerminalPage() {
     if (state.type !== 'active') return;
 
     const shellId = `shell-${shellCounter}`;
-    const shellWsUrl = `ws://${window.location.hostname}:3457/ws/shell?cwd=${encodeURIComponent(state.metadata.worktreePath)}`;
+    const shellWsUrl = `ws://${window.location.host}/ws/shell?cwd=${encodeURIComponent(state.metadata.worktreePath)}`;
     const newTab: Tab = {
       id: shellId,
       type: 'shell',
@@ -203,7 +203,7 @@ function TerminalPage() {
   useEffect(() => {
     // For 'new' session, use the /ws/terminal-new endpoint directly
     if (sessionId === 'new') {
-      const wsUrl = `ws://${window.location.hostname}:3457/ws/terminal-new${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
+      const wsUrl = `ws://${window.location.host}/ws/terminal-new${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
       const newMetadata: SessionMetadata = {
         id: 'new',
         worktreePath: cwd || '(server default)',
@@ -224,7 +224,7 @@ function TerminalPage() {
         }
 
         if (metadata.isActive) {
-          const wsUrl = `ws://${window.location.hostname}:3457/ws/terminal/${sessionId}`;
+          const wsUrl = `ws://${window.location.host}/ws/terminal/${sessionId}`;
           setState({ type: 'active', wsUrl, metadata });
         } else {
           setState({ type: 'disconnected', metadata });
