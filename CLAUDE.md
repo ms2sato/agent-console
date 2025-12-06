@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working Principles
+
+**Purpose over speed.** Do not rush to finish quickly at the expense of losing sight of the original purpose. Code that fails to achieve its purpose wastes more time than code written correctly from the start.
+
+**Do not blindly follow existing patterns.** Existing code is not automatically correct. Evaluate whether patterns in the codebase are appropriate before adopting them.
+
+**Think before you act.** When facing a problem, first consider the correct approach rather than immediately implementing the easiest solution.
+
 ## Project Overview
 
 A web application for managing multiple Claude Code instances running in different git worktrees. Instead of scattered terminals, users control all instances through a unified browser interface using xterm.js.
@@ -45,3 +53,7 @@ Server → Client:
 - `node-pty` - Pseudo-terminal for spawning Claude Code
 - `ws` - WebSocket server
 - xterm.js loaded from CDN (v5.3.0)
+
+## Testing
+
+Follow the guidelines in [docs/testing-guidelines.md](docs/testing-guidelines.md).
