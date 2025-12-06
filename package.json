@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --parallel --filter './packages/*' dev",
-    "build": "pnpm --filter './packages/*' build",
+    "build": "pnpm --filter @agent-console/shared build && pnpm --filter @agent-console/client build && pnpm --filter @agent-console/server build",
+    "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "pnpm --filter './packages/*' typecheck",
     "test": "pnpm --filter './packages/*' test",
     "lint": "pnpm --filter './packages/*' lint"
@@ -16,5 +17,9 @@
   "packageManager": "pnpm@9.14.4",
   "engines": {
     "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.3"
   }
 }
