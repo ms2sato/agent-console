@@ -1,8 +1,37 @@
 import { v4 as uuidv4 } from 'uuid';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import type { Repository } from '@agents-web-console/shared';
 import { persistenceService } from './persistence-service.js';
+
+const CONFIG_DIR = path.join(os.homedir(), '.agents-web-console');
+
+/**
+ * Extract org/repo from git remote URL
+ * Falls back to directory name if no remote
+ */
+function getOrgRepoFromPath(repoPath: string): string {
+  try {
+    const remoteUrl = execSync('git remote get-url origin', {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+
+    // SSH format: git@github.com:org/repo.git
+    const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
+    if (sshMatch) return sshMatch[1];
+
+    // HTTPS format: https://github.com/org/repo.git
+    const httpsMatch = remoteUrl.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/);
+    if (httpsMatch) return httpsMatch[1];
+  } catch {
+    // No remote or error - fall through
+  }
+  return path.basename(repoPath);
+}
 
 export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
@@ -72,10 +101,42 @@ export class RepositoryManager {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
+    // Clean up related directories
+    this.cleanupRepositoryData(repo.path);
+
     this.repositories.delete(id);
     this.saveToDisk();
     console.log(`Repository unregistered: ${repo.name} (${id})`);
     return true;
+  }
+
+  /**
+   * Clean up worktrees and templates directories for a repository
+   */
+  private cleanupRepositoryData(repoPath: string): void {
+    const orgRepo = getOrgRepoFromPath(repoPath);
+
+    // Clean up worktrees directory
+    const worktreesDir = path.join(CONFIG_DIR, 'worktrees', orgRepo);
+    if (fs.existsSync(worktreesDir)) {
+      try {
+        fs.rmSync(worktreesDir, { recursive: true });
+        console.log(`Cleaned up worktrees: ${worktreesDir}`);
+      } catch (e) {
+        console.error(`Failed to clean up worktrees: ${worktreesDir}`, e);
+      }
+    }
+
+    // Clean up templates directory
+    const templatesDir = path.join(CONFIG_DIR, 'templates', orgRepo);
+    if (fs.existsSync(templatesDir)) {
+      try {
+        fs.rmSync(templatesDir, { recursive: true });
+        console.log(`Cleaned up templates: ${templatesDir}`);
+      } catch (e) {
+        console.error(`Failed to clean up templates: ${templatesDir}`, e);
+      }
+    }
   }
 
   getRepository(id: string): Repository | undefined {
