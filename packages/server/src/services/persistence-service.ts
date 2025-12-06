@@ -1,13 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { AgentDefinition } from '@agent-console/shared';
+import { getConfigDir } from '../lib/config.js';
 
-// Config directory: ~/.agent-console/
-const CONFIG_DIR = path.join(os.homedir(), '.agent-console');
-const REPOSITORIES_FILE = path.join(CONFIG_DIR, 'repositories.json');
-const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
-const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
+// Config directory paths (lazy-evaluated to support env override)
+const getRepositoriesFile = () => path.join(getConfigDir(), 'repositories.json');
+const getSessionsFile = () => path.join(getConfigDir(), 'sessions.json');
+const getAgentsFile = () => path.join(getConfigDir(), 'agents.json');
 
 export interface PersistedRepository {
   id: string;
@@ -21,14 +20,16 @@ export interface PersistedSession {
   worktreePath: string;
   repositoryId: string;
   pid: number;
+  serverPid: number;  // PID of the server that created this session
   createdAt: string;
 }
 
 
 function ensureConfigDir(): void {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    console.log(`Created config directory: ${CONFIG_DIR}`);
+  const configDir = getConfigDir();
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+    console.log(`Created config directory: ${configDir}`);
   }
 }
 
@@ -58,21 +59,21 @@ export class PersistenceService {
   // ========== Repositories ==========
 
   loadRepositories(): PersistedRepository[] {
-    return safeRead<PersistedRepository[]>(REPOSITORIES_FILE, []);
+    return safeRead<PersistedRepository[]>(getRepositoriesFile(), []);
   }
 
   saveRepositories(repositories: PersistedRepository[]): void {
-    atomicWrite(REPOSITORIES_FILE, JSON.stringify(repositories, null, 2));
+    atomicWrite(getRepositoriesFile(), JSON.stringify(repositories, null, 2));
   }
 
   // ========== Sessions ==========
 
   loadSessions(): PersistedSession[] {
-    return safeRead<PersistedSession[]>(SESSIONS_FILE, []);
+    return safeRead<PersistedSession[]>(getSessionsFile(), []);
   }
 
   saveSessions(sessions: PersistedSession[]): void {
-    atomicWrite(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+    atomicWrite(getSessionsFile(), JSON.stringify(sessions, null, 2));
   }
 
   // Get session metadata by ID (for reconnection)
@@ -96,11 +97,11 @@ export class PersistenceService {
   // ========== Agents ==========
 
   loadAgents(): AgentDefinition[] {
-    return safeRead<AgentDefinition[]>(AGENTS_FILE, []);
+    return safeRead<AgentDefinition[]>(getAgentsFile(), []);
   }
 
   saveAgents(agents: AgentDefinition[]): void {
-    atomicWrite(AGENTS_FILE, JSON.stringify(agents, null, 2));
+    atomicWrite(getAgentsFile(), JSON.stringify(agents, null, 2));
   }
 
   getAgent(agentId: string): AgentDefinition | undefined {

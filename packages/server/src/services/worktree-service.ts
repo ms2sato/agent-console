@@ -1,12 +1,12 @@
 import { execSync, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { Worktree } from '@agent-console/shared';
+import { getConfigDir } from '../lib/config.js';
 
 // Worktree base directory (can be overridden by WORKTREE_BASE_DIR env var)
 const getWorktreeBaseDir = () => {
-  return process.env.WORKTREE_BASE_DIR || path.join(os.homedir(), '.agent-console', 'worktrees');
+  return process.env.WORKTREE_BASE_DIR || path.join(getConfigDir(), 'worktrees');
 };
 
 // ========== Index Management ==========
@@ -65,7 +65,7 @@ function getIndexForPath(store: IndexStore, worktreePath: string): number | unde
 
 /**
  * Find templates directory for a repository
- * Priority: 1. .git-wt/ in repo root  2. ~/.agent-console/templates/<owner>/<repo>/
+ * Priority: 1. .git-wt/ in repo root  2. $AGENT_CONSOLE_HOME/templates/<owner>/<repo>/
  */
 function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
   // Check repo-local templates
@@ -74,8 +74,8 @@ function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
     return localTemplates;
   }
 
-  // Check global templates in .agent-console/templates/
-  const globalTemplates = path.join(os.homedir(), '.agent-console', 'templates', orgRepo);
+  // Check global templates in $AGENT_CONSOLE_HOME/templates/
+  const globalTemplates = path.join(getConfigDir(), 'templates', orgRepo);
   if (fs.existsSync(globalTemplates) && fs.statSync(globalTemplates).isDirectory()) {
     return globalTemplates;
   }

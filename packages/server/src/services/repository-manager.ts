@@ -2,11 +2,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { Repository } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
-
-const CONFIG_DIR = path.join(os.homedir(), '.agent-console');
+import { getConfigDir } from '../lib/config.js';
 
 /**
  * Extract org/repo from git remote URL
@@ -117,7 +115,7 @@ export class RepositoryManager {
     const orgRepo = getOrgRepoFromPath(repoPath);
 
     // Clean up worktrees directory
-    const worktreesDir = path.join(CONFIG_DIR, 'worktrees', orgRepo);
+    const worktreesDir = path.join(getConfigDir(), 'worktrees', orgRepo);
     if (fs.existsSync(worktreesDir)) {
       try {
         fs.rmSync(worktreesDir, { recursive: true });
@@ -128,7 +126,7 @@ export class RepositoryManager {
     }
 
     // Clean up templates directory
-    const templatesDir = path.join(CONFIG_DIR, 'templates', orgRepo);
+    const templatesDir = path.join(getConfigDir(), 'templates', orgRepo);
     if (fs.existsSync(templatesDir)) {
       try {
         fs.rmSync(templatesDir, { recursive: true });

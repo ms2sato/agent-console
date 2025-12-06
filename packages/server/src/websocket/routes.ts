@@ -9,21 +9,22 @@ import { handleTerminalMessage } from './terminal-handler.js';
 const dashboardClients = new Set<WSContext>();
 
 // Set up global activity callback to broadcast to all dashboard clients
-sessionManager.setGlobalActivityCallback((sessionId, state) => {
-  const msg: DashboardServerMessage = {
-    type: 'session-activity',
-    sessionId,
-    activityState: state,
-  };
-  const msgStr = JSON.stringify(msg);
-  for (const client of dashboardClients) {
-    try {
-      client.send(msgStr);
-    } catch (e) {
-      console.error('Failed to send to dashboard client:', e);
-    }
-  }
-});
+// TEST: Disabled to check if this causes the issue
+// sessionManager.setGlobalActivityCallback((sessionId, state) => {
+//   const msg: DashboardServerMessage = {
+//     type: 'session-activity',
+//     sessionId,
+//     activityState: state,
+//   };
+//   const msgStr = JSON.stringify(msg);
+//   for (const client of dashboardClients) {
+//     try {
+//       client.send(msgStr);
+//     } catch (e) {
+//       console.error('Failed to send to dashboard client:', e);
+//     }
+//   }
+// });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
@@ -83,38 +84,66 @@ export function setupWebSocketRoutes(
 
           console.log(`Terminal WebSocket connected for session: ${sessionId}`);
 
+          // Helper to safely send WebSocket messages with buffering
+          let outputBuffer = '';
+          let flushTimer: ReturnType<typeof setTimeout> | null = null;
+          const FLUSH_INTERVAL = 50; // ms
+
+          const flushBuffer = () => {
+            if (outputBuffer.length > 0 && ws.readyState === 1) {
+              try {
+                ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
+              } catch (error) {
+                console.error(`[WS] Error sending to session ${sessionId}:`, error);
+              }
+              outputBuffer = '';
+            }
+            flushTimer = null;
+          };
+
+          const safeSend = (msg: TerminalServerMessage) => {
+            if (msg.type === 'output') {
+              // Buffer output messages
+              outputBuffer += msg.data;
+              if (!flushTimer) {
+                flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL);
+              }
+            } else {
+              // Send other messages immediately
+              if (ws.readyState === 1) {
+                try {
+                  ws.send(JSON.stringify(msg));
+                } catch (error) {
+                  console.error(`[WS] Error sending to session ${sessionId}:`, error);
+                }
+              }
+            }
+          };
+
           // Attach callbacks to receive real-time output
           sessionManager.attachCallbacks(
             sessionId,
             (data) => {
-              const msg: TerminalServerMessage = { type: 'output', data };
-              ws.send(JSON.stringify(msg));
+              safeSend({ type: 'output', data });
             },
             (exitCode, signal) => {
-              const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
-              ws.send(JSON.stringify(msg));
+              safeSend({ type: 'exit', exitCode, signal });
             },
             (state: ClaudeActivityState) => {
-              const msg: TerminalServerMessage = { type: 'activity', state };
-              ws.send(JSON.stringify(msg));
+              safeSend({ type: 'activity', state });
             }
           );
 
           // Send buffered output (history) on reconnection
           const history = sessionManager.getOutputBuffer(sessionId);
           if (history) {
-            const historyMsg: TerminalServerMessage = {
-              type: 'history',
-              data: history,
-            };
-            ws.send(JSON.stringify(historyMsg));
+            safeSend({ type: 'history', data: history });
           }
 
           // Send current activity state on connection
           const activityState = sessionManager.getActivityState(sessionId);
           if (activityState && activityState !== 'unknown') {
-            const activityMsg: TerminalServerMessage = { type: 'activity', state: activityState };
-            ws.send(JSON.stringify(activityMsg));
+            safeSend({ type: 'activity', state: activityState });
           }
         },
         onMessage(event: { data: string | Buffer }, ws: WSContext) {
@@ -125,6 +154,9 @@ export function setupWebSocketRoutes(
           console.log(`Terminal WebSocket disconnected for session: ${sessionId}`);
           // Detach callbacks but keep session alive
           sessionManager.detachCallbacks(sessionId);
+        },
+        onError(event: ErrorEvent) {
+          console.error(`Terminal WebSocket error for session ${sessionId}:`, event.error);
         },
       };
     })

@@ -5,6 +5,7 @@ import { persistenceService, type PersistedSession } from './persistence-service
 import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
+import { getServerPid } from '../lib/config.js';
 
 interface InternalSession {
   id: string;
@@ -41,17 +42,36 @@ export class SessionManager {
 
   /**
    * Kill orphan processes from previous server run
+   * Only kills sessions where the parent server is no longer running
    * Note: We keep session metadata for reconnection UI
    */
   private cleanupOrphanProcesses(): void {
     const persistedSessions = persistenceService.loadSessions();
+    const currentServerPid = getServerPid();
+    let killedCount = 0;
+    let preservedCount = 0;
 
     for (const session of persistedSessions) {
+      // If serverPid is not set (legacy session), don't kill it - be safe
+      if (!session.serverPid) {
+        console.warn(`[WARN] Session ${session.id} has no serverPid (legacy session), skipping cleanup`);
+        preservedCount++;
+        continue;
+      }
+
+      // Check if the server that created this session is still alive
+      if (this.isProcessAlive(session.serverPid)) {
+        // Parent server is still running, don't touch this session
+        preservedCount++;
+        continue;
+      }
+
       try {
-        // Check if process exists and kill it
+        // Check if session process exists and kill it
         process.kill(session.pid, 0); // 0 = check if process exists
         process.kill(session.pid, 'SIGTERM');
-        console.log(`Killed orphan process: PID ${session.pid} (session ${session.id})`);
+        console.log(`Killed orphan process: PID ${session.pid} (session ${session.id}, parent server ${session.serverPid} is dead)`);
+        killedCount++;
       } catch {
         // Process doesn't exist, that's fine
       }
@@ -59,7 +79,19 @@ export class SessionManager {
 
     // Keep session metadata for reconnection UI
     // Metadata will be cleared when user creates new session or explicitly dismisses
-    console.log(`Orphan process cleanup completed (${persistedSessions.length} sessions preserved for reconnection)`);
+    console.log(`Orphan process cleanup: killed ${killedCount}, preserved ${preservedCount} (server PID: ${currentServerPid})`);
+  }
+
+  /**
+   * Check if a process is still alive
+   */
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0); // 0 = check if process exists without killing
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private persistSession(session: InternalSession): void {
@@ -69,6 +101,7 @@ export class SessionManager {
       worktreePath: session.worktreePath,
       repositoryId: session.repositoryId,
       pid: session.pty.pid,
+      serverPid: getServerPid(),
       createdAt: session.startedAt,
     };
     sessions.push(persisted);
@@ -285,6 +318,7 @@ export class SessionManager {
     const idx = sessions.findIndex(s => s.id === id);
     if (idx >= 0) {
       sessions[idx].pid = pid;
+      sessions[idx].serverPid = getServerPid();
       sessions[idx].createdAt = startedAt;
       persistenceService.saveSessions(sessions);
     }
