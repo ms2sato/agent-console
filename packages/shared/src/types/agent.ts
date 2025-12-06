@@ -18,6 +18,8 @@ export interface AgentDefinition {
   isBuiltIn: boolean;
   registeredAt: string;
   activityPatterns?: AgentActivityPatterns;
+  /** Arguments to append when continuing conversation (e.g., ['-c'] for Claude Code) */
+  continueArgs?: string[];
 }
 
 /**
@@ -29,6 +31,7 @@ export interface CreateAgentRequest {
   description?: string;
   icon?: string;
   activityPatterns?: AgentActivityPatterns;
+  continueArgs?: string[];
 }
 
 /**
@@ -40,4 +43,5 @@ export interface UpdateAgentRequest {
   description?: string;
   icon?: string;
   activityPatterns?: AgentActivityPatterns;
+  continueArgs?: string[];
 }

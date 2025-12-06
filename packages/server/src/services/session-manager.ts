@@ -94,10 +94,9 @@ export class SessionManager {
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
     // Build command arguments
-    // Note: -c flag is Claude Code specific, other agents may not support it
     const args: string[] = [];
-    if (agent.id === CLAUDE_CODE_AGENT_ID && continueConversation) {
-      args.push('-c');
+    if (continueConversation && agent.continueArgs) {
+      args.push(...agent.continueArgs);
     }
 
     const ptyProcess = pty.spawn(agent.command, args, {
@@ -210,8 +209,8 @@ export class SessionManager {
 
     // Build command arguments
     const args: string[] = [];
-    if (agent.id === CLAUDE_CODE_AGENT_ID && continueConversation) {
-      args.push('-c');
+    if (continueConversation && agent.continueArgs) {
+      args.push(...agent.continueArgs);
     }
 
     const ptyProcess = pty.spawn(agent.command, args, {

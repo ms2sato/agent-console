@@ -4,43 +4,11 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
 } from '@agents-web-console/shared';
-import { persistenceService, type PersistedAgent } from './persistence-service.js';
+import { persistenceService } from './persistence-service.js';
+import { claudeCodeAgent, CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
 
-// Built-in agent ID
-export const CLAUDE_CODE_AGENT_ID = 'claude-code-builtin';
-
-// Claude Code specific asking patterns (extracted from activity-detector.ts)
-const CLAUDE_CODE_ASKING_PATTERNS: string[] = [
-  // Selection menu footer (most reliable - appears on all permission prompts)
-  'Enter to select.*Tab.*navigate.*Esc to cancel',
-
-  // Permission prompts - Claude Code style
-  'Do you want to.*\\?',              // "Do you want to create/edit/run..." prompts
-  '\\[y\\].*\\[n\\]',                 // Yes/No selection
-  '\\[a\\].*always',                  // Always allow option
-  'Allow.*\\?',                       // "Allow X?" prompts
-
-  // AskUserQuestion patterns
-  '\\[A\\].*\\[B\\]',                 // A/B selection
-  '\\[1\\].*\\[2\\]',                 // Numbered selection
-
-  // Selection box with prompt
-  '╰─+╯\\s*>\\s*$',                   // Box bottom + prompt
-];
-
-// Claude Code built-in agent definition
-const CLAUDE_CODE_BUILTIN_AGENT: AgentDefinition = {
-  id: CLAUDE_CODE_AGENT_ID,
-  name: 'Claude Code',
-  command: 'claude',
-  description: 'Anthropic Claude Code - Interactive AI coding assistant',
-  icon: 'terminal',
-  isBuiltIn: true,
-  registeredAt: new Date(0).toISOString(), // Epoch time for built-in
-  activityPatterns: {
-    askingPatterns: CLAUDE_CODE_ASKING_PATTERNS,
-  },
-};
+// Re-export for backward compatibility
+export { CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
 
 export class AgentManager {
   private agents: Map<string, AgentDefinition> = new Map();
@@ -54,16 +22,16 @@ export class AgentManager {
    */
   private initialize(): void {
     // Always register built-in agent first
-    this.agents.set(CLAUDE_CODE_AGENT_ID, CLAUDE_CODE_BUILTIN_AGENT);
+    this.agents.set(CLAUDE_CODE_AGENT_ID, claudeCodeAgent);
 
     // Load custom agents from persistence
-    const persistedAgents = persistenceService.loadAgents();
-    for (const persisted of persistedAgents) {
+    const customAgents = persistenceService.loadAgents();
+    for (const agent of customAgents) {
       // Skip if it's the built-in agent (already loaded)
-      if (persisted.isBuiltIn) {
+      if (agent.isBuiltIn) {
         continue;
       }
-      this.agents.set(persisted.id, this.toAgentDefinition(persisted));
+      this.agents.set(agent.id, agent);
     }
 
     console.log(`AgentManager initialized with ${this.agents.size} agents`);
@@ -106,6 +74,7 @@ export class AgentManager {
       isBuiltIn: false,
       registeredAt: now,
       activityPatterns: request.activityPatterns,
+      continueArgs: request.continueArgs,
     };
 
     this.agents.set(id, agent);
@@ -137,6 +106,7 @@ export class AgentManager {
       description: request.description ?? existing.description,
       icon: request.icon ?? existing.icon,
       activityPatterns: request.activityPatterns ?? existing.activityPatterns,
+      continueArgs: request.continueArgs ?? existing.continueArgs,
     };
 
     this.agents.set(id, updated);
@@ -172,50 +142,19 @@ export class AgentManager {
    * Persist all custom agents to storage
    */
   private persistAgents(): void {
-    const customAgents: PersistedAgent[] = [];
+    const customAgents: AgentDefinition[] = [];
 
     for (const agent of this.agents.values()) {
       // Don't persist built-in agents
       if (agent.isBuiltIn) {
         continue;
       }
-      customAgents.push(this.toPersistedAgent(agent));
+      customAgents.push(agent);
     }
 
     persistenceService.saveAgents(customAgents);
   }
 
-  /**
-   * Convert PersistedAgent to AgentDefinition
-   */
-  private toAgentDefinition(persisted: PersistedAgent): AgentDefinition {
-    return {
-      id: persisted.id,
-      name: persisted.name,
-      command: persisted.command,
-      description: persisted.description,
-      icon: persisted.icon,
-      isBuiltIn: persisted.isBuiltIn,
-      registeredAt: persisted.registeredAt,
-      activityPatterns: persisted.activityPatterns,
-    };
-  }
-
-  /**
-   * Convert AgentDefinition to PersistedAgent
-   */
-  private toPersistedAgent(agent: AgentDefinition): PersistedAgent {
-    return {
-      id: agent.id,
-      name: agent.name,
-      command: agent.command,
-      description: agent.description,
-      icon: agent.icon,
-      isBuiltIn: agent.isBuiltIn,
-      registeredAt: agent.registeredAt,
-      activityPatterns: agent.activityPatterns,
-    };
-  }
 }
 
 // Singleton instance

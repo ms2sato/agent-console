@@ -33,9 +33,7 @@ export class ActivityDetector {
   // Threshold: number of outputs in window to consider "active"
   private readonly activeCountThreshold: number = 20;
   // How long with no output to transition to idle (ms)
-  // Increased from 2000 to 5000 because TUI apps like Claude Code
-  // continuously redraw even when "idle", preventing shorter timeouts
-  private readonly noOutputIdleMs: number = 5000;
+  private readonly noOutputIdleMs: number = 2000;
 
   // Flag to suppress rate-based detection after entering asking state
   // (TUI redraws should not trigger active while waiting for user input)

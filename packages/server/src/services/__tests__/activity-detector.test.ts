@@ -91,18 +91,31 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should transition from asking to active when high output count', () => {
+    it('should keep asking state until user responds (suppressRateDetection)', () => {
       // First enter asking state
       detector.processOutput('Do you want to proceed?');
       vi.advanceTimersByTime(400);
       expect(detector.getState()).toBe('asking');
 
-      // Then generate high output (simulating Claude working)
+      // Generate high output - should NOT transition to active due to suppressRateDetection
       for (let i = 0; i < 25; i++) {
         detector.processOutput('working...');
       }
 
-      expect(detector.getState()).toBe('active');
+      // Should stay in asking state until user explicitly responds
+      expect(detector.getState()).toBe('asking');
+    });
+
+    it('should transition from asking to idle when user responds', () => {
+      // First enter asking state
+      detector.processOutput('Do you want to proceed?');
+      vi.advanceTimersByTime(400);
+      expect(detector.getState()).toBe('asking');
+
+      // User responds (e.g., pressing Enter)
+      detector.clearUserTyping(false);
+
+      expect(detector.getState()).toBe('idle');
     });
   });
 

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { AgentActivityPatterns } from '@agents-web-console/shared';
+import type { AgentDefinition } from '@agents-web-console/shared';
 
 // Config directory: ~/.agents-web-console/
 const CONFIG_DIR = path.join(os.homedir(), '.agents-web-console');
@@ -24,16 +24,6 @@ export interface PersistedSession {
   createdAt: string;
 }
 
-export interface PersistedAgent {
-  id: string;
-  name: string;
-  command: string;
-  description?: string;
-  icon?: string;
-  isBuiltIn: boolean;
-  registeredAt: string;
-  activityPatterns?: AgentActivityPatterns;
-}
 
 function ensureConfigDir(): void {
   if (!fs.existsSync(CONFIG_DIR)) {
@@ -105,15 +95,15 @@ export class PersistenceService {
 
   // ========== Agents ==========
 
-  loadAgents(): PersistedAgent[] {
-    return safeRead<PersistedAgent[]>(AGENTS_FILE, []);
+  loadAgents(): AgentDefinition[] {
+    return safeRead<AgentDefinition[]>(AGENTS_FILE, []);
   }
 
-  saveAgents(agents: PersistedAgent[]): void {
+  saveAgents(agents: AgentDefinition[]): void {
     atomicWrite(AGENTS_FILE, JSON.stringify(agents, null, 2));
   }
 
-  getAgent(agentId: string): PersistedAgent | undefined {
+  getAgent(agentId: string): AgentDefinition | undefined {
     const agents = this.loadAgents();
     return agents.find(a => a.id === agentId);
   }
