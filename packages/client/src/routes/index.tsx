@@ -516,6 +516,16 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
+    onError: (error: Error, force: boolean) => {
+      // If deletion failed without force and error mentions untracked/modified files, retry with force
+      if (!force && error.message.includes('untracked')) {
+        if (confirm(`Worktree has untracked files. Force delete "${worktree.branch}"?`)) {
+          deleteWorktreeMutation.mutate(true);
+        }
+      } else {
+        alert(error.message);
+      }
+    },
   });
 
   const handleStartSession = async () => {
