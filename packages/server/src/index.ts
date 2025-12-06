@@ -10,17 +10,34 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
+// Timestamp helper for logging
+const timestamp = () => new Date().toISOString();
+
+// Log server PID on startup for debugging
+console.log(`[${timestamp()}] Server process starting (PID: ${process.pid})`);
+
 // Global error handlers to log crashes before process exits
 process.on('uncaughtException', (error) => {
-  console.error('[FATAL] Uncaught Exception:', error);
+  console.error(`[${timestamp()}] [FATAL] Uncaught Exception (PID: ${process.pid}):`, error);
   console.error('Stack:', error.stack);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[FATAL] Unhandled Rejection at:', promise);
+  console.error(`[${timestamp()}] [FATAL] Unhandled Rejection (PID: ${process.pid}) at:`, promise);
   console.error('Reason:', reason);
   process.exit(1);
+});
+
+// Log when server receives termination signals
+process.on('SIGTERM', () => {
+  console.log(`[${timestamp()}] Server received SIGTERM (PID: ${process.pid})`);
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log(`[${timestamp()}] Server received SIGINT (PID: ${process.pid})`);
+  process.exit(0);
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,7 +86,7 @@ if (isProduction) {
 
 const PORT = Number(process.env.PORT) || 3457;
 
-console.log(`Server starting on http://localhost:${PORT} (${isProduction ? 'production' : 'development'})`);
+console.log(`[${timestamp()}] Server starting on http://localhost:${PORT} (${isProduction ? 'production' : 'development'}) (PID: ${process.pid})`);
 
 const server = serve({
   fetch: app.fetch,
