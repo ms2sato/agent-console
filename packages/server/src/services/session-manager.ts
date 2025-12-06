@@ -152,6 +152,7 @@ export class SessionManager {
       session.activityDetector.dispose();
       // signal can be a number (signal code) or undefined
       const signalStr = signal !== undefined ? String(signal) : null;
+      console.log(`[${new Date().toISOString()}] Session exited: ${id} (PID: ${ptyProcess.pid}, exitCode: ${exitCode}, signal: ${signalStr})`);
       session.onExit(exitCode, signalStr);
       // Keep session metadata for restart - only remove on explicit delete
     });
@@ -159,7 +160,7 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.persistSession(session);
 
-    console.log(`Session created: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
+    console.log(`[${new Date().toISOString()}] Session created: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
 
     return this.toPublicSession(session);
   }
@@ -264,6 +265,7 @@ export class SessionManager {
       session.status = 'stopped';
       session.activityDetector.dispose();
       const signalStr = signal !== undefined ? String(signal) : null;
+      console.log(`[${new Date().toISOString()}] Session exited: ${id} (PID: ${ptyProcess.pid}, exitCode: ${exitCode}, signal: ${signalStr})`);
       session.onExit(exitCode, signalStr);
       // Keep session metadata for restart - only remove on explicit delete
     });
@@ -273,7 +275,7 @@ export class SessionManager {
     // Update persistence with new PID
     this.updatePersistedSession(id, ptyProcess.pid, startedAt);
 
-    console.log(`Session restarted: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
+    console.log(`[${new Date().toISOString()}] Session restarted: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
 
     return this.toPublicSession(session);
   }
