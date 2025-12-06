@@ -161,6 +161,7 @@ describe('PersistenceService', () => {
           worktreePath: '/path/to/worktree',
           repositoryId: 'repo-1',
           pid: 12345,
+          serverPid: 99999,
           createdAt: '2024-01-01T00:00:00.000Z',
         },
       ];
@@ -171,10 +172,28 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testSessions);
     });
 
+    it('should save and load sessions with serverPid', () => {
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-with-server-pid',
+          worktreePath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          pid: 12345,
+          serverPid: 67890,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ];
+
+      service.saveSessions(testSessions);
+      const loaded = service.loadSessions();
+
+      expect(loaded[0].serverPid).toBe(67890);
+    });
+
     it('should get session metadata by id', () => {
       const testSessions: PersistedSession[] = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, createdAt: '2024-01-02T00:00:00.000Z' },
+        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
 
       service.saveSessions(testSessions);
@@ -182,6 +201,7 @@ describe('PersistenceService', () => {
       const session = service.getSessionMetadata('s1');
       expect(session?.id).toBe('s1');
       expect(session?.worktreePath).toBe('/p1');
+      expect(session?.serverPid).toBe(100);
     });
 
     it('should return undefined for non-existent session', () => {
@@ -191,8 +211,8 @@ describe('PersistenceService', () => {
 
     it('should remove session by id', () => {
       const testSessions: PersistedSession[] = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, createdAt: '2024-01-02T00:00:00.000Z' },
+        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
 
       service.saveSessions(testSessions);
@@ -205,8 +225,8 @@ describe('PersistenceService', () => {
 
     it('should clear all sessions', () => {
       const testSessions: PersistedSession[] = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, createdAt: '2024-01-02T00:00:00.000Z' },
+        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
 
       service.saveSessions(testSessions);
