@@ -250,7 +250,7 @@ function TerminalPage() {
     try {
       await restartSession(sessionId, continueConversation);
       // Session restarted with same ID - just switch to active state
-      const wsUrl = `ws://${window.location.hostname}:3457/ws/terminal/${sessionId}`;
+      const wsUrl = `ws://${window.location.host}/ws/terminal/${sessionId}`;
       setState({ type: 'active', wsUrl, metadata: { ...metadata, isActive: true } });
     } catch (error) {
       console.error('Failed to restart session:', error);
