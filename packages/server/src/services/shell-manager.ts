@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
 import { v4 as uuidv4 } from 'uuid';
+import { getChildProcessEnv } from './env-filter.js';
 
 interface ShellInstance {
   id: string;
@@ -25,7 +26,7 @@ class ShellManager {
       cols: 120,
       rows: 30,
       cwd,
-      env: process.env as Record<string, string>,
+      env: getChildProcessEnv(),
     });
 
     ptyProcess.onData(onData);

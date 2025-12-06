@@ -4,6 +4,7 @@ import type { Session, SessionStatus, ClaudeActivityState } from '@agent-console
 import { persistenceService, type PersistedSession } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { getChildProcessEnv } from './env-filter.js';
 
 interface InternalSession {
   id: string;
@@ -104,7 +105,7 @@ export class SessionManager {
       cols: 120,
       rows: 30,
       cwd: worktreePath,
-      env: process.env as Record<string, string>,
+      env: getChildProcessEnv(),
     });
 
     // Create activity detector for this session with agent-specific patterns
@@ -218,7 +219,7 @@ export class SessionManager {
       cols: 120,
       rows: 30,
       cwd: metadata.worktreePath,
-      env: process.env as Record<string, string>,
+      env: getChildProcessEnv(),
     });
 
     // Create activity detector for this session with agent-specific patterns
