@@ -4,9 +4,9 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Repository } from '@agent-console/shared';
 
-// Create a testable RepositoryManager that doesn't use the singleton persistence service
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-repo-test-' + Date.now());
-const TEST_REPO_DIR = path.join(os.tmpdir(), 'test-git-repo-' + Date.now());
+// Test directory paths - will be set uniquely for each test
+let TEST_CONFIG_DIR: string;
+let TEST_REPO_DIR: string;
 
 class TestPersistenceService {
   private repositoriesFile: string;
@@ -76,7 +76,7 @@ class TestRepositoryManager {
       }
     }
 
-    const id = 'test-uuid-' + Date.now();
+    const id = `test-uuid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const name = path.basename(absolutePath);
 
     const repository: Repository = {
@@ -125,13 +125,13 @@ describe('RepositoryManager', () => {
   let persistence: TestPersistenceService;
 
   beforeEach(() => {
-    // Create test directories
-    if (fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    if (fs.existsSync(TEST_REPO_DIR)) {
-      fs.rmSync(TEST_REPO_DIR, { recursive: true });
-    }
+    // Generate unique directory paths for each test
+    const uniqueId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    TEST_CONFIG_DIR = path.join(os.tmpdir(), `agent-console-repo-test-${uniqueId}`);
+    TEST_REPO_DIR = path.join(os.tmpdir(), `test-git-repo-${uniqueId}`);
+
+    // Create test directories (clean slate for each test)
+    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
 
     // Create a fake git repo
     fs.mkdirSync(TEST_REPO_DIR, { recursive: true });
