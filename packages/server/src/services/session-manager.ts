@@ -150,7 +150,10 @@ export class SessionManager {
       args.push(...agent.continueArgs);
     }
 
-    const ptyProcess = pty.spawn(agent.command, args, {
+    // Use login shell to load user's environment (.bash_profile, .zprofile, etc.)
+    const shell = process.env.SHELL || '/bin/bash';
+    const fullCommand = [agent.command, ...args].join(' ');
+    const ptyProcess = pty.spawn(shell, ['-l', '-c', fullCommand], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -271,7 +274,10 @@ export class SessionManager {
       args.push(...agent.continueArgs);
     }
 
-    const ptyProcess = pty.spawn(agent.command, args, {
+    // Use login shell to load user's environment (.bash_profile, .zprofile, etc.)
+    const shell = process.env.SHELL || '/bin/bash';
+    const fullCommand = [agent.command, ...args].join(' ');
+    const ptyProcess = pty.spawn(shell, ['-l', '-c', fullCommand], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
