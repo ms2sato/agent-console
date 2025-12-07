@@ -1,5 +1,7 @@
 # Agent Console
 
+> **Note**: Currently only tested on macOS.
+
 A web application for managing multiple AI coding agent instances running in different git worktrees. Control all your agents through a unified browser interface instead of scattered terminal windows.
 
 Currently supports **Claude Code** as the default agent, with plans to support additional agents (Gemini CLI, Codex, etc.) in the future.
