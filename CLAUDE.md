@@ -97,3 +97,13 @@ Server → Client:
 ## Testing
 
 Follow the guidelines in [docs/testing-guidelines.md](docs/testing-guidelines.md).
+
+### Verification Checklist
+
+Before completing any code changes, always verify the following:
+
+1. **Run tests:** Execute `pnpm test` and ensure all tests pass.
+2. **Run type check:** Execute `pnpm typecheck` and ensure no type errors.
+3. **Manual verification:** When Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
+
+**Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
