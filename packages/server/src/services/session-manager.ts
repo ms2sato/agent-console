@@ -230,7 +230,8 @@ export class SessionManager {
   }
 
   /**
-   * Restart a dead session with the same ID
+   * Restart a session with the same ID
+   * Handles both active sessions (kills first) and dead sessions
    * Used when user clicks Continue or New Session in reconnection UI
    */
   restartSession(
@@ -240,10 +241,14 @@ export class SessionManager {
     continueConversation: boolean = false,
     agentId?: string
   ): Session | null {
-    // Check if session is already active
-    if (this.sessions.has(id)) {
-      console.log(`Session ${id} is already active, cannot restart`);
-      return null;
+    // If session is active, kill it first but keep metadata
+    const existingSession = this.sessions.get(id);
+    if (existingSession) {
+      console.log(`Killing active session ${id} before restart`);
+      existingSession.pty.kill();
+      existingSession.activityDetector.dispose();
+      this.sessions.delete(id);
+      // Don't call unpersistSession - we need the metadata for restart
     }
 
     // Get metadata from persistence

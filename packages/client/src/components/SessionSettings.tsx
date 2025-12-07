@@ -94,8 +94,9 @@ export function SessionSettings({
       setIsOpen(false);
 
       // Restart session with -c flag to pick up new branch name while keeping conversation
+      // The server's restartSession will handle killing the active session
       if (onSessionRestart) {
-        await restartSession(sessionId, true); // continueConversation=true
+        await restartSession(sessionId, true); // Restart with continueConversation=true
         onSessionRestart();
       }
     } catch (err) {
