@@ -427,6 +427,10 @@ function TerminalPage() {
             sessionId={sessionId}
             currentBranch={branchName}
             onBranchChange={setBranchName}
+            onSessionRestart={() => {
+              // Reload page to reconnect WebSocket to restarted session
+              window.location.reload();
+            }}
           />
         </div>
       </div>

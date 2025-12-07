@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { renameSessionBranch } from '../lib/api';
+import { renameSessionBranch, restartSession } from '../lib/api';
 
 interface SessionSettingsProps {
   sessionId: string;
   currentBranch: string;
   onBranchChange: (newBranch: string) => void;
+  onSessionRestart?: () => void;
 }
 
 export function SessionSettings({
   sessionId,
   currentBranch,
   onBranchChange,
+  onSessionRestart,
 }: SessionSettingsProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [branchName, setBranchName] = useState(currentBranch);
@@ -90,6 +92,12 @@ export function SessionSettings({
       const result = await renameSessionBranch(sessionId, trimmedBranch);
       onBranchChange(result.branch);
       setIsOpen(false);
+
+      // Restart session with -c flag to pick up new branch name while keeping conversation
+      if (onSessionRestart) {
+        await restartSession(sessionId, true); // continueConversation=true
+        onSessionRestart();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to rename branch');
     } finally {
