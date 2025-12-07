@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm --parallel --filter './packages/*' dev",
+    "dev": "AGENT_CONSOLE_HOME=$HOME/.agent-console-dev pnpm --parallel --filter './packages/*' dev",
     "build": "pnpm --filter @agent-console/shared build && pnpm --filter @agent-console/client build && pnpm --filter @agent-console/server build",
     "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "pnpm --filter './packages/*' typecheck",
