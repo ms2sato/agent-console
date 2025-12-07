@@ -425,7 +425,9 @@ function TerminalPage() {
         <div className="px-2">
           <SessionSettings
             sessionId={sessionId}
+            repositoryId={state.metadata.repositoryId}
             currentBranch={branchName}
+            worktreePath={state.metadata.worktreePath}
             onBranchChange={setBranchName}
             onSessionRestart={() => {
               // Reload page to reconnect WebSocket to restarted session
