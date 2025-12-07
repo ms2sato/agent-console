@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Mock config - must be before any imports that use it
 vi.mock('../../lib/config.js', () => ({
   getConfigDir: vi.fn(() => '/test/config'),
+  getRepositoriesDir: vi.fn(() => '/test/config/repositories'),
+  getRepositoryDir: vi.fn((orgRepo: string) => `/test/config/repositories/${orgRepo}`),
 }));
 
 // Mock fs

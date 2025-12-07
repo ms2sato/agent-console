@@ -50,4 +50,38 @@ describe('config', () => {
       expect(typeof getServerPid()).toBe('number');
     });
   });
+
+  describe('getRepositoriesDir', () => {
+    it('should return repositories subdirectory of config dir', async () => {
+      delete process.env.AGENT_CONSOLE_HOME;
+      const { getRepositoriesDir } = await import('../config.js');
+
+      const expected = path.join(os.homedir(), '.agent-console', 'repositories');
+      expect(getRepositoriesDir()).toBe(expected);
+    });
+
+    it('should respect AGENT_CONSOLE_HOME', async () => {
+      process.env.AGENT_CONSOLE_HOME = '/custom/path';
+      const { getRepositoriesDir } = await import('../config.js');
+
+      expect(getRepositoriesDir()).toBe('/custom/path/repositories');
+    });
+  });
+
+  describe('getRepositoryDir', () => {
+    it('should return repository-specific directory', async () => {
+      delete process.env.AGENT_CONSOLE_HOME;
+      const { getRepositoryDir } = await import('../config.js');
+
+      const expected = path.join(os.homedir(), '.agent-console', 'repositories', 'owner/repo');
+      expect(getRepositoryDir('owner/repo')).toBe(expected);
+    });
+
+    it('should handle simple repo names', async () => {
+      process.env.AGENT_CONSOLE_HOME = '/config';
+      const { getRepositoryDir } = await import('../config.js');
+
+      expect(getRepositoryDir('my-repo')).toBe('/config/repositories/my-repo');
+    });
+  });
 });

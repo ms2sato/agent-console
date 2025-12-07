@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
-import { getConfigDir } from '../lib/config.js';
+import { getRepositoryDir } from '../lib/config.js';
 
 /**
  * Extract org/repo from git remote URL
@@ -109,30 +109,19 @@ export class RepositoryManager {
   }
 
   /**
-   * Clean up worktrees and templates directories for a repository
+   * Clean up repository data directory (worktrees and templates)
    */
   private cleanupRepositoryData(repoPath: string): void {
     const orgRepo = getOrgRepoFromPath(repoPath);
+    const repoDir = getRepositoryDir(orgRepo);
 
-    // Clean up worktrees directory
-    const worktreesDir = path.join(getConfigDir(), 'worktrees', orgRepo);
-    if (fs.existsSync(worktreesDir)) {
+    // Clean up entire repository directory
+    if (fs.existsSync(repoDir)) {
       try {
-        fs.rmSync(worktreesDir, { recursive: true });
-        console.log(`Cleaned up worktrees: ${worktreesDir}`);
+        fs.rmSync(repoDir, { recursive: true });
+        console.log(`Cleaned up repository data: ${repoDir}`);
       } catch (e) {
-        console.error(`Failed to clean up worktrees: ${worktreesDir}`, e);
-      }
-    }
-
-    // Clean up templates directory
-    const templatesDir = path.join(getConfigDir(), 'templates', orgRepo);
-    if (fs.existsSync(templatesDir)) {
-      try {
-        fs.rmSync(templatesDir, { recursive: true });
-        console.log(`Cleaned up templates: ${templatesDir}`);
-      } catch (e) {
-        console.error(`Failed to clean up templates: ${templatesDir}`, e);
+        console.error(`Failed to clean up repository data: ${repoDir}`, e);
       }
     }
   }

@@ -2,12 +2,7 @@ import { execSync, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Worktree } from '@agent-console/shared';
-import { getConfigDir } from '../lib/config.js';
-
-// Worktree base directory (can be overridden by WORKTREE_BASE_DIR env var)
-const getWorktreeBaseDir = () => {
-  return process.env.WORKTREE_BASE_DIR || path.join(getConfigDir(), 'worktrees');
-};
+import { getRepositoryDir } from '../lib/config.js';
 
 // ========== Index Management ==========
 interface IndexStore {
@@ -19,7 +14,7 @@ interface IndexStore {
  * Load index store for a repository
  */
 function loadIndexStore(repoWorktreeDir: string): IndexStore {
-  const indexFile = path.join(repoWorktreeDir, '.worktree-indexes.json');
+  const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
   try {
     if (fs.existsSync(indexFile)) {
       return JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
@@ -34,7 +29,7 @@ function loadIndexStore(repoWorktreeDir: string): IndexStore {
  * Save index store for a repository
  */
 function saveIndexStore(repoWorktreeDir: string, store: IndexStore): void {
-  const indexFile = path.join(repoWorktreeDir, '.worktree-indexes.json');
+  const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
   try {
     fs.writeFileSync(indexFile, JSON.stringify(store, null, 2));
   } catch (e) {
@@ -65,7 +60,7 @@ function getIndexForPath(store: IndexStore, worktreePath: string): number | unde
 
 /**
  * Find templates directory for a repository
- * Priority: 1. .git-wt/ in repo root  2. $AGENT_CONSOLE_HOME/templates/<owner>/<repo>/
+ * Priority: 1. .git-wt/ in repo root  2. $AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/
  */
 function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
   // Check repo-local templates
@@ -74,8 +69,8 @@ function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
     return localTemplates;
   }
 
-  // Check global templates in $AGENT_CONSOLE_HOME/templates/
-  const globalTemplates = path.join(getConfigDir(), 'templates', orgRepo);
+  // Check global templates in $AGENT_CONSOLE_HOME/repositories/<org>/<repo>/templates/
+  const globalTemplates = path.join(getRepositoryDir(orgRepo), 'templates');
   if (fs.existsSync(globalTemplates) && fs.statSync(globalTemplates).isDirectory()) {
     return globalTemplates;
   }
@@ -203,8 +198,7 @@ export class WorktreeService {
 
       // Get org/repo for index store path
       const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
-      const baseDir = getWorktreeBaseDir();
-      const repoWorktreeDir = path.join(baseDir, orgRepo);
+      const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
       const indexStore = loadIndexStore(repoWorktreeDir);
 
       return this.parsePorcelainOutput(output, repositoryId, repoPath, indexStore);
@@ -272,11 +266,10 @@ export class WorktreeService {
     branch: string,
     baseBranch?: string
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
-    // Generate worktree path: .worktrees/{org}/{repo}/{branch}
+    // Generate worktree path: repositories/{org}/{repo}/worktrees/{branch}
     // Falls back to repo directory name if remote URL cannot be parsed
     const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
-    const baseDir = getWorktreeBaseDir();
-    const repoWorktreeDir = path.join(baseDir, orgRepo);
+    const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
     const worktreePath = path.join(repoWorktreeDir, branch);
 
     // Ensure base directory exists
@@ -344,8 +337,7 @@ export class WorktreeService {
   ): Promise<{ success: boolean; error?: string }> {
     // Get org/repo for index store
     const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
-    const baseDir = getWorktreeBaseDir();
-    const repoWorktreeDir = path.join(baseDir, orgRepo);
+    const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     return new Promise((resolve) => {
       const forceFlag = force ? ' --force' : '';
