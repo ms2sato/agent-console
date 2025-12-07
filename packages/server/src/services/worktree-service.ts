@@ -255,14 +255,19 @@ export class WorktreeService {
 
       if (worktreePath) {
         const isMain = worktreePath === mainRepoPath;
-        worktrees.push({
-          path: worktreePath,
-          branch,
-          isMain,
-          repositoryId,
-          // Only non-main worktrees have an index
-          index: isMain ? undefined : getIndexForPath(indexStore, worktreePath),
-        });
+        const index = getIndexForPath(indexStore, worktreePath);
+
+        // Only include worktrees that are registered in the index store (created by this app)
+        // Main worktree is always included
+        if (isMain || index !== undefined) {
+          worktrees.push({
+            path: worktreePath,
+            branch,
+            isMain,
+            repositoryId,
+            index: isMain ? undefined : index,
+          });
+        }
       }
     }
 
