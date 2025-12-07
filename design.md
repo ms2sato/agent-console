@@ -74,6 +74,13 @@ git worktreeの作成・削除もUIから行える。
 - **URLベースのルーティング**: `/sessions/:id` でターミナルにアクセス
 - ダッシュボード（`/`）から各セッションへ遷移
 
+### 5. Branch Name and Directory Name Separation
+- **Directory name**: Fixed at worktree creation time (never renamed)
+- **Branch name**: Can be freely changed via `git branch -m`
+- **Display**: Always uses actual branch name fetched from git
+- Default branch name is auto-generated (e.g., `wt-001-x2sl`) at worktree creation
+- Branch can be renamed from session settings dialog
+
 ## データ構造
 
 ### Repository
@@ -89,23 +96,25 @@ interface Repository {
 ### Worktree
 ```typescript
 interface Worktree {
-  path: string;         // worktreeの絶対パス
-  branch: string;       // ブランチ名
-  head: string;         // HEADコミットハッシュ
-  isMain: boolean;      // メインworktreeか
-  repositoryId: string; // 親リポジトリID
+  path: string;         // Absolute path to worktree
+  branch: string;       // Branch name (dynamically fetched from git)
+  isMain: boolean;      // Whether this is the main worktree
+  repositoryId: string; // Parent repository ID
+  index?: number;       // Sequential number (starts from 1, not assigned to main)
 }
 ```
+Note: Directory name may differ from branch name (e.g., after branch rename)
 
 ### Session
 ```typescript
 interface Session {
   id: string;           // UUID
-  worktreePath: string; // worktreeパス（cwd）
-  repositoryId: string; // 親リポジトリID
+  worktreePath: string; // Worktree path (cwd)
+  repositoryId: string; // Parent repository ID
   status: 'running' | 'idle' | 'stopped';
   pid?: number;
   startedAt: string;
+  branch: string;       // Branch name (fetched at session start)
 }
 ```
 
