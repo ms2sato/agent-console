@@ -12,6 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
 
+## Language Policy
+
+**Code and documentation:** Write all code comments, commit messages, issues, pull requests, and documentation (including files under `docs/`) in English.
+
+**Communication with Claude:** Adapt to the user's preferred language. Respond in the same language the user uses.
+
 ## Development Workflow
 
 **Branching:** Follow GitHub-Flow. Create feature branches from main, open pull requests for review, and merge after approval.
