@@ -97,6 +97,8 @@ vi.mock('../services/worktree-service.js', () => ({
     createWorktree: vi.fn(() => ({ worktreePath: '/test/path', error: null })),
     removeWorktree: vi.fn(() => ({ success: true })),
     isWorktreeOf: vi.fn(() => true),
+    generateNextBranchName: vi.fn(() => 'wt-001-abcd'),
+    getDefaultBranch: vi.fn(() => 'main'),
   },
 }));
 
@@ -490,7 +492,7 @@ describe('API Routes', () => {
     });
 
     describe('POST /api/repositories/:id/worktrees', () => {
-      it('should create a worktree', async () => {
+      it('should create a worktree with custom branch', async () => {
         const { worktreeService } = await import('../services/worktree-service.js');
         vi.mocked(worktreeService.createWorktree).mockResolvedValue({
           worktreePath: '/path/to/new/worktree',
@@ -508,7 +510,7 @@ describe('API Routes', () => {
         const res = await app.request('/api/repositories/test-repo-id/worktrees', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ branch: 'feature-branch' }),
+          body: JSON.stringify({ mode: 'custom', branch: 'feature-branch' }),
         });
         expect(res.status).toBe(201);
 
@@ -517,13 +519,60 @@ describe('API Routes', () => {
         expect(body.worktree.branch).toBe('feature-branch');
       });
 
-      it('should return 400 when branch is missing', async () => {
+      it('should auto-generate branch name with mode auto', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/test/worktrees/wt-001-abcd',
+          index: 1,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/test/worktrees/wt-001-abcd',
+            branch: 'wt-001-abcd',
+            repositoryId: 'test-repo-id',
+            isMain: false,
+            index: 1,
+          },
+        ]);
+
         const res = await app.request('/api/repositories/test-repo-id/worktrees', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ mode: 'auto' }),
         });
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(201);
+
+        expect(vi.mocked(worktreeService.generateNextBranchName)).toHaveBeenCalled();
+      });
+
+      it('should use existing branch with mode existing', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/path/to/worktree',
+          error: undefined,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/path/to/worktree',
+            branch: 'existing-branch',
+            repositoryId: 'test-repo-id',
+            isMain: false,
+          },
+        ]);
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'existing', branch: 'existing-branch' }),
+        });
+        expect(res.status).toBe(201);
+
+        // baseBranch should be undefined for existing mode
+        expect(vi.mocked(worktreeService.createWorktree)).toHaveBeenCalledWith(
+          '/path/to/repo',
+          'existing-branch',
+          undefined
+        );
       });
 
       it('should return 400 when worktree creation fails', async () => {
@@ -536,7 +585,16 @@ describe('API Routes', () => {
         const res = await app.request('/api/repositories/test-repo-id/worktrees', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ branch: 'existing-branch' }),
+          body: JSON.stringify({ mode: 'custom', branch: 'existing-branch' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 for invalid mode', async () => {
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'invalid' }),
         });
         expect(res.status).toBe(400);
       });
@@ -545,7 +603,7 @@ describe('API Routes', () => {
         const res = await app.request('/api/repositories/non-existent/worktrees', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ branch: 'new-branch' }),
+          body: JSON.stringify({ mode: 'custom', branch: 'new-branch' }),
         });
         expect(res.status).toBe(404);
       });
