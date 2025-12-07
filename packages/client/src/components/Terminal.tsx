@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
 import type { ClaudeActivityState } from '@agent-console/shared';
@@ -74,6 +75,13 @@ export function Terminal({ wsUrl, onStatusChange, onActivityChange, hideStatusBa
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+
+    // Enable clickable URLs in terminal output
+    const webLinksAddon = new WebLinksAddon((_event, uri) => {
+      window.open(uri, '_blank');
+    });
+    terminal.loadAddon(webLinksAddon);
+
     terminal.open(container);
 
     terminalRef.current = terminal;

@@ -3,6 +3,27 @@ import { Hono } from 'hono';
 import * as os from 'os';
 import type { Session, Repository, Worktree, AgentDefinition } from '@agent-console/shared';
 
+// Mock open package
+vi.mock('open', () => ({
+  default: vi.fn(() => Promise.resolve()),
+}));
+
+// Mock fs functions
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...original,
+    existsSync: vi.fn((path: string) => {
+      if (path.includes('non-existent')) return false;
+      return true;
+    }),
+    statSync: vi.fn((path: string) => ({
+      isFile: () => path.includes('.txt') || path.includes('.js'),
+      isDirectory: () => !path.includes('.txt') && !path.includes('.js'),
+    })),
+  };
+});
+
 // Mock data storage
 let mockSessions: Map<string, Session>;
 let mockRepositories: Map<string, Repository>;
@@ -725,6 +746,59 @@ describe('API Routes', () => {
 
         const res = await app.request('/api/agents/non-existent', {
           method: 'DELETE',
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+  });
+
+  describe('System API', () => {
+    describe('POST /api/system/open', () => {
+      it('should open a directory path', async () => {
+        const open = (await import('open')).default;
+
+        const res = await app.request('/api/system/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/path/to/directory' }),
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+        expect(open).toHaveBeenCalled();
+      });
+
+      it('should open parent directory for a file path', async () => {
+        const open = (await import('open')).default;
+
+        const res = await app.request('/api/system/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/path/to/file.txt' }),
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+        // Should open the parent directory, not the file itself
+        expect(open).toHaveBeenCalledWith('/path/to');
+      });
+
+      it('should return 400 when path is missing', async () => {
+        const res = await app.request('/api/system/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 404 when path does not exist', async () => {
+        const res = await app.request('/api/system/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/non-existent/path' }),
         });
         expect(res.status).toBe(404);
       });

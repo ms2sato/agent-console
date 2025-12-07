@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { SessionSettings } from '../../components/SessionSettings';
-import { getSessionMetadata, restartSession, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
+import { getSessionMetadata, restartSession, openPath, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import type { ClaudeActivityState } from '@agent-console/shared';
 
@@ -457,7 +457,14 @@ function TerminalPage() {
       {/* Status bar at bottom */}
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
-        <span className="text-gray-500 text-xs font-mono truncate flex-1">
+        <span
+          onClick={() => openPath(state.metadata.worktreePath)}
+          className="text-gray-500 text-xs font-mono truncate flex-1 text-left hover:text-blue-400 hover:underline cursor-pointer select-all"
+          title={`Open ${state.metadata.worktreePath} in Finder`}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && openPath(state.metadata.worktreePath)}
+        >
           {formatPath(state.metadata.worktreePath)}
         </span>
         {/* Activity state indicator (only for Claude tab) */}

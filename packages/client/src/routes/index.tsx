@@ -12,6 +12,7 @@ import {
   deleteSession,
   createWorktree,
   deleteWorktree,
+  openPath,
 } from '../lib/api';
 import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
@@ -81,6 +82,30 @@ function ActivityBadge({ state }: { state?: ClaudeActivityState }) {
   return (
     <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state]}`}>
       {labels[state]}
+    </span>
+  );
+}
+
+// Clickable path link component that opens the path in Finder/Explorer
+function PathLink({ path, className = '' }: { path: string; className?: string }) {
+  const handleClick = async () => {
+    try {
+      await openPath(path);
+    } catch (err) {
+      console.error('Failed to open path:', err);
+    }
+  };
+
+  return (
+    <span
+      onClick={handleClick}
+      className={`hover:text-blue-400 hover:underline cursor-pointer select-all ${className}`}
+      title={`Open ${path} in Finder`}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === 'Enter' && handleClick()}
+    >
+      {formatPath(path)}
     </span>
   );
 }
@@ -420,7 +445,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-lg font-medium">{repository.name}</h2>
-          <p className="text-xs text-gray-500">{formatPath(repository.path)}</p>
+          <PathLink path={repository.path} className="text-xs text-gray-500" />
         </div>
         <div className="flex gap-2">
           <button
@@ -594,7 +619,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           )}
           {session && <ActivityBadge state={session.activityState} />}
         </div>
-        <div className="text-xs text-gray-500 truncate">{formatPath(worktree.path)}</div>
+        <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
       <div className="flex gap-2 shrink-0">
         {session ? (
@@ -755,7 +780,7 @@ function SessionCard({ session }: SessionCardProps) {
       <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
-          <span className="truncate">{formatPath(session.worktreePath)}</span>
+          <PathLink path={session.worktreePath} className="truncate" />
           <ActivityBadge state={session.activityState} />
         </div>
         <div className="text-xs text-gray-500 mt-1">

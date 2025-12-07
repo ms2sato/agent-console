@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, dirname } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import open from 'open';
 import type { CreateWorktreeRequest, CreateAgentRequest, UpdateAgentRequest } from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
@@ -378,6 +380,42 @@ api.delete('/agents/:id', (c) => {
   }
 
   return c.json({ success: true });
+});
+
+// ========== System API ==========
+
+// Open a file or directory in the default application (Finder/Explorer)
+api.post('/system/open', async (c) => {
+  const body = await c.req.json<{ path: string }>();
+  const { path } = body;
+
+  if (!path) {
+    throw new ValidationError('path is required');
+  }
+
+  // Resolve to absolute path
+  const absolutePath = resolvePath(path);
+
+  // Check if path exists
+  if (!existsSync(absolutePath)) {
+    throw new NotFoundError('Path');
+  }
+
+  try {
+    // For files, open the containing directory
+    const stats = statSync(absolutePath);
+    if (stats.isFile()) {
+      // Open the parent directory
+      await open(dirname(absolutePath));
+    } else {
+      // Open the directory directly
+      await open(absolutePath);
+    }
+    return c.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to open path';
+    throw new ValidationError(message);
+  }
 });
 
 export { api };

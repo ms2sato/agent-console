@@ -315,3 +315,17 @@ export async function unregisterAgent(agentId: string): Promise<void> {
     throw new Error(error.error || 'Failed to unregister agent');
   }
 }
+
+// ========== System API ==========
+
+export async function openPath(path: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/system/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to open path');
+  }
+}
