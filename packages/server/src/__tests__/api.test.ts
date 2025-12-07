@@ -22,6 +22,7 @@ vi.mock('../services/session-manager.js', () => ({
         pid: 12345,
         startedAt: new Date().toISOString(),
         activityState: 'idle',
+        branch: 'main',
       };
       mockSessions.set(session.id, session);
       return session;
@@ -40,6 +41,8 @@ vi.mock('../services/session-manager.js', () => ({
     getOutputBuffer: vi.fn(() => null),
     getActivityState: vi.fn(() => 'idle'),
     setGlobalActivityCallback: vi.fn(),
+    getBranchForPath: vi.fn(() => 'main'),
+    renameBranch: vi.fn(() => ({ success: true, branch: 'new-branch' })),
   },
 }));
 
@@ -61,7 +64,6 @@ vi.mock('../services/worktree-service.js', () => ({
       {
         path: repoPath,
         branch: 'main',
-        head: 'abc123',
         repositoryId: repoId,
         isMain: true,
       },
@@ -180,6 +182,7 @@ describe('API Routes', () => {
           pid: 1234,
           startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
+          branch: 'main',
         });
 
         const res = await app.request('/api/sessions');
@@ -245,6 +248,7 @@ describe('API Routes', () => {
           pid: 1234,
           startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
+          branch: 'main',
         });
 
         const res = await app.request('/api/sessions/active-session/metadata');
@@ -266,13 +270,15 @@ describe('API Routes', () => {
           serverPid: 99999,
           createdAt: '2024-01-01T00:00:00.000Z',
         });
+        vi.mocked(sessionManager.getBranchForPath).mockReturnValue('feature-branch');
 
         const res = await app.request('/api/sessions/dead-session/metadata');
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { id: string; isActive: boolean };
+        const body = (await res.json()) as { id: string; isActive: boolean; branch: string };
         expect(body.id).toBe('dead-session');
         expect(body.isActive).toBe(false);
+        expect(body.branch).toBe('feature-branch');
       });
 
       it('should return 404 for non-existent session', async () => {
@@ -295,6 +301,7 @@ describe('API Routes', () => {
           pid: 9999,
           startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
+          branch: 'main',
         });
 
         const res = await app.request('/api/sessions/dead-session/restart', {
@@ -472,7 +479,6 @@ describe('API Routes', () => {
           {
             path: '/path/to/new/worktree',
             branch: 'feature-branch',
-            head: 'abc123',
             repositoryId: 'test-repo-id',
             isMain: false,
           },

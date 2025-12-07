@@ -65,6 +65,7 @@ export interface SessionMetadata {
   worktreePath: string;
   repositoryId: string;
   isActive: boolean;
+  branch: string;
 }
 
 export class ServerUnavailableError extends Error {
@@ -123,6 +124,27 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to delete session');
   }
+}
+
+export interface RenameBranchResponse {
+  success: boolean;
+  branch: string;
+}
+
+export async function renameSessionBranch(
+  sessionId: string,
+  newBranch: string
+): Promise<RenameBranchResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/branch`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newBranch }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to rename branch');
+  }
+  return res.json();
 }
 
 // ========== Repositories API ==========

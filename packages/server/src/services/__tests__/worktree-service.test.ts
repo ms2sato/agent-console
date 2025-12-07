@@ -84,7 +84,6 @@ branch refs/heads/feature-1
       expect(worktrees.length).toBe(2);
       expect(worktrees[0].path).toBe('/repo/main');
       expect(worktrees[0].branch).toBe('main');
-      expect(worktrees[0].head).toBe('abc123');
       expect(worktrees[0].isMain).toBe(true);
 
       expect(worktrees[1].path).toBe('/worktrees/feature-1');

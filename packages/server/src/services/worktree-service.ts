@@ -246,7 +246,6 @@ export class WorktreeService {
         worktrees.push({
           path: worktreePath,
           branch,
-          head,
           isMain,
           repositoryId,
           // Only non-main worktrees have an index

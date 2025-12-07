@@ -19,6 +19,22 @@ import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
 import type { Session, Repository, Worktree, ClaudeActivityState } from '@agent-console/shared';
 
+// Generate default branch name: wt-{index:3 digits}-{4 random alphanumeric}
+function generateDefaultBranchName(worktrees: Worktree[]): string {
+  // Get next index (max existing index + 1)
+  const maxIndex = worktrees.reduce((max, wt) => Math.max(max, wt.index ?? 0), 0);
+  const nextIndex = maxIndex + 1;
+
+  // Generate random 4-character alphanumeric suffix
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let suffix = '';
+  for (let i = 0; i < 4; i++) {
+    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+
+  return `wt-${String(nextIndex).padStart(3, '0')}-${suffix}`;
+}
+
 // Request notification permission on load
 function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
@@ -162,20 +178,11 @@ function DashboardPage() {
       // Get session info for notification body
       const session = sessionsRef.current.find(s => s.id === sessionId);
       const worktreePath = session?.worktreePath || '';
-      // Extract project name and branch from path
-      // Format: ~/.agent-console/worktrees/{org}/{repo}/{branch} or /path/to/project
+      const branch = session?.branch || 'unknown';
+      // Extract project name from path
       const pathParts = worktreePath.split('/').filter(Boolean);
-      const isWorktree = worktreePath.includes('.agent-console/worktrees');
-      let projectInfo: string;
-      if (isWorktree && pathParts.length >= 2) {
-        // Last part is branch, second-to-last is repo (or org/repo)
-        const branch = pathParts[pathParts.length - 1];
-        const repo = pathParts[pathParts.length - 2];
-        projectInfo = `${repo} (${branch})`;
-      } else {
-        // Main repo - just use directory name
-        projectInfo = pathParts[pathParts.length - 1] || 'Unknown';
-      }
+      const repo = pathParts[pathParts.length - 2] || pathParts[pathParts.length - 1] || 'Unknown';
+      const projectInfo = `${repo} (${branch})`;
 
       if (state === 'idle') {
         console.log('[Notification] Triggering: work completed');
@@ -346,13 +353,24 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [newBranch, setNewBranch] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
-  const [isNewBranch, setIsNewBranch] = useState(false);
+  const [isNewBranch, setIsNewBranch] = useState(true); // Default to new branch
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
     queryFn: () => fetchWorktrees(repository.id),
   });
+
+  const worktrees = worktreesData?.worktrees ?? [];
+
+  // Generate default branch name when dialog opens
+  const handleOpenCreateDialog = useCallback(() => {
+    setNewBranch(generateDefaultBranchName(worktrees));
+    setIsNewBranch(true);
+    setBaseBranch('');
+    setSelectedAgentId(undefined);
+    setShowCreateWorktree(true);
+  }, [worktrees]);
 
   const { data: branchesData } = useQuery({
     queryKey: ['branches', repository.id],
@@ -384,8 +402,6 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     },
   });
 
-  const worktrees = worktreesData?.worktrees ?? [];
-
   const handleCreateWorktree = async () => {
     if (!newBranch.trim()) return;
     try {
@@ -408,7 +424,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowCreateWorktree(true)}
+            onClick={handleOpenCreateDialog}
             className="btn btn-primary text-sm"
           >
             + Worktree

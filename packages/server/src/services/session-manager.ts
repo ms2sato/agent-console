@@ -1,4 +1,5 @@
 import * as pty from 'node-pty';
+import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type { Session, SessionStatus, ClaudeActivityState } from '@agent-console/shared';
 import { persistenceService, type PersistedSession } from './persistence-service.js';
@@ -7,6 +8,20 @@ import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
 import { getServerPid } from '../lib/config.js';
 
+/**
+ * Get current branch name for a directory
+ */
+function getCurrentBranch(cwd: string): string {
+  try {
+    return execSync('git branch --show-current', {
+      cwd,
+      encoding: 'utf-8',
+    }).trim() || '(detached)';
+  } catch {
+    return '(unknown)';
+  }
+}
+
 interface InternalSession {
   id: string;
   pty: pty.IPty;
@@ -14,6 +29,7 @@ interface InternalSession {
   worktreePath: string;
   repositoryId: string;
   agentId: string;
+  branch: string;
   status: SessionStatus;
   activityState: ClaudeActivityState;
   startedAt: string;
@@ -122,6 +138,7 @@ export class SessionManager {
   ): Session {
     const id = uuidv4();
     const startedAt = new Date().toISOString();
+    const branch = getCurrentBranch(worktreePath);
 
     // Resolve agent - use provided agentId or default to Claude Code
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
@@ -159,6 +176,7 @@ export class SessionManager {
       worktreePath,
       repositoryId,
       agentId: agent.id,
+      branch,
       status: 'running',
       activityState: 'idle',
       startedAt,
@@ -236,6 +254,7 @@ export class SessionManager {
     }
 
     const startedAt = new Date().toISOString();
+    const branch = getCurrentBranch(metadata.worktreePath);
 
     // Resolve agent - use provided agentId or default to Claude Code
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
@@ -273,6 +292,7 @@ export class SessionManager {
       worktreePath: metadata.worktreePath,
       repositoryId: metadata.repositoryId,
       agentId: agent.id,
+      branch,
       status: 'running',
       activityState: 'idle',
       startedAt,
@@ -417,6 +437,60 @@ export class SessionManager {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
   }
 
+  /**
+   * Get current branch name for a given path
+   */
+  getBranchForPath(worktreePath: string): string {
+    return getCurrentBranch(worktreePath);
+  }
+
+  /**
+   * Rename the branch for a session
+   * Uses git branch -m to rename the current branch
+   */
+  renameBranch(
+    sessionId: string,
+    newBranch: string
+  ): { success: boolean; branch?: string; error?: string } {
+    // Check active sessions first
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      const currentBranch = session.branch;
+
+      try {
+        execSync(`git branch -m "${currentBranch}" "${newBranch}"`, {
+          cwd: session.worktreePath,
+          encoding: 'utf-8',
+        });
+        session.branch = newBranch;
+        return { success: true, branch: newBranch };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return { success: false, error: message };
+      }
+    }
+
+    // Check persisted metadata for dead sessions
+    const metadata = persistenceService.getSessionMetadata(sessionId);
+    if (!metadata) {
+      return { success: false, error: 'session_not_found' };
+    }
+
+    // For dead sessions, get current branch from git and rename
+    const currentBranch = getCurrentBranch(metadata.worktreePath);
+
+    try {
+      execSync(`git branch -m "${currentBranch}" "${newBranch}"`, {
+        cwd: metadata.worktreePath,
+        encoding: 'utf-8',
+      });
+      return { success: true, branch: newBranch };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  }
+
   private toPublicSession(session: InternalSession): Session {
     return {
       id: session.id,
@@ -427,6 +501,7 @@ export class SessionManager {
       pid: session.pty.pid,
       startedAt: session.startedAt,
       agentId: session.agentId,
+      branch: session.branch,
     };
   }
 }
