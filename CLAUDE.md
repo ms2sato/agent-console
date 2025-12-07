@@ -10,6 +10,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Think before you act.** When facing a problem, first consider the correct approach rather than immediately implementing the easiest solution.
 
+**Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
+
+## Development Workflow
+
+**Branching:** Follow GitHub-Flow. Create feature branches from main, open pull requests for review, and merge after approval.
+
+**Testing with code changes:** When modifying code, always update or add corresponding tests. Code changes without test coverage are incomplete.
+
+**TDD for bug fixes:** When fixing bugs, apply Test-Driven Development where feasible. Write a failing test that reproduces the bug first, then implement the fix.
+
+**Commit messages:** Use conventional commit format: `type: description`
+- `feat:` new feature
+- `fix:` bug fix
+- `refactor:` code change without feature/fix
+- `test:` adding or updating tests
+- `docs:` documentation changes
+
+## Commands
+
+```bash
+pnpm dev        # Start development servers
+pnpm build      # Build all packages
+pnpm test       # Run tests
+pnpm typecheck  # Type check all packages
+pnpm lint       # Lint all packages
+```
+
+## Project Structure
+
+Monorepo with pnpm workspaces:
+- `packages/client` - React frontend with TanStack Router
+- `packages/server` - Node.js backend with Express + WebSocket
+- `packages/shared` - Shared types and utilities
+
+## TypeScript
+
+- Avoid `any`. Use `unknown` with proper type guards only when the type is genuinely uncertain.
+- Do not use `unknown` as a shortcut to bypass type checking. Casting through `unknown` (e.g., `value as unknown as TargetType`) is prohibited.
+- Define shared types in `packages/shared`.
+
 ## Project Overview
 
 A web application for managing multiple Claude Code instances running in different git worktrees. Instead of scattered terminals, users control all instances through a unified browser interface using xterm.js.
@@ -27,7 +67,7 @@ Backend (Node.js)              Frontend (Browser)
 ```
 
 - **Backend** manages PTY processes that persist across browser reconnections (tmux-like)
-- **Frontend** is vanilla JS with xterm.js via CDN (no framework)
+- **Frontend** is React with TanStack Router, using xterm.js for terminal rendering
 - **WebSocket** protocol for bidirectional terminal I/O
 
 ## Key Technical Details
@@ -52,7 +92,7 @@ Server → Client:
 
 - `node-pty` - Pseudo-terminal for spawning Claude Code
 - `ws` - WebSocket server
-- xterm.js loaded from CDN (v5.3.0)
+- `@xterm/xterm` - Terminal rendering in browser
 
 ## Testing
 
