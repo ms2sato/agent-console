@@ -8,7 +8,8 @@
     "build": "pnpm --filter @agent-console/shared build && pnpm --filter @agent-console/client build && pnpm --filter @agent-console/server build",
     "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "pnpm --filter './packages/*' typecheck",
-    "test": "pnpm --filter './packages/*' test",
+    "test": "pnpm typecheck && pnpm test:only",
+    "test:only": "pnpm --filter './packages/*' test",
     "lint": "pnpm --filter './packages/*' lint",
     "deploy:mac": "pnpm build && mkdir -p ~/.agent-console/server && rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/ && cd ~/.agent-console/server && pnpm install --prod && launchctl unload ~/Library/LaunchAgents/com.agent-console.plist && launchctl load ~/Library/LaunchAgents/com.agent-console.plist && echo 'Deployed and restarted'"
   },
