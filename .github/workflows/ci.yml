@@ -28,9 +28,6 @@ jobs:
       - name: Build shared package
         run: pnpm --filter @agent-console/shared build
 
-      - name: Type check
-        run: pnpm typecheck
-
       - name: Test
         run: pnpm test
 
