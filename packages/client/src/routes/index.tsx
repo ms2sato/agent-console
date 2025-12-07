@@ -18,23 +18,7 @@ import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
-import type { Session, Repository, Worktree, ClaudeActivityState } from '@agent-console/shared';
-
-// Generate default branch name: wt-{index:3 digits}-{4 random alphanumeric}
-function generateDefaultBranchName(worktrees: Worktree[]): string {
-  // Get next index (max existing index + 1)
-  const maxIndex = worktrees.reduce((max, wt) => Math.max(max, wt.index ?? 0), 0);
-  const nextIndex = maxIndex + 1;
-
-  // Generate random 4-character alphanumeric suffix
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let suffix = '';
-  for (let i = 0; i < 4; i++) {
-    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-
-  return `wt-${String(nextIndex).padStart(3, '0')}-${suffix}`;
-}
+import type { Session, Repository, Worktree, ClaudeActivityState, CreateWorktreeRequest } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -373,12 +357,14 @@ interface RepositoryCardProps {
   onUnregister: () => void;
 }
 
+type BranchNameMode = 'auto' | 'custom' | 'existing';
+
 function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
-  const [newBranch, setNewBranch] = useState('');
+  const [branchNameMode, setBranchNameMode] = useState<BranchNameMode>('auto');
+  const [customBranch, setCustomBranch] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
-  const [isNewBranch, setIsNewBranch] = useState(true); // Default to new branch
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
 
   const { data: worktreesData } = useQuery({
@@ -388,14 +374,14 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
   const worktrees = worktreesData?.worktrees ?? [];
 
-  // Generate default branch name when dialog opens
+  // Open dialog with default settings
   const handleOpenCreateDialog = useCallback(() => {
-    setNewBranch(generateDefaultBranchName(worktrees));
-    setIsNewBranch(true);
+    setBranchNameMode('auto');
+    setCustomBranch('');
     setBaseBranch('');
     setSelectedAgentId(undefined);
     setShowCreateWorktree(true);
-  }, [worktrees]);
+  }, []);
 
   const { data: branchesData } = useQuery({
     queryKey: ['branches', repository.id],
@@ -406,21 +392,15 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const defaultBranch = branchesData?.defaultBranch || 'main';
 
   const createWorktreeMutation = useMutation({
-    mutationFn: (params: { branch: string; baseBranch?: string; agentId?: string }) =>
-      createWorktree(repository.id, {
-        branch: params.branch,
-        baseBranch: params.baseBranch,
-        autoStartSession: true,
-        agentId: params.agentId,
-      }),
+    mutationFn: (params: CreateWorktreeRequest) =>
+      createWorktree(repository.id, params),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['worktrees', repository.id] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowCreateWorktree(false);
-      setNewBranch('');
+      setCustomBranch('');
       setBaseBranch('');
       setSelectedAgentId(undefined);
-      // Open terminal in new tab if session was created
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
       }
@@ -428,13 +408,41 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   });
 
   const handleCreateWorktree = async () => {
-    if (!newBranch.trim()) return;
+    if (branchNameMode !== 'auto' && !customBranch.trim()) {
+      alert('Branch name is required');
+      return;
+    }
+
     try {
-      await createWorktreeMutation.mutateAsync({
-        branch: newBranch.trim(),
-        baseBranch: isNewBranch ? baseBranch.trim() || defaultBranch : undefined,
-        agentId: selectedAgentId,
-      });
+      let request: CreateWorktreeRequest;
+      switch (branchNameMode) {
+        case 'auto':
+          request = {
+            mode: 'auto',
+            baseBranch: baseBranch.trim() || undefined,
+            autoStartSession: true,
+            agentId: selectedAgentId,
+          };
+          break;
+        case 'custom':
+          request = {
+            mode: 'custom',
+            branch: customBranch.trim(),
+            baseBranch: baseBranch.trim() || undefined,
+            autoStartSession: true,
+            agentId: selectedAgentId,
+          };
+          break;
+        case 'existing':
+          request = {
+            mode: 'existing',
+            branch: customBranch.trim(),
+            autoStartSession: true,
+            agentId: selectedAgentId,
+          };
+          break;
+      }
+      await createWorktreeMutation.mutateAsync(request);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to create worktree');
     }
@@ -464,25 +472,50 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         <div className="bg-slate-800 p-4 rounded mb-4">
           <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
           <div className="flex flex-col gap-3">
-            <div className="flex gap-2 items-center">
-              <label className="text-sm text-gray-400">
+            {/* Branch name mode selection */}
+            <div className="flex flex-col gap-2">
+              <label className="text-sm text-gray-400 flex items-center gap-2">
                 <input
-                  type="checkbox"
-                  checked={isNewBranch}
-                  onChange={(e) => setIsNewBranch(e.target.checked)}
-                  className="mr-2"
+                  type="radio"
+                  name="branchMode"
+                  checked={branchNameMode === 'auto'}
+                  onChange={() => setBranchNameMode('auto')}
                 />
-                Create new branch
+                Auto-generate name
+              </label>
+              <label className="text-sm text-gray-400 flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="branchMode"
+                  checked={branchNameMode === 'custom'}
+                  onChange={() => setBranchNameMode('custom')}
+                />
+                Custom name (new branch)
+              </label>
+              <label className="text-sm text-gray-400 flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="branchMode"
+                  checked={branchNameMode === 'existing'}
+                  onChange={() => setBranchNameMode('existing')}
+                />
+                Use existing branch
               </label>
             </div>
-            <input
-              type="text"
-              placeholder={isNewBranch ? 'New branch name' : 'Existing branch name'}
-              value={newBranch}
-              onChange={(e) => setNewBranch(e.target.value)}
-              className="input"
-            />
-            {isNewBranch && (
+
+            {/* Branch name input (only for custom/existing) */}
+            {branchNameMode !== 'auto' && (
+              <input
+                type="text"
+                placeholder={branchNameMode === 'custom' ? 'New branch name' : 'Existing branch name'}
+                value={customBranch}
+                onChange={(e) => setCustomBranch(e.target.value)}
+                className="input"
+              />
+            )}
+
+            {/* Base branch input (only for new branches) */}
+            {branchNameMode !== 'existing' && (
               <input
                 type="text"
                 placeholder={`Base branch (default: ${defaultBranch})`}
@@ -491,6 +524,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                 className="input"
               />
             )}
+
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
@@ -510,7 +544,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
               <button
                 onClick={() => {
                   setShowCreateWorktree(false);
-                  setNewBranch('');
+                  setCustomBranch('');
                   setBaseBranch('');
                   setSelectedAgentId(undefined);
                 }}

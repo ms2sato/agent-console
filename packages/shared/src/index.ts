@@ -70,12 +70,31 @@ export interface CreateRepositoryRequest {
   path: string;
 }
 
-export interface CreateWorktreeRequest {
-  branch: string;           // 既存ブランチ名 or 新規ブランチ名
-  baseBranch?: string;      // 新規ブランチの場合のベース
+interface CreateWorktreeBaseRequest {
   autoStartSession?: boolean;
-  agentId?: string;         // autoStartSession時に使用するAgent ID
+  agentId?: string;
 }
+
+interface CreateWorktreeAutoRequest extends CreateWorktreeBaseRequest {
+  mode: 'auto';
+  baseBranch?: string;
+}
+
+interface CreateWorktreeCustomRequest extends CreateWorktreeBaseRequest {
+  mode: 'custom';
+  branch: string;
+  baseBranch?: string;
+}
+
+interface CreateWorktreeExistingRequest extends CreateWorktreeBaseRequest {
+  mode: 'existing';
+  branch: string;
+}
+
+export type CreateWorktreeRequest =
+  | CreateWorktreeAutoRequest
+  | CreateWorktreeCustomRequest
+  | CreateWorktreeExistingRequest;
 
 export interface DeleteWorktreeRequest {
   force?: boolean;          // セッション強制終了して削除

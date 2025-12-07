@@ -261,7 +261,7 @@ describe('API Client', () => {
   });
 
   describe('createWorktree', () => {
-    it('should create worktree successfully', async () => {
+    it('should create worktree successfully with custom mode', async () => {
       const { createWorktree } = await import('../api');
       const mockResponse = {
         worktree: { path: '/path/to/worktree', branch: 'feature-1' },
@@ -269,12 +269,12 @@ describe('API Client', () => {
       };
       vi.mocked(fetch).mockResolvedValue(createMockResponse(mockResponse));
 
-      const result = await createWorktree('repo-id', { branch: 'feature-1' });
+      const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1' });
 
       expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branch: 'feature-1' }),
+        body: JSON.stringify({ mode: 'custom', branch: 'feature-1' }),
       });
       expect(result).toEqual(mockResponse);
     });
@@ -288,7 +288,7 @@ describe('API Client', () => {
         json: vi.fn().mockResolvedValue({ error: 'Branch already exists' }),
       } as unknown as Response);
 
-      await expect(createWorktree('repo-id', { branch: 'existing' })).rejects.toThrow(
+      await expect(createWorktree('repo-id', { mode: 'custom', branch: 'existing' })).rejects.toThrow(
         'Branch already exists'
       );
     });

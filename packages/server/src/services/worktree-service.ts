@@ -56,6 +56,18 @@ function getIndexForPath(store: IndexStore, worktreePath: string): number | unde
   return store.indexes[worktreePath];
 }
 
+/**
+ * Generate a random alphanumeric suffix
+ */
+function generateRandomSuffix(length: number): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let suffix = '';
+  for (let i = 0; i < length; i++) {
+    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return suffix;
+}
+
 // ========== Template Functionality ==========
 
 /**
@@ -423,6 +435,26 @@ export class WorktreeService {
   isWorktreeOf(repoPath: string, worktreePath: string): boolean {
     const worktrees = this.listWorktrees(repoPath, '');
     return worktrees.some(wt => wt.path === worktreePath);
+  }
+
+  /**
+   * Generate next branch name: wt-{index:3 digits}-{4 random alphanumeric}
+   * Uses the next available index from the index store
+   */
+  generateNextBranchName(repoPath: string): string {
+    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+    const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
+
+    // Ensure directory exists for index store
+    if (!fs.existsSync(repoWorktreeDir)) {
+      fs.mkdirSync(repoWorktreeDir, { recursive: true });
+    }
+
+    const indexStore = loadIndexStore(repoWorktreeDir);
+    const nextIndex = allocateIndex(indexStore);
+    const suffix = generateRandomSuffix(4);
+
+    return `wt-${String(nextIndex).padStart(3, '0')}-${suffix}`;
   }
 }
 

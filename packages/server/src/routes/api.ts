@@ -210,10 +210,26 @@ api.post('/repositories/:id/worktrees', async (c) => {
   }
 
   const body = await c.req.json<CreateWorktreeRequest>();
-  const { branch, baseBranch, autoStartSession, agentId } = body;
+  const { mode, autoStartSession, agentId } = body;
 
-  if (!branch) {
-    throw new ValidationError('branch is required');
+  let branch: string;
+  let baseBranch: string | undefined;
+
+  switch (mode) {
+    case 'auto':
+      branch = worktreeService.generateNextBranchName(repo.path);
+      baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
+      break;
+    case 'custom':
+      branch = body.branch;
+      baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
+      break;
+    case 'existing':
+      branch = body.branch;
+      baseBranch = undefined;
+      break;
+    default:
+      throw new ValidationError('Invalid mode. Must be "auto", "custom", or "existing"');
   }
 
   const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
