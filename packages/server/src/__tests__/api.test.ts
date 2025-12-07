@@ -1,13 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import * as os from 'os';
-import type { Session, Repository, Worktree, Agent } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentDefinition } from '@agent-console/shared';
 
 // Mock data storage
 let mockSessions: Map<string, Session>;
 let mockRepositories: Map<string, Repository>;
 let sessionIdCounter = 0;
-let repositoryIdCounter = 0;
 
 // Mock session manager - simple mock without external logic
 vi.mock('../services/session-manager.js', () => ({
@@ -19,8 +18,9 @@ vi.mock('../services/session-manager.js', () => ({
         id: `test-session-${++sessionIdCounter}`,
         worktreePath,
         repositoryId,
+        status: 'running',
         pid: 12345,
-        createdAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
         activityState: 'idle',
       };
       mockSessions.set(session.id, session);
@@ -63,7 +63,7 @@ vi.mock('../services/worktree-service.js', () => ({
         branch: 'main',
         head: 'abc123',
         repositoryId: repoId,
-        isPrimary: true,
+        isMain: true,
       },
     ]),
     listBranches: vi.fn(() => ({
@@ -80,21 +80,23 @@ vi.mock('../services/worktree-service.js', () => ({
 // Mock agent manager
 vi.mock('../services/agent-manager.js', () => ({
   agentManager: {
-    getAllAgents: vi.fn((): Agent[] => [
+    getAllAgents: vi.fn((): AgentDefinition[] => [
       {
         id: 'claude-code',
         name: 'Claude Code',
         command: 'claude',
         isBuiltIn: true,
+        registeredAt: '2024-01-01T00:00:00.000Z',
       },
     ]),
-    getAgent: vi.fn((id: string): Agent | undefined => {
+    getAgent: vi.fn((id: string): AgentDefinition | undefined => {
       if (id === 'claude-code') {
         return {
           id: 'claude-code',
           name: 'Claude Code',
           command: 'claude',
           isBuiltIn: true,
+          registeredAt: '2024-01-01T00:00:00.000Z',
         };
       }
       return undefined;
@@ -107,6 +109,7 @@ vi.mock('../services/agent-manager.js', () => ({
       name: 'Claude Code',
       command: 'claude',
       isBuiltIn: true,
+      registeredAt: '2024-01-01T00:00:00.000Z',
     })),
   },
   CLAUDE_CODE_AGENT_ID: 'claude-code',
@@ -123,7 +126,6 @@ describe('API Routes', () => {
     mockSessions = new Map();
     mockRepositories = new Map();
     sessionIdCounter = 0;
-    repositoryIdCounter = 0;
 
     // Import and mount the actual API router with error handler
     const { api } = await import('../routes/api.js');
@@ -174,8 +176,9 @@ describe('API Routes', () => {
           id: 'session-1',
           worktreePath: '/path/1',
           repositoryId: 'repo-1',
+          status: 'running',
           pid: 1234,
-          createdAt: '2024-01-01T00:00:00.000Z',
+          startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
         });
 
@@ -238,8 +241,9 @@ describe('API Routes', () => {
           id: 'active-session',
           worktreePath: '/path/to/worktree',
           repositoryId: 'repo-1',
+          status: 'running',
           pid: 1234,
-          createdAt: '2024-01-01T00:00:00.000Z',
+          startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
         });
 
@@ -258,6 +262,9 @@ describe('API Routes', () => {
           id: 'dead-session',
           worktreePath: '/path/to/dead',
           repositoryId: 'repo-1',
+          pid: 12345,
+          serverPid: 99999,
+          createdAt: '2024-01-01T00:00:00.000Z',
         });
 
         const res = await app.request('/api/sessions/dead-session/metadata');
@@ -284,8 +291,9 @@ describe('API Routes', () => {
           id: 'restarted-session',
           worktreePath: '/path/to/worktree',
           repositoryId: 'repo-1',
+          status: 'running',
           pid: 9999,
-          createdAt: '2024-01-01T00:00:00.000Z',
+          startedAt: '2024-01-01T00:00:00.000Z',
           activityState: 'idle',
         });
 
@@ -458,7 +466,7 @@ describe('API Routes', () => {
         const { worktreeService } = await import('../services/worktree-service.js');
         vi.mocked(worktreeService.createWorktree).mockResolvedValue({
           worktreePath: '/path/to/new/worktree',
-          error: null,
+          error: undefined,
         });
         vi.mocked(worktreeService.listWorktrees).mockReturnValue([
           {
@@ -466,7 +474,7 @@ describe('API Routes', () => {
             branch: 'feature-branch',
             head: 'abc123',
             repositoryId: 'test-repo-id',
-            isPrimary: false,
+            isMain: false,
           },
         ]);
 
@@ -494,7 +502,7 @@ describe('API Routes', () => {
       it('should return 400 when worktree creation fails', async () => {
         const { worktreeService } = await import('../services/worktree-service.js');
         vi.mocked(worktreeService.createWorktree).mockResolvedValue({
-          worktreePath: null,
+          worktreePath: '',
           error: 'Branch already exists',
         });
 
@@ -571,7 +579,7 @@ describe('API Routes', () => {
         const res = await app.request('/api/agents');
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { agents: Agent[] };
+        const body = (await res.json()) as { agents: AgentDefinition[] };
         expect(body.agents).toBeInstanceOf(Array);
         expect(body.agents.length).toBeGreaterThan(0);
       });
@@ -582,7 +590,7 @@ describe('API Routes', () => {
         const res = await app.request('/api/agents/claude-code');
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { agent: Agent };
+        const body = (await res.json()) as { agent: AgentDefinition };
         expect(body.agent.id).toBe('claude-code');
       });
 
@@ -600,6 +608,7 @@ describe('API Routes', () => {
           name: 'My Agent',
           command: 'my-agent',
           isBuiltIn: false,
+          registeredAt: '2024-01-01T00:00:00.000Z',
         });
 
         const res = await app.request('/api/agents', {
@@ -609,7 +618,7 @@ describe('API Routes', () => {
         });
         expect(res.status).toBe(201);
 
-        const body = (await res.json()) as { agent: Agent };
+        const body = (await res.json()) as { agent: AgentDefinition };
         expect(body.agent.name).toBe('My Agent');
       });
 
@@ -640,6 +649,7 @@ describe('API Routes', () => {
           name: 'Updated Name',
           command: 'claude',
           isBuiltIn: true,
+          registeredAt: '2024-01-01T00:00:00.000Z',
         });
 
         const res = await app.request('/api/agents/claude-code', {
@@ -649,7 +659,7 @@ describe('API Routes', () => {
         });
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { agent: Agent };
+        const body = (await res.json()) as { agent: AgentDefinition };
         expect(body.agent.name).toBe('Updated Name');
       });
 
@@ -674,6 +684,7 @@ describe('API Routes', () => {
           name: 'Custom Agent',
           command: 'custom',
           isBuiltIn: false,
+          registeredAt: '2024-01-01T00:00:00.000Z',
         });
         vi.mocked(agentManager.unregisterAgent).mockReturnValue(true);
 
@@ -693,6 +704,7 @@ describe('API Routes', () => {
           name: 'Claude Code',
           command: 'claude',
           isBuiltIn: true,
+          registeredAt: '2024-01-01T00:00:00.000Z',
         });
 
         const res = await app.request('/api/agents/claude-code', {

@@ -63,7 +63,7 @@ branch refs/heads/feature-1
     });
 
     vi.mocked(childProcess.exec).mockImplementation(
-      (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+      (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
         if (callback) {
           callback(null, '', '');
         }
@@ -131,7 +131,7 @@ detached
     it('should create worktree with existing branch', async () => {
       const childProcess = await import('child_process');
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(null, '', '');
           return undefined as never;
         }
@@ -152,7 +152,7 @@ detached
       let capturedCommand = '';
 
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           capturedCommand = cmd;
           if (callback) callback(null, '', '');
           return undefined as never;
@@ -171,7 +171,7 @@ detached
     it('should return error on failure', async () => {
       const childProcess = await import('child_process');
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(new Error('branch already exists'), '', 'fatal: branch already exists');
           return undefined as never;
         }
@@ -191,7 +191,7 @@ detached
     it('should remove worktree successfully', async () => {
       const childProcess = await import('child_process');
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(null, '', '');
           return undefined as never;
         }
@@ -211,7 +211,7 @@ detached
       let capturedCommand = '';
 
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           capturedCommand = cmd;
           if (callback) callback(null, '', '');
           return undefined as never;
@@ -229,7 +229,7 @@ detached
     it('should return error on failure', async () => {
       const childProcess = await import('child_process');
       vi.mocked(childProcess.exec).mockImplementation(
-        (cmd: string, options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(new Error('worktree has changes'), '', 'fatal: worktree has uncommitted changes');
           return undefined as never;
         }
@@ -327,7 +327,7 @@ detached
 
     it('should return null if no default branch found', async () => {
       const childProcess = await import('child_process');
-      vi.mocked(childProcess.execSync).mockImplementation((cmd: string) => {
+      vi.mocked(childProcess.execSync).mockImplementation((_cmd: string) => {
         throw new Error('not found');
       });
 

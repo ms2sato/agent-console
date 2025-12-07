@@ -70,8 +70,8 @@ describe('useDashboardWebSocket', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     MockWebSocket.clearInstances();
-    (globalThis as unknown as { WebSocket: typeof MockWebSocket }).WebSocket =
-      MockWebSocket as unknown as typeof WebSocket;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).WebSocket = MockWebSocket;
 
     // Mock window.location
     Object.defineProperty(window, 'location', {

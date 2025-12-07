@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { useTerminalWebSocket } from '../useTerminalWebSocket';
 
 // Mock WebSocket
@@ -63,8 +63,8 @@ describe('useTerminalWebSocket', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     MockWebSocket.clearInstances();
-    (globalThis as unknown as { WebSocket: typeof MockWebSocket }).WebSocket =
-      MockWebSocket as unknown as typeof WebSocket;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).WebSocket = MockWebSocket;
   });
 
   afterEach(() => {
@@ -108,7 +108,7 @@ describe('useTerminalWebSocket', () => {
 
   it('should handle output messages', async () => {
     const options = { ...defaultOptions };
-    const { result } = renderHook(() =>
+    renderHook(() =>
       useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 

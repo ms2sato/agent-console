@@ -56,8 +56,9 @@ describe('Terminal Handler', () => {
         id: 'test-session',
         worktreePath: '/test/path',
         repositoryId: 'repo-1',
+        status: 'running',
         pid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
@@ -79,8 +80,9 @@ describe('Terminal Handler', () => {
         id: 'test-session',
         worktreePath: '/test/path',
         repositoryId: 'repo-1',
+        status: 'running',
         pid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'active',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
@@ -101,10 +103,11 @@ describe('Terminal Handler', () => {
         id: 'test-session',
         worktreePath: '/test/path',
         repositoryId: 'repo-1',
+        status: 'running',
         pid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:00:00.000Z',
         // activityState is undefined
-      } as Session;
+      };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
       vi.mocked(sessionManager.getOutputBuffer).mockReturnValue('');
 
@@ -123,8 +126,9 @@ describe('Terminal Handler', () => {
         id: 'test-session',
         worktreePath: '/test/path',
         repositoryId: 'repo-1',
+        status: 'running',
         pid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
@@ -227,8 +231,9 @@ describe('Terminal Handler', () => {
         id: 'new-session-id',
         worktreePath: '/path',
         repositoryId: 'repo',
+        status: 'running',
         pid: 1234,
-        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
       });
 
@@ -249,14 +254,15 @@ describe('Terminal Handler', () => {
 
       let capturedOnData: ((data: string) => void) | null = null;
       vi.mocked(sessionManager.createSession).mockImplementation(
-        (path, repoId, onData, onExit) => {
+        (path, repoId, onData, _onExit) => {
           capturedOnData = onData;
           return {
             id: 'test-session',
             worktreePath: path,
             repositoryId: repoId,
+            status: 'running',
             pid: 1234,
-            createdAt: '2024-01-01T00:00:00.000Z',
+            startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
           };
         }
@@ -278,14 +284,15 @@ describe('Terminal Handler', () => {
 
       let capturedOnExit: ((exitCode: number, signal: string | null) => void) | null = null;
       vi.mocked(sessionManager.createSession).mockImplementation(
-        (path, repoId, onData, onExit) => {
+        (path, repoId, _onData, onExit) => {
           capturedOnExit = onExit;
           return {
             id: 'test-session',
             worktreePath: path,
             repositoryId: repoId,
+            status: 'running',
             pid: 1234,
-            createdAt: '2024-01-01T00:00:00.000Z',
+            startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
           };
         }
@@ -353,14 +360,15 @@ describe('Terminal Handler', () => {
 
       let capturedOnExit: ((exitCode: number, signal: string | null) => void) | null = null;
       vi.mocked(sessionManager.createSession).mockImplementation(
-        (path, repoId, onData, onExit) => {
+        (path, repoId, _onData, onExit) => {
           capturedOnExit = onExit;
           return {
             id: 'test-session',
             worktreePath: path,
             repositoryId: repoId,
+            status: 'running',
             pid: 1234,
-            createdAt: '2024-01-01T00:00:00.000Z',
+            startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
           };
         }

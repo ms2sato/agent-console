@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { PersistedSession } from '../persistence-service.js';
-import { MockPty, createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 
 // Create mock PTY factory
 const ptyFactory = createMockPtyFactory(10000);
@@ -553,7 +553,7 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      const session = manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      manager.createSession('/test/path', 'repo-1', onData, vi.fn());
 
       const pty = ptyFactory.instances[0];
 
@@ -584,7 +584,7 @@ describe('SessionManager', () => {
         throw new Error('Callback error');
       });
 
-      const session = manager.createSession('/test/path', 'repo-1', throwingCallback, vi.fn());
+      manager.createSession('/test/path', 'repo-1', throwingCallback, vi.fn());
 
       // Callback errors propagate - this documents the expected behavior
       // Callers (e.g., WebSocket handlers) should wrap callbacks with try-catch
@@ -598,7 +598,7 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onExit = vi.fn();
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), onExit);
+      manager.createSession('/test/path', 'repo-1', vi.fn(), onExit);
 
       // Simulate PTY crash with non-zero exit (signal 9 = SIGKILL)
       ptyFactory.instances[0].simulateExit(1, 9);
@@ -625,7 +625,7 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       // Create two sessions
-      const session1 = manager.createSession('/path/1', 'repo-1', vi.fn(), vi.fn());
+      manager.createSession('/path/1', 'repo-1', vi.fn(), vi.fn());
       const session2 = manager.createSession('/path/2', 'repo-1', vi.fn(), vi.fn());
 
       // First session crashes (signal 11 = SIGSEGV)

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { onApiError } from '../error-handler.js';
-import { ApiError, ValidationError, NotFoundError, ConflictError, InternalError } from '../errors.js';
+import { ValidationError, NotFoundError, ConflictError, InternalError } from '../errors.js';
 
 describe('Error Handler', () => {
   let app: Hono;
