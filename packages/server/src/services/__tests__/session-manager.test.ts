@@ -157,8 +157,9 @@ describe('SessionManager', () => {
 
       expect(vi.mocked(pty.spawn)).toHaveBeenCalled();
       const callArgs = vi.mocked(pty.spawn).mock.calls[0];
-      expect(callArgs[0]).toBe('claude');
-      expect(callArgs[1]).toEqual(['-c']);
+      // Should spawn login shell with -l -c flags
+      expect(callArgs[0]).toBe(process.env.SHELL || '/bin/bash');
+      expect(callArgs[1]).toEqual(['-l', '-c', 'claude -c']);
       expect(callArgs[2]).toMatchObject({ cwd: '/test/path' });
     });
   });
@@ -290,9 +291,10 @@ describe('SessionManager', () => {
 
       manager.restartSession('dead-session', vi.fn(), vi.fn(), true); // continueConversation = true
 
-      // Verify -c flag was passed
+      // Verify login shell with -l -c flags was used
       const callArgs = vi.mocked(pty.spawn).mock.calls[0];
-      expect(callArgs[1]).toEqual(['-c']);
+      expect(callArgs[0]).toBe(process.env.SHELL || '/bin/bash');
+      expect(callArgs[1]).toEqual(['-l', '-c', 'claude -c']);
     });
   });
 
