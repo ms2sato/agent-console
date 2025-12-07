@@ -9,22 +9,21 @@ import { handleTerminalMessage } from './terminal-handler.js';
 const dashboardClients = new Set<WSContext>();
 
 // Set up global activity callback to broadcast to all dashboard clients
-// TEST: Disabled to check if this causes the issue
-// sessionManager.setGlobalActivityCallback((sessionId, state) => {
-//   const msg: DashboardServerMessage = {
-//     type: 'session-activity',
-//     sessionId,
-//     activityState: state,
-//   };
-//   const msgStr = JSON.stringify(msg);
-//   for (const client of dashboardClients) {
-//     try {
-//       client.send(msgStr);
-//     } catch (e) {
-//       console.error('Failed to send to dashboard client:', e);
-//     }
-//   }
-// });
+sessionManager.setGlobalActivityCallback((sessionId, state) => {
+  const msg: DashboardServerMessage = {
+    type: 'session-activity',
+    sessionId,
+    activityState: state,
+  };
+  const msgStr = JSON.stringify(msg);
+  for (const client of dashboardClients) {
+    try {
+      client.send(msgStr);
+    } catch (e) {
+      console.error('Failed to send to dashboard client:', e);
+    }
+  }
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
