@@ -91,6 +91,46 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('asking');
     });
 
+    it('should detect asking state from Always allow pattern', () => {
+      detector.processOutput('Allow once  [a] Always allow');
+
+      vi.advanceTimersByTime(400);
+
+      expect(detector.getState()).toBe('asking');
+    });
+
+    it('should detect asking state from Allow X? pattern', () => {
+      detector.processOutput('Allow reading file.txt?');
+
+      vi.advanceTimersByTime(400);
+
+      expect(detector.getState()).toBe('asking');
+    });
+
+    it('should detect asking state from A/B selection pattern', () => {
+      detector.processOutput('[A] Option A  [B] Option B');
+
+      vi.advanceTimersByTime(400);
+
+      expect(detector.getState()).toBe('asking');
+    });
+
+    it('should detect asking state from numbered selection pattern', () => {
+      detector.processOutput('[1] First choice  [2] Second choice');
+
+      vi.advanceTimersByTime(400);
+
+      expect(detector.getState()).toBe('asking');
+    });
+
+    it('should detect asking state from box bottom with prompt pattern', () => {
+      detector.processOutput('╰─────────────────────────────────╯ > ');
+
+      vi.advanceTimersByTime(400);
+
+      expect(detector.getState()).toBe('asking');
+    });
+
     it('should keep asking state until user responds (suppressRateDetection)', () => {
       // First enter asking state
       detector.processOutput('Do you want to proceed?');
@@ -114,6 +154,28 @@ describe('ActivityDetector', () => {
 
       // User responds (e.g., pressing Enter)
       detector.clearUserTyping(false);
+
+      expect(detector.getState()).toBe('idle');
+    });
+
+    it('should transition from asking to idle when user cancels with ESC', () => {
+      // First enter asking state
+      detector.processOutput('Do you want to proceed?');
+      vi.advanceTimersByTime(400);
+      expect(detector.getState()).toBe('asking');
+
+      // User cancels (pressing ESC)
+      detector.clearUserTyping(true);
+
+      expect(detector.getState()).toBe('idle');
+    });
+
+    it('should not change state if not in asking state when clearUserTyping is called with isCancel', () => {
+      // Start in idle state
+      expect(detector.getState()).toBe('idle');
+
+      // Call clearUserTyping with isCancel=true - should stay idle
+      detector.clearUserTyping(true);
 
       expect(detector.getState()).toBe('idle');
     });

@@ -1,84 +1,63 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import type { Session, Repository, Worktree, Agent } from '@agent-console/shared';
 
-// Create test config directory to avoid polluting real config
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-api-test-' + Date.now());
-const TEST_REPO_DIR = path.join(os.tmpdir(), 'test-api-repo-' + Date.now());
+// Mock data storage
+let mockSessions: Map<string, Session>;
+let mockRepositories: Map<string, Repository>;
+let sessionIdCounter = 0;
+let repositoryIdCounter = 0;
 
-// Mock persistence service to use test directory
-vi.mock('../services/persistence-service.js', () => {
-  const testConfigDir = path.join(os.tmpdir(), 'agent-console-api-test-' + Date.now());
-  const reposFile = path.join(testConfigDir, 'repositories.json');
+// Mock session manager - simple mock without external logic
+vi.mock('../services/session-manager.js', () => ({
+  sessionManager: {
+    getAllSessions: vi.fn(() => Array.from(mockSessions.values())),
+    getSession: vi.fn((id: string) => mockSessions.get(id)),
+    createSession: vi.fn((worktreePath: string, repositoryId: string) => {
+      const session: Session = {
+        id: `test-session-${++sessionIdCounter}`,
+        worktreePath,
+        repositoryId,
+        pid: 12345,
+        createdAt: new Date().toISOString(),
+        activityState: 'idle',
+      };
+      mockSessions.set(session.id, session);
+      return session;
+    }),
+    killSession: vi.fn((id: string) => {
+      if (mockSessions.has(id)) {
+        mockSessions.delete(id);
+        return true;
+      }
+      return false;
+    }),
+    getSessionMetadata: vi.fn(() => undefined),
+    restartSession: vi.fn(() => null),
+    attachCallbacks: vi.fn(),
+    detachCallbacks: vi.fn(),
+    getOutputBuffer: vi.fn(() => null),
+    getActivityState: vi.fn(() => 'idle'),
+    setGlobalActivityCallback: vi.fn(),
+  },
+}));
 
-  return {
-    persistenceService: {
-      loadRepositories: () => {
-        try {
-          if (fs.existsSync(reposFile)) {
-            return JSON.parse(fs.readFileSync(reposFile, 'utf-8'));
-          }
-        } catch { /* ignore */ }
-        return [];
-      },
-      saveRepositories: (repos: unknown[]) => {
-        if (!fs.existsSync(testConfigDir)) {
-          fs.mkdirSync(testConfigDir, { recursive: true });
-        }
-        fs.writeFileSync(reposFile, JSON.stringify(repos, null, 2));
-      },
-      loadSessions: () => [],
-      saveSessions: () => {},
-      getSessionMetadata: () => undefined,
-      removeSession: () => {},
-      clearSessions: () => {},
-    },
-  };
-});
-
-// Mock session manager to avoid PTY operations
-vi.mock('../services/session-manager.js', () => {
-  const sessions = new Map();
-  return {
-    sessionManager: {
-      getAllSessions: () => Array.from(sessions.values()),
-      getSession: (id: string) => sessions.get(id),
-      createSession: (worktreePath: string, repositoryId: string) => {
-        const session = {
-          id: 'test-session-' + Date.now(),
-          worktreePath,
-          repositoryId,
-          pid: 12345,
-          createdAt: new Date().toISOString(),
-          activityState: 'idle',
-        };
-        sessions.set(session.id, session);
-        return session;
-      },
-      killSession: (id: string) => {
-        if (sessions.has(id)) {
-          sessions.delete(id);
-          return true;
-        }
-        return false;
-      },
-      getSessionMetadata: () => undefined,
-      restartSession: () => null,
-      attachCallbacks: () => {},
-      detachCallbacks: () => {},
-      getOutputBuffer: () => null,
-      getActivityState: () => 'idle',
-      setGlobalActivityCallback: () => {},
-    },
-  };
-});
+// Mock repository manager - simple mock that can be configured per test
+vi.mock('../services/repository-manager.js', () => ({
+  repositoryManager: {
+    getAllRepositories: vi.fn(() => Array.from(mockRepositories.values())),
+    getRepository: vi.fn((id: string) => mockRepositories.get(id)),
+    registerRepository: vi.fn(),
+    unregisterRepository: vi.fn((id: string) => mockRepositories.has(id)),
+    findRepositoryByPath: vi.fn(() => undefined),
+  },
+}));
 
 // Mock worktree service
 vi.mock('../services/worktree-service.js', () => ({
   worktreeService: {
-    listWorktrees: (repoPath: string, repoId: string) => [
+    listWorktrees: vi.fn((repoPath: string, repoId: string): Worktree[] => [
       {
         path: repoPath,
         branch: 'main',
@@ -86,138 +65,76 @@ vi.mock('../services/worktree-service.js', () => ({
         repositoryId: repoId,
         isPrimary: true,
       },
-    ],
-    listBranches: () => ({
+    ]),
+    listBranches: vi.fn(() => ({
       local: ['main', 'develop'],
       remote: ['origin/main', 'origin/develop'],
       defaultBranch: 'main',
-    }),
-    createWorktree: () => ({ worktreePath: '/test/path', error: null }),
-    removeWorktree: () => ({ success: true }),
-    isWorktreeOf: () => true,
+    })),
+    createWorktree: vi.fn(() => ({ worktreePath: '/test/path', error: null })),
+    removeWorktree: vi.fn(() => ({ success: true })),
+    isWorktreeOf: vi.fn(() => true),
   },
 }));
 
-// Import app after mocks
-import { Hono as HonoType } from 'hono';
+// Mock agent manager
+vi.mock('../services/agent-manager.js', () => ({
+  agentManager: {
+    getAllAgents: vi.fn((): Agent[] => [
+      {
+        id: 'claude-code',
+        name: 'Claude Code',
+        command: 'claude',
+        isBuiltIn: true,
+      },
+    ]),
+    getAgent: vi.fn((id: string): Agent | undefined => {
+      if (id === 'claude-code') {
+        return {
+          id: 'claude-code',
+          name: 'Claude Code',
+          command: 'claude',
+          isBuiltIn: true,
+        };
+      }
+      return undefined;
+    }),
+    registerAgent: vi.fn(),
+    updateAgent: vi.fn(),
+    unregisterAgent: vi.fn(),
+    getDefaultAgent: vi.fn(() => ({
+      id: 'claude-code',
+      name: 'Claude Code',
+      command: 'claude',
+      isBuiltIn: true,
+    })),
+  },
+  CLAUDE_CODE_AGENT_ID: 'claude-code',
+}));
 
-// Create a simplified version of the app for testing
-function createTestApp() {
-  const app = new Hono();
+describe('API Routes', () => {
+  let app: Hono;
 
-  // Health check
-  app.get('/health', (c) => c.json({ status: 'ok' }));
+  beforeEach(async () => {
+    // Reset modules to get fresh imports
+    vi.resetModules();
 
-  // API info
-  app.get('/api', (c) => c.json({ message: 'Agent Console API' }));
+    // Reset mock data
+    mockSessions = new Map();
+    mockRepositories = new Map();
+    sessionIdCounter = 0;
+    repositoryIdCounter = 0;
 
-  // Config
-  app.get('/api/config', (c) => c.json({ homeDir: os.homedir() }));
-
-  // Sessions (simplified for testing)
-  app.get('/api/sessions', async (c) => {
-    const { sessionManager } = await import('../services/session-manager.js');
-    const sessions = sessionManager.getAllSessions();
-    return c.json({ sessions });
-  });
-
-  app.post('/api/sessions', async (c) => {
-    const { sessionManager } = await import('../services/session-manager.js');
-    const body = await c.req.json();
-    const { worktreePath = process.cwd(), repositoryId = 'default' } = body;
-    const session = sessionManager.createSession(
-      worktreePath,
-      repositoryId,
-      () => {},
-      () => {}
-    );
-    return c.json({ session }, 201);
-  });
-
-  app.delete('/api/sessions/:id', async (c) => {
-    const { sessionManager } = await import('../services/session-manager.js');
-    const sessionId = c.req.param('id');
-    const success = sessionManager.killSession(sessionId);
-    if (!success) {
-      return c.json({ error: 'Session not found' }, 404);
-    }
-    return c.json({ success: true });
-  });
-
-  // Repositories
-  app.get('/api/repositories', async (c) => {
-    const { repositoryManager } = await import('../services/repository-manager.js');
-    const repositories = repositoryManager.getAllRepositories();
-    return c.json({ repositories });
-  });
-
-  app.post('/api/repositories', async (c) => {
-    const { repositoryManager } = await import('../services/repository-manager.js');
-    const body = await c.req.json();
-    const { path: repoPath } = body;
-
-    if (!repoPath) {
-      return c.json({ error: 'path is required' }, 400);
-    }
-
-    try {
-      const repository = repositoryManager.registerRepository(repoPath);
-      return c.json({ repository }, 201);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: message }, 400);
-    }
-  });
-
-  app.delete('/api/repositories/:id', async (c) => {
-    const { repositoryManager } = await import('../services/repository-manager.js');
-    const repoId = c.req.param('id');
-    const success = repositoryManager.unregisterRepository(repoId);
-
-    if (!success) {
-      return c.json({ error: 'Repository not found' }, 404);
-    }
-
-    return c.json({ success: true });
-  });
-
-  return app;
-}
-
-describe('API Integration Tests', () => {
-  let app: HonoType;
-
-  beforeEach(() => {
-    // Create test directories
-    if (!fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(TEST_REPO_DIR)) {
-      fs.mkdirSync(TEST_REPO_DIR, { recursive: true });
-      fs.mkdirSync(path.join(TEST_REPO_DIR, '.git'));
-    }
-
-    app = createTestApp();
+    // Import and mount the actual API router with error handler
+    const { api } = await import('../routes/api.js');
+    const { onApiError } = await import('../lib/error-handler.js');
+    app = new Hono();
+    app.onError(onApiError);
+    app.route('/api', api);
   });
 
   afterEach(() => {
-    // Cleanup
-    if (fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    if (fs.existsSync(TEST_REPO_DIR)) {
-      fs.rmSync(TEST_REPO_DIR, { recursive: true });
-    }
-  });
-
-  describe('GET /health', () => {
-    it('should return ok status', async () => {
-      const res = await app.request('/health');
-      expect(res.status).toBe(200);
-
-      const body = await res.json();
-      expect(body).toEqual({ status: 'ok' });
-    });
+    vi.clearAllMocks();
   });
 
   describe('GET /api', () => {
@@ -235,7 +152,7 @@ describe('API Integration Tests', () => {
       const res = await app.request('/api/config');
       expect(res.status).toBe(200);
 
-      const body = await res.json() as { homeDir: string };
+      const body = (await res.json()) as { homeDir: string };
       expect(body.homeDir).toBe(os.homedir());
     });
   });
@@ -246,8 +163,28 @@ describe('API Integration Tests', () => {
         const res = await app.request('/api/sessions');
         expect(res.status).toBe(200);
 
-        const body = await res.json() as { sessions: unknown[] };
+        const body = (await res.json()) as { sessions: Session[] };
         expect(body.sessions).toBeInstanceOf(Array);
+        expect(body.sessions.length).toBe(0);
+      });
+
+      it('should return sessions when they exist', async () => {
+        // Pre-populate mock data
+        mockSessions.set('session-1', {
+          id: 'session-1',
+          worktreePath: '/path/1',
+          repositoryId: 'repo-1',
+          pid: 1234,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          activityState: 'idle',
+        });
+
+        const res = await app.request('/api/sessions');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { sessions: Session[] };
+        expect(body.sessions.length).toBe(1);
+        expect(body.sessions[0].id).toBe('session-1');
       });
     });
 
@@ -260,7 +197,7 @@ describe('API Integration Tests', () => {
         });
         expect(res.status).toBe(201);
 
-        const body = await res.json() as { session: { worktreePath: string; repositoryId: string; id: string } };
+        const body = (await res.json()) as { session: Session };
         expect(body.session).toBeDefined();
         expect(body.session.worktreePath).toBe('/test/path');
         expect(body.session.repositoryId).toBe('test-repo');
@@ -275,7 +212,7 @@ describe('API Integration Tests', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ worktreePath: '/test', repositoryId: 'test' }),
         });
-        const { session } = await createRes.json() as { session: { id: string } };
+        const { session } = (await createRes.json()) as { session: Session };
 
         // Then delete it
         const deleteRes = await app.request(`/api/sessions/${session.id}`, {
@@ -283,7 +220,7 @@ describe('API Integration Tests', () => {
         });
         expect(deleteRes.status).toBe(200);
 
-        const body = await deleteRes.json() as { success: boolean };
+        const body = (await deleteRes.json()) as { success: boolean };
         expect(body.success).toBe(true);
       });
 
@@ -292,21 +229,116 @@ describe('API Integration Tests', () => {
           method: 'DELETE',
         });
         expect(res.status).toBe(404);
+      });
+    });
 
-        const body = await res.json() as { error: string };
-        expect(body.error).toBe('Session not found');
+    describe('GET /api/sessions/:id/metadata', () => {
+      it('should return metadata for active session', async () => {
+        mockSessions.set('active-session', {
+          id: 'active-session',
+          worktreePath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          pid: 1234,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          activityState: 'idle',
+        });
+
+        const res = await app.request('/api/sessions/active-session/metadata');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { id: string; worktreePath: string; isActive: boolean };
+        expect(body.id).toBe('active-session');
+        expect(body.worktreePath).toBe('/path/to/worktree');
+        expect(body.isActive).toBe(true);
+      });
+
+      it('should return metadata for inactive session from persistence', async () => {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.getSessionMetadata).mockReturnValue({
+          id: 'dead-session',
+          worktreePath: '/path/to/dead',
+          repositoryId: 'repo-1',
+        });
+
+        const res = await app.request('/api/sessions/dead-session/metadata');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { id: string; isActive: boolean };
+        expect(body.id).toBe('dead-session');
+        expect(body.isActive).toBe(false);
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.getSessionMetadata).mockReturnValue(undefined);
+
+        const res = await app.request('/api/sessions/non-existent/metadata');
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('POST /api/sessions/:id/restart', () => {
+      it('should restart a dead session', async () => {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.restartSession).mockReturnValue({
+          id: 'restarted-session',
+          worktreePath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          pid: 9999,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          activityState: 'idle',
+        });
+
+        const res = await app.request('/api/sessions/dead-session/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ continueConversation: true }),
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { session: Session };
+        expect(body.session.id).toBe('restarted-session');
+      });
+
+      it('should return 404 when session cannot be restarted', async () => {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.restartSession).mockReturnValue(null);
+
+        const res = await app.request('/api/sessions/non-existent/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(404);
       });
     });
   });
 
   describe('Repositories API', () => {
     describe('GET /api/repositories', () => {
-      it('should return repositories array', async () => {
+      it('should return empty repositories array initially', async () => {
         const res = await app.request('/api/repositories');
         expect(res.status).toBe(200);
 
-        const body = await res.json() as { repositories: unknown[] };
+        const body = (await res.json()) as { repositories: Repository[] };
         expect(body.repositories).toBeInstanceOf(Array);
+        expect(body.repositories.length).toBe(0);
+      });
+
+      it('should return repositories when they exist', async () => {
+        mockRepositories.set('repo-1', {
+          id: 'repo-1',
+          name: 'test-repo',
+          path: '/path/to/repo',
+          registeredAt: '2024-01-01T00:00:00.000Z',
+        });
+
+        const res = await app.request('/api/repositories');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { repositories: Repository[] };
+        expect(body.repositories.length).toBe(1);
+        expect(body.repositories[0].name).toBe('test-repo');
       });
     });
 
@@ -318,20 +350,47 @@ describe('API Integration Tests', () => {
           body: JSON.stringify({}),
         });
         expect(res.status).toBe(400);
-
-        const body = await res.json() as { error: string };
-        expect(body.error).toBe('path is required');
       });
 
-      it('should return 400 for non-existent path', async () => {
+      it('should register repository successfully', async () => {
+        const { repositoryManager } = await import('../services/repository-manager.js');
+
+        // Configure mock to return a repository
+        vi.mocked(repositoryManager.registerRepository).mockReturnValue({
+          id: 'new-repo-id',
+          name: 'my-repo',
+          path: '/path/to/my-repo',
+          registeredAt: new Date().toISOString(),
+        });
+
         const res = await app.request('/api/repositories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: '/non/existent/path' }),
+          body: JSON.stringify({ path: '/path/to/my-repo' }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { repository: Repository };
+        expect(body.repository).toBeDefined();
+        expect(body.repository.path).toBe('/path/to/my-repo');
+      });
+
+      it('should return 400 when repository registration fails', async () => {
+        const { repositoryManager } = await import('../services/repository-manager.js');
+
+        // Configure mock to throw an error
+        vi.mocked(repositoryManager.registerRepository).mockImplementation(() => {
+          throw new Error('Path does not exist: /non/existent');
+        });
+
+        const res = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/non/existent' }),
         });
         expect(res.status).toBe(400);
 
-        const body = await res.json() as { error: string };
+        const body = (await res.json()) as { error: string };
         expect(body.error).toContain('Path does not exist');
       });
     });
@@ -342,9 +401,314 @@ describe('API Integration Tests', () => {
           method: 'DELETE',
         });
         expect(res.status).toBe(404);
+      });
 
-        const body = await res.json() as { error: string };
-        expect(body.error).toBe('Repository not found');
+      it('should delete existing repository', async () => {
+        // Pre-populate mock data
+        mockRepositories.set('repo-to-delete', {
+          id: 'repo-to-delete',
+          name: 'test-repo',
+          path: '/path/to/repo',
+          registeredAt: '2024-01-01T00:00:00.000Z',
+        });
+
+        const { repositoryManager } = await import('../services/repository-manager.js');
+        vi.mocked(repositoryManager.unregisterRepository).mockReturnValue(true);
+
+        const res = await app.request('/api/repositories/repo-to-delete', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+      });
+    });
+  });
+
+  describe('Worktree API', () => {
+    beforeEach(() => {
+      // Set up a repository for worktree tests
+      mockRepositories.set('test-repo-id', {
+        id: 'test-repo-id',
+        name: 'test-repo',
+        path: '/path/to/repo',
+        registeredAt: '2024-01-01T00:00:00.000Z',
+      });
+    });
+
+    describe('GET /api/repositories/:id/worktrees', () => {
+      it('should return worktrees for repository', async () => {
+        const res = await app.request('/api/repositories/test-repo-id/worktrees');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { worktrees: Worktree[] };
+        expect(body.worktrees).toBeInstanceOf(Array);
+        expect(body.worktrees[0].branch).toBe('main');
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const res = await app.request('/api/repositories/non-existent/worktrees');
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('POST /api/repositories/:id/worktrees', () => {
+      it('should create a worktree', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/path/to/new/worktree',
+          error: null,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/path/to/new/worktree',
+            branch: 'feature-branch',
+            head: 'abc123',
+            repositoryId: 'test-repo-id',
+            isPrimary: false,
+          },
+        ]);
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch: 'feature-branch' }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { worktree: Worktree };
+        expect(body.worktree).toBeDefined();
+        expect(body.worktree.branch).toBe('feature-branch');
+      });
+
+      it('should return 400 when branch is missing', async () => {
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when worktree creation fails', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: null,
+          error: 'Branch already exists',
+        });
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch: 'existing-branch' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const res = await app.request('/api/repositories/non-existent/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch: 'new-branch' }),
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('DELETE /api/repositories/:id/worktrees/*', () => {
+      it('should delete a worktree', async () => {
+        const res = await app.request('/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+      });
+
+      it('should return 400 when worktree removal fails', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        vi.mocked(worktreeService.removeWorktree).mockResolvedValue({
+          success: false,
+          error: 'Worktree has uncommitted changes',
+        });
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const res = await app.request('/api/repositories/non-existent/worktrees/%2Fpath', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('GET /api/repositories/:id/branches', () => {
+      it('should return branches for repository', async () => {
+        const res = await app.request('/api/repositories/test-repo-id/branches');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { local: string[]; remote: string[] };
+        expect(body.local).toContain('main');
+        expect(body.remote).toContain('origin/main');
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const res = await app.request('/api/repositories/non-existent/branches');
+        expect(res.status).toBe(404);
+      });
+    });
+  });
+
+  describe('Agents API', () => {
+    describe('GET /api/agents', () => {
+      it('should return agents array', async () => {
+        const res = await app.request('/api/agents');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { agents: Agent[] };
+        expect(body.agents).toBeInstanceOf(Array);
+        expect(body.agents.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('GET /api/agents/:id', () => {
+      it('should return agent by id', async () => {
+        const res = await app.request('/api/agents/claude-code');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { agent: Agent };
+        expect(body.agent.id).toBe('claude-code');
+      });
+
+      it('should return 404 for non-existent agent', async () => {
+        const res = await app.request('/api/agents/non-existent');
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('POST /api/agents', () => {
+      it('should register a new agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.registerAgent).mockReturnValue({
+          id: 'new-agent-id',
+          name: 'My Agent',
+          command: 'my-agent',
+          isBuiltIn: false,
+        });
+
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'My Agent', command: 'my-agent' }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { agent: Agent };
+        expect(body.agent.name).toBe('My Agent');
+      });
+
+      it('should return 400 when name is missing', async () => {
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'my-agent' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when command is missing', async () => {
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'My Agent' }),
+        });
+        expect(res.status).toBe(400);
+      });
+    });
+
+    describe('PATCH /api/agents/:id', () => {
+      it('should update an existing agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.updateAgent).mockReturnValue({
+          id: 'claude-code',
+          name: 'Updated Name',
+          command: 'claude',
+          isBuiltIn: true,
+        });
+
+        const res = await app.request('/api/agents/claude-code', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Updated Name' }),
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { agent: Agent };
+        expect(body.agent.name).toBe('Updated Name');
+      });
+
+      it('should return 404 for non-existent agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.updateAgent).mockReturnValue(null);
+
+        const res = await app.request('/api/agents/non-existent', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'New Name' }),
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('DELETE /api/agents/:id', () => {
+      it('should delete a custom agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.getAgent).mockReturnValue({
+          id: 'custom-agent',
+          name: 'Custom Agent',
+          command: 'custom',
+          isBuiltIn: false,
+        });
+        vi.mocked(agentManager.unregisterAgent).mockReturnValue(true);
+
+        const res = await app.request('/api/agents/custom-agent', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+      });
+
+      it('should return 400 when trying to delete built-in agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.getAgent).mockReturnValue({
+          id: 'claude-code',
+          name: 'Claude Code',
+          command: 'claude',
+          isBuiltIn: true,
+        });
+
+        const res = await app.request('/api/agents/claude-code', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 404 for non-existent agent', async () => {
+        const { agentManager } = await import('../services/agent-manager.js');
+        vi.mocked(agentManager.getAgent).mockReturnValue(undefined);
+
+        const res = await app.request('/api/agents/non-existent', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(404);
       });
     });
   });

@@ -155,8 +155,8 @@ export function setupWebSocketRoutes(
           // Detach callbacks but keep session alive
           sessionManager.detachCallbacks(sessionId);
         },
-        onError(event: { error?: unknown }) {
-          console.error(`Terminal WebSocket error for session ${sessionId}:`, event.error);
+        onError(event: Event) {
+          console.error(`Terminal WebSocket error for session ${sessionId}:`, event);
         },
       };
     })

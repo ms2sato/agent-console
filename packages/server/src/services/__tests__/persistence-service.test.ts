@@ -3,104 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// Mock the config directory to use a temp directory for tests
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-test-' + Date.now());
-
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof fs>();
-  return {
-    ...actual,
-    existsSync: vi.fn((filePath: string) => {
-      if (filePath.includes('agent-console-test')) {
-        return actual.existsSync(filePath);
-      }
-      return actual.existsSync(filePath);
-    }),
-  };
-});
-
-// We need to create a testable version of PersistenceService
-// since the original uses hardcoded paths
-
-import type { PersistedRepository, PersistedSession } from '../persistence-service.js';
-
-class TestPersistenceService {
-  private configDir: string;
-  private repositoriesFile: string;
-  private sessionsFile: string;
-
-  constructor(configDir: string) {
-    this.configDir = configDir;
-    this.repositoriesFile = path.join(configDir, 'repositories.json');
-    this.sessionsFile = path.join(configDir, 'sessions.json');
-    this.ensureConfigDir();
-  }
-
-  private ensureConfigDir(): void {
-    if (!fs.existsSync(this.configDir)) {
-      fs.mkdirSync(this.configDir, { recursive: true });
-    }
-  }
-
-  private atomicWrite(filePath: string, data: string): void {
-    const tempPath = filePath + '.tmp';
-    fs.writeFileSync(tempPath, data, 'utf-8');
-    fs.renameSync(tempPath, filePath);
-  }
-
-  private safeRead<T>(filePath: string, defaultValue: T): T {
-    try {
-      if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        return JSON.parse(content);
-      }
-    } catch {
-      // Ignore errors
-    }
-    return defaultValue;
-  }
-
-  loadRepositories(): PersistedRepository[] {
-    return this.safeRead<PersistedRepository[]>(this.repositoriesFile, []);
-  }
-
-  saveRepositories(repositories: PersistedRepository[]): void {
-    this.atomicWrite(this.repositoriesFile, JSON.stringify(repositories, null, 2));
-  }
-
-  loadSessions(): PersistedSession[] {
-    return this.safeRead<PersistedSession[]>(this.sessionsFile, []);
-  }
-
-  saveSessions(sessions: PersistedSession[]): void {
-    this.atomicWrite(this.sessionsFile, JSON.stringify(sessions, null, 2));
-  }
-
-  getSessionMetadata(sessionId: string): PersistedSession | undefined {
-    const sessions = this.loadSessions();
-    return sessions.find(s => s.id === sessionId);
-  }
-
-  removeSession(sessionId: string): void {
-    const sessions = this.loadSessions();
-    const filtered = sessions.filter(s => s.id !== sessionId);
-    this.saveSessions(filtered);
-  }
-
-  clearSessions(): void {
-    this.saveSessions([]);
-  }
-}
+// Test directory - unique per test run
+const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-persistence-test-' + process.pid + '-' + Date.now());
 
 describe('PersistenceService', () => {
-  let service: TestPersistenceService;
+  beforeEach(async () => {
+    // Set up test config directory via environment variable
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-  beforeEach(() => {
-    // Create fresh test directory
-    if (fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    service = new TestPersistenceService(TEST_CONFIG_DIR);
+    // Clear module cache to get fresh instance with new config dir
+    vi.resetModules();
   });
 
   afterEach(() => {
@@ -108,16 +20,23 @@ describe('PersistenceService', () => {
     if (fs.existsSync(TEST_CONFIG_DIR)) {
       fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
     }
+    delete process.env.AGENT_CONSOLE_HOME;
   });
 
   describe('repositories', () => {
-    it('should return empty array when no repositories file exists', () => {
+    it('should return empty array when no repositories file exists', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
       const repos = service.loadRepositories();
       expect(repos).toEqual([]);
     });
 
-    it('should save and load repositories', () => {
-      const testRepos: PersistedRepository[] = [
+    it('should save and load repositories', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testRepos = [
         {
           id: 'test-id-1',
           name: 'test-repo',
@@ -132,11 +51,14 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testRepos);
     });
 
-    it('should overwrite repositories on save', () => {
-      const repos1: PersistedRepository[] = [
+    it('should overwrite repositories on save', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const repos1 = [
         { id: '1', name: 'repo1', path: '/path1', registeredAt: '2024-01-01T00:00:00.000Z' },
       ];
-      const repos2: PersistedRepository[] = [
+      const repos2 = [
         { id: '2', name: 'repo2', path: '/path2', registeredAt: '2024-01-02T00:00:00.000Z' },
       ];
 
@@ -149,13 +71,19 @@ describe('PersistenceService', () => {
   });
 
   describe('sessions', () => {
-    it('should return empty array when no sessions file exists', () => {
+    it('should return empty array when no sessions file exists', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
       const sessions = service.loadSessions();
       expect(sessions).toEqual([]);
     });
 
-    it('should save and load sessions', () => {
-      const testSessions: PersistedSession[] = [
+    it('should save and load sessions', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testSessions = [
         {
           id: 'session-1',
           worktreePath: '/path/to/worktree',
@@ -172,8 +100,11 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testSessions);
     });
 
-    it('should save and load sessions with serverPid', () => {
-      const testSessions: PersistedSession[] = [
+    it('should save and load sessions with serverPid', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testSessions = [
         {
           id: 'session-with-server-pid',
           worktreePath: '/path/to/worktree',
@@ -190,8 +121,11 @@ describe('PersistenceService', () => {
       expect(loaded[0].serverPid).toBe(67890);
     });
 
-    it('should get session metadata by id', () => {
-      const testSessions: PersistedSession[] = [
+    it('should get session metadata by id', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testSessions = [
         { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
         { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
@@ -204,13 +138,19 @@ describe('PersistenceService', () => {
       expect(session?.serverPid).toBe(100);
     });
 
-    it('should return undefined for non-existent session', () => {
+    it('should return undefined for non-existent session', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
       const session = service.getSessionMetadata('non-existent');
       expect(session).toBeUndefined();
     });
 
-    it('should remove session by id', () => {
-      const testSessions: PersistedSession[] = [
+    it('should remove session by id', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testSessions = [
         { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
         { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
@@ -223,8 +163,11 @@ describe('PersistenceService', () => {
       expect(loaded[0].id).toBe('s2');
     });
 
-    it('should clear all sessions', () => {
-      const testSessions: PersistedSession[] = [
+    it('should clear all sessions', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
+      const testSessions = [
         { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
         { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
       ];
@@ -238,7 +181,10 @@ describe('PersistenceService', () => {
   });
 
   describe('atomic write', () => {
-    it('should not leave temp files on successful write', () => {
+    it('should not leave temp files on successful write', async () => {
+      const { PersistenceService } = await import('../persistence-service.js');
+      const service = new PersistenceService();
+
       service.saveRepositories([
         { id: '1', name: 'repo', path: '/path', registeredAt: '2024-01-01T00:00:00.000Z' },
       ]);

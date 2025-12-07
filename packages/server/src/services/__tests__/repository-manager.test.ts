@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -8,137 +8,43 @@ import type { Repository } from '@agent-console/shared';
 let TEST_CONFIG_DIR: string;
 let TEST_REPO_DIR: string;
 
-class TestPersistenceService {
-  private repositoriesFile: string;
+// Storage for mocked repositories
+let mockRepositories: Repository[] = [];
 
-  constructor(configDir: string) {
-    this.repositoriesFile = path.join(configDir, 'repositories.json');
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
-  }
+// Mock persistence service
+vi.mock('../persistence-service.js', () => ({
+  persistenceService: {
+    loadRepositories: vi.fn(() => mockRepositories),
+    saveRepositories: vi.fn((repos: Repository[]) => {
+      mockRepositories = repos;
+    }),
+  },
+}));
 
-  loadRepositories(): Repository[] {
-    try {
-      if (fs.existsSync(this.repositoriesFile)) {
-        const content = fs.readFileSync(this.repositoriesFile, 'utf-8');
-        return JSON.parse(content);
-      }
-    } catch {
-      // Ignore
-    }
-    return [];
-  }
-
-  saveRepositories(repositories: Repository[]): void {
-    fs.writeFileSync(this.repositoriesFile, JSON.stringify(repositories, null, 2));
-  }
-}
-
-class TestRepositoryManager {
-  private repositories: Map<string, Repository> = new Map();
-  private persistence: TestPersistenceService;
-
-  constructor(persistence: TestPersistenceService) {
-    this.persistence = persistence;
-    this.loadFromDisk();
-  }
-
-  private loadFromDisk(): void {
-    const persisted = this.persistence.loadRepositories();
-    for (const repo of persisted) {
-      if (fs.existsSync(repo.path)) {
-        this.repositories.set(repo.id, repo);
-      }
-    }
-  }
-
-  private saveToDisk(): void {
-    const repos = Array.from(this.repositories.values());
-    this.persistence.saveRepositories(repos);
-  }
-
-  registerRepository(repoPath: string): Repository {
-    const absolutePath = path.resolve(repoPath);
-
-    if (!fs.existsSync(absolutePath)) {
-      throw new Error(`Path does not exist: ${absolutePath}`);
-    }
-
-    const gitDir = path.join(absolutePath, '.git');
-    if (!fs.existsSync(gitDir)) {
-      throw new Error(`Not a git repository: ${absolutePath}`);
-    }
-
-    for (const repo of this.repositories.values()) {
-      if (repo.path === absolutePath) {
-        throw new Error(`Repository already registered: ${absolutePath}`);
-      }
-    }
-
-    const id = `test-uuid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const name = path.basename(absolutePath);
-
-    const repository: Repository = {
-      id,
-      name,
-      path: absolutePath,
-      registeredAt: new Date().toISOString(),
-    };
-
-    this.repositories.set(id, repository);
-    this.saveToDisk();
-
-    return repository;
-  }
-
-  unregisterRepository(id: string): boolean {
-    const repo = this.repositories.get(id);
-    if (!repo) return false;
-
-    this.repositories.delete(id);
-    this.saveToDisk();
-    return true;
-  }
-
-  getRepository(id: string): Repository | undefined {
-    return this.repositories.get(id);
-  }
-
-  getAllRepositories(): Repository[] {
-    return Array.from(this.repositories.values());
-  }
-
-  findRepositoryByPath(repoPath: string): Repository | undefined {
-    const absolutePath = path.resolve(repoPath);
-    for (const repo of this.repositories.values()) {
-      if (repo.path === absolutePath) {
-        return repo;
-      }
-    }
-    return undefined;
-  }
-}
+// Mock config
+vi.mock('../../lib/config.js', () => ({
+  getConfigDir: vi.fn(() => TEST_CONFIG_DIR),
+}));
 
 describe('RepositoryManager', () => {
-  let manager: TestRepositoryManager;
-  let persistence: TestPersistenceService;
-
   beforeEach(() => {
+    // Reset modules to get fresh instance
+    vi.resetModules();
+
     // Generate unique directory paths for each test
     const uniqueId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     TEST_CONFIG_DIR = path.join(os.tmpdir(), `agent-console-repo-test-${uniqueId}`);
     TEST_REPO_DIR = path.join(os.tmpdir(), `test-git-repo-${uniqueId}`);
 
-    // Create test directories (clean slate for each test)
+    // Reset mock storage
+    mockRepositories = [];
+
+    // Create test directories
     fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
 
     // Create a fake git repo
     fs.mkdirSync(TEST_REPO_DIR, { recursive: true });
     fs.mkdirSync(path.join(TEST_REPO_DIR, '.git'));
-
-    persistence = new TestPersistenceService(TEST_CONFIG_DIR);
-    manager = new TestRepositoryManager(persistence);
   });
 
   afterEach(() => {
@@ -152,7 +58,10 @@ describe('RepositoryManager', () => {
   });
 
   describe('registerRepository', () => {
-    it('should register a valid git repository', () => {
+    it('should register a valid git repository', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const repo = manager.registerRepository(TEST_REPO_DIR);
 
       expect(repo.id).toBeDefined();
@@ -161,13 +70,19 @@ describe('RepositoryManager', () => {
       expect(repo.registeredAt).toBeDefined();
     });
 
-    it('should throw error for non-existent path', () => {
+    it('should throw error for non-existent path', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       expect(() => {
         manager.registerRepository('/non/existent/path');
       }).toThrow('Path does not exist');
     });
 
-    it('should throw error for non-git directory', () => {
+    it('should throw error for non-git directory', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const nonGitDir = path.join(os.tmpdir(), 'non-git-dir-' + Date.now());
       fs.mkdirSync(nonGitDir, { recursive: true });
 
@@ -180,7 +95,10 @@ describe('RepositoryManager', () => {
       }
     });
 
-    it('should throw error for duplicate registration', () => {
+    it('should throw error for duplicate registration', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       manager.registerRepository(TEST_REPO_DIR);
 
       expect(() => {
@@ -188,20 +106,24 @@ describe('RepositoryManager', () => {
       }).toThrow('Repository already registered');
     });
 
-    it('should persist repository to disk', () => {
+    it('should persist repository via persistence service', async () => {
+      const { persistenceService } = await import('../persistence-service.js');
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       manager.registerRepository(TEST_REPO_DIR);
 
-      // Create new manager instance to verify persistence
-      const newManager = new TestRepositoryManager(persistence);
-      const repos = newManager.getAllRepositories();
-
-      expect(repos.length).toBe(1);
-      expect(repos[0].path).toBe(TEST_REPO_DIR);
+      expect(vi.mocked(persistenceService.saveRepositories)).toHaveBeenCalled();
+      expect(mockRepositories.length).toBe(1);
+      expect(mockRepositories[0].path).toBe(TEST_REPO_DIR);
     });
   });
 
   describe('unregisterRepository', () => {
-    it('should unregister existing repository', () => {
+    it('should unregister existing repository', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const repo = manager.registerRepository(TEST_REPO_DIR);
       const result = manager.unregisterRepository(repo.id);
 
@@ -209,42 +131,62 @@ describe('RepositoryManager', () => {
       expect(manager.getRepository(repo.id)).toBeUndefined();
     });
 
-    it('should return false for non-existent repository', () => {
+    it('should return false for non-existent repository', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const result = manager.unregisterRepository('non-existent-id');
       expect(result).toBe(false);
     });
 
-    it('should persist unregistration to disk', () => {
+    it('should persist unregistration via persistence service', async () => {
+      const { persistenceService } = await import('../persistence-service.js');
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const repo = manager.registerRepository(TEST_REPO_DIR);
+      vi.mocked(persistenceService.saveRepositories).mockClear();
+
       manager.unregisterRepository(repo.id);
 
-      // Create new manager instance to verify persistence
-      const newManager = new TestRepositoryManager(persistence);
-      expect(newManager.getAllRepositories().length).toBe(0);
+      expect(vi.mocked(persistenceService.saveRepositories)).toHaveBeenCalled();
+      expect(mockRepositories.length).toBe(0);
     });
   });
 
   describe('getRepository', () => {
-    it('should return repository by id', () => {
+    it('should return repository by id', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const registered = manager.registerRepository(TEST_REPO_DIR);
       const retrieved = manager.getRepository(registered.id);
 
       expect(retrieved).toEqual(registered);
     });
 
-    it('should return undefined for unknown id', () => {
+    it('should return undefined for unknown id', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const result = manager.getRepository('unknown-id');
       expect(result).toBeUndefined();
     });
   });
 
   describe('getAllRepositories', () => {
-    it('should return empty array when no repositories', () => {
+    it('should return empty array when no repositories', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const repos = manager.getAllRepositories();
       expect(repos).toEqual([]);
     });
 
-    it('should return all registered repositories', () => {
+    it('should return all registered repositories', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       // Register first repo
       const repo1 = manager.registerRepository(TEST_REPO_DIR);
       expect(manager.getAllRepositories().length).toBe(1);
@@ -272,30 +214,60 @@ describe('RepositoryManager', () => {
   });
 
   describe('findRepositoryByPath', () => {
-    it('should find repository by path', () => {
+    it('should find repository by path', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const registered = manager.registerRepository(TEST_REPO_DIR);
       const found = manager.findRepositoryByPath(TEST_REPO_DIR);
 
       expect(found).toEqual(registered);
     });
 
-    it('should return undefined for unregistered path', () => {
+    it('should return undefined for unregistered path', async () => {
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
       const result = manager.findRepositoryByPath('/some/other/path');
       expect(result).toBeUndefined();
     });
   });
 
   describe('loading from disk', () => {
-    it('should skip repositories with missing paths on load', () => {
-      // Register a repo
-      manager.registerRepository(TEST_REPO_DIR);
+    it('should load repositories from persistence service on construction', async () => {
+      // Pre-populate mock storage
+      mockRepositories = [
+        {
+          id: 'existing-id',
+          name: path.basename(TEST_REPO_DIR),
+          path: TEST_REPO_DIR,
+          registeredAt: '2024-01-01T00:00:00.000Z',
+        },
+      ];
 
-      // Delete the repo directory
-      fs.rmSync(TEST_REPO_DIR, { recursive: true });
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
 
-      // Create new manager - should skip the missing repo
-      const newManager = new TestRepositoryManager(persistence);
-      expect(newManager.getAllRepositories().length).toBe(0);
+      const repos = manager.getAllRepositories();
+      expect(repos.length).toBe(1);
+      expect(repos[0].id).toBe('existing-id');
+    });
+
+    it('should skip repositories with missing paths on load', async () => {
+      // Pre-populate with a repo that points to non-existent path
+      mockRepositories = [
+        {
+          id: 'missing-repo',
+          name: 'missing',
+          path: '/non/existent/path',
+          registeredAt: '2024-01-01T00:00:00.000Z',
+        },
+      ];
+
+      const { RepositoryManager } = await import('../repository-manager.js');
+      const manager = new RepositoryManager();
+
+      expect(manager.getAllRepositories().length).toBe(0);
     });
   });
 });

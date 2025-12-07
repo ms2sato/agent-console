@@ -259,4 +259,221 @@ describe('API Client', () => {
       expect(result).toEqual(mockBranches);
     });
   });
+
+  describe('createWorktree', () => {
+    it('should create worktree successfully', async () => {
+      const { createWorktree } = await import('../api');
+      const mockResponse = {
+        worktree: { path: '/path/to/worktree', branch: 'feature-1' },
+        session: null,
+      };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await createWorktree('repo-id', { branch: 'feature-1' });
+
+      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch: 'feature-1' }),
+      });
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should throw error on failure', async () => {
+      const { createWorktree } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: vi.fn().mockResolvedValue({ error: 'Branch already exists' }),
+      } as unknown as Response);
+
+      await expect(createWorktree('repo-id', { branch: 'existing' })).rejects.toThrow(
+        'Branch already exists'
+      );
+    });
+  });
+
+  describe('deleteWorktree', () => {
+    it('should delete worktree successfully', async () => {
+      const { deleteWorktree } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+
+      await deleteWorktree('repo-id', '/path/to/worktree');
+
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree',
+        { method: 'DELETE' }
+      );
+    });
+
+    it('should include force flag when specified', async () => {
+      const { deleteWorktree } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+
+      await deleteWorktree('repo-id', '/path/to/worktree', true);
+
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true',
+        { method: 'DELETE' }
+      );
+    });
+
+    it('should throw error on failure', async () => {
+      const { deleteWorktree } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: vi.fn().mockResolvedValue({ error: 'Worktree has uncommitted changes' }),
+      } as unknown as Response);
+
+      await expect(deleteWorktree('repo-id', '/path')).rejects.toThrow(
+        'Worktree has uncommitted changes'
+      );
+    });
+  });
+
+  describe('fetchAgents', () => {
+    it('should fetch agents successfully', async () => {
+      const { fetchAgents } = await import('../api');
+      const mockAgents = {
+        agents: [
+          { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
+        ],
+      };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgents));
+
+      const result = await fetchAgents();
+
+      expect(fetch).toHaveBeenCalledWith('/api/agents');
+      expect(result).toEqual(mockAgents);
+    });
+
+    it('should throw error on failure', async () => {
+      const { fetchAgents } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(fetchAgents()).rejects.toThrow('Failed to fetch agents');
+    });
+  });
+
+  describe('fetchAgent', () => {
+    it('should fetch agent by id', async () => {
+      const { fetchAgent } = await import('../api');
+      const mockAgent = {
+        agent: { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
+      };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+
+      const result = await fetchAgent('claude-code');
+
+      expect(fetch).toHaveBeenCalledWith('/api/agents/claude-code');
+      expect(result).toEqual(mockAgent);
+    });
+
+    it('should throw error for non-existent agent', async () => {
+      const { fetchAgent } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue(
+        createMockResponse({}, { status: 404, ok: false })
+      );
+
+      await expect(fetchAgent('non-existent')).rejects.toThrow('Failed to fetch agent');
+    });
+  });
+
+  describe('registerAgent', () => {
+    it('should register agent successfully', async () => {
+      const { registerAgent } = await import('../api');
+      const mockAgent = {
+        agent: { id: 'new-agent', name: 'New Agent', command: 'new-cmd', isBuiltIn: false },
+      };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+
+      const result = await registerAgent({ name: 'New Agent', command: 'new-cmd' });
+
+      expect(fetch).toHaveBeenCalledWith('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Agent', command: 'new-cmd' }),
+      });
+      expect(result).toEqual(mockAgent);
+    });
+
+    it('should throw error on failure', async () => {
+      const { registerAgent } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: vi.fn().mockResolvedValue({ error: 'Invalid command' }),
+      } as unknown as Response);
+
+      await expect(registerAgent({ name: 'Test', command: '' })).rejects.toThrow(
+        'Invalid command'
+      );
+    });
+  });
+
+  describe('updateAgent', () => {
+    it('should update agent successfully', async () => {
+      const { updateAgent } = await import('../api');
+      const mockAgent = {
+        agent: { id: 'agent-1', name: 'Updated Agent', command: 'cmd', isBuiltIn: false },
+      };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+
+      const result = await updateAgent('agent-1', { name: 'Updated Agent' });
+
+      expect(fetch).toHaveBeenCalledWith('/api/agents/agent-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated Agent' }),
+      });
+      expect(result).toEqual(mockAgent);
+    });
+
+    it('should throw error when updating built-in agent', async () => {
+      const { updateAgent } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: vi.fn().mockResolvedValue({ error: 'Cannot update built-in agent' }),
+      } as unknown as Response);
+
+      await expect(updateAgent('claude-code', { name: 'New Name' })).rejects.toThrow(
+        'Cannot update built-in agent'
+      );
+    });
+  });
+
+  describe('unregisterAgent', () => {
+    it('should unregister agent successfully', async () => {
+      const { unregisterAgent } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+
+      await unregisterAgent('agent-1');
+
+      expect(fetch).toHaveBeenCalledWith('/api/agents/agent-1', {
+        method: 'DELETE',
+      });
+    });
+
+    it('should throw error when unregistering built-in agent', async () => {
+      const { unregisterAgent } = await import('../api');
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: vi.fn().mockResolvedValue({ error: 'Cannot unregister built-in agent' }),
+      } as unknown as Response);
+
+      await expect(unregisterAgent('claude-code')).rejects.toThrow(
+        'Cannot unregister built-in agent'
+      );
+    });
+  });
 });

@@ -1,184 +1,171 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import type { PersistedSession } from '../persistence-service.js';
 
-// Test directory for isolated tests
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-cleanup-test-' + Date.now());
+// Track which PIDs were killed
+const killedPids: number[] = [];
+const alivePids = new Set<number>();
 
-// Mock persistence service that uses test directory
-class MockPersistenceService {
-  private sessionsFile: string;
+// Mock persistence service
+vi.mock('../persistence-service.js', () => ({
+  persistenceService: {
+    loadSessions: vi.fn(() => []),
+    saveSessions: vi.fn(),
+    removeSession: vi.fn(),
+    getSessionMetadata: vi.fn(),
+    clearSessions: vi.fn(),
+    loadRepositories: vi.fn(() => []),
+    saveRepositories: vi.fn(),
+    loadAgents: vi.fn(() => []),
+    saveAgents: vi.fn(),
+    getAgent: vi.fn(),
+    removeAgent: vi.fn(),
+  },
+}));
 
-  constructor() {
-    if (!fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    this.sessionsFile = path.join(TEST_CONFIG_DIR, 'sessions.json');
-  }
+// Mock node-pty to prevent actual PTY spawning
+vi.mock('node-pty', () => ({
+  spawn: vi.fn(() => ({
+    pid: 99999,
+    onData: vi.fn(),
+    onExit: vi.fn(),
+    write: vi.fn(),
+    resize: vi.fn(),
+    kill: vi.fn(),
+  })),
+}));
 
-  loadSessions(): PersistedSession[] {
-    try {
-      if (fs.existsSync(this.sessionsFile)) {
-        return JSON.parse(fs.readFileSync(this.sessionsFile, 'utf-8'));
+// Mock agent-manager
+vi.mock('./agent-manager.js', () => ({
+  agentManager: {
+    getAgent: vi.fn(() => ({
+      id: 'claude-code',
+      name: 'Claude Code',
+      command: 'claude',
+      isBuiltIn: true,
+    })),
+    getDefaultAgent: vi.fn(() => ({
+      id: 'claude-code',
+      name: 'Claude Code',
+      command: 'claude',
+      isBuiltIn: true,
+    })),
+  },
+  CLAUDE_CODE_AGENT_ID: 'claude-code',
+}));
+
+// Mock config
+vi.mock('../lib/config.js', () => ({
+  getServerPid: vi.fn(() => 12345),
+  getConfigDir: vi.fn(() => '/tmp/test-config'),
+}));
+
+// Mock process.kill to track kills and simulate process existence
+const originalProcessKill = process.kill;
+beforeEach(() => {
+  // Reset modules FIRST to ensure fresh imports
+  vi.resetModules();
+
+  killedPids.length = 0;
+  alivePids.clear();
+
+  // @ts-expect-error - mocking process.kill
+  process.kill = vi.fn((pid: number, signal?: string | number) => {
+    if (signal === 0) {
+      // Check if process exists
+      if (!alivePids.has(pid)) {
+        const error = new Error('Process does not exist');
+        (error as NodeJS.ErrnoException).code = 'ESRCH';
+        throw error;
       }
-    } catch {
-      // ignore
+      return true;
     }
-    return [];
-  }
+    // Actual kill
+    killedPids.push(pid);
+    return true;
+  });
+});
 
-  saveSessions(sessions: PersistedSession[]): void {
-    fs.writeFileSync(this.sessionsFile, JSON.stringify(sessions, null, 2));
-  }
-}
+afterEach(() => {
+  process.kill = originalProcessKill;
+});
 
-// Extracted cleanup logic for testing
-function cleanupOrphanProcesses(
-  persistenceService: MockPersistenceService,
-  _currentServerPid: number,
-  isProcessAlive: (pid: number) => boolean,
-  killProcess: (pid: number) => void
-): { killed: string[]; preserved: string[]; warnings: string[] } {
-  const persistedSessions = persistenceService.loadSessions();
-  const killed: string[] = [];
-  const preserved: string[] = [];
-  const warnings: string[] = [];
+describe('SessionManager cleanup on initialization', () => {
+  // Note: session-manager.ts exports a singleton `sessionManager` which is created
+  // when the module is imported. The cleanup runs in the constructor, so we test
+  // by setting up mocks BEFORE importing the module.
 
-  for (const session of persistedSessions) {
-    // If serverPid is not set (legacy session), don't kill it - be safe
-    if (!session.serverPid) {
-      warnings.push(`Session ${session.id} has no serverPid (legacy session), skipping cleanup`);
-      preserved.push(session.id);
-      continue;
-    }
+  it('should skip sessions without serverPid (legacy sessions)', async () => {
+    const { persistenceService } = await import('../persistence-service.js');
 
-    // Check if the server that created this session is still alive
-    if (isProcessAlive(session.serverPid)) {
-      // Parent server is still running, don't touch this session
-      preserved.push(session.id);
-      continue;
-    }
+    const legacySession: PersistedSession = {
+      id: 'legacy-session',
+      worktreePath: '/path/to/worktree',
+      repositoryId: 'repo-1',
+      pid: 11111,
+      serverPid: undefined as unknown as number,
+      createdAt: '2024-01-01T00:00:00.000Z',
+    };
+    vi.mocked(persistenceService.loadSessions).mockReturnValue([legacySession]);
 
-    // Parent server is dead, kill the orphan process
-    try {
-      killProcess(session.pid);
-      killed.push(session.id);
-    } catch {
-      // Process doesn't exist, that's fine
-    }
-  }
+    // Mark the session process as alive
+    alivePids.add(11111);
 
-  return { killed, preserved, warnings };
-}
+    // Import session-manager - singleton is created and cleanup runs
+    await import('../session-manager.js');
 
-describe('cleanupOrphanProcesses', () => {
-  let persistenceService: MockPersistenceService;
-
-  beforeEach(() => {
-    if (fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
-    }
-    persistenceService = new MockPersistenceService();
+    // Legacy session should NOT be killed
+    expect(killedPids).not.toContain(11111);
   });
 
-  afterEach(() => {
-    if (fs.existsSync(TEST_CONFIG_DIR)) {
-      fs.rmSync(TEST_CONFIG_DIR, { recursive: true });
-    }
+  it('should preserve sessions when parent server is still alive', async () => {
+    const { persistenceService } = await import('../persistence-service.js');
+
+    const activeSession: PersistedSession = {
+      id: 'active-session',
+      worktreePath: '/path/to/worktree',
+      repositoryId: 'repo-1',
+      pid: 22222,
+      serverPid: 33333, // Parent server PID
+      createdAt: '2024-01-01T00:00:00.000Z',
+    };
+    vi.mocked(persistenceService.loadSessions).mockReturnValue([activeSession]);
+
+    // Mark both session process and parent server as alive
+    alivePids.add(22222);
+    alivePids.add(33333);
+
+    await import('../session-manager.js');
+
+    // Session should NOT be killed because parent server is alive
+    expect(killedPids).not.toContain(22222);
   });
 
-  it('should skip sessions without serverPid (legacy sessions)', () => {
-    const sessions: PersistedSession[] = [
-      {
-        id: 'legacy-session',
-        worktreePath: '/path/to/worktree',
-        repositoryId: 'repo-1',
-        pid: 12345,
-        serverPid: undefined as unknown as number, // Legacy session without serverPid
-        createdAt: '2024-01-01T00:00:00.000Z',
-      },
-    ];
-    persistenceService.saveSessions(sessions);
+  it('should kill sessions when parent server is dead', async () => {
+    const { persistenceService } = await import('../persistence-service.js');
 
-    const killProcess = vi.fn();
-    const isProcessAlive = vi.fn().mockReturnValue(true);
+    const orphanSession: PersistedSession = {
+      id: 'orphan-session',
+      worktreePath: '/path/to/worktree',
+      repositoryId: 'repo-1',
+      pid: 44444,
+      serverPid: 55555, // Dead parent server
+      createdAt: '2024-01-01T00:00:00.000Z',
+    };
+    vi.mocked(persistenceService.loadSessions).mockReturnValue([orphanSession]);
 
-    const result = cleanupOrphanProcesses(
-      persistenceService,
-      99999,
-      isProcessAlive,
-      killProcess
-    );
+    // Mark session process as alive, but parent server as dead
+    alivePids.add(44444);
+    // Note: 55555 is NOT in alivePids, so it's dead
 
-    expect(result.killed).toEqual([]);
-    expect(result.preserved).toEqual(['legacy-session']);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toContain('legacy session');
-    expect(killProcess).not.toHaveBeenCalled();
+    await import('../session-manager.js');
+
+    // Orphan session should be killed
+    expect(killedPids).toContain(44444);
   });
 
-  it('should preserve sessions when parent server is still alive', () => {
-    const sessions: PersistedSession[] = [
-      {
-        id: 'active-session',
-        worktreePath: '/path/to/worktree',
-        repositoryId: 'repo-1',
-        pid: 12345,
-        serverPid: 11111, // Parent server PID
-        createdAt: '2024-01-01T00:00:00.000Z',
-      },
-    ];
-    persistenceService.saveSessions(sessions);
+  it('should handle mixed sessions correctly', async () => {
+    const { persistenceService } = await import('../persistence-service.js');
 
-    const killProcess = vi.fn();
-    const isProcessAlive = vi.fn().mockReturnValue(true); // Parent server is alive
-
-    const result = cleanupOrphanProcesses(
-      persistenceService,
-      99999, // Current server PID (different from parent)
-      isProcessAlive,
-      killProcess
-    );
-
-    expect(result.killed).toEqual([]);
-    expect(result.preserved).toEqual(['active-session']);
-    expect(result.warnings).toHaveLength(0);
-    expect(killProcess).not.toHaveBeenCalled();
-    expect(isProcessAlive).toHaveBeenCalledWith(11111);
-  });
-
-  it('should kill sessions when parent server is dead', () => {
-    const sessions: PersistedSession[] = [
-      {
-        id: 'orphan-session',
-        worktreePath: '/path/to/worktree',
-        repositoryId: 'repo-1',
-        pid: 12345,
-        serverPid: 11111, // Dead parent server PID
-        createdAt: '2024-01-01T00:00:00.000Z',
-      },
-    ];
-    persistenceService.saveSessions(sessions);
-
-    const killProcess = vi.fn();
-    const isProcessAlive = vi.fn().mockReturnValue(false); // Parent server is dead
-
-    const result = cleanupOrphanProcesses(
-      persistenceService,
-      99999,
-      isProcessAlive,
-      killProcess
-    );
-
-    expect(result.killed).toEqual(['orphan-session']);
-    expect(result.preserved).toEqual([]);
-    expect(result.warnings).toHaveLength(0);
-    expect(killProcess).toHaveBeenCalledWith(12345);
-  });
-
-  it('should handle mixed sessions correctly', () => {
     const sessions: PersistedSession[] = [
       {
         id: 'legacy-session',
@@ -205,45 +192,30 @@ describe('cleanupOrphanProcesses', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
       },
     ];
-    persistenceService.saveSessions(sessions);
+    vi.mocked(persistenceService.loadSessions).mockReturnValue(sessions);
 
-    const killProcess = vi.fn();
-    const isProcessAlive = vi.fn().mockImplementation((pid: number) => {
-      return pid === 20001; // Only server 20001 is alive
-    });
+    // Set up process states
+    alivePids.add(10001); // Legacy session process
+    alivePids.add(10002); // Active session process
+    alivePids.add(10003); // Orphan session process
+    alivePids.add(20001); // Alive parent server
+    // 20002 is dead (not in alivePids)
 
-    const result = cleanupOrphanProcesses(
-      persistenceService,
-      99999,
-      isProcessAlive,
-      killProcess
-    );
+    await import('../session-manager.js');
 
-    expect(result.killed).toEqual(['orphan-session']);
-    expect(result.preserved).toContain('legacy-session');
-    expect(result.preserved).toContain('active-session');
-    expect(result.warnings).toHaveLength(1);
-    expect(killProcess).toHaveBeenCalledTimes(1);
-    expect(killProcess).toHaveBeenCalledWith(10003);
+    // Only orphan session should be killed
+    expect(killedPids).toContain(10003);
+    expect(killedPids).not.toContain(10001);
+    expect(killedPids).not.toContain(10002);
   });
 
-  it('should handle empty sessions list', () => {
-    persistenceService.saveSessions([]);
+  it('should handle empty sessions list', async () => {
+    const { persistenceService } = await import('../persistence-service.js');
+    vi.mocked(persistenceService.loadSessions).mockReturnValue([]);
 
-    const killProcess = vi.fn();
-    const isProcessAlive = vi.fn();
+    await import('../session-manager.js');
 
-    const result = cleanupOrphanProcesses(
-      persistenceService,
-      99999,
-      isProcessAlive,
-      killProcess
-    );
-
-    expect(result.killed).toEqual([]);
-    expect(result.preserved).toEqual([]);
-    expect(result.warnings).toEqual([]);
-    expect(killProcess).not.toHaveBeenCalled();
-    expect(isProcessAlive).not.toHaveBeenCalled();
+    // No processes should be killed
+    expect(killedPids.length).toBe(0);
   });
 });
