@@ -250,14 +250,18 @@ describe('SessionManager', () => {
       expect(session?.status).toBe('running');
     });
 
-    it('should return null if session is already active', async () => {
+    it('should kill active session and restart', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
       const created = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const originalPid = created.pid;
       const restarted = manager.restartSession(created.id, vi.fn(), vi.fn());
 
-      expect(restarted).toBeNull();
+      expect(restarted).not.toBeNull();
+      expect(restarted?.id).toBe(created.id);
+      expect(restarted?.pid).not.toBe(originalPid); // New PID after restart
+      expect(restarted?.status).toBe('running');
     });
 
     it('should return null if no metadata exists', async () => {

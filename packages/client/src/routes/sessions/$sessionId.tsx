@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
+import { SessionSettings } from '../../components/SessionSettings';
 import { getSessionMetadata, restartSession, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import type { ClaudeActivityState } from '@agent-console/shared';
@@ -36,11 +37,6 @@ interface Tab {
   wsUrl: string;
 }
 
-function extractBranchName(worktreePath: string): string {
-  // Extract last directory name as branch hint
-  const parts = worktreePath.split('/');
-  return parts[parts.length - 1] || 'unknown';
-}
 
 function extractProjectName(worktreePath: string): string {
   // Path format: ~/.agent-console/worktrees/{org}/{repo}/{branch}
@@ -88,6 +84,16 @@ function TerminalPage() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [shellCounter, setShellCounter] = useState(1);
 
+  // Local branch name state (can be updated by settings dialog)
+  const [branchName, setBranchName] = useState<string>('');
+
+  // Sync branch name when metadata changes
+  useEffect(() => {
+    if (state.type === 'active' || state.type === 'disconnected') {
+      setBranchName(state.metadata.branch || '');
+    }
+  }, [state]);
+
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
     setConnectionStatus(status);
     setExitInfo(info);
@@ -101,7 +107,7 @@ function TerminalPage() {
   useEffect(() => {
     if (state.type !== 'active' && state.type !== 'disconnected') return;
 
-    const branchName = extractBranchName(state.metadata.worktreePath);
+    const branchName = state.metadata.branch;
     const projectName = extractProjectName(state.metadata.worktreePath);
     document.title = `${branchName}@${projectName} - Agent Console`;
 
@@ -209,6 +215,7 @@ function TerminalPage() {
         worktreePath: cwd || '(server default)',
         repositoryId: 'default',
         isActive: true,
+        branch: '(unknown)',
       };
       setState({ type: 'active', wsUrl, metadata: newMetadata });
       return;
@@ -350,8 +357,6 @@ function TerminalPage() {
   }
 
   // Active state - show terminal with status bar at bottom
-  const branchName = extractBranchName(state.metadata.worktreePath);
-
   const statusColor =
     connectionStatus === 'connected' && activityState !== 'unknown' ? 'bg-green-500' :
     connectionStatus === 'connected' || connectionStatus === 'connecting' ? 'bg-yellow-500' :
@@ -412,6 +417,22 @@ function TerminalPage() {
         >
           +
         </button>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Settings button */}
+        <div className="px-2">
+          <SessionSettings
+            sessionId={sessionId}
+            currentBranch={branchName}
+            onBranchChange={setBranchName}
+            onSessionRestart={() => {
+              // Reload page to reconnect WebSocket to restarted session
+              window.location.reload();
+            }}
+          />
+        </div>
       </div>
 
       {/* Terminal panels - render all but only show active */}

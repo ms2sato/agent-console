@@ -12,8 +12,7 @@ export interface Repository {
 // ========== Worktree ==========
 export interface Worktree {
   path: string;         // worktreeの絶対パス
-  branch: string;       // ブランチ名
-  head: string;         // HEADコミットハッシュ
+  branch: string;       // ブランチ名（gitから動的取得）
   isMain: boolean;      // メインworktreeか
   repositoryId: string; // 親リポジトリID
   index?: number;       // 連番（1から。メインには割り当てない）
@@ -38,6 +37,7 @@ export interface Session {
   pid?: number;
   startedAt: string;    // ISO 8601
   agentId?: string;     // 使用するAgent ID（未指定時はデフォルトAgent）
+  branch: string;       // ブランチ名（セッション開始時に取得）
 }
 
 // ========== WebSocket メッセージ ==========

@@ -69,17 +69,21 @@ api.get('/sessions/:id/metadata', (c) => {
       worktreePath: activeSession.worktreePath,
       repositoryId: activeSession.repositoryId,
       isActive: true,
+      branch: activeSession.branch,
     });
   }
 
   // Check persisted metadata for dead sessions
   const metadata = sessionManager.getSessionMetadata(sessionId);
   if (metadata) {
+    // Get current branch from git for dead sessions
+    const branch = sessionManager.getBranchForPath(metadata.worktreePath);
     return c.json({
       id: metadata.id,
       worktreePath: metadata.worktreePath,
       repositoryId: metadata.repositoryId,
       isActive: false,
+      branch,
     });
   }
 
@@ -117,6 +121,28 @@ api.delete('/sessions/:id', (c) => {
   }
 
   return c.json({ success: true });
+});
+
+// Rename branch for a session
+api.patch('/sessions/:id/branch', async (c) => {
+  const sessionId = c.req.param('id');
+  const body = await c.req.json<{ newBranch: string }>();
+  const { newBranch } = body;
+
+  if (!newBranch?.trim()) {
+    throw new ValidationError('newBranch is required');
+  }
+
+  const result = sessionManager.renameBranch(sessionId, newBranch.trim());
+
+  if (!result.success) {
+    if (result.error === 'session_not_found') {
+      throw new NotFoundError('Session');
+    }
+    throw new ValidationError(result.error || 'Failed to rename branch');
+  }
+
+  return c.json({ success: true, branch: result.branch });
 });
 
 // ========== Repository API ==========

@@ -60,6 +60,7 @@ describe('Terminal Handler', () => {
         pid: 12345,
         startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
+        branch: 'main',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
       vi.mocked(sessionManager.getOutputBuffer).mockReturnValue('previous output');
@@ -84,6 +85,7 @@ describe('Terminal Handler', () => {
         pid: 12345,
         startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'active',
+        branch: 'main',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
       vi.mocked(sessionManager.getOutputBuffer).mockReturnValue('');
@@ -106,6 +108,7 @@ describe('Terminal Handler', () => {
         status: 'running',
         pid: 12345,
         startedAt: '2024-01-01T00:00:00.000Z',
+        branch: 'main',
         // activityState is undefined
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
@@ -130,6 +133,7 @@ describe('Terminal Handler', () => {
         pid: 12345,
         startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
+        branch: 'main',
       };
       vi.mocked(sessionManager.getSession).mockReturnValue(mockSession);
       vi.mocked(sessionManager.getOutputBuffer).mockReturnValue('');
@@ -235,6 +239,7 @@ describe('Terminal Handler', () => {
         pid: 1234,
         startedAt: '2024-01-01T00:00:00.000Z',
         activityState: 'idle',
+        branch: 'main',
       });
 
       const { createSessionWithWebSocket } = await import('../terminal-handler.js');
@@ -264,6 +269,7 @@ describe('Terminal Handler', () => {
             pid: 1234,
             startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
+            branch: 'main',
           };
         }
       );
@@ -294,6 +300,7 @@ describe('Terminal Handler', () => {
             pid: 1234,
             startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
+            branch: 'main',
           };
         }
       );
@@ -370,6 +377,7 @@ describe('Terminal Handler', () => {
             pid: 1234,
             startedAt: '2024-01-01T00:00:00.000Z',
             activityState: 'idle',
+            branch: 'main',
           };
         }
       );
