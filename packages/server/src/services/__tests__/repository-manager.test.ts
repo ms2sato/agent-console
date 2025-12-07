@@ -24,6 +24,8 @@ vi.mock('../persistence-service.js', () => ({
 // Mock config
 vi.mock('../../lib/config.js', () => ({
   getConfigDir: vi.fn(() => TEST_CONFIG_DIR),
+  getRepositoriesDir: vi.fn(() => `${TEST_CONFIG_DIR}/repositories`),
+  getRepositoryDir: vi.fn((orgRepo: string) => `${TEST_CONFIG_DIR}/repositories/${orgRepo}`),
 }));
 
 describe('RepositoryManager', () => {
