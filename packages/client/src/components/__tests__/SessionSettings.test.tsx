@@ -68,9 +68,9 @@ describe('SessionSettings', () => {
   };
 
   describe('handleDeleteWorktree', () => {
-    it('should delete worktree first, then session on success', async () => {
+    it('should call deleteWorktree and navigate on success', async () => {
+      // Server-side deleteWorktree also terminates sessions, so no separate deleteSession call
       vi.mocked(api.deleteWorktree).mockResolvedValue(undefined);
-      vi.mocked(api.deleteSession).mockResolvedValue(undefined);
 
       render(<SessionSettings {...defaultProps} />);
 
@@ -84,20 +84,14 @@ describe('SessionSettings', () => {
         );
       });
 
-      await waitFor(() => {
-        expect(api.deleteSession).toHaveBeenCalledWith('test-session-id');
-      });
+      // deleteSession is NOT called from client - server handles it
+      expect(api.deleteSession).not.toHaveBeenCalled();
 
       // Should navigate to home
       expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
-
-      // Verify order: deleteWorktree called before deleteSession
-      const deleteWorktreeCallOrder = vi.mocked(api.deleteWorktree).mock.invocationCallOrder[0];
-      const deleteSessionCallOrder = vi.mocked(api.deleteSession).mock.invocationCallOrder[0];
-      expect(deleteWorktreeCallOrder).toBeLessThan(deleteSessionCallOrder);
     });
 
-    it('should NOT call deleteSession when deleteWorktree fails with untracked files error', async () => {
+    it('should show Force Delete option when deleteWorktree fails with untracked files error', async () => {
       vi.mocked(api.deleteWorktree).mockRejectedValue(
         new Error('Worktree contains untracked files')
       );
@@ -114,9 +108,6 @@ describe('SessionSettings', () => {
         );
       });
 
-      // deleteSession should NOT be called
-      expect(api.deleteSession).not.toHaveBeenCalled();
-
       // Should show error with Force Delete option
       await waitFor(() => {
         expect(screen.getByText(/untracked files/i)).toBeTruthy();
@@ -132,7 +123,6 @@ describe('SessionSettings', () => {
       vi.mocked(api.deleteWorktree)
         .mockRejectedValueOnce(new Error('Worktree contains untracked files'))
         .mockResolvedValueOnce(undefined);
-      vi.mocked(api.deleteSession).mockResolvedValue(undefined);
 
       render(<SessionSettings {...defaultProps} />);
 
@@ -157,11 +147,6 @@ describe('SessionSettings', () => {
         );
       });
 
-      // After force delete succeeds, deleteSession should be called
-      await waitFor(() => {
-        expect(api.deleteSession).toHaveBeenCalledWith('test-session-id');
-      });
-
       // Should navigate to home
       expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
     });
@@ -177,29 +162,8 @@ describe('SessionSettings', () => {
         expect(screen.getByText('Permission denied')).toBeTruthy();
       });
 
-      // deleteSession should NOT be called
-      expect(api.deleteSession).not.toHaveBeenCalled();
-
       // Force Delete button should NOT appear (only for untracked files)
       expect(screen.queryByText('Force Delete')).toBeNull();
-    });
-
-    it('should succeed even if deleteSession fails after worktree deletion', async () => {
-      vi.mocked(api.deleteWorktree).mockResolvedValue(undefined);
-      vi.mocked(api.deleteSession).mockRejectedValue(new Error('Session not found'));
-
-      render(<SessionSettings {...defaultProps} />);
-
-      await openDeleteWorktreeDialogAndConfirm();
-
-      await waitFor(() => {
-        expect(api.deleteWorktree).toHaveBeenCalled();
-      });
-
-      // Even though deleteSession failed, we should still navigate (worktree is deleted)
-      await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
-      });
     });
   });
 });
