@@ -1,22 +1,26 @@
-import { build } from 'esbuild';
 import { writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = dirname(new URL(import.meta.url).pathname);
 const distDir = join(__dirname, '../../dist');
 
-// Bundle server with esbuild
-await build({
-  entryPoints: [join(__dirname, 'src/index.ts')],
-  bundle: true,
-  platform: 'node',
-  target: 'node22',
+// Bundle server with Bun's built-in bundler
+const result = await Bun.build({
+  entrypoints: [join(__dirname, 'src/index.ts')],
+  outdir: distDir,
+  target: 'bun',
   format: 'esm',
-  outfile: join(distDir, 'index.js'),
-  external: ['node-pty', 'ws'], // Native module + CJS module with dynamic require
-  sourcemap: true,
+  sourcemap: 'external',
+  external: ['@zenyr/bun-pty'], // Native module
 });
+
+if (!result.success) {
+  console.error('Build failed:');
+  for (const message of result.logs) {
+    console.error(message);
+  }
+  process.exit(1);
+}
 
 // Generate dist/package.json for standalone distribution
 const distPackageJson = {
@@ -24,14 +28,10 @@ const distPackageJson = {
   version: '0.1.0',
   type: 'module',
   scripts: {
-    start: 'node index.js',
+    start: 'bun index.js',
   },
   dependencies: {
-    'node-pty': '^1.0.0',
-    'ws': '^8.18.0',
-  },
-  engines: {
-    node: '>=22.0.0',
+    '@zenyr/bun-pty': '^0.4.4',
   },
 };
 

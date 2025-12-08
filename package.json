@@ -3,24 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "AGENT_CONSOLE_HOME=$HOME/.agent-console-dev pnpm --parallel --filter './packages/*' dev",
-    "build": "pnpm --filter @agent-console/shared build && pnpm --filter @agent-console/client build && pnpm --filter @agent-console/server build",
-    "start": "NODE_ENV=production node dist/index.js",
-    "typecheck": "pnpm --filter './packages/*' typecheck",
-    "test": "pnpm typecheck && pnpm test:only",
-    "test:only": "pnpm --filter './packages/*' test",
-    "lint": "pnpm --filter './packages/*' lint"
+    "dev": "AGENT_CONSOLE_HOME=$HOME/.agent-console-dev bun run --filter '*' dev",
+    "build": "bun run --filter '@agent-console/shared' build && bun run --filter '@agent-console/client' build && bun run --filter '@agent-console/server' build",
+    "start": "NODE_ENV=production bun dist/index.js",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run typecheck && bun run test:only",
+    "test:only": "bun run --filter '*' test",
+    "lint": "bun run --filter '*' lint"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@9.14.4",
-  "engines": {
-    "node": ">=20.0.0"
-  },
   "dependencies": {
-    "node-pty": "^1.0.0",
-    "ws": "^8.18.3"
   }
 }

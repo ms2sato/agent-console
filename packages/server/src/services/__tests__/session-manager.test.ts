@@ -9,8 +9,8 @@ const ptyFactory = createMockPtyFactory(10000);
 // Mock data storage
 let mockPersistedSessions: PersistedSession[] = [];
 
-// Mock node-pty
-vi.mock('node-pty', () => ptyFactory.createMock());
+// Mock @zenyr/bun-pty
+vi.mock('@zenyr/bun-pty', () => ptyFactory.createMock());
 
 // Mock persistence service
 vi.mock('../persistence-service.js', () => ({
