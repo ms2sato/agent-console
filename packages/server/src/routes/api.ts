@@ -8,7 +8,7 @@ import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { agentManager } from '../services/agent-manager.js';
-import { NotFoundError, ValidationError, ConflictError } from '../lib/errors.js';
+import { NotFoundError, ValidationError } from '../lib/errors.js';
 
 const api = new Hono();
 
@@ -287,21 +287,20 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   // Check for force flag in query
   const force = c.req.query('force') === 'true';
 
-  // Kill any sessions running in this worktree
-  const sessions = sessionManager.getAllSessions();
-  for (const session of sessions) {
-    if (session.worktreePath === worktreePath) {
-      if (!force) {
-        throw new ConflictError('Session is running in this worktree. Use force=true to terminate.');
-      }
-      sessionManager.killSession(session.id);
-    }
-  }
-
+  // Try to remove worktree first
   const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
   if (!result.success) {
+    // Worktree deletion failed - don't touch sessions
     throw new ValidationError(result.error || 'Failed to remove worktree');
+  }
+
+  // Worktree deletion succeeded - now clean up any associated sessions
+  const sessions = sessionManager.getAllSessions();
+  for (const session of sessions) {
+    if (session.worktreePath === worktreePath) {
+      sessionManager.killSession(session.id);
+    }
   }
 
   return c.json({ success: true });
