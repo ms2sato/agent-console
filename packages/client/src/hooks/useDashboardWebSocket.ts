@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { DashboardServerMessage, ClaudeActivityState } from '@agent-console/shared';
+import type { DashboardServerMessage, AgentActivityState } from '@agent-console/shared';
+
+interface WorkerActivityInfo {
+  id: string;
+  activityState?: AgentActivityState;
+}
+
+interface SessionActivityInfo {
+  id: string;
+  workers: WorkerActivityInfo[];
+}
 
 interface UseDashboardWebSocketOptions {
-  onSync?: (sessions: Array<{ id: string; activityState: ClaudeActivityState }>) => void;
-  onActivity?: (sessionId: string, state: ClaudeActivityState) => void;
+  onSync?: (sessions: SessionActivityInfo[]) => void;
+  onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
 }
 
 interface UseDashboardWebSocketReturn {
@@ -48,10 +58,9 @@ export function useDashboardWebSocket(
             console.log(`[WebSocket] sessions-sync received: ${msg.sessions.length} sessions`);
             optionsRef.current.onSync?.(msg.sessions);
             break;
-          case 'session-activity':
-            optionsRef.current.onActivity?.(msg.sessionId, msg.activityState);
+          case 'worker-activity':
+            optionsRef.current.onWorkerActivity?.(msg.sessionId, msg.workerId, msg.activityState);
             break;
-          // Add other message types as needed
         }
       } catch (e) {
         console.error('Failed to parse dashboard WebSocket message:', e);

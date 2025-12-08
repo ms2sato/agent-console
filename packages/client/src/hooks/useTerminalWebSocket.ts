@@ -1,12 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { TerminalClientMessage, TerminalServerMessage, ClaudeActivityState } from '@agent-console/shared';
+import type { WorkerClientMessage, WorkerServerMessage, AgentActivityState } from '@agent-console/shared';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string) => void;
   onHistory: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
-  onActivity?: (state: ClaudeActivityState) => void;
+  onActivity?: (state: AgentActivityState) => void;
 }
 
 interface UseTerminalWebSocketReturn {
@@ -48,7 +48,7 @@ export function useTerminalWebSocket(
 
       ws.onmessage = (event) => {
         try {
-          const msg: TerminalServerMessage = JSON.parse(event.data);
+          const msg: WorkerServerMessage = JSON.parse(event.data);
           switch (msg.type) {
             case 'output':
               optionsRef.current.onOutput(msg.data);
@@ -91,21 +91,21 @@ export function useTerminalWebSocket(
 
   const sendInput = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: TerminalClientMessage = { type: 'input', data };
+      const msg: WorkerClientMessage = { type: 'input', data };
       wsRef.current.send(JSON.stringify(msg));
     }
   }, []);
 
   const sendResize = useCallback((cols: number, rows: number) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: TerminalClientMessage = { type: 'resize', cols, rows };
+      const msg: WorkerClientMessage = { type: 'resize', cols, rows };
       wsRef.current.send(JSON.stringify(msg));
     }
   }, []);
 
   const sendImage = useCallback((data: string, mimeType: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: TerminalClientMessage = { type: 'image', data, mimeType };
+      const msg: WorkerClientMessage = { type: 'image', data, mimeType };
       wsRef.current.send(JSON.stringify(msg));
     }
   }, []);

@@ -3,11 +3,17 @@ import { homedir } from 'node:os';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import open from 'open';
-import type { CreateWorktreeRequest, CreateAgentRequest, UpdateAgentRequest } from '@agent-console/shared';
+import type {
+  CreateWorktreeRequest,
+  CreateAgentRequest,
+  UpdateAgentRequest,
+  CreateSessionRequest,
+  CreateWorkerRequest,
+} from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
-import { agentManager } from '../services/agent-manager.js';
+import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 
 const api = new Hono();
@@ -30,93 +36,44 @@ api.get('/sessions', (c) => {
   return c.json({ sessions });
 });
 
-// Create a new session
-api.post('/sessions', async (c) => {
-  const body = await c.req.json<{
-    worktreePath?: string;
-    repositoryId?: string;
-    continueConversation?: boolean;
-    agentId?: string;
-  }>();
-  const {
-    worktreePath = process.cwd(),
-    repositoryId = 'default',
-    continueConversation = false,
-    agentId,
-  } = body;
-
-  // Create session without WebSocket initially
-  // The WebSocket connection will attach to it later
-  const session = sessionManager.createSession(
-    worktreePath,
-    repositoryId,
-    () => {}, // onData placeholder - will be replaced by WebSocket
-    () => {}, // onExit placeholder - will be replaced by WebSocket
-    continueConversation,
-    agentId
-  );
-
-  return c.json({ session }, 201);
-});
-
-// Get session metadata (for reconnection UI)
-api.get('/sessions/:id/metadata', (c) => {
+// Get a single session
+api.get('/sessions/:id', (c) => {
   const sessionId = c.req.param('id');
 
   // First check if session is active
-  const activeSession = sessionManager.getSession(sessionId);
-  if (activeSession) {
-    return c.json({
-      id: activeSession.id,
-      worktreePath: activeSession.worktreePath,
-      repositoryId: activeSession.repositoryId,
-      isActive: true,
-      branch: activeSession.branch,
-    });
+  const session = sessionManager.getSession(sessionId);
+  if (session) {
+    return c.json({ session });
   }
 
-  // Check persisted metadata for dead sessions
+  // Check persisted metadata for inactive sessions
   const metadata = sessionManager.getSessionMetadata(sessionId);
   if (metadata) {
-    // Get current branch from git for dead sessions
-    const branch = sessionManager.getBranchForPath(metadata.worktreePath);
+    // Return persisted data with inactive status
     return c.json({
-      id: metadata.id,
-      worktreePath: metadata.worktreePath,
-      repositoryId: metadata.repositoryId,
-      isActive: false,
-      branch,
+      session: {
+        ...metadata,
+        status: 'inactive',
+      },
     });
   }
 
   throw new NotFoundError('Session');
 });
 
-// Restart a dead session (reuse same session ID)
-api.post('/sessions/:id/restart', async (c) => {
-  const sessionId = c.req.param('id');
-  const body = await c.req.json<{ continueConversation?: boolean; agentId?: string }>();
-  const { continueConversation = false, agentId } = body;
+// Create a new session
+api.post('/sessions', async (c) => {
+  const body = await c.req.json<CreateSessionRequest>();
 
-  const session = sessionManager.restartSession(
-    sessionId,
-    () => {}, // onData placeholder - will be replaced by WebSocket
-    () => {}, // onExit placeholder - will be replaced by WebSocket
-    continueConversation,
-    agentId
-  );
+  const session = sessionManager.createSession(body);
 
-  if (!session) {
-    throw new NotFoundError('Session');
-  }
-
-  return c.json({ session });
+  return c.json({ session }, 201);
 });
 
 // Delete a session
 api.delete('/sessions/:id', (c) => {
   const sessionId = c.req.param('id');
-  const success = sessionManager.killSession(sessionId);
+  const success = sessionManager.deleteSession(sessionId);
 
   if (!success) {
     throw new NotFoundError('Session');
@@ -145,6 +102,74 @@ api.patch('/sessions/:id/branch', async (c) => {
   }
 
   return c.json({ success: true, branch: result.branch });
+});
+
+// ========== Workers API ==========
+
+// Get workers for a session
+api.get('/sessions/:sessionId/workers', (c) => {
+  const sessionId = c.req.param('sessionId');
+  const session = sessionManager.getSession(sessionId);
+
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  return c.json({ workers: session.workers });
+});
+
+// Create a worker in a session
+api.post('/sessions/:sessionId/workers', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const body = await c.req.json<CreateWorkerRequest & { continueConversation?: boolean }>();
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  const { continueConversation = false, ...workerRequest } = body;
+  const worker = sessionManager.createWorker(sessionId, workerRequest, continueConversation);
+
+  if (!worker) {
+    throw new ValidationError('Failed to create worker');
+  }
+
+  return c.json({ worker }, 201);
+});
+
+// Delete a worker
+api.delete('/sessions/:sessionId/workers/:workerId', (c) => {
+  const sessionId = c.req.param('sessionId');
+  const workerId = c.req.param('workerId');
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  const success = sessionManager.deleteWorker(sessionId, workerId);
+  if (!success) {
+    throw new NotFoundError('Worker');
+  }
+
+  return c.json({ success: true });
+});
+
+// Restart an agent worker
+api.post('/sessions/:sessionId/workers/:workerId/restart', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const workerId = c.req.param('workerId');
+  const body = await c.req.json<{ continueConversation?: boolean }>();
+  const { continueConversation = false } = body;
+
+  const worker = sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
+
+  if (!worker) {
+    throw new NotFoundError('Worker');
+  }
+
+  return c.json({ worker });
 });
 
 // ========== Repository API ==========
@@ -245,14 +270,13 @@ api.post('/repositories/:id/worktrees', async (c) => {
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
-    session = sessionManager.createSession(
-      worktree.path,
-      repoId,
-      () => {},
-      () => {},
-      false, // continueConversation
-      agentId
-    );
+    session = sessionManager.createSession({
+      type: 'worktree',
+      repositoryId: repoId,
+      worktreeId: worktree.branch,
+      locationPath: worktree.path,
+      agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
+    });
   }
 
   return c.json({ worktree, session }, 201);
@@ -298,8 +322,8 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   // Worktree deletion succeeded - now clean up any associated sessions
   const sessions = sessionManager.getAllSessions();
   for (const session of sessions) {
-    if (session.worktreePath === worktreePath) {
-      sessionManager.killSession(session.id);
+    if (session.locationPath === worktreePath) {
+      sessionManager.deleteSession(session.id);
     }
   }
 

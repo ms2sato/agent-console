@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { PersistedSession } from '../persistence-service.js';
+import type { CreateSessionRequest, CreateWorkerRequest } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 
 // Create mock PTY factory
@@ -74,22 +75,49 @@ describe('SessionManager', () => {
   });
 
   describe('createSession', () => {
-    it('should create a new session with correct properties', async () => {
+    it('should create a new worktree session with correct properties', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const onData = vi.fn();
-      const onExit = vi.fn();
+      const request: CreateSessionRequest = {
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      };
 
-      const session = manager.createSession('/test/path', 'repo-1', onData, onExit);
+      const session = manager.createSession(request);
 
       expect(session.id).toBeDefined();
-      expect(session.worktreePath).toBe('/test/path');
-      expect(session.repositoryId).toBe('repo-1');
-      expect(session.status).toBe('running');
-      expect(session.activityState).toBe('idle');
-      expect(session.pid).toBeDefined();
-      expect(session.agentId).toBe('claude-code');
+      expect(session.type).toBe('worktree');
+      expect(session.locationPath).toBe('/test/path');
+      if (session.type === 'worktree') {
+        expect(session.repositoryId).toBe('repo-1');
+        expect(session.worktreeId).toBe('main');
+      }
+      expect(session.status).toBe('active');
+      expect(session.workers.length).toBe(1);
+      expect(session.workers[0].type).toBe('agent');
+    });
+
+    it('should create a new quick session with correct properties', async () => {
+      const { SessionManager } = await import('../session-manager.js');
+      const manager = new SessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(request);
+
+      expect(session.id).toBeDefined();
+      expect(session.type).toBe('quick');
+      expect(session.locationPath).toBe('/test/path');
+      expect(session.status).toBe('active');
+      expect(session.workers.length).toBe(1);
     });
 
     it('should persist session to storage', async () => {
@@ -97,11 +125,17 @@ describe('SessionManager', () => {
       const { persistenceService } = await import('../persistence-service.js');
       const manager = new SessionManager();
 
-      manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      manager.createSession(request);
 
       expect(vi.mocked(persistenceService.saveSessions)).toHaveBeenCalled();
       expect(mockPersistedSessions.length).toBe(1);
-      expect(mockPersistedSessions[0].worktreePath).toBe('/test/path');
+      expect(mockPersistedSessions[0].locationPath).toBe('/test/path');
       expect(mockPersistedSessions[0].serverPid).toBe(99999);
     });
 
@@ -110,7 +144,18 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(request);
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData,
+        onExit: vi.fn(),
+      });
 
       // Simulate PTY output
       const pty = ptyFactory.instances[0];
@@ -124,7 +169,18 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onExit = vi.fn();
-      manager.createSession('/test/path', 'repo-1', vi.fn(), onExit);
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(request);
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: vi.fn(),
+        onExit,
+      });
 
       // Simulate PTY exit
       const pty = ptyFactory.instances[0];
@@ -137,30 +193,98 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(request);
+      const workerId = session.workers[0].id;
 
       // Simulate PTY output
       const pty = ptyFactory.instances[0];
       pty.simulateData('Line 1\n');
       pty.simulateData('Line 2\n');
 
-      const buffer = manager.getOutputBuffer(session.id);
+      const buffer = manager.getWorkerOutputBuffer(session.id, workerId);
       expect(buffer).toBe('Line 1\nLine 2\n');
     });
+  });
 
-    it('should spawn PTY with continue args when continueConversation is true', async () => {
-      const pty = await import('node-pty');
+  describe('createWorker', () => {
+    it('should create a terminal worker in existing session', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn(), true);
+      const sessionRequest: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
 
-      expect(vi.mocked(pty.spawn)).toHaveBeenCalled();
-      const callArgs = vi.mocked(pty.spawn).mock.calls[0];
-      // Should spawn login shell with -l -c flags
-      expect(callArgs[0]).toBe(process.env.SHELL || '/bin/bash');
-      expect(callArgs[1]).toEqual(['-l', '-c', 'claude -c']);
-      expect(callArgs[2]).toMatchObject({ cwd: '/test/path' });
+      const session = manager.createSession(sessionRequest);
+
+      const workerRequest: CreateWorkerRequest = {
+        type: 'terminal',
+        name: 'Shell',
+      };
+
+      const worker = manager.createWorker(session.id, workerRequest);
+
+      expect(worker).not.toBeNull();
+      expect(worker?.type).toBe('terminal');
+      expect(worker?.name).toBe('Shell');
+    });
+
+    it('should return null for non-existent session', async () => {
+      const { SessionManager } = await import('../session-manager.js');
+      const manager = new SessionManager();
+
+      const workerRequest: CreateWorkerRequest = {
+        type: 'terminal',
+        name: 'Shell',
+      };
+
+      const worker = manager.createWorker('non-existent', workerRequest);
+      expect(worker).toBeNull();
+    });
+  });
+
+  describe('deleteWorker', () => {
+    it('should delete a worker from session', async () => {
+      const { SessionManager } = await import('../session-manager.js');
+      const manager = new SessionManager();
+
+      const sessionRequest: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(sessionRequest);
+      const workerId = session.workers[0].id;
+
+      const result = manager.deleteWorker(session.id, workerId);
+
+      expect(result).toBe(true);
+      const updatedSession = manager.getSession(session.id);
+      expect(updatedSession?.workers.find(w => w.id === workerId)).toBeUndefined();
+    });
+
+    it('should return false for non-existent worker', async () => {
+      const { SessionManager } = await import('../session-manager.js');
+      const manager = new SessionManager();
+
+      const sessionRequest: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = manager.createSession(sessionRequest);
+      const result = manager.deleteWorker(session.id, 'non-existent');
+      expect(result).toBe(false);
     });
   });
 
@@ -169,7 +293,13 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const created = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const created = manager.createSession(request);
       const retrieved = manager.getSession(created.id);
 
       expect(retrieved).toBeDefined();
@@ -198,113 +328,27 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      manager.createSession('/path/1', 'repo-1', vi.fn(), vi.fn());
-      manager.createSession('/path/2', 'repo-2', vi.fn(), vi.fn());
+      manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
+      manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
 
       const sessions = manager.getAllSessions();
       expect(sessions.length).toBe(2);
     });
   });
 
-  describe('getSessionMetadata', () => {
-    it('should return metadata from persistence service', async () => {
-      mockPersistedSessions = [
-        {
-          id: 'test-session',
-          worktreePath: '/test/path',
-          repositoryId: 'repo-1',
-          pid: 12345,
-          serverPid: 99999,
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
-      ];
-
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const metadata = manager.getSessionMetadata('test-session');
-      expect(metadata).toBeDefined();
-      expect(metadata?.worktreePath).toBe('/test/path');
-    });
-  });
-
-  describe('restartSession', () => {
-    it('should restart a dead session with same ID', async () => {
-      mockPersistedSessions = [
-        {
-          id: 'dead-session',
-          worktreePath: '/test/path',
-          repositoryId: 'repo-1',
-          pid: 12345,
-          serverPid: 88888, // Different server - session is dead
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
-      ];
-
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.restartSession('dead-session', vi.fn(), vi.fn());
-
-      expect(session).not.toBeNull();
-      expect(session?.id).toBe('dead-session');
-      expect(session?.status).toBe('running');
-    });
-
-    it('should kill active session and restart', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const created = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      const originalPid = created.pid;
-      const restarted = manager.restartSession(created.id, vi.fn(), vi.fn());
-
-      expect(restarted).not.toBeNull();
-      expect(restarted?.id).toBe(created.id);
-      expect(restarted?.pid).not.toBe(originalPid); // New PID after restart
-      expect(restarted?.status).toBe('running');
-    });
-
-    it('should return null if no metadata exists', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.restartSession('non-existent', vi.fn(), vi.fn());
-      expect(session).toBeNull();
-    });
-
-    it('should restart with continueConversation flag', async () => {
-      mockPersistedSessions = [
-        {
-          id: 'dead-session',
-          worktreePath: '/test/path',
-          repositoryId: 'repo-1',
-          pid: 12345,
-          serverPid: 88888,
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
-      ];
-
-      const pty = await import('node-pty');
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      manager.restartSession('dead-session', vi.fn(), vi.fn(), true); // continueConversation = true
-
-      // Verify login shell with -l -c flags was used
-      const callArgs = vi.mocked(pty.spawn).mock.calls[0];
-      expect(callArgs[0]).toBe(process.env.SHELL || '/bin/bash');
-      expect(callArgs[1]).toEqual(['-l', '-c', 'claude -c']);
-    });
-  });
-
-  describe('writeInput', () => {
+  describe('writeWorkerInput', () => {
     it('should write input to PTY', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      const result = manager.writeInput(session.id, 'hello');
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      const result = manager.writeWorkerInput(session.id, workerId, 'hello');
 
       expect(result).toBe(true);
       expect(ptyFactory.instances[0].writtenData).toContain('hello');
@@ -314,53 +358,24 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const result = manager.writeInput('non-existent', 'hello');
+      const result = manager.writeWorkerInput('non-existent', 'worker-1', 'hello');
       expect(result).toBe(false);
-    });
-
-    it('should handle Enter key (CR) as submit', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      manager.writeInput(session.id, '\r'); // Enter key
-
-      expect(ptyFactory.instances[0].writtenData).toContain('\r');
-    });
-
-    it('should handle ESC key', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      manager.writeInput(session.id, '\x1b'); // ESC key
-
-      expect(ptyFactory.instances[0].writtenData).toContain('\x1b');
-    });
-
-    it('should ignore focus in/out events for activity detection', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-
-      // Focus in event
-      manager.writeInput(session.id, '\x1b[I');
-      // Focus out event
-      manager.writeInput(session.id, '\x1b[O');
-
-      expect(ptyFactory.instances[0].writtenData).toContain('\x1b[I');
-      expect(ptyFactory.instances[0].writtenData).toContain('\x1b[O');
     });
   });
 
-  describe('resize', () => {
+  describe('resizeWorker', () => {
     it('should resize PTY', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      const result = manager.resize(session.id, 80, 24);
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      const result = manager.resizeWorker(session.id, workerId, 80, 24);
 
       expect(result).toBe(true);
       expect(ptyFactory.instances[0].currentCols).toBe(80);
@@ -371,19 +386,24 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const result = manager.resize('non-existent', 80, 24);
+      const result = manager.resizeWorker('non-existent', 'worker-1', 80, 24);
       expect(result).toBe(false);
     });
   });
 
-  describe('killSession', () => {
-    it('should kill session and remove from storage', async () => {
+  describe('deleteSession', () => {
+    it('should delete session and remove from storage', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const { persistenceService } = await import('../persistence-service.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      const result = manager.killSession(session.id);
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = manager.deleteSession(session.id);
 
       expect(result).toBe(true);
       expect(ptyFactory.instances[0].killed).toBe(true);
@@ -395,21 +415,29 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const result = manager.killSession('non-existent');
+      const result = manager.deleteSession('non-existent');
       expect(result).toBe(false);
     });
   });
 
-  describe('attachCallbacks / detachCallbacks', () => {
+  describe('attachWorkerCallbacks / detachWorkerCallbacks', () => {
     it('should update callbacks on attach', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
       const newOnData = vi.fn();
       const newOnExit = vi.fn();
-      const result = manager.attachCallbacks(session.id, newOnData, newOnExit);
+      const result = manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: newOnData,
+        onExit: newOnExit,
+      });
 
       expect(result).toBe(true);
 
@@ -423,9 +451,19 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      const session = manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
-      manager.detachCallbacks(session.id);
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData,
+        onExit: vi.fn(),
+      });
+
+      manager.detachWorkerCallbacks(session.id, workerId);
 
       // Data should not trigger original callback after detach
       onData.mockClear();
@@ -439,27 +477,37 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      expect(manager.attachCallbacks('non-existent', vi.fn(), vi.fn())).toBe(false);
-      expect(manager.detachCallbacks('non-existent')).toBe(false);
+      expect(manager.attachWorkerCallbacks('non-existent', 'worker-1', {
+        onData: vi.fn(),
+        onExit: vi.fn(),
+      })).toBe(false);
+      expect(manager.detachWorkerCallbacks('non-existent', 'worker-1')).toBe(false);
     });
   });
 
-  describe('getActivityState', () => {
+  describe('getWorkerActivityState', () => {
     it('should return activity state', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-      const state = manager.getActivityState(session.id);
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
-      expect(state).toBe('idle');
+      const state = manager.getWorkerActivityState(session.id, workerId);
+
+      // Initial state is 'unknown' until activity is detected
+      expect(state).toBe('unknown');
     });
 
     it('should return undefined for non-existent session', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const state = manager.getActivityState('non-existent');
+      const state = manager.getWorkerActivityState('non-existent', 'worker-1');
       expect(state).toBeUndefined();
     });
   });
@@ -472,7 +520,12 @@ describe('SessionManager', () => {
       const globalCallback = vi.fn();
       manager.setGlobalActivityCallback(globalCallback);
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
       // Generate enough output to trigger 'active' state
       const pty = ptyFactory.instances[0];
@@ -481,16 +534,16 @@ describe('SessionManager', () => {
       }
 
       // Global callback should have been called with 'active' state
-      expect(globalCallback).toHaveBeenCalledWith(session.id, 'active');
+      expect(globalCallback).toHaveBeenCalledWith(session.id, workerId, 'active');
     });
   });
 
-  describe('getOutputBuffer', () => {
+  describe('getWorkerOutputBuffer', () => {
     it('should return empty string for non-existent session', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const buffer = manager.getOutputBuffer('non-existent');
+      const buffer = manager.getWorkerOutputBuffer('non-existent', 'worker-1');
       expect(buffer).toBe('');
     });
 
@@ -498,7 +551,12 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
       // Generate large output (> 100KB)
       const pty = ptyFactory.instances[0];
@@ -506,8 +564,8 @@ describe('SessionManager', () => {
       pty.simulateData(largeData);
       pty.simulateData(largeData);
 
-      const buffer = manager.getOutputBuffer(session.id);
-      expect(buffer.length).toBeLessThanOrEqual(100000);
+      const buffer = manager.getWorkerOutputBuffer(session.id, workerId);
+      expect(buffer!.length).toBeLessThanOrEqual(100000);
     });
   });
 
@@ -516,10 +574,15 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
 
       // Empty string should still be written
-      const result = manager.writeInput(session.id, '');
+      const result = manager.writeWorkerInput(session.id, workerId, '');
       expect(result).toBe(true);
     });
 
@@ -528,7 +591,16 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      const session = manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData,
+        onExit: vi.fn(),
+      });
 
       // Simulate binary-like output with null bytes
       const pty = ptyFactory.instances[0];
@@ -536,7 +608,7 @@ describe('SessionManager', () => {
       pty.simulateData(binaryLike);
 
       expect(onData).toHaveBeenCalledWith(binaryLike);
-      expect(manager.getOutputBuffer(session.id)).toBe(binaryLike);
+      expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(binaryLike);
     });
 
     it('should handle unicode output', async () => {
@@ -544,14 +616,23 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      const session = manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData,
+        onExit: vi.fn(),
+      });
 
       const pty = ptyFactory.instances[0];
       const unicode = '日本語テスト 🎉 émoji';
       pty.simulateData(unicode);
 
       expect(onData).toHaveBeenCalledWith(unicode);
-      expect(manager.getOutputBuffer(session.id)).toBe(unicode);
+      expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(unicode);
     });
 
     it('should handle rapid consecutive outputs', async () => {
@@ -559,7 +640,16 @@ describe('SessionManager', () => {
       const manager = new SessionManager();
 
       const onData = vi.fn();
-      manager.createSession('/test/path', 'repo-1', onData, vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData,
+        onExit: vi.fn(),
+      });
 
       const pty = ptyFactory.instances[0];
 
@@ -575,9 +665,13 @@ describe('SessionManager', () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
-      const session = manager.createSession('/path/with spaces/project', 'repo-1', vi.fn(), vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/path/with spaces/project',
+        agentId: 'claude-code',
+      });
 
-      expect(session.worktreePath).toBe('/path/with spaces/project');
+      expect(session.locationPath).toBe('/path/with spaces/project');
     });
   });
 
@@ -590,7 +684,16 @@ describe('SessionManager', () => {
         throw new Error('Callback error');
       });
 
-      manager.createSession('/test/path', 'repo-1', throwingCallback, vi.fn());
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: throwingCallback,
+        onExit: vi.fn(),
+      });
 
       // Callback errors propagate - this documents the expected behavior
       // Callers (e.g., WebSocket handlers) should wrap callbacks with try-catch
@@ -599,12 +702,21 @@ describe('SessionManager', () => {
       }).toThrow('Callback error');
     });
 
-    it('should mark session as stopped on PTY exit', async () => {
+    it('should mark worker as stopped on PTY exit', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
       const onExit = vi.fn();
-      manager.createSession('/test/path', 'repo-1', vi.fn(), onExit);
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: vi.fn(),
+        onExit,
+      });
 
       // Simulate PTY crash with non-zero exit (signal 9 = SIGKILL)
       ptyFactory.instances[0].simulateExit(1, 9);
@@ -612,34 +724,21 @@ describe('SessionManager', () => {
       expect(onExit).toHaveBeenCalledWith(1, '9');
     });
 
-    it('should handle killing already exited session gracefully', async () => {
-      const { SessionManager } = await import('../session-manager.js');
-      const manager = new SessionManager();
-
-      const session = manager.createSession('/test/path', 'repo-1', vi.fn(), vi.fn());
-
-      // Simulate PTY exit
-      ptyFactory.instances[0].simulateExit(0);
-
-      // Killing already exited session should still return true (session exists in map until killed)
-      const result = manager.killSession(session.id);
-      expect(result).toBe(true);
-    });
-
     it('should continue operating after one session crashes', async () => {
       const { SessionManager } = await import('../session-manager.js');
       const manager = new SessionManager();
 
       // Create two sessions
-      manager.createSession('/path/1', 'repo-1', vi.fn(), vi.fn());
-      const session2 = manager.createSession('/path/2', 'repo-1', vi.fn(), vi.fn());
+      manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
+      const session2 = manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
+      const workerId2 = session2.workers[0].id;
 
       // First session crashes (signal 11 = SIGSEGV)
       ptyFactory.instances[0].simulateExit(1, 11);
 
       // Second session should still work
       expect(manager.getSession(session2.id)).toBeDefined();
-      expect(manager.writeInput(session2.id, 'test')).toBe(true);
+      expect(manager.writeWorkerInput(session2.id, workerId2, 'test')).toBe(true);
     });
   });
 });

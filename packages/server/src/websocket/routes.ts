@@ -1,18 +1,22 @@
 import { Hono } from 'hono';
-import type { TerminalServerMessage, ClaudeActivityState, DashboardServerMessage } from '@agent-console/shared';
+import type {
+  WorkerServerMessage,
+  AgentActivityState,
+  DashboardServerMessage,
+} from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
-import { shellManager } from '../services/shell-manager.js';
-import { handleTerminalMessage } from './terminal-handler.js';
+import { handleWorkerMessage } from './worker-handler.js';
 
 // Track connected dashboard clients for broadcasting
 const dashboardClients = new Set<WSContext>();
 
 // Set up global activity callback to broadcast to all dashboard clients
-sessionManager.setGlobalActivityCallback((sessionId, state) => {
+sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
   const msg: DashboardServerMessage = {
-    type: 'session-activity',
+    type: 'worker-activity',
     sessionId,
+    workerId,
     activityState: state,
   };
   const msgStr = JSON.stringify(msg);
@@ -47,7 +51,12 @@ export function setupWebSocketRoutes(
             type: 'sessions-sync',
             sessions: allSessions.map(s => ({
               id: s.id,
-              activityState: s.activityState ?? 'unknown',
+              workers: s.workers
+                .filter(w => w.type === 'agent')
+                .map(w => ({
+                  id: w.id,
+                  activityState: sessionManager.getWorkerActivityState(s.id, w.id),
+                })),
             })),
           };
           ws.send(JSON.stringify(syncMsg));
@@ -61,17 +70,18 @@ export function setupWebSocketRoutes(
     })
   );
 
-  // WebSocket endpoint for terminal (reconnect to existing session)
+  // WebSocket endpoint for worker connection
   app.get(
-    '/ws/terminal/:sessionId',
+    '/ws/session/:sessionId/worker/:workerId',
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
+      const workerId = c.req.param('workerId');
 
       return {
         onOpen(_event: unknown, ws: WSContext) {
           const session = sessionManager.getSession(sessionId);
           if (!session) {
-            const errorMsg: TerminalServerMessage = {
+            const errorMsg: WorkerServerMessage = {
               type: 'exit',
               exitCode: 1,
               signal: null,
@@ -81,7 +91,19 @@ export function setupWebSocketRoutes(
             return;
           }
 
-          console.log(`Terminal WebSocket connected for session: ${sessionId}`);
+          const worker = session.workers.find(w => w.id === workerId);
+          if (!worker) {
+            const errorMsg: WorkerServerMessage = {
+              type: 'exit',
+              exitCode: 1,
+              signal: null,
+            };
+            ws.send(JSON.stringify(errorMsg));
+            ws.close();
+            return;
+          }
+
+          console.log(`Worker WebSocket connected: session=${sessionId}, worker=${workerId}`);
 
           // Helper to safely send WebSocket messages with buffering
           let outputBuffer = '';
@@ -93,14 +115,14 @@ export function setupWebSocketRoutes(
               try {
                 ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
               } catch (error) {
-                console.error(`[WS] Error sending to session ${sessionId}:`, error);
+                console.error(`[WS] Error sending to worker ${workerId}:`, error);
               }
               outputBuffer = '';
             }
             flushTimer = null;
           };
 
-          const safeSend = (msg: TerminalServerMessage) => {
+          const safeSend = (msg: WorkerServerMessage) => {
             if (msg.type === 'output') {
               // Buffer output messages
               outputBuffer += msg.data;
@@ -113,161 +135,50 @@ export function setupWebSocketRoutes(
                 try {
                   ws.send(JSON.stringify(msg));
                 } catch (error) {
-                  console.error(`[WS] Error sending to session ${sessionId}:`, error);
+                  console.error(`[WS] Error sending to worker ${workerId}:`, error);
                 }
               }
             }
           };
 
           // Attach callbacks to receive real-time output
-          sessionManager.attachCallbacks(
-            sessionId,
-            (data) => {
+          sessionManager.attachWorkerCallbacks(sessionId, workerId, {
+            onData: (data) => {
               safeSend({ type: 'output', data });
             },
-            (exitCode, signal) => {
+            onExit: (exitCode, signal) => {
               safeSend({ type: 'exit', exitCode, signal });
             },
-            (state: ClaudeActivityState) => {
+            onActivityChange: (state: AgentActivityState) => {
               safeSend({ type: 'activity', state });
-            }
-          );
+            },
+          });
 
           // Send buffered output (history) on reconnection
-          const history = sessionManager.getOutputBuffer(sessionId);
+          const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
           if (history) {
             safeSend({ type: 'history', data: history });
           }
 
-          // Send current activity state on connection
-          const activityState = sessionManager.getActivityState(sessionId);
-          if (activityState && activityState !== 'unknown') {
-            safeSend({ type: 'activity', state: activityState });
+          // Send current activity state on connection (for agent workers)
+          if (worker.type === 'agent') {
+            const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
+            if (activityState && activityState !== 'unknown') {
+              safeSend({ type: 'activity', state: activityState });
+            }
           }
         },
         onMessage(event: { data: string | Buffer }, ws: WSContext) {
           const data = typeof event.data === 'string' ? event.data : event.data.toString();
-          handleTerminalMessage(ws, sessionId, data);
+          handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {
-          console.log(`Terminal WebSocket disconnected for session: ${sessionId}`);
-          // Detach callbacks but keep session alive
-          sessionManager.detachCallbacks(sessionId);
+          console.log(`Worker WebSocket disconnected: session=${sessionId}, worker=${workerId}`);
+          // Detach callbacks but keep worker alive
+          sessionManager.detachWorkerCallbacks(sessionId, workerId);
         },
         onError(event: Event) {
-          console.error(`Terminal WebSocket error for session ${sessionId}:`, event);
-        },
-      };
-    })
-  );
-
-  // Simple WebSocket endpoint that creates a session and connects immediately
-  // This is for Phase 1 single-session testing
-  app.get(
-    '/ws/terminal-new',
-    upgradeWebSocket((c) => {
-      const cwd = c.req.query('cwd') || process.cwd();
-      let sessionId: string | null = null;
-
-      return {
-        onOpen(_event: unknown, ws: WSContext) {
-          // Create a new session when WebSocket connects
-          const session = sessionManager.createSession(
-            cwd,
-            'default',
-            (data) => {
-              const msg: TerminalServerMessage = { type: 'output', data };
-              ws.send(JSON.stringify(msg));
-            },
-            (exitCode, signal) => {
-              const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
-              ws.send(JSON.stringify(msg));
-            }
-          );
-          sessionId = session.id;
-
-          // Attach activity change callback
-          sessionManager.attachCallbacks(
-            sessionId,
-            (data) => {
-              const msg: TerminalServerMessage = { type: 'output', data };
-              ws.send(JSON.stringify(msg));
-            },
-            (exitCode, signal) => {
-              const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
-              ws.send(JSON.stringify(msg));
-            },
-            (state: ClaudeActivityState) => {
-              const msg: TerminalServerMessage = { type: 'activity', state };
-              ws.send(JSON.stringify(msg));
-            }
-          );
-
-          console.log(`New terminal session created: ${sessionId}`);
-        },
-        onMessage(event: { data: string | Buffer }, ws: WSContext) {
-          if (sessionId) {
-            const data = typeof event.data === 'string' ? event.data : event.data.toString();
-            handleTerminalMessage(ws, sessionId, data);
-          }
-        },
-        onClose() {
-          if (sessionId) {
-            console.log(`Terminal disconnected, session preserved: ${sessionId}`);
-            // Don't kill session - it persists for reconnection
-          }
-        },
-      };
-    })
-  );
-
-  // Shell WebSocket (regular terminal)
-  // Creates a new shell instance for the given working directory
-  app.get(
-    '/ws/shell',
-    upgradeWebSocket((c) => {
-      const cwd = c.req.query('cwd') || process.cwd();
-      let shellId: string | null = null;
-
-      return {
-        onOpen(_event: unknown, ws: WSContext) {
-          shellId = shellManager.createShell(
-            cwd,
-            (data) => {
-              const msg: TerminalServerMessage = { type: 'output', data };
-              ws.send(JSON.stringify(msg));
-            },
-            (exitCode, signal) => {
-              const msg: TerminalServerMessage = { type: 'exit', exitCode, signal };
-              ws.send(JSON.stringify(msg));
-            }
-          );
-          console.log(`Shell WebSocket connected: ${shellId}`);
-        },
-        onMessage(event: { data: string | Buffer }) {
-          if (!shellId) return;
-
-          try {
-            const msgStr = typeof event.data === 'string' ? event.data : event.data.toString();
-            const parsed = JSON.parse(msgStr);
-
-            switch (parsed.type) {
-              case 'input':
-                shellManager.writeInput(shellId, parsed.data);
-                break;
-              case 'resize':
-                shellManager.resize(shellId, parsed.cols, parsed.rows);
-                break;
-            }
-          } catch (e) {
-            console.error('Invalid shell message:', e);
-          }
-        },
-        onClose() {
-          if (shellId) {
-            shellManager.destroyShell(shellId);
-            console.log(`Shell WebSocket disconnected: ${shellId}`);
-          }
+          console.error(`Worker WebSocket error: session=${sessionId}, worker=${workerId}:`, event);
         },
       };
     })

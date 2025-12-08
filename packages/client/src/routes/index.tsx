@@ -18,7 +18,7 @@ import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
-import type { Session, Repository, Worktree, ClaudeActivityState, CreateWorktreeRequest } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -48,24 +48,24 @@ function showNotification(title: string, body: string, sessionId: string, tag: s
 }
 
 // Activity state badge component
-function ActivityBadge({ state }: { state?: ClaudeActivityState }) {
+function ActivityBadge({ state }: { state?: AgentActivityState }) {
   if (!state || state === 'unknown') return null;
 
-  const styles = {
+  const styles: Record<string, string> = {
     asking: 'bg-yellow-500/20 text-yellow-400',
     active: 'bg-blue-500/20 text-blue-400',
     idle: 'bg-gray-500/20 text-gray-400',
   };
 
-  const labels = {
+  const labels: Record<string, string> = {
     asking: 'Waiting',
     active: 'Working',
     idle: 'Idle',
   };
 
   return (
-    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state]}`}>
-      {labels[state]}
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state] ?? ''}`}>
+      {labels[state] ?? state}
     </span>
   );
 }
@@ -98,15 +98,27 @@ export const Route = createFileRoute('/')({
   component: DashboardPage,
 });
 
+// Helper to get primary agent worker's activity state
+function getSessionActivityState(session: Session, workerActivityStates: Record<string, Record<string, AgentActivityState>>): AgentActivityState | undefined {
+  const sessionWorkerStates = workerActivityStates[session.id];
+  if (!sessionWorkerStates) return undefined;
+
+  // Find the first agent worker
+  const agentWorker = session.workers.find(w => w.type === 'agent');
+  if (!agentWorker) return undefined;
+
+  return sessionWorkerStates[agentWorker.id];
+}
+
 function DashboardPage() {
   const queryClient = useQueryClient();
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [newRepoPath, setNewRepoPath] = useState('');
-  // Track activity states locally for real-time updates
-  const [activityStates, setActivityStates] = useState<Record<string, ClaudeActivityState>>({});
+  // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
+  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
-  const prevStatesRef = useRef<Record<string, ClaudeActivityState>>({});
-  // Track when each session entered 'active' state (for minimum working time check)
+  const prevStatesRef = useRef<Record<string, Record<string, AgentActivityState>>>({});
+  // Track when each worker entered 'active' state (for minimum working time check)
   const activeStartTimeRef = useRef<Record<string, number>>({});
   // Track last notification time per session (for cooldown)
   const lastNotificationTimeRef = useRef<Record<string, number>>({});
@@ -124,31 +136,49 @@ function DashboardPage() {
   }, []);
 
   // Handle WebSocket sync (initializes prevStatesRef from server state)
-  const handleSessionsSync = useCallback((sessions: Array<{ id: string; activityState: ClaudeActivityState }>) => {
+  const handleSessionsSync = useCallback((sessions: Array<{ id: string; workers: Array<{ id: string; activityState?: AgentActivityState }> }>) => {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
     for (const session of sessions) {
-      console.log(`[Sync] ${session.id}: ${session.activityState}`);
-      prevStatesRef.current[session.id] = session.activityState;
-      setActivityStates(prev => ({ ...prev, [session.id]: session.activityState }));
+      for (const worker of session.workers) {
+        if (worker.activityState) {
+          const key = `${session.id}:${worker.id}`;
+          console.log(`[Sync] ${key}: ${worker.activityState}`);
+          if (!prevStatesRef.current[session.id]) {
+            prevStatesRef.current[session.id] = {};
+          }
+          prevStatesRef.current[session.id][worker.id] = worker.activityState;
+          setWorkerActivityStates(prev => ({
+            ...prev,
+            [session.id]: { ...(prev[session.id] ?? {}), [worker.id]: worker.activityState! },
+          }));
+        }
+      }
     }
   }, []);
 
   // Handle real-time activity updates via WebSocket
   // Note: ActivityDetector handles debouncing and sticky state transitions server-side
-  const handleActivityUpdate = useCallback((sessionId: string, state: ClaudeActivityState) => {
-    const prevState = prevStatesRef.current[sessionId];
+  const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
+    const key = `${sessionId}:${workerId}`;
+    const prevState = prevStatesRef.current[sessionId]?.[workerId];
     const now = Date.now();
 
-    console.log(`[Activity] ${sessionId}: ${prevState} → ${state}`);
+    console.log(`[Activity] ${key}: ${prevState} → ${state}`);
 
     // Update local state
-    setActivityStates(prev => ({ ...prev, [sessionId]: state }));
-    prevStatesRef.current[sessionId] = state;
+    setWorkerActivityStates(prev => ({
+      ...prev,
+      [sessionId]: { ...(prev[sessionId] ?? {}), [workerId]: state },
+    }));
+    if (!prevStatesRef.current[sessionId]) {
+      prevStatesRef.current[sessionId] = {};
+    }
+    prevStatesRef.current[sessionId][workerId] = state;
 
-    // Track when session enters 'active' state
+    // Track when worker enters 'active' state
     if (state === 'active' && prevState !== 'active') {
-      activeStartTimeRef.current[sessionId] = now;
-      console.log(`[Activity] ${sessionId}: Started working at ${now}`);
+      activeStartTimeRef.current[key] = now;
+      console.log(`[Activity] ${key}: Started working at ${now}`);
     }
 
     // Skip notifications if this is the first state update (session just started)
@@ -170,8 +200,8 @@ function DashboardPage() {
       return;
     }
 
-    // Check if session was working long enough
-    const activeStartTime = activeStartTimeRef.current[sessionId] || 0;
+    // Check if worker was working long enough
+    const activeStartTime = activeStartTimeRef.current[key] || 0;
     const workingTime = now - activeStartTime;
     const wasWorkingLongEnough = prevState === 'active' && workingTime >= MIN_WORKING_TIME_MS;
 
@@ -186,18 +216,16 @@ function DashboardPage() {
 
       // Get session info for notification body
       const session = sessionsRef.current.find(s => s.id === sessionId);
-      const worktreePath = session?.worktreePath || '';
-      const branch = session?.branch || 'unknown';
+      const locationPath = session?.locationPath || '';
       // Extract project name from path
-      const pathParts = worktreePath.split('/').filter(Boolean);
-      const repo = pathParts[pathParts.length - 2] || pathParts[pathParts.length - 1] || 'Unknown';
-      const projectInfo = `${repo} (${branch})`;
+      const pathParts = locationPath.split('/').filter(Boolean);
+      const projectName = pathParts[pathParts.length - 1] || 'Unknown';
 
       if (state === 'idle') {
         console.log('[Notification] Triggering: work completed');
         showNotification(
           'Claude completed work',
-          `${projectInfo} - Work completed`,
+          `${projectName} - Work completed`,
           sessionId,
           `completed-${sessionId}-${now}`
         );
@@ -205,7 +233,7 @@ function DashboardPage() {
         console.log('[Notification] Triggering: waiting for input');
         showNotification(
           'Claude needs your input',
-          `${projectInfo} - Waiting for input`,
+          `${projectName} - Waiting for input`,
           sessionId,
           `asking-${sessionId}-${now}`
         );
@@ -216,7 +244,7 @@ function DashboardPage() {
   // Connect to dashboard WebSocket for real-time updates
   useDashboardWebSocket({
     onSync: handleSessionsSync,
-    onActivity: handleActivityUpdate,
+    onWorkerActivity: handleWorkerActivityUpdate,
   });
 
   const { data: reposData } = useQuery({
@@ -230,16 +258,16 @@ function DashboardPage() {
     refetchInterval: 5000,
   });
 
-  // Merge server session data with local real-time activity states
+  // Add activity state to sessions
   const sessions = (sessionsData?.sessions ?? []).map(session => ({
     ...session,
-    activityState: activityStates[session.id] ?? session.activityState,
+    activityState: getSessionActivityState(session, workerActivityStates),
   }));
 
   // Keep sessionsRef in sync for notification context
   useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
+    sessionsRef.current = sessionsData?.sessions ?? [];
+  }, [sessionsData]);
 
   const registerMutation = useMutation({
     mutationFn: registerRepository,
@@ -328,7 +356,7 @@ function DashboardPage() {
             <RepositoryCard
               key={repo.id}
               repository={repo}
-              sessions={sessions.filter((s) => s.repositoryId === repo.id)}
+              sessions={sessions.filter((s) => s.type === 'worktree' && s.repositoryId === repo.id)}
               onUnregister={() => {
                 if (confirm(`Unregister ${repo.name}?`)) {
                   unregisterMutation.mutate(repo.id);
@@ -340,7 +368,7 @@ function DashboardPage() {
       )}
 
       {/* Quick Sessions (sessions without a registered repository) */}
-      <QuickSessionsSection sessions={sessions.filter((s) => s.repositoryId === 'default')} />
+      <QuickSessionsSection sessions={sessions.filter((s) => s.type === 'quick')} />
 
       {/* Settings Section */}
       <div className="mt-8">
@@ -351,9 +379,13 @@ function DashboardPage() {
   );
 }
 
+type SessionWithActivity = Session & {
+  activityState?: AgentActivityState;
+};
+
 interface RepositoryCardProps {
   repository: Repository;
-  sessions: Session[];
+  sessions: SessionWithActivity[];
   onUnregister: () => void;
 }
 
@@ -565,7 +597,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             <WorktreeRow
               key={worktree.path}
               worktree={worktree}
-              session={sessions.find((s) => s.worktreePath === worktree.path)}
+              session={sessions.find((s) => s.locationPath === worktree.path)}
               repositoryId={repository.id}
             />
           ))}
@@ -577,7 +609,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
 interface WorktreeRowProps {
   worktree: Worktree;
-  session?: Session;
+  session?: SessionWithActivity;
   repositoryId: string;
 }
 
@@ -606,7 +638,12 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const handleStartSession = async () => {
     setIsStarting(true);
     try {
-      const { session: newSession } = await createSession(worktree.path, repositoryId);
+      const { session: newSession } = await createSession({
+        type: 'worktree',
+        repositoryId,
+        worktreeId: worktree.branch,
+        locationPath: worktree.path,
+      });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       window.open(`/sessions/${newSession.id}`, '_blank');
     } catch (err) {
@@ -631,11 +668,9 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   };
 
   const statusColor = session
-    ? session.status === 'running'
+    ? session.status === 'active'
       ? 'bg-green-500'
-      : session.status === 'idle'
-        ? 'bg-yellow-500'
-        : 'bg-red-500'
+      : 'bg-gray-500'
     : 'bg-gray-600';
 
   return (
@@ -688,7 +723,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
 }
 
 interface QuickSessionsSectionProps {
-  sessions: Session[];
+  sessions: SessionWithActivity[];
 }
 
 function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
@@ -702,7 +737,11 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
     if (!newPath.trim()) return;
     setIsStarting(true);
     try {
-      const { session } = await createSession(newPath.trim(), 'default', false, selectedAgentId);
+      const { session } = await createSession({
+        type: 'quick',
+        locationPath: newPath.trim(),
+        agentId: selectedAgentId,
+      });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowAddSession(false);
       setNewPath('');
@@ -789,7 +828,7 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
 }
 
 interface SessionCardProps {
-  session: Session;
+  session: SessionWithActivity;
 }
 
 function SessionCard({ session }: SessionCardProps) {
@@ -803,22 +842,20 @@ function SessionCard({ session }: SessionCardProps) {
   });
 
   const statusColor =
-    session.status === 'running'
+    session.status === 'active'
       ? 'bg-green-500'
-      : session.status === 'idle'
-        ? 'bg-yellow-500'
-        : 'bg-red-500';
+      : 'bg-gray-500';
 
   return (
     <div className="card flex items-center gap-4">
       <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
-          <PathLink path={session.worktreePath} className="truncate" />
+          <PathLink path={session.locationPath} className="truncate" />
           <ActivityBadge state={session.activityState} />
         </div>
         <div className="text-xs text-gray-500 mt-1">
-          PID: {session.pid} | Started: {new Date(session.startedAt).toLocaleString()}
+          Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}
         </div>
       </div>
       <Link

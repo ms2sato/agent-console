@@ -15,15 +15,100 @@ export interface PersistedRepository {
   registeredAt: string;
 }
 
-export interface PersistedSession {
+// ========== Worker Persistence Types ==========
+
+interface PersistedWorkerBase {
+  id: string;
+  name: string;
+  pid: number;
+  createdAt: string;
+}
+
+export interface PersistedAgentWorker extends PersistedWorkerBase {
+  type: 'agent';
+  agentId: string;
+}
+
+export interface PersistedTerminalWorker extends PersistedWorkerBase {
+  type: 'terminal';
+}
+
+export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker;
+
+// ========== Session Persistence Types ==========
+
+interface PersistedSessionBase {
+  id: string;
+  locationPath: string;
+  serverPid: number;
+  createdAt: string;
+  workers: PersistedWorker[];
+}
+
+export interface PersistedWorktreeSession extends PersistedSessionBase {
+  type: 'worktree';
+  repositoryId: string;
+  worktreeId: string;
+}
+
+export interface PersistedQuickSession extends PersistedSessionBase {
+  type: 'quick';
+}
+
+export type PersistedSession = PersistedWorktreeSession | PersistedQuickSession;
+
+// ========== Old Format (for migration) ==========
+
+interface OldPersistedSession {
   id: string;
   worktreePath: string;
   repositoryId: string;
   pid: number;
-  serverPid: number;  // PID of the server that created this session
+  serverPid: number;
   createdAt: string;
 }
 
+function isOldFormat(session: unknown): session is OldPersistedSession {
+  return typeof session === 'object' && session !== null &&
+    (!('type' in session) || !('workers' in session));
+}
+
+function migrateSession(old: OldPersistedSession): PersistedSession {
+  const isQuick = old.repositoryId === 'default';
+
+  const workers: PersistedWorker[] = [{
+    id: `${old.id}-agent`,
+    type: 'agent',
+    name: 'Claude',
+    agentId: 'claude-code-builtin',
+    pid: old.pid,
+    createdAt: old.createdAt,
+  }];
+
+  if (isQuick) {
+    return {
+      id: old.id,
+      type: 'quick',
+      locationPath: old.worktreePath,
+      serverPid: old.serverPid,
+      createdAt: old.createdAt,
+      workers,
+    };
+  } else {
+    return {
+      id: old.id,
+      type: 'worktree',
+      locationPath: old.worktreePath,
+      repositoryId: old.repositoryId,
+      worktreeId: old.worktreePath,  // Use path as worktreeId for migration
+      serverPid: old.serverPid,
+      createdAt: old.createdAt,
+      workers,
+    };
+  }
+}
+
+// ========== Utility Functions ==========
 
 function ensureConfigDir(): void {
   const configDir = getConfigDir();
@@ -51,6 +136,8 @@ function safeRead<T>(filePath: string, defaultValue: T): T {
   return defaultValue;
 }
 
+// ========== Persistence Service ==========
+
 export class PersistenceService {
   constructor() {
     ensureConfigDir();
@@ -69,7 +156,16 @@ export class PersistenceService {
   // ========== Sessions ==========
 
   loadSessions(): PersistedSession[] {
-    return safeRead<PersistedSession[]>(getSessionsFile(), []);
+    const raw = safeRead<unknown[]>(getSessionsFile(), []);
+
+    // Migrate old format if needed
+    return raw.map(session => {
+      if (isOldFormat(session)) {
+        console.log(`Migrating old session format: ${session.id}`);
+        return migrateSession(session);
+      }
+      return session as PersistedSession;
+    });
   }
 
   saveSessions(sessions: PersistedSession[]): void {

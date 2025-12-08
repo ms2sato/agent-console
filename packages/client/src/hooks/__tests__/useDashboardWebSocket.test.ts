@@ -157,23 +157,24 @@ describe('useDashboardWebSocket', () => {
       ]);
     });
 
-    it('should call onActivity for session-activity message', () => {
-      const onActivity = vi.fn();
-      renderHook(() => useDashboardWebSocket({ onActivity }));
+    it('should call onWorkerActivity for worker-activity message', () => {
+      const onWorkerActivity = vi.fn();
+      renderHook(() => useDashboardWebSocket({ onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
           JSON.stringify({
-            type: 'session-activity',
+            type: 'worker-activity',
             sessionId: 'session-1',
+            workerId: 'worker-1',
             activityState: 'active',
           })
         );
       });
 
-      expect(onActivity).toHaveBeenCalledWith('session-1', 'active');
+      expect(onWorkerActivity).toHaveBeenCalledWith('session-1', 'worker-1', 'active');
     });
 
     it('should handle invalid JSON gracefully', () => {
@@ -192,8 +193,8 @@ describe('useDashboardWebSocket', () => {
 
     it('should handle unknown message types gracefully', () => {
       const onSync = vi.fn();
-      const onActivity = vi.fn();
-      renderHook(() => useDashboardWebSocket({ onSync, onActivity }));
+      const onWorkerActivity = vi.fn();
+      renderHook(() => useDashboardWebSocket({ onSync, onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -202,7 +203,7 @@ describe('useDashboardWebSocket', () => {
       });
 
       expect(onSync).not.toHaveBeenCalled();
-      expect(onActivity).not.toHaveBeenCalled();
+      expect(onWorkerActivity).not.toHaveBeenCalled();
     });
   });
 
