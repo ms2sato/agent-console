@@ -86,5 +86,3 @@ const server = Bun.serve({
 });
 
 console.log(`[${timestamp()}] Server listening on http://localhost:${server.port}`);
-
-export default app;
