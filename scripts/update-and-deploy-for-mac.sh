@@ -12,16 +12,16 @@ git checkout main
 git pull origin main
 
 echo "==> Installing dependencies..."
-pnpm install
+bun install
 
 echo "==> Building..."
-pnpm build
+bun run build
 
 echo "==> Deploying files..."
 mkdir -p ~/.agent-console/server
 rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/
 cd ~/.agent-console/server
-pnpm install --prod
+bun install --production
 
 echo "==> Restarting service..."
 launchctl kickstart -k gui/$(id -u)/com.agent-console 2>/dev/null || \

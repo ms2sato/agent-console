@@ -22,12 +22,12 @@ vi.mock('../persistence-service.js', () => ({
   },
 }));
 
-// Mock node-pty to prevent actual PTY spawning
-vi.mock('node-pty', () => ({
+// Mock @zenyr/bun-pty to prevent actual PTY spawning
+vi.mock('@zenyr/bun-pty', () => ({
   spawn: vi.fn(() => ({
     pid: 99999,
-    onData: vi.fn(),
-    onExit: vi.fn(),
+    onData: vi.fn(() => ({ dispose: () => {} })),
+    onExit: vi.fn(() => ({ dispose: () => {} })),
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(),

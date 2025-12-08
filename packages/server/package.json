@@ -4,27 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "node build.js",
-    "start": "node dist/index.js",
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build.ts",
+    "start": "bun dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-console/shared": "workspace:*",
-    "@hono/node-server": "^1.13.7",
-    "@hono/node-ws": "^1.0.4",
+    "@agent-console/shared": "*",
+    "@zenyr/bun-pty": "^0.4.4",
     "hono": "^4.6.13",
-    "node-pty": "^1.0.0",
     "open": "^11.0.0",
     "uuid": "^11.0.3"
   },
   "devDependencies": {
+    "@types/bun": "^1.1.14",
     "@types/node": "^22.10.1",
     "@types/uuid": "^10.0.0",
-    "esbuild": "^0.27.1",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.0.15"
   }
