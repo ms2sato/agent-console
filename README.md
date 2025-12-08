@@ -1,6 +1,6 @@
 # Agent Console
 
-> **Note**: Currently only tested on macOS.
+> **Note**: Currently only tested on macOS & Claude Code.
 
 A web application for managing multiple AI coding agent instances running in different git worktrees. Control all your agents through a unified browser interface instead of scattered terminal windows.
 
