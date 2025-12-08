@@ -41,6 +41,16 @@ interface InternalSession {
 
 const MAX_BUFFER_SIZE = 100000; // 100KB
 
+interface SessionInitParams {
+  id: string;
+  worktreePath: string;
+  repositoryId: string;
+  onData: (data: string) => void;
+  onExit: (exitCode: number, signal: string | null) => void;
+  continueConversation: boolean;
+  agentId?: string;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private globalActivityCallback?: (sessionId: string, state: ClaudeActivityState) => void;
@@ -128,15 +138,19 @@ export class SessionManager {
     persistenceService.removeSession(id);
   }
 
-  createSession(
-    worktreePath: string,
-    repositoryId: string,
-    onData: (data: string) => void,
-    onExit: (exitCode: number, signal: string | null) => void,
-    continueConversation: boolean = false,
-    agentId?: string
-  ): Session {
-    const id = uuidv4();
+  /**
+   * Initialize a session with PTY process and event handlers
+   * Consolidates common logic between createSession and restartSession
+   */
+  private initializeSession({
+    id,
+    worktreePath,
+    repositoryId,
+    onData,
+    onExit,
+    continueConversation,
+    agentId,
+  }: SessionInitParams): InternalSession {
     const startedAt = new Date().toISOString();
     const branch = getCurrentBranch(worktreePath);
 
@@ -211,10 +225,33 @@ export class SessionManager {
       // Keep session metadata for restart - only remove on explicit delete
     });
 
+    return session;
+  }
+
+  createSession(
+    worktreePath: string,
+    repositoryId: string,
+    onData: (data: string) => void,
+    onExit: (exitCode: number, signal: string | null) => void,
+    continueConversation: boolean = false,
+    agentId?: string
+  ): Session {
+    const id = uuidv4();
+
+    const session = this.initializeSession({
+      id,
+      worktreePath,
+      repositoryId,
+      onData,
+      onExit,
+      continueConversation,
+      agentId,
+    });
+
     this.sessions.set(id, session);
     this.persistSession(session);
 
-    console.log(`[${new Date().toISOString()}] Session created: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
+    console.log(`[${new Date().toISOString()}] Session created: ${id} (PID: ${session.pty.pid})${continueConversation ? ' [continuing]' : ''}`);
 
     return this.toPublicSession(session);
   }
@@ -261,85 +298,22 @@ export class SessionManager {
       return null;
     }
 
-    const startedAt = new Date().toISOString();
-    const branch = getCurrentBranch(metadata.worktreePath);
-
-    // Resolve agent - use provided agentId or default to Claude Code
-    const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
-    const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
-
-    // Build command arguments
-    const args: string[] = [];
-    if (continueConversation && agent.continueArgs) {
-      args.push(...agent.continueArgs);
-    }
-
-    // Use login shell to load user's environment (.bash_profile, .zprofile, etc.)
-    const shell = process.env.SHELL || '/bin/bash';
-    const fullCommand = [agent.command, ...args].join(' ');
-    const ptyProcess = pty.spawn(shell, ['-l', '-c', fullCommand], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: metadata.worktreePath,
-      env: getChildProcessEnv(),
-    });
-
-    // Create activity detector for this session with agent-specific patterns
-    const activityDetector = new ActivityDetector({
-      onStateChange: (state) => {
-        session.activityState = state;
-        session.onActivityChange?.(state);
-        // Broadcast to all dashboard clients
-        this.globalActivityCallback?.(id, state);
-      },
-      activityPatterns: agent.activityPatterns,
-    });
-
-    const session: InternalSession = {
+    const session = this.initializeSession({
       id,
-      pty: ptyProcess,
-      outputBuffer: '',
       worktreePath: metadata.worktreePath,
       repositoryId: metadata.repositoryId,
-      agentId: agent.id,
-      branch,
-      status: 'running',
-      activityState: 'idle',
-      startedAt,
       onData,
       onExit,
-      activityDetector,
-    };
-
-    ptyProcess.onData((data) => {
-      // Buffer output for reconnection
-      session.outputBuffer += data;
-      if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
-        session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_SIZE);
-      }
-
-      // Process output for activity detection
-      session.activityDetector.processOutput(data);
-
-      session.onData(data);
-    });
-
-    ptyProcess.onExit(({ exitCode, signal }) => {
-      session.status = 'stopped';
-      session.activityDetector.dispose();
-      const signalStr = signal !== undefined ? String(signal) : null;
-      console.log(`[${new Date().toISOString()}] Session exited: ${id} (PID: ${ptyProcess.pid}, exitCode: ${exitCode}, signal: ${signalStr})`);
-      session.onExit(exitCode, signalStr);
-      // Keep session metadata for restart - only remove on explicit delete
+      continueConversation,
+      agentId,
     });
 
     this.sessions.set(id, session);
 
     // Update persistence with new PID
-    this.updatePersistedSession(id, ptyProcess.pid, startedAt);
+    this.updatePersistedSession(id, session.pty.pid, session.startedAt);
 
-    console.log(`[${new Date().toISOString()}] Session restarted: ${id} (PID: ${ptyProcess.pid})${continueConversation ? ' [continuing]' : ''}`);
+    console.log(`[${new Date().toISOString()}] Session restarted: ${id} (PID: ${session.pty.pid})${continueConversation ? ' [continuing]' : ''}`);
 
     return this.toPublicSession(session);
   }
