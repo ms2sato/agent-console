@@ -1,13 +1,7 @@
-// ========== Agent ==========
 export * from './types/agent.js';
-
-// ========== Worker ==========
 export * from './types/worker.js';
-
-// ========== Session ==========
 export * from './types/session.js';
 
-// ========== Repository ==========
 export interface Repository {
   id: string;           // UUID
   name: string;         // Display name (directory name)
@@ -15,7 +9,6 @@ export interface Repository {
   registeredAt: string; // Registration date (ISO 8601)
 }
 
-// ========== Worktree ==========
 export interface Worktree {
   path: string;         // Worktree absolute path
   branch: string;       // Branch name (dynamically fetched from git)
@@ -24,7 +17,6 @@ export interface Worktree {
   index?: number;       // Index number (starting from 1, not assigned to main)
 }
 
-// ========== API Request/Response ==========
 export interface CreateRepositoryRequest {
   path: string;
 }
@@ -59,7 +51,6 @@ export interface DeleteWorktreeRequest {
   force?: boolean;          // Force delete with session termination
 }
 
-// ========== API Response ==========
 export interface ApiError {
   error: string;
   message: string;

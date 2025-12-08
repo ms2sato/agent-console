@@ -28,8 +28,6 @@ api.get('/config', (c) => {
   return c.json({ homeDir: homedir() });
 });
 
-// ========== Sessions API ==========
-
 // Get all sessions
 api.get('/sessions', (c) => {
   const sessions = sessionManager.getAllSessions();
@@ -104,8 +102,6 @@ api.patch('/sessions/:id/branch', async (c) => {
   return c.json({ success: true, branch: result.branch });
 });
 
-// ========== Workers API ==========
-
 // Get workers for a session
 api.get('/sessions/:sessionId/workers', (c) => {
   const sessionId = c.req.param('sessionId');
@@ -172,8 +168,6 @@ api.post('/sessions/:sessionId/workers/:workerId/restart', async (c) => {
   return c.json({ worker });
 });
 
-// ========== Repository API ==========
-
 // Get all repositories
 api.get('/repositories', (c) => {
   const repositories = repositoryManager.getAllRepositories();
@@ -209,8 +203,6 @@ api.delete('/repositories/:id', (c) => {
 
   return c.json({ success: true });
 });
-
-// ========== Worktree API ==========
 
 // Get worktrees for a repository
 api.get('/repositories/:id/worktrees', (c) => {
@@ -343,8 +335,6 @@ api.get('/repositories/:id/branches', (c) => {
   return c.json(branches);
 });
 
-// ========== Agents API ==========
-
 // Get all agents
 api.get('/agents', (c) => {
   const agents = agentManager.getAllAgents();
@@ -420,8 +410,6 @@ api.delete('/agents/:id', (c) => {
 
   return c.json({ success: true });
 });
-
-// ========== System API ==========
 
 // Open a file or directory in the default application (Finder/Explorer)
 api.post('/system/open', async (c) => {

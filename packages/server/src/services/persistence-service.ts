@@ -15,8 +15,6 @@ export interface PersistedRepository {
   registeredAt: string;
 }
 
-// ========== Worker Persistence Types ==========
-
 interface PersistedWorkerBase {
   id: string;
   name: string;
@@ -34,8 +32,6 @@ export interface PersistedTerminalWorker extends PersistedWorkerBase {
 }
 
 export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker;
-
-// ========== Session Persistence Types ==========
 
 interface PersistedSessionBase {
   id: string;
@@ -56,8 +52,6 @@ export interface PersistedQuickSession extends PersistedSessionBase {
 }
 
 export type PersistedSession = PersistedWorktreeSession | PersistedQuickSession;
-
-// ========== Old Format (for migration) ==========
 
 interface OldPersistedSession {
   id: string;
@@ -108,8 +102,6 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
   }
 }
 
-// ========== Utility Functions ==========
-
 function ensureConfigDir(): void {
   const configDir = getConfigDir();
   if (!fs.existsSync(configDir)) {
@@ -136,14 +128,10 @@ function safeRead<T>(filePath: string, defaultValue: T): T {
   return defaultValue;
 }
 
-// ========== Persistence Service ==========
-
 export class PersistenceService {
   constructor() {
     ensureConfigDir();
   }
-
-  // ========== Repositories ==========
 
   loadRepositories(): PersistedRepository[] {
     return safeRead<PersistedRepository[]>(getRepositoriesFile(), []);
@@ -152,8 +140,6 @@ export class PersistenceService {
   saveRepositories(repositories: PersistedRepository[]): void {
     atomicWrite(getRepositoriesFile(), JSON.stringify(repositories, null, 2));
   }
-
-  // ========== Sessions ==========
 
   loadSessions(): PersistedSession[] {
     const raw = safeRead<unknown[]>(getSessionsFile(), []);
@@ -189,8 +175,6 @@ export class PersistenceService {
   clearSessions(): void {
     this.saveSessions([]);
   }
-
-  // ========== Agents ==========
 
   loadAgents(): AgentDefinition[] {
     return safeRead<AgentDefinition[]>(getAgentsFile(), []);

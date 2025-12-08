@@ -1,5 +1,3 @@
-// ========== Worker Types ==========
-
 export interface WorkerBase {
   id: string;
   name: string;
@@ -16,8 +14,6 @@ export interface TerminalWorker extends WorkerBase {
 }
 
 export type Worker = AgentWorker | TerminalWorker;
-
-// ========== Worker Activity ==========
 
 // Agent activity state (detected by parsing output)
 export type AgentActivityState =

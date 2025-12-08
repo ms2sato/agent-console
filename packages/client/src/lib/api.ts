@@ -14,8 +14,6 @@ import type {
 
 const API_BASE = '/api';
 
-// ========== Config API ==========
-
 export interface ConfigResponse {
   homeDir: string;
 }
@@ -27,8 +25,6 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   }
   return res.json();
 }
-
-// ========== Sessions API ==========
 
 export interface SessionsResponse {
   sessions: Session[];
@@ -92,8 +88,6 @@ export class ServerUnavailableError extends Error {
     this.name = 'ServerUnavailableError';
   }
 }
-
-// ========== Workers API ==========
 
 export interface WorkersResponse {
   workers: Worker[];
@@ -181,8 +175,6 @@ export async function renameSessionBranch(
   return res.json();
 }
 
-// ========== Repositories API ==========
-
 export interface RepositoriesResponse {
   repositories: Repository[];
 }
@@ -220,8 +212,6 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
     throw new Error(`Failed to unregister repository: ${res.statusText}`);
   }
 }
-
-// ========== Worktrees API ==========
 
 export interface WorktreesResponse {
   worktrees: Worktree[];
@@ -285,8 +275,6 @@ export async function deleteWorktree(
   }
 }
 
-// ========== Agents API ==========
-
 export interface AgentsResponse {
   agents: AgentDefinition[];
 }
@@ -349,8 +337,6 @@ export async function unregisterAgent(agentId: string): Promise<void> {
     throw new Error(error.error || 'Failed to unregister agent');
   }
 }
-
-// ========== System API ==========
 
 export async function openPath(path: string): Promise<void> {
   const res = await fetch(`${API_BASE}/system/open`, {

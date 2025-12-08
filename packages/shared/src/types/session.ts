@@ -1,7 +1,5 @@
 import type { Worker, AgentActivityState } from './worker.js';
 
-// ========== Session Types ==========
-
 export type SessionStatus = 'active' | 'inactive';
 
 export interface SessionBase {
@@ -23,8 +21,6 @@ export interface QuickSession extends SessionBase {
 }
 
 export type Session = WorktreeSession | QuickSession;
-
-// ========== API Request/Response Types ==========
 
 interface CreateWorktreeSessionRequest {
   type: 'worktree';
@@ -66,8 +62,6 @@ export interface CreateWorkerResponse {
   worker: Worker;
 }
 
-// ========== WebSocket Message Types ==========
-
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
@@ -78,8 +72,6 @@ export type WorkerServerMessage =
   | { type: 'exit'; exitCode: number; signal: string | null }
   | { type: 'history'; data: string }
   | { type: 'activity'; state: AgentActivityState };  // Agent workers only
-
-// ========== Dashboard Message Types ==========
 
 export type DashboardServerMessage =
   | { type: 'sessions-sync'; sessions: Array<{ id: string; workers: Array<{ id: string; activityState?: AgentActivityState }> }> }

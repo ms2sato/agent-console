@@ -24,8 +24,6 @@ import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
 import { getServerPid } from '../lib/config.js';
 
-// ========== Utility Functions ==========
-
 function getCurrentBranch(cwd: string): string {
   try {
     return execSync('git branch --show-current', {
@@ -36,8 +34,6 @@ function getCurrentBranch(cwd: string): string {
     return '(unknown)';
   }
 }
-
-// ========== Internal Worker Types ==========
 
 interface InternalWorkerBase {
   id: string;
@@ -63,8 +59,6 @@ interface InternalTerminalWorker extends InternalWorkerBase {
 
 type InternalWorker = InternalAgentWorker | InternalTerminalWorker;
 
-// ========== Internal Session Types ==========
-
 interface InternalSessionBase {
   id: string;
   locationPath: string;
@@ -85,19 +79,13 @@ interface InternalQuickSession extends InternalSessionBase {
 
 type InternalSession = InternalWorktreeSession | InternalQuickSession;
 
-// ========== Constants ==========
-
 const MAX_BUFFER_SIZE = 100000; // 100KB
-
-// ========== Worker Callbacks Type ==========
 
 interface WorkerCallbacks {
   onData: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivityChange?: (state: AgentActivityState) => void;
 }
-
-// ========== Session Manager ==========
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
@@ -282,8 +270,6 @@ export class SessionManager {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
   }
 
-  // ========== Worker Lifecycle ==========
-
   createWorker(
     sessionId: string,
     request: CreateWorkerRequest,
@@ -363,8 +349,6 @@ export class SessionManager {
     }
     return `Terminal ${count + 1}`;
   }
-
-  // ========== Worker Initialization ==========
 
   private initializeAgentWorker(params: {
     id: string;
@@ -482,8 +466,6 @@ export class SessionManager {
     });
   }
 
-  // ========== Worker I/O ==========
-
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): boolean {
     const worker = this.getWorker(sessionId, workerId);
     if (!worker) return false;
@@ -553,8 +535,6 @@ export class SessionManager {
     }
     return undefined;
   }
-
-  // ========== Session-specific Operations ==========
 
   restartAgentWorker(
     sessionId: string,
@@ -650,8 +630,6 @@ export class SessionManager {
     }
   }
 
-  // ========== Persistence ==========
-
   private persistSession(session: InternalSession): void {
     const sessions = persistenceService.loadSessions();
     const existingIdx = sessions.findIndex(s => s.id === session.id);
@@ -711,8 +689,6 @@ export class SessionManager {
       };
     }
   }
-
-  // ========== Public Type Conversion ==========
 
   private toPublicSession(session: InternalSession): Session {
     const workers = Array.from(session.workers.values())
