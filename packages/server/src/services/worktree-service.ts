@@ -4,7 +4,6 @@ import * as path from 'path';
 import type { Worktree } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
 
-// ========== Index Management ==========
 interface IndexStore {
   // Map of worktree path -> index number
   indexes: Record<string, number>;
@@ -67,8 +66,6 @@ function generateRandomSuffix(length: number): string {
   }
   return suffix;
 }
-
-// ========== Template Functionality ==========
 
 /**
  * Find templates directory for a repository

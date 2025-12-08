@@ -1,16 +1,18 @@
 import type {
   Session,
+  Worker,
   Repository,
   Worktree,
   CreateWorktreeRequest,
+  CreateWorkerRequest,
+  CreateWorkerResponse,
+  CreateSessionRequest,
   AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
-
-// ========== Config API ==========
 
 export interface ConfigResponse {
   homeDir: string;
@@ -23,8 +25,6 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   }
   return res.json();
 }
-
-// ========== Sessions API ==========
 
 export interface SessionsResponse {
   sessions: Session[];
@@ -43,15 +43,12 @@ export async function fetchSessions(): Promise<SessionsResponse> {
 }
 
 export async function createSession(
-  worktreePath?: string,
-  repositoryId?: string,
-  continueConversation: boolean = false,
-  agentId?: string
+  request: CreateSessionRequest
 ): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repositoryId, continueConversation, agentId }),
+    body: JSON.stringify(request),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
@@ -60,24 +57,9 @@ export async function createSession(
   return res.json();
 }
 
-export interface SessionMetadata {
-  id: string;
-  worktreePath: string;
-  repositoryId: string;
-  isActive: boolean;
-  branch: string;
-}
-
-export class ServerUnavailableError extends Error {
-  constructor() {
-    super('Server is unavailable');
-    this.name = 'ServerUnavailableError';
-  }
-}
-
-export async function getSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
+export async function getSession(sessionId: string): Promise<Session | null> {
   try {
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/metadata`);
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}`);
     if (res.status === 404) {
       return null;
     }
@@ -86,9 +68,10 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
       throw new ServerUnavailableError();
     }
     if (!res.ok) {
-      throw new Error(`Failed to get session metadata: ${res.statusText}`);
+      throw new Error(`Failed to get session: ${res.statusText}`);
     }
-    return res.json();
+    const data = await res.json();
+    return data.session;
   } catch (error) {
     // Network error - server is likely down
     // TypeError is thrown when fetch fails due to network issues
@@ -99,19 +82,64 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
   }
 }
 
-export async function restartSession(
+export class ServerUnavailableError extends Error {
+  constructor() {
+    super('Server is unavailable');
+    this.name = 'ServerUnavailableError';
+  }
+}
+
+export interface WorkersResponse {
+  workers: Worker[];
+}
+
+export async function fetchWorkers(sessionId: string): Promise<WorkersResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch workers: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function createWorker(
   sessionId: string,
-  continueConversation: boolean = false,
-  agentId?: string
-): Promise<CreateSessionResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/restart`, {
+  request: CreateWorkerRequest & { continueConversation?: boolean }
+): Promise<CreateWorkerResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ continueConversation, agentId }),
+    body: JSON.stringify(request),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(error.error || 'Failed to restart session');
+    throw new Error(error.error || 'Failed to create worker');
+  }
+  return res.json();
+}
+
+export async function deleteWorker(sessionId: string, workerId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to delete worker');
+  }
+}
+
+export async function restartAgentWorker(
+  sessionId: string,
+  workerId: string,
+  continueConversation: boolean = false
+): Promise<{ worker: Worker }> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ continueConversation }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to restart worker');
   }
   return res.json();
 }
@@ -146,8 +174,6 @@ export async function renameSessionBranch(
   }
   return res.json();
 }
-
-// ========== Repositories API ==========
 
 export interface RepositoriesResponse {
   repositories: Repository[];
@@ -186,8 +212,6 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
     throw new Error(`Failed to unregister repository: ${res.statusText}`);
   }
 }
-
-// ========== Worktrees API ==========
 
 export interface WorktreesResponse {
   worktrees: Worktree[];
@@ -251,8 +275,6 @@ export async function deleteWorktree(
   }
 }
 
-// ========== Agents API ==========
-
 export interface AgentsResponse {
   agents: AgentDefinition[];
 }
@@ -315,8 +337,6 @@ export async function unregisterAgent(agentId: string): Promise<void> {
     throw new Error(error.error || 'Failed to unregister agent');
   }
 }
-
-// ========== System API ==========
 
 export async function openPath(path: string): Promise<void> {
   const res = await fetch(`${API_BASE}/system/open`, {

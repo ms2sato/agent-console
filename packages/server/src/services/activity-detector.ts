@@ -1,4 +1,4 @@
-import type { ClaudeActivityState, AgentActivityPatterns } from '@agent-console/shared';
+import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
 
 // ANSI escape sequence removal regex
 const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
@@ -7,7 +7,7 @@ const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 export interface ActivityDetectorOptions {
   bufferSize?: number;        // Max buffer size (default: 1000)
   debounceMs?: number;        // Debounce time (default: 300ms)
-  onStateChange?: (state: ClaudeActivityState) => void;
+  onStateChange?: (state: AgentActivityState) => void;
   activityPatterns?: AgentActivityPatterns; // Optional patterns from agent definition
 }
 
@@ -17,8 +17,8 @@ export class ActivityDetector {
   private debounceMs: number;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private idleCheckTimer: ReturnType<typeof setTimeout> | null = null;
-  private currentState: ClaudeActivityState = 'idle';
-  private onStateChange?: (state: ClaudeActivityState) => void;
+  private currentState: AgentActivityState = 'idle';
+  private onStateChange?: (state: AgentActivityState) => void;
   private lastOutputTime: number = 0;
 
   // User typing detection
@@ -184,7 +184,7 @@ export class ActivityDetector {
   /**
    * Set state and notify if changed
    */
-  private setState(newState: ClaudeActivityState): void {
+  private setState(newState: AgentActivityState): void {
     if (this.currentState !== newState) {
       console.log(`[ActivityDetector] State change: ${this.currentState} → ${newState}`);
       this.currentState = newState;
@@ -204,7 +204,7 @@ export class ActivityDetector {
   /**
    * Get current detected state
    */
-  getState(): ClaudeActivityState {
+  getState(): AgentActivityState {
     return this.currentState;
   }
 

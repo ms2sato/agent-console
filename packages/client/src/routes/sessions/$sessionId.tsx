@@ -2,52 +2,40 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { SessionSettings } from '../../components/SessionSettings';
-import { getSessionMetadata, restartSession, openPath, ServerUnavailableError, type SessionMetadata } from '../../lib/api';
+import { getSession, createWorker, deleteWorker, restartAgentWorker, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
-import type { ClaudeActivityState } from '@agent-console/shared';
-
-interface TerminalSearchParams {
-  cwd?: string;
-}
+import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
 
 export const Route = createFileRoute('/sessions/$sessionId')({
   component: TerminalPage,
-  validateSearch: (search: Record<string, unknown>): TerminalSearchParams => {
-    return {
-      cwd: typeof search.cwd === 'string' ? search.cwd : undefined,
-    };
-  },
 });
 
 type PageState =
   | { type: 'loading' }
-  | { type: 'active'; wsUrl: string; metadata: SessionMetadata }
-  | { type: 'disconnected'; metadata: SessionMetadata }
+  | { type: 'active'; session: Session }
+  | { type: 'disconnected'; session: Session }
   | { type: 'not_found' }
   | { type: 'server_unavailable' }
   | { type: 'restarting' };
 
-// Tab types
-type TabType = 'claude' | 'shell';
-
+// Tab representation - links to workers
 interface Tab {
-  id: string;
-  type: TabType;
+  id: string;           // Worker ID
+  workerType: 'agent' | 'terminal';
   name: string;
   wsUrl: string;
 }
 
-
-function extractProjectName(worktreePath: string): string {
+function extractProjectName(locationPath: string): string {
   // Path format: ~/.agent-console/worktrees/{org}/{repo}/{branch}
   // or: ~/.agent-console/worktrees/{repo}/{branch}
   // Branch is always the last part, repo is second to last
-  const parts = worktreePath.split('/').filter(Boolean);
+  const parts = locationPath.split('/').filter(Boolean);
   return parts[parts.length - 2] || 'project';
 }
 
 // Generate favicon based on activity state
-function generateFavicon(state: ClaudeActivityState, bounce: number = 0): string {
+function generateFavicon(state: AgentActivityState, bounce: number = 0): string {
   const canvas = document.createElement('canvas');
   canvas.width = 32;
   canvas.height = 32;
@@ -71,26 +59,54 @@ function generateFavicon(state: ClaudeActivityState, bounce: number = 0): string
   return canvas.toDataURL('image/png');
 }
 
+// Get branch name from session (for worktree sessions)
+function getBranchName(session: Session): string {
+  return session.type === 'worktree' ? session.worktreeId : '(quick)';
+}
+
+// Get repository ID from session (for worktree sessions)
+function getRepositoryId(session: Session): string {
+  return session.type === 'worktree' ? session.repositoryId : '';
+}
+
+// Build WebSocket URL for a worker
+function buildWorkerWsUrl(sessionId: string, workerId: string): string {
+  return `ws://${window.location.host}/ws/session/${sessionId}/worker/${workerId}`;
+}
+
+// Convert workers to tabs
+function workersToTabs(sessionId: string, workers: Worker[]): Tab[] {
+  return workers.map(worker => ({
+    id: worker.id,
+    workerType: worker.type,
+    name: worker.name,
+    wsUrl: buildWorkerWsUrl(sessionId, worker.id),
+  }));
+}
+
+// Find the first agent worker in the list
+function findFirstAgentWorker(workers: Worker[]): AgentWorker | undefined {
+  return workers.find((w): w is AgentWorker => w.type === 'agent');
+}
+
 function TerminalPage() {
   const { sessionId } = Route.useParams();
-  const { cwd } = Route.useSearch();
   const [state, setState] = useState<PageState>({ type: 'loading' });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
-  const [activityState, setActivityState] = useState<ClaudeActivityState>('unknown');
+  const [activityState, setActivityState] = useState<AgentActivityState>('unknown');
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [shellCounter, setShellCounter] = useState(1);
 
   // Local branch name state (can be updated by settings dialog)
   const [branchName, setBranchName] = useState<string>('');
 
-  // Sync branch name when metadata changes
+  // Sync branch name when state changes
   useEffect(() => {
     if (state.type === 'active' || state.type === 'disconnected') {
-      setBranchName(state.metadata.branch || '');
+      setBranchName(getBranchName(state.session));
     }
   }, [state]);
 
@@ -99,17 +115,18 @@ function TerminalPage() {
     setExitInfo(info);
   }, []);
 
-  const handleActivityChange = useCallback((state: ClaudeActivityState) => {
-    setActivityState(state);
+  const handleActivityChange = useCallback((newState: AgentActivityState) => {
+    setActivityState(newState);
   }, []);
 
   // Update page title and favicon based on state
   useEffect(() => {
     if (state.type !== 'active' && state.type !== 'disconnected') return;
 
-    const branchName = state.metadata.branch;
-    const projectName = extractProjectName(state.metadata.worktreePath);
-    document.title = `${branchName}@${projectName} - Agent Console`;
+    const session = state.session;
+    const branch = getBranchName(session);
+    const projectName = extractProjectName(session.locationPath);
+    document.title = `${branch}@${projectName} - Agent Console`;
 
     // Cleanup: restore default title on unmount
     return () => {
@@ -163,78 +180,101 @@ function TerminalPage() {
   // Initialize tabs when state becomes active
   useEffect(() => {
     if (state.type === 'active' && tabs.length === 0) {
-      const claudeTab: Tab = {
-        id: 'claude',
-        type: 'claude',
-        name: 'Claude',
-        wsUrl: state.wsUrl,
-      };
-      setTabs([claudeTab]);
-      setActiveTabId('claude');
-    }
-  }, [state, tabs.length]);
+      const workers = state.session.workers;
 
-  // Add a new shell tab
-  const addShellTab = useCallback(() => {
+      // If no workers exist, create an agent worker automatically
+      if (workers.length === 0) {
+        (async () => {
+          try {
+            const { worker } = await createWorker(sessionId, {
+              type: 'agent',
+              agentId: 'claude-code-builtin',
+              name: 'Claude',
+            });
+            const newTab: Tab = {
+              id: worker.id,
+              workerType: 'agent',
+              name: worker.name,
+              wsUrl: buildWorkerWsUrl(sessionId, worker.id),
+            };
+            setTabs([newTab]);
+            setActiveTabId(worker.id);
+          } catch (error) {
+            console.error('Failed to create agent worker:', error);
+          }
+        })();
+        return;
+      }
+
+      const newTabs = workersToTabs(sessionId, workers);
+      setTabs(newTabs);
+      // Set active tab to first agent worker if exists, otherwise first tab
+      const firstAgent = findFirstAgentWorker(workers);
+      setActiveTabId(firstAgent?.id ?? newTabs[0]?.id ?? null);
+    }
+  }, [state, tabs.length, sessionId]);
+
+  // Add a new terminal (shell) tab
+  const addTerminalTab = useCallback(async () => {
     if (state.type !== 'active') return;
 
-    const shellId = `shell-${shellCounter}`;
-    const shellWsUrl = `ws://${window.location.host}/ws/shell?cwd=${encodeURIComponent(state.metadata.worktreePath)}`;
-    const newTab: Tab = {
-      id: shellId,
-      type: 'shell',
-      name: `Shell ${shellCounter}`,
-      wsUrl: shellWsUrl,
-    };
-    setTabs(prev => [...prev, newTab]);
-    setActiveTabId(shellId);
-    setShellCounter(prev => prev + 1);
-  }, [state, shellCounter]);
+    try {
+      const { worker } = await createWorker(sessionId, {
+        type: 'terminal',
+        name: `Shell ${tabs.filter(t => t.workerType === 'terminal').length + 1}`,
+      });
 
-  // Close a tab
-  const closeTab = useCallback((tabId: string) => {
-    // Don't allow closing the Claude tab
-    if (tabId === 'claude') return;
-
-    setTabs(prev => {
-      const newTabs = prev.filter(t => t.id !== tabId);
-      // If closing the active tab, switch to Claude
-      if (activeTabId === tabId) {
-        setActiveTabId('claude');
-      }
-      return newTabs;
-    });
-  }, [activeTabId]);
-
-  useEffect(() => {
-    // For 'new' session, use the /ws/terminal-new endpoint directly
-    if (sessionId === 'new') {
-      const wsUrl = `ws://${window.location.host}/ws/terminal-new${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
-      const newMetadata: SessionMetadata = {
-        id: 'new',
-        worktreePath: cwd || '(server default)',
-        repositoryId: 'default',
-        isActive: true,
-        branch: '(unknown)',
+      const newTab: Tab = {
+        id: worker.id,
+        workerType: 'terminal',
+        name: worker.name,
+        wsUrl: buildWorkerWsUrl(sessionId, worker.id),
       };
-      setState({ type: 'active', wsUrl, metadata: newMetadata });
-      return;
+      setTabs(prev => [...prev, newTab]);
+      setActiveTabId(worker.id);
+    } catch (error) {
+      console.error('Failed to create terminal worker:', error);
     }
+  }, [state, sessionId, tabs]);
 
-    // Check session status
+  // Close a tab (delete worker)
+  const closeTab = useCallback(async (tabId: string) => {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab) return;
+
+    // Don't allow closing agent workers (primary Claude tab)
+    if (tab.workerType === 'agent') return;
+
+    try {
+      await deleteWorker(sessionId, tabId);
+      setTabs(prev => {
+        const newTabs = prev.filter(t => t.id !== tabId);
+        // If closing the active tab, switch to first agent or first remaining tab
+        if (activeTabId === tabId) {
+          const firstAgent = newTabs.find(t => t.workerType === 'agent');
+          setActiveTabId(firstAgent?.id ?? newTabs[0]?.id ?? null);
+        }
+        return newTabs;
+      });
+    } catch (error) {
+      console.error('Failed to delete worker:', error);
+    }
+  }, [sessionId, tabs, activeTabId]);
+
+  // Load session data
+  useEffect(() => {
     const checkSession = async () => {
       try {
-        const metadata = await getSessionMetadata(sessionId);
-        if (!metadata) {
+        const session = await getSession(sessionId);
+        if (!session) {
           setState({ type: 'not_found' });
           return;
         }
 
-        if (metadata.isActive) {
-          const wsUrl = `ws://${window.location.host}/ws/terminal/${sessionId}`;
-          setState({ type: 'active', wsUrl, metadata });
+        if (session.status === 'active') {
+          setState({ type: 'active', session });
         } else {
-          setState({ type: 'disconnected', metadata });
+          setState({ type: 'disconnected', session });
         }
       } catch (error) {
         console.error('Failed to check session:', error);
@@ -247,22 +287,36 @@ function TerminalPage() {
     };
 
     checkSession();
-  }, [sessionId, cwd]);
+  }, [sessionId]);
 
   const handleRestart = async (continueConversation: boolean) => {
     if (state.type !== 'disconnected') return;
 
-    const metadata = state.metadata;
+    const session = state.session;
+
+    // Find the first agent worker to restart
+    const agentWorker = findFirstAgentWorker(session.workers);
+    if (!agentWorker) {
+      console.error('No agent worker found to restart');
+      return;
+    }
+
     setState({ type: 'restarting' });
     try {
-      await restartSession(sessionId, continueConversation);
-      // Session restarted with same ID - just switch to active state
-      const wsUrl = `ws://${window.location.host}/ws/terminal/${sessionId}`;
-      setState({ type: 'active', wsUrl, metadata: { ...metadata, isActive: true } });
+      await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
+      // Reload session to get updated state
+      const updatedSession = await getSession(sessionId);
+      if (updatedSession && updatedSession.status === 'active') {
+        // Reset tabs to pick up new worker state
+        setTabs([]);
+        setState({ type: 'active', session: updatedSession });
+      } else {
+        setState({ type: 'disconnected', session });
+      }
     } catch (error) {
       console.error('Failed to restart session:', error);
       alert(error instanceof Error ? error.message : 'Failed to restart session');
-      setState({ type: 'disconnected', metadata });
+      setState({ type: 'disconnected', session });
     }
   };
 
@@ -332,7 +386,7 @@ function TerminalPage() {
             The session has been disconnected (server may have restarted).
           </p>
           <p className="text-sm text-gray-500 mb-6 font-mono bg-slate-800 p-2 rounded">
-            {formatPath(state.metadata.worktreePath)}
+            {formatPath(state.session.locationPath)}
           </p>
           <div className="flex gap-3 justify-center">
             <button
@@ -357,6 +411,9 @@ function TerminalPage() {
   }
 
   // Active state - show terminal with status bar at bottom
+  const session = state.session;
+  const repositoryId = getRepositoryId(session);
+
   const statusColor =
     connectionStatus === 'connected' && activityState !== 'unknown' ? 'bg-green-500' :
     connectionStatus === 'connected' || connectionStatus === 'connecting' ? 'bg-yellow-500' :
@@ -394,10 +451,10 @@ function TerminalPage() {
             }`}
           >
             <span className={`inline-block w-2 h-2 rounded-full ${
-              tab.type === 'claude' ? 'bg-blue-500' : 'bg-green-500'
+              tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
             }`} />
             {tab.name}
-            {tab.type === 'shell' && (
+            {tab.workerType === 'terminal' && (
               <span
                 onClick={(e) => {
                   e.stopPropagation();
@@ -411,7 +468,7 @@ function TerminalPage() {
           </button>
         ))}
         <button
-          onClick={addShellTab}
+          onClick={addTerminalTab}
           className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-800"
           title="Add shell tab"
         >
@@ -421,20 +478,22 @@ function TerminalPage() {
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Settings button */}
-        <div className="px-2">
-          <SessionSettings
-            sessionId={sessionId}
-            repositoryId={state.metadata.repositoryId}
-            currentBranch={branchName}
-            worktreePath={state.metadata.worktreePath}
-            onBranchChange={setBranchName}
-            onSessionRestart={() => {
-              // Reload page to reconnect WebSocket to restarted session
-              window.location.reload();
-            }}
-          />
-        </div>
+        {/* Settings button (only for worktree sessions) */}
+        {session.type === 'worktree' && (
+          <div className="px-2">
+            <SessionSettings
+              sessionId={sessionId}
+              repositoryId={repositoryId}
+              currentBranch={branchName}
+              worktreePath={session.locationPath}
+              onBranchChange={setBranchName}
+              onSessionRestart={() => {
+                // Reload page to reconnect WebSocket to restarted session
+                window.location.reload();
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Terminal panels - render all but only show active */}
@@ -449,7 +508,7 @@ function TerminalPage() {
             <Terminal
               wsUrl={tab.wsUrl}
               onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
-              onActivityChange={tab.type === 'claude' ? handleActivityChange : undefined}
+              onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
               hideStatusBar
             />
           </div>
@@ -460,17 +519,23 @@ function TerminalPage() {
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
         <span
-          onClick={() => openPath(state.metadata.worktreePath)}
+          onClick={() => {
+            import('../../lib/api').then(({ openPath }) => openPath(session.locationPath));
+          }}
           className="text-gray-500 text-xs font-mono truncate flex-1 text-left hover:text-blue-400 hover:underline cursor-pointer select-all"
-          title={`Open ${state.metadata.worktreePath} in Finder`}
+          title={`Open ${session.locationPath} in Finder`}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && openPath(state.metadata.worktreePath)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              import('../../lib/api').then(({ openPath }) => openPath(session.locationPath));
+            }
+          }}
         >
-          {formatPath(state.metadata.worktreePath)}
+          {formatPath(session.locationPath)}
         </span>
-        {/* Activity state indicator (only for Claude tab) */}
-        {activeTab?.type === 'claude' && activityState !== 'unknown' && (
+        {/* Activity state indicator (only for agent tab) */}
+        {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             activityState === 'asking' ? 'bg-yellow-500/20 text-yellow-400' :
             activityState === 'active' ? 'bg-blue-500/20 text-blue-400' :

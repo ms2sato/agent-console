@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import * as os from 'os';
-import type { Session, Repository, Worktree, AgentDefinition } from '@agent-console/shared';
+import type {
+  Session,
+  Repository,
+  Worktree,
+  AgentDefinition,
+  Worker,
+  CreateSessionRequest,
+} from '@agent-console/shared';
 
 // Mock open package
 vi.mock('open', () => ({
@@ -29,26 +36,54 @@ let mockSessions: Map<string, Session>;
 let mockRepositories: Map<string, Repository>;
 let sessionIdCounter = 0;
 
+// Helper to create a mock session
+function createMockSession(request: CreateSessionRequest): Session {
+  const id = `test-session-${++sessionIdCounter}`;
+  const now = new Date().toISOString();
+  const workers: Worker[] = [
+    {
+      id: `${id}-agent`,
+      type: 'agent',
+      name: 'Claude',
+      agentId: request.agentId || 'claude-code',
+      createdAt: now,
+    },
+  ];
+
+  if (request.type === 'worktree') {
+    return {
+      id,
+      type: 'worktree',
+      locationPath: request.locationPath,
+      repositoryId: request.repositoryId,
+      worktreeId: request.worktreeId,
+      status: 'active',
+      createdAt: now,
+      workers,
+    };
+  } else {
+    return {
+      id,
+      type: 'quick',
+      locationPath: request.locationPath,
+      status: 'active',
+      createdAt: now,
+      workers,
+    };
+  }
+}
+
 // Mock session manager - simple mock without external logic
 vi.mock('../services/session-manager.js', () => ({
   sessionManager: {
     getAllSessions: vi.fn(() => Array.from(mockSessions.values())),
     getSession: vi.fn((id: string) => mockSessions.get(id)),
-    createSession: vi.fn((worktreePath: string, repositoryId: string) => {
-      const session: Session = {
-        id: `test-session-${++sessionIdCounter}`,
-        worktreePath,
-        repositoryId,
-        status: 'running',
-        pid: 12345,
-        startedAt: new Date().toISOString(),
-        activityState: 'idle',
-        branch: 'main',
-      };
+    createSession: vi.fn((request: CreateSessionRequest) => {
+      const session = createMockSession(request);
       mockSessions.set(session.id, session);
       return session;
     }),
-    killSession: vi.fn((id: string) => {
+    deleteSession: vi.fn((id: string) => {
       if (mockSessions.has(id)) {
         mockSessions.delete(id);
         return true;
@@ -56,13 +91,14 @@ vi.mock('../services/session-manager.js', () => ({
       return false;
     }),
     getSessionMetadata: vi.fn(() => undefined),
-    restartSession: vi.fn(() => null),
-    attachCallbacks: vi.fn(),
-    detachCallbacks: vi.fn(),
-    getOutputBuffer: vi.fn(() => null),
-    getActivityState: vi.fn(() => 'idle'),
+    createWorker: vi.fn(),
+    deleteWorker: vi.fn(),
+    restartAgentWorker: vi.fn(() => null),
+    attachWorkerCallbacks: vi.fn(),
+    detachWorkerCallbacks: vi.fn(),
+    getWorkerOutputBuffer: vi.fn(() => null),
+    getWorkerActivityState: vi.fn(() => 'idle'),
     setGlobalActivityCallback: vi.fn(),
-    getBranchForPath: vi.fn(() => 'main'),
     renameBranch: vi.fn(() => ({ success: true, branch: 'new-branch' })),
   },
 }));
@@ -199,13 +235,13 @@ describe('API Routes', () => {
         // Pre-populate mock data
         mockSessions.set('session-1', {
           id: 'session-1',
-          worktreePath: '/path/1',
+          type: 'worktree',
+          locationPath: '/path/1',
           repositoryId: 'repo-1',
-          status: 'running',
-          pid: 1234,
-          startedAt: '2024-01-01T00:00:00.000Z',
-          activityState: 'idle',
-          branch: 'main',
+          worktreeId: 'main',
+          status: 'active',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [],
         });
 
         const res = await app.request('/api/sessions');
@@ -218,18 +254,39 @@ describe('API Routes', () => {
     });
 
     describe('POST /api/sessions', () => {
-      it('should create a new session', async () => {
+      it('should create a new worktree session', async () => {
         const res = await app.request('/api/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ worktreePath: '/test/path', repositoryId: 'test-repo' }),
+          body: JSON.stringify({
+            type: 'worktree',
+            locationPath: '/test/path',
+            repositoryId: 'test-repo',
+            worktreeId: 'main',
+          }),
         });
         expect(res.status).toBe(201);
 
         const body = (await res.json()) as { session: Session };
         expect(body.session).toBeDefined();
-        expect(body.session.worktreePath).toBe('/test/path');
-        expect(body.session.repositoryId).toBe('test-repo');
+        expect(body.session.locationPath).toBe('/test/path');
+        expect(body.session.type).toBe('worktree');
+      });
+
+      it('should create a new quick session', async () => {
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+          }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { session: Session };
+        expect(body.session).toBeDefined();
+        expect(body.session.type).toBe('quick');
       });
     });
 
@@ -239,7 +296,10 @@ describe('API Routes', () => {
         const createRes = await app.request('/api/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ worktreePath: '/test', repositoryId: 'test' }),
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test',
+          }),
         });
         const { session } = (await createRes.json()) as { session: Session };
 
@@ -261,88 +321,188 @@ describe('API Routes', () => {
       });
     });
 
-    describe('GET /api/sessions/:id/metadata', () => {
-      it('should return metadata for active session', async () => {
+    describe('GET /api/sessions/:id', () => {
+      it('should return session for active session', async () => {
         mockSessions.set('active-session', {
           id: 'active-session',
-          worktreePath: '/path/to/worktree',
+          type: 'worktree',
+          locationPath: '/path/to/worktree',
           repositoryId: 'repo-1',
-          status: 'running',
-          pid: 1234,
-          startedAt: '2024-01-01T00:00:00.000Z',
-          activityState: 'idle',
-          branch: 'main',
-        });
-
-        const res = await app.request('/api/sessions/active-session/metadata');
-        expect(res.status).toBe(200);
-
-        const body = (await res.json()) as { id: string; worktreePath: string; isActive: boolean };
-        expect(body.id).toBe('active-session');
-        expect(body.worktreePath).toBe('/path/to/worktree');
-        expect(body.isActive).toBe(true);
-      });
-
-      it('should return metadata for inactive session from persistence', async () => {
-        const { sessionManager } = await import('../services/session-manager.js');
-        vi.mocked(sessionManager.getSessionMetadata).mockReturnValue({
-          id: 'dead-session',
-          worktreePath: '/path/to/dead',
-          repositoryId: 'repo-1',
-          pid: 12345,
-          serverPid: 99999,
+          worktreeId: 'main',
+          status: 'active',
           createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [],
         });
-        vi.mocked(sessionManager.getBranchForPath).mockReturnValue('feature-branch');
 
-        const res = await app.request('/api/sessions/dead-session/metadata');
+        const res = await app.request('/api/sessions/active-session');
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { id: string; isActive: boolean; branch: string };
-        expect(body.id).toBe('dead-session');
-        expect(body.isActive).toBe(false);
-        expect(body.branch).toBe('feature-branch');
+        const body = (await res.json()) as { session: Session };
+        expect(body.session.id).toBe('active-session');
+        expect(body.session.locationPath).toBe('/path/to/worktree');
       });
 
       it('should return 404 for non-existent session', async () => {
         const { sessionManager } = await import('../services/session-manager.js');
         vi.mocked(sessionManager.getSessionMetadata).mockReturnValue(undefined);
 
-        const res = await app.request('/api/sessions/non-existent/metadata');
+        const res = await app.request('/api/sessions/non-existent');
+        expect(res.status).toBe(404);
+      });
+    });
+  });
+
+  describe('Workers API', () => {
+    describe('GET /api/sessions/:sessionId/workers', () => {
+      it('should return workers for a session', async () => {
+        mockSessions.set('test-session', {
+          id: 'test-session',
+          type: 'quick',
+          locationPath: '/test',
+          status: 'active',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [
+            {
+              id: 'worker-1',
+              type: 'agent',
+              name: 'Claude',
+              agentId: 'claude-code',
+              createdAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        });
+
+        const res = await app.request('/api/sessions/test-session/workers');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { workers: Worker[] };
+        expect(body.workers.length).toBe(1);
+        expect(body.workers[0].id).toBe('worker-1');
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const res = await app.request('/api/sessions/non-existent/workers');
         expect(res.status).toBe(404);
       });
     });
 
-    describe('POST /api/sessions/:id/restart', () => {
-      it('should restart a dead session', async () => {
-        const { sessionManager } = await import('../services/session-manager.js');
-        vi.mocked(sessionManager.restartSession).mockReturnValue({
-          id: 'restarted-session',
-          worktreePath: '/path/to/worktree',
-          repositoryId: 'repo-1',
-          status: 'running',
-          pid: 9999,
-          startedAt: '2024-01-01T00:00:00.000Z',
-          activityState: 'idle',
-          branch: 'main',
+    describe('POST /api/sessions/:sessionId/workers', () => {
+      it('should create a worker in a session', async () => {
+        mockSessions.set('test-session', {
+          id: 'test-session',
+          type: 'quick',
+          locationPath: '/test',
+          status: 'active',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [],
         });
 
-        const res = await app.request('/api/sessions/dead-session/restart', {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.createWorker).mockReturnValue({
+          id: 'new-worker',
+          type: 'terminal',
+          name: 'Shell',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        });
+
+        const res = await app.request('/api/sessions/test-session/workers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'terminal', name: 'Shell' }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { worker: Worker };
+        expect(body.worker.id).toBe('new-worker');
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const res = await app.request('/api/sessions/non-existent/workers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'terminal', name: 'Shell' }),
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('DELETE /api/sessions/:sessionId/workers/:workerId', () => {
+      it('should delete a worker', async () => {
+        mockSessions.set('test-session', {
+          id: 'test-session',
+          type: 'quick',
+          locationPath: '/test',
+          status: 'active',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [
+            {
+              id: 'worker-1',
+              type: 'terminal',
+              name: 'Shell',
+              createdAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        });
+
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.deleteWorker).mockReturnValue(true);
+
+        const res = await app.request('/api/sessions/test-session/workers/worker-1', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+      });
+
+      it('should return 404 for non-existent worker', async () => {
+        mockSessions.set('test-session', {
+          id: 'test-session',
+          type: 'quick',
+          locationPath: '/test',
+          status: 'active',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          workers: [],
+        });
+
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.deleteWorker).mockReturnValue(false);
+
+        const res = await app.request('/api/sessions/test-session/workers/non-existent', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('POST /api/sessions/:sessionId/workers/:workerId/restart', () => {
+      it('should restart an agent worker', async () => {
+        const { sessionManager } = await import('../services/session-manager.js');
+        vi.mocked(sessionManager.restartAgentWorker).mockReturnValue({
+          id: 'worker-1',
+          type: 'agent',
+          name: 'Claude',
+          agentId: 'claude-code',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        });
+
+        const res = await app.request('/api/sessions/test-session/workers/worker-1/restart', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ continueConversation: true }),
         });
         expect(res.status).toBe(200);
 
-        const body = (await res.json()) as { session: Session };
-        expect(body.session.id).toBe('restarted-session');
+        const body = (await res.json()) as { worker: Worker };
+        expect(body.worker.id).toBe('worker-1');
       });
 
-      it('should return 404 when session cannot be restarted', async () => {
+      it('should return 404 when worker cannot be restarted', async () => {
         const { sessionManager } = await import('../services/session-manager.js');
-        vi.mocked(sessionManager.restartSession).mockReturnValue(null);
+        vi.mocked(sessionManager.restartAgentWorker).mockReturnValue(null);
 
-        const res = await app.request('/api/sessions/non-existent/restart', {
+        const res = await app.request('/api/sessions/test-session/workers/worker-1/restart', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),

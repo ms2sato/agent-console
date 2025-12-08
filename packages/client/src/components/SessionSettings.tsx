@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import {
   renameSessionBranch,
-  restartSession,
+  restartAgentWorker,
   deleteSession,
   deleteWorktree,
   openPath,
+  getSession,
 } from '../lib/api';
 import {
   SettingsIcon,
@@ -144,7 +145,14 @@ export function SessionSettings({
 
       // Restart session with -c flag to pick up new branch name while keeping conversation
       if (onSessionRestart) {
-        await restartSession(sessionId, true);
+        // Get the session to find the first agent worker
+        const session = await getSession(sessionId);
+        if (session) {
+          const agentWorker = session.workers.find(w => w.type === 'agent');
+          if (agentWorker) {
+            await restartAgentWorker(sessionId, agentWorker.id, true);
+          }
+        }
         onSessionRestart();
       }
     } catch (err) {
@@ -159,7 +167,16 @@ export function SessionSettings({
     setError(null);
 
     try {
-      await restartSession(sessionId, continueConversation);
+      // Get the session to find the first agent worker
+      const session = await getSession(sessionId);
+      if (!session) {
+        throw new Error('Session not found');
+      }
+      const agentWorker = session.workers.find(w => w.type === 'agent');
+      if (!agentWorker) {
+        throw new Error('No agent worker found');
+      }
+      await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
       setActiveDialog(null);
       if (onSessionRestart) {
         onSessionRestart();

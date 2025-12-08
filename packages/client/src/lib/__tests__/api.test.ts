@@ -3,9 +3,11 @@ import {
   fetchConfig,
   fetchSessions,
   createSession,
-  restartSession,
+  getSession,
   deleteSession,
-  getSessionMetadata,
+  createWorker,
+  deleteWorker,
+  restartAgentWorker,
   fetchRepositories,
   registerRepository,
   unregisterRepository,
@@ -63,39 +65,48 @@ describe('API Client', () => {
   });
 
   describe('createSession', () => {
-    it('should create session with default values', async () => {
-      const mockSession = { session: { id: '1' } };
+    it('should create worktree session', async () => {
+      const mockSession = { session: { id: '1', type: 'worktree' } };
       vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
 
-      const result = await createSession();
+      const result = await createSession({
+        type: 'worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        locationPath: '/path/to/worktree',
+      });
 
       expect(fetch).toHaveBeenCalledWith('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          worktreePath: undefined,
-          repositoryId: undefined,
-          continueConversation: false,
+          type: 'worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'main',
+          locationPath: '/path/to/worktree',
         }),
       });
       expect(result).toEqual(mockSession);
     });
 
-    it('should create session with custom values', async () => {
-      const mockSession = { session: { id: '1' } };
+    it('should create quick session', async () => {
+      const mockSession = { session: { id: '1', type: 'quick' } };
       vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
 
-      await createSession('/path/to/worktree', 'repo-id', true);
+      const result = await createSession({
+        type: 'quick',
+        locationPath: '/path/to/project',
+      });
 
       expect(fetch).toHaveBeenCalledWith('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          worktreePath: '/path/to/worktree',
-          repositoryId: 'repo-id',
-          continueConversation: true,
+          type: 'quick',
+          locationPath: '/path/to/project',
         }),
       });
+      expect(result).toEqual(mockSession);
     });
 
     it('should extract error message from JSON response', async () => {
@@ -106,7 +117,7 @@ describe('API Client', () => {
         json: vi.fn().mockResolvedValue({ error: 'Detailed error message' }),
       } as unknown as Response);
 
-      await expect(createSession()).rejects.toThrow('Detailed error message');
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Detailed error message');
     });
 
     it('should fall back to statusText when JSON parsing fails', async () => {
@@ -117,24 +128,42 @@ describe('API Client', () => {
         json: vi.fn().mockRejectedValue(new Error('Parse error')),
       } as unknown as Response);
 
-      // When JSON parsing fails, catches returns { error: res.statusText }
-      await expect(createSession()).rejects.toThrow('Internal Server Error');
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Internal Server Error');
     });
   });
 
-  describe('restartSession', () => {
-    it('should restart session successfully', async () => {
-      const mockSession = { session: { id: '1' } };
+  describe('getSession', () => {
+    it('should return session when exists', async () => {
+      const mockSession = { session: { id: '1', type: 'worktree', status: 'active' } };
       vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
 
-      const result = await restartSession('session-id', true);
+      const result = await getSession('session-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/restart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ continueConversation: true }),
-      });
-      expect(result).toEqual(mockSession);
+      expect(result).toEqual(mockSession.session);
+    });
+
+    it('should return null when session not found (404)', async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        createMockResponse({}, { status: 404, ok: false })
+      );
+
+      const result = await getSession('non-existent');
+
+      expect(result).toBeNull();
+    });
+
+    it('should throw ServerUnavailableError on 5xx errors', async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(getSession('session-id')).rejects.toThrow(ServerUnavailableError);
+    });
+
+    it('should throw ServerUnavailableError on network error', async () => {
+      vi.mocked(fetch).mockRejectedValue(new TypeError('Network error'));
+
+      await expect(getSession('session-id')).rejects.toThrow(ServerUnavailableError);
     });
   });
 
@@ -150,38 +179,61 @@ describe('API Client', () => {
     });
   });
 
-  describe('getSessionMetadata', () => {
-    it('should return metadata when session exists', async () => {
-      const mockMetadata = { id: '1', worktreePath: '/path', isActive: true };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockMetadata));
+  describe('createWorker', () => {
+    it('should create agent worker', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
 
-      const result = await getSessionMetadata('session-id');
+      const result = await createWorker('session-id', { type: 'agent', agentId: 'claude-code' });
 
-      expect(result).toEqual(mockMetadata);
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'agent', agentId: 'claude-code' }),
+      });
+      expect(result).toEqual(mockWorker);
     });
 
-    it('should return null when session not found (404)', async () => {
-      vi.mocked(fetch).mockResolvedValue(
-        createMockResponse({}, { status: 404, ok: false })
-      );
+    it('should create terminal worker', async () => {
+      const mockWorker = { worker: { id: 'worker-2', type: 'terminal', name: 'Shell 1' } };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
 
-      const result = await getSessionMetadata('non-existent');
+      const result = await createWorker('session-id', { type: 'terminal', name: 'Shell 1' });
 
-      expect(result).toBeNull();
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'terminal', name: 'Shell 1' }),
+      });
+      expect(result).toEqual(mockWorker);
     });
+  });
 
-    it('should throw ServerUnavailableError on 5xx errors', async () => {
-      vi.mocked(fetch).mockResolvedValue(
-        createMockResponse({}, { status: 500, ok: false })
-      );
+  describe('deleteWorker', () => {
+    it('should delete worker successfully', async () => {
+      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
 
-      await expect(getSessionMetadata('session-id')).rejects.toThrow(ServerUnavailableError);
+      await deleteWorker('session-id', 'worker-id');
+
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers/worker-id', {
+        method: 'DELETE',
+      });
     });
+  });
 
-    it('should throw ServerUnavailableError on network error', async () => {
-      vi.mocked(fetch).mockRejectedValue(new TypeError('Network error'));
+  describe('restartAgentWorker', () => {
+    it('should restart agent worker', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
+      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
 
-      await expect(getSessionMetadata('session-id')).rejects.toThrow(ServerUnavailableError);
+      const result = await restartAgentWorker('session-id', 'worker-id', true);
+
+      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers/worker-id/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ continueConversation: true }),
+      });
+      expect(result).toEqual(mockWorker);
     });
   });
 

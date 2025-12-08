@@ -4,14 +4,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
-import type { ClaudeActivityState } from '@agent-console/shared';
+import type { AgentActivityState } from '@agent-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
 interface TerminalProps {
   wsUrl: string;
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
-  onActivityChange?: (state: ClaudeActivityState) => void;
+  onActivityChange?: (state: AgentActivityState) => void;
   hideStatusBar?: boolean;
 }
 
@@ -44,7 +44,7 @@ export function Terminal({ wsUrl, onStatusChange, onActivityChange, hideStatusBa
     setStatus(connected ? 'connected' : 'disconnected');
   }, []);
 
-  const handleActivity = useCallback((state: ClaudeActivityState) => {
+  const handleActivity = useCallback((state: AgentActivityState) => {
     onActivityChange?.(state);
   }, [onActivityChange]);
 

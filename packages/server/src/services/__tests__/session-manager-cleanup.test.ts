@@ -99,9 +99,18 @@ describe('SessionManager cleanup on initialization', () => {
 
     const legacySession: PersistedSession = {
       id: 'legacy-session',
-      worktreePath: '/path/to/worktree',
-      repositoryId: 'repo-1',
-      pid: 11111,
+      type: 'quick',
+      locationPath: '/path/to/worktree',
+      workers: [
+        {
+          id: 'worker-1',
+          type: 'agent',
+          name: 'Claude',
+          agentId: 'claude-code',
+          pid: 11111,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
       serverPid: undefined as unknown as number,
       createdAt: '2024-01-01T00:00:00.000Z',
     };
@@ -122,9 +131,20 @@ describe('SessionManager cleanup on initialization', () => {
 
     const activeSession: PersistedSession = {
       id: 'active-session',
-      worktreePath: '/path/to/worktree',
+      type: 'worktree',
+      locationPath: '/path/to/worktree',
       repositoryId: 'repo-1',
-      pid: 22222,
+      worktreeId: 'main',
+      workers: [
+        {
+          id: 'worker-1',
+          type: 'agent',
+          name: 'Claude',
+          agentId: 'claude-code',
+          pid: 22222,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
       serverPid: 33333, // Parent server PID
       createdAt: '2024-01-01T00:00:00.000Z',
     };
@@ -145,9 +165,18 @@ describe('SessionManager cleanup on initialization', () => {
 
     const orphanSession: PersistedSession = {
       id: 'orphan-session',
-      worktreePath: '/path/to/worktree',
-      repositoryId: 'repo-1',
-      pid: 44444,
+      type: 'quick',
+      locationPath: '/path/to/worktree',
+      workers: [
+        {
+          id: 'worker-1',
+          type: 'agent',
+          name: 'Claude',
+          agentId: 'claude-code',
+          pid: 44444,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
       serverPid: 55555, // Dead parent server
       createdAt: '2024-01-01T00:00:00.000Z',
     };
@@ -169,25 +198,54 @@ describe('SessionManager cleanup on initialization', () => {
     const sessions: PersistedSession[] = [
       {
         id: 'legacy-session',
-        worktreePath: '/path/1',
-        repositoryId: 'repo-1',
-        pid: 10001,
+        type: 'quick',
+        locationPath: '/path/1',
+        workers: [
+          {
+            id: 'worker-1',
+            type: 'agent',
+            name: 'Claude',
+            agentId: 'claude-code',
+            pid: 10001,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
         serverPid: undefined as unknown as number,
         createdAt: '2024-01-01T00:00:00.000Z',
       },
       {
         id: 'active-session',
-        worktreePath: '/path/2',
+        type: 'worktree',
+        locationPath: '/path/2',
         repositoryId: 'repo-1',
-        pid: 10002,
+        worktreeId: 'main',
+        workers: [
+          {
+            id: 'worker-2',
+            type: 'agent',
+            name: 'Claude',
+            agentId: 'claude-code',
+            pid: 10002,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
         serverPid: 20001, // Alive server
         createdAt: '2024-01-01T00:00:00.000Z',
       },
       {
         id: 'orphan-session',
-        worktreePath: '/path/3',
-        repositoryId: 'repo-1',
-        pid: 10003,
+        type: 'quick',
+        locationPath: '/path/3',
+        workers: [
+          {
+            id: 'worker-3',
+            type: 'agent',
+            name: 'Claude',
+            agentId: 'claude-code',
+            pid: 10003,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
         serverPid: 20002, // Dead server
         createdAt: '2024-01-01T00:00:00.000Z',
       },

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { PersistedSession } from '../persistence-service.js';
 
 // Test directory - unique per test run
 const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'agent-console-persistence-test-' + process.pid + '-' + Date.now());
@@ -83,12 +84,23 @@ describe('PersistenceService', () => {
       const { PersistenceService } = await import('../persistence-service.js');
       const service = new PersistenceService();
 
-      const testSessions = [
+      const testSessions: PersistedSession[] = [
         {
           id: 'session-1',
-          worktreePath: '/path/to/worktree',
+          type: 'worktree',
+          locationPath: '/path/to/worktree',
           repositoryId: 'repo-1',
-          pid: 12345,
+          worktreeId: 'main',
+          workers: [
+            {
+              id: 'worker-1',
+              type: 'agent',
+              name: 'Claude',
+              agentId: 'claude-code',
+              pid: 12345,
+              createdAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
           serverPid: 99999,
           createdAt: '2024-01-01T00:00:00.000Z',
         },
@@ -104,12 +116,20 @@ describe('PersistenceService', () => {
       const { PersistenceService } = await import('../persistence-service.js');
       const service = new PersistenceService();
 
-      const testSessions = [
+      const testSessions: PersistedSession[] = [
         {
           id: 'session-with-server-pid',
-          worktreePath: '/path/to/worktree',
-          repositoryId: 'repo-1',
-          pid: 12345,
+          type: 'quick',
+          locationPath: '/path/to/worktree',
+          workers: [
+            {
+              id: 'worker-1',
+              type: 'terminal',
+              name: 'Shell',
+              pid: 12345,
+              createdAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
           serverPid: 67890,
           createdAt: '2024-01-01T00:00:00.000Z',
         },
@@ -125,16 +145,32 @@ describe('PersistenceService', () => {
       const { PersistenceService } = await import('../persistence-service.js');
       const service = new PersistenceService();
 
-      const testSessions = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
+      const testSessions: PersistedSession[] = [
+        {
+          id: 's1',
+          type: 'worktree',
+          locationPath: '/p1',
+          repositoryId: 'r1',
+          worktreeId: 'main',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 's2',
+          type: 'quick',
+          locationPath: '/p2',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-02T00:00:00.000Z',
+        },
       ];
 
       service.saveSessions(testSessions);
 
       const session = service.getSessionMetadata('s1');
       expect(session?.id).toBe('s1');
-      expect(session?.worktreePath).toBe('/p1');
+      expect(session?.locationPath).toBe('/p1');
       expect(session?.serverPid).toBe(100);
     });
 
@@ -150,9 +186,23 @@ describe('PersistenceService', () => {
       const { PersistenceService } = await import('../persistence-service.js');
       const service = new PersistenceService();
 
-      const testSessions = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
+      const testSessions: PersistedSession[] = [
+        {
+          id: 's1',
+          type: 'quick',
+          locationPath: '/p1',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 's2',
+          type: 'quick',
+          locationPath: '/p2',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-02T00:00:00.000Z',
+        },
       ];
 
       service.saveSessions(testSessions);
@@ -167,9 +217,23 @@ describe('PersistenceService', () => {
       const { PersistenceService } = await import('../persistence-service.js');
       const service = new PersistenceService();
 
-      const testSessions = [
-        { id: 's1', worktreePath: '/p1', repositoryId: 'r1', pid: 1, serverPid: 100, createdAt: '2024-01-01T00:00:00.000Z' },
-        { id: 's2', worktreePath: '/p2', repositoryId: 'r2', pid: 2, serverPid: 100, createdAt: '2024-01-02T00:00:00.000Z' },
+      const testSessions: PersistedSession[] = [
+        {
+          id: 's1',
+          type: 'quick',
+          locationPath: '/p1',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 's2',
+          type: 'quick',
+          locationPath: '/p2',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-02T00:00:00.000Z',
+        },
       ];
 
       service.saveSessions(testSessions);
