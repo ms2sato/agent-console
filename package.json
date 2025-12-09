@@ -14,7 +14,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run typecheck && bun run test:only",
     "test:only": "bun run --filter '*' test",
-    "lint": "bun run --filter '*' lint"
+    "lint": "bun run --filter '*' lint",
+    "release": "gh release create v$(bun -e \"console.log(require('./dist/package.json').version)\") --generate-notes"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
