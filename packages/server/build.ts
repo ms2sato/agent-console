@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, chmodSync } from 'fs';
 import { dirname, join } from 'path';
 
 const __dirname = dirname(new URL(import.meta.url).pathname);
@@ -27,8 +27,14 @@ const distPackageJson = {
   name: 'agent-console',
   version: '0.1.0',
   type: 'module',
+  bin: {
+    'agent-console': './index.js',
+  },
   scripts: {
     start: 'bun index.js',
+  },
+  engines: {
+    bun: '>=1.3.0',
   },
   dependencies: {
     'bun-pty': '^0.4.2',
@@ -40,6 +46,14 @@ writeFileSync(
   join(distDir, 'package.json'),
   JSON.stringify(distPackageJson, null, 2) + '\n'
 );
+
+// Add shebang to index.js for CLI execution
+const indexPath = join(distDir, 'index.js');
+const indexContent = readFileSync(indexPath, 'utf-8');
+if (!indexContent.startsWith('#!')) {
+  writeFileSync(indexPath, `#!/usr/bin/env bun\n${indexContent}`);
+  chmodSync(indexPath, 0o755);
+}
 
 console.log('Build complete: dist/index.js');
 console.log('Generated: dist/package.json');
