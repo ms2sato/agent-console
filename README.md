@@ -4,12 +4,12 @@
 
 A web application for managing multiple AI coding agent instances running in different git worktrees. Control all your agents through a unified browser interface instead of scattered terminal windows.
 
-Currently supports **Claude Code** as the default agent, with plans to support additional agents (Gemini CLI, Codex, etc.) in the future.
+Currently supports **[Claude Code](https://claude.ai/code)** as the default agent, with plans to support additional agents (Gemini CLI, Codex, etc.) in the future.
 
 ## Features
 
 - **Unified Dashboard**: View and manage all repositories, worktrees, and agent sessions in one place
-- **Browser-based Terminal**: Full terminal access via xterm.js - no need for separate terminal windows
+- **Browser-based Terminal**: Full terminal access via [xterm.js](https://xtermjs.org) - no need for separate terminal windows
 - **Session Persistence**: Sessions continue running even when you close the browser tab (tmux-like behavior)
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI
 - **Real-time Updates**: WebSocket-based notifications for session and worktree changes
@@ -17,7 +17,7 @@ Currently supports **Claude Code** as the default agent, with plans to support a
 ## Architecture
 
 ```
-Backend (Node.js + Hono)           Frontend (React + Vite)
+Backend (Bun + Hono)               Frontend (React + Vite)
 ┌──────────────────────────┐       ┌──────────────────────────┐
 │ Session Manager          │       │ Dashboard                │
 │ ├── PTY Process 1       │◄─────►│ xterm.js Terminal        │
@@ -28,8 +28,7 @@ Backend (Node.js + Hono)           Frontend (React + Vite)
 
 ## Requirements
 
-- Node.js >= 22.0.0
-- pnpm >= 9.0.0
+- [Bun](https://bun.sh) >= 1.3.0
 
 ## Development
 
@@ -37,10 +36,10 @@ Backend (Node.js + Hono)           Frontend (React + Vite)
 
 ```bash
 # Install dependencies
-pnpm install
+bun install
 
 # Start development servers (frontend + backend)
-pnpm dev
+bun dev
 ```
 
 The development server runs at:
@@ -50,7 +49,7 @@ The development server runs at:
 ### Build
 
 ```bash
-pnpm build
+bun run build
 ```
 
 This creates a production bundle in the `dist/` directory:
@@ -58,7 +57,7 @@ This creates a production bundle in the `dist/` directory:
 ```
 dist/
 ├── package.json    # Standalone package manifest
-├── index.js        # Bundled server (ESM)
+├── index.js        # Bundled server
 └── public/         # Built frontend assets
 ```
 
@@ -66,13 +65,13 @@ dist/
 
 ```bash
 # From the project root (after build)
-pnpm start
+bun start
 ```
 
 Or run directly:
 
 ```bash
-NODE_ENV=production node dist/index.js
+NODE_ENV=production bun dist/index.js
 ```
 
 The server runs at http://localhost:3457
@@ -83,16 +82,9 @@ The `dist/` directory can be distributed independently. Users only need to:
 
 ```bash
 cd dist
-npm install   # Installs only node-pty and ws (~few seconds)
-npm start     # Starts the server
+bun install   # Installs only bun-pty (~few seconds)
+bun start     # Starts the server
 ```
-
-### Why these dependencies aren't bundled
-
-- **node-pty**: Native module with C++ bindings - must be compiled for the target platform
-- **ws**: Uses CommonJS dynamic require which can't be bundled into ESM
-
-All other dependencies (hono, uuid, etc.) are bundled into `index.js`.
 
 ## Project Structure
 
@@ -102,17 +94,33 @@ agent-console/
 │   ├── client/          # React frontend
 │   ├── server/          # Hono backend
 │   └── shared/          # Shared TypeScript types
-├── dist/                # Production build output
-├── poc/                 # Proof-of-concept files
-└── design.md            # Design documentation (Japanese)
+├── docs/                # Documentation
+├── scripts/             # Deployment scripts
+└── dist/                # Production build output (generated)
 ```
 
 ## Tech Stack
 
-- **Backend**: Node.js, TypeScript, Hono, node-pty, ws
-- **Frontend**: React, TypeScript, Vite, TanStack Router, TanStack Query, xterm.js, Tailwind CSS
-- **Build**: esbuild (server bundling), Vite (frontend)
-- **Package Manager**: pnpm workspaces
+- **Backend**: [Bun](https://bun.sh), [TypeScript](https://www.typescriptlang.org), [Hono](https://hono.dev), [bun-pty](https://github.com/sursaone/bun-pty)
+- **Frontend**: [React](https://react.dev), [TypeScript](https://www.typescriptlang.org), [Vite](https://vite.dev), [TanStack Router](https://tanstack.com/router), [TanStack Query](https://tanstack.com/query), [xterm.js](https://xtermjs.org), [Tailwind CSS](https://tailwindcss.com)
+- **Build**: [Bun bundler](https://bun.sh/docs/bundler) (server), [Vite](https://vite.dev) (frontend)
+- **Package Manager**: [Bun workspaces](https://bun.sh/docs/install/workspaces)
+
+## Special Thanks
+
+This project is built on the shoulders of amazing open-source projects:
+
+- [Claude Code](https://claude.ai/code) - The AI coding agent that wrote most of this codebase with remarkable speed and quality. This project literally couldn't exist without it.
+- [Bun](https://bun.sh) - Blazing fast runtime that makes development a joy
+- [Hono](https://hono.dev) - Ultrafast web framework with excellent DX
+- [TypeScript](https://www.typescriptlang.org) - Type safety that saves countless debugging hours
+- [xterm.js](https://xtermjs.org) - The terminal emulator that makes browser-based CLI possible
+
+### Inspiration
+
+- [Vibe Kanban](https://www.vibekanban.com/) - A fantastic project for managing AI coding agents. Exploring this project sparked the idea for Agent Console. Highly recommended!
+
+Thank you to all the maintainers and contributors!
 
 ## License
 
