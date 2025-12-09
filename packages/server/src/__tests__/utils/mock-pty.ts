@@ -1,8 +1,9 @@
 import { vi } from 'vitest';
 
 /**
- * Mock PTY class for testing node-pty dependent code.
+ * Mock PTY class for testing bun-pty dependent code.
  * Simulates PTY behavior without spawning actual processes.
+ * @see https://github.com/puffyCid/bun-pty
  */
 export class MockPty {
   pid: number;
@@ -19,10 +20,12 @@ export class MockPty {
 
   onData(callback: (data: string) => void) {
     this.dataCallbacks.push(callback);
+    return { dispose: () => {} };
   }
 
   onExit(callback: (event: { exitCode: number; signal?: number }) => void) {
     this.exitCallbacks.push(callback);
+    return { dispose: () => {} };
   }
 
   write(data: string) {
@@ -53,10 +56,10 @@ export class MockPty {
 }
 
 /**
- * Creates a mock factory for node-pty that tracks all created instances.
+ * Creates a mock factory for bun-pty that tracks all created instances.
  * Usage:
  *   const { instances, createMock } = createMockPtyFactory();
- *   vi.mock('node-pty', () => createMock());
+ *   vi.mock('bun-pty', () => createMock());
  */
 export function createMockPtyFactory(startPid = 10000) {
   const instances: MockPty[] = [];

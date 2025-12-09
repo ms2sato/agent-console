@@ -1,6 +1,4 @@
-import { serve } from '@hono/node-server';
-import { serveStatic } from '@hono/node-server/serve-static';
-import { createNodeWebSocket } from '@hono/node-ws';
+import { serveStatic, upgradeWebSocket, websocket } from 'hono/bun';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { api } from './routes/api.js';
@@ -8,7 +6,6 @@ import { setupWebSocketRoutes } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 
 // Timestamp helper for logging
 const timestamp = () => new Date().toISOString();
@@ -40,11 +37,7 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = new Hono();
-const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
 // Production mode: serve static files
 const isProduction = process.env.NODE_ENV === 'production';
@@ -68,13 +61,11 @@ setupWebSocketRoutes(app, upgradeWebSocket);
 
 // Static file serving (production only)
 if (isProduction) {
+  const __dirname = path.dirname(new URL(import.meta.url).pathname);
   const publicDir = path.join(__dirname, './public');
 
-  // Serve static files from public directory (use absolute path)
-  app.use('/*', serveStatic({
-    root: publicDir,
-    rewriteRequestPath: (p) => p, // Don't rewrite, use path as-is
-  }));
+  // Serve static files from public directory
+  app.use('/*', serveStatic({ root: publicDir }));
 
   // SPA fallback: serve index.html for any non-API/WS routes
   app.get('*', (c) => {
@@ -88,11 +79,10 @@ const PORT = Number(process.env.PORT) || 3457;
 
 console.log(`[${timestamp()}] Server starting on http://localhost:${PORT} (${isProduction ? 'production' : 'development'}) (PID: ${process.pid})`);
 
-const server = serve({
+const server = Bun.serve({
   fetch: app.fetch,
   port: PORT,
+  websocket,
 });
 
-injectWebSocket(server);
-
-export default app;
+console.log(`[${timestamp()}] Server listening on http://localhost:${server.port}`);
