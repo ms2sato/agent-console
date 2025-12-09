@@ -11,6 +11,10 @@ const BLOCKED_ENV_VARS = [
 /**
  * Filter environment variables for child PTY processes.
  * Removes server-specific variables that could interfere with child behavior.
+ *
+ * Note: bun-pty merges the provided env with parent process env instead of replacing it.
+ * To work around this, we explicitly set blocked variables to empty strings to override
+ * the inherited values from the parent process.
  */
 export function getChildProcessEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -19,6 +23,12 @@ export function getChildProcessEnv(): Record<string, string> {
     if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
       env[key] = value;
     }
+  }
+
+  // Explicitly set blocked env vars to empty string to override bun-pty's
+  // parent environment inheritance behavior
+  for (const key of BLOCKED_ENV_VARS) {
+    env[key] = '';
   }
 
   // Ensure color support for PTY processes (required for bun-pty)

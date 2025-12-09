@@ -15,37 +15,38 @@ describe('env-filter', () => {
   });
 
   describe('getChildProcessEnv', () => {
-    it('should exclude NODE_ENV from child process environment', () => {
+    it('should set NODE_ENV to empty string to override bun-pty inheritance', () => {
       process.env.NODE_ENV = 'production';
       process.env.HOME = '/home/test';
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.NODE_ENV).toBeUndefined();
+      // bun-pty merges env with parent, so we set to empty string to override
+      expect(childEnv.NODE_ENV).toBe('');
       expect(childEnv.HOME).toBe('/home/test');
     });
 
-    it('should exclude PORT from child process environment', () => {
+    it('should set PORT to empty string to override bun-pty inheritance', () => {
       process.env.PORT = '3000';
       process.env.PATH = '/usr/bin';
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.PORT).toBeUndefined();
+      expect(childEnv.PORT).toBe('');
       expect(childEnv.PATH).toBe('/usr/bin');
     });
 
-    it('should exclude HOST from child process environment', () => {
+    it('should set HOST to empty string to override bun-pty inheritance', () => {
       process.env.HOST = '0.0.0.0';
       process.env.USER = 'testuser';
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.HOST).toBeUndefined();
+      expect(childEnv.HOST).toBe('');
       expect(childEnv.USER).toBe('testuser');
     });
 
-    it('should exclude all blocked variables at once', () => {
+    it('should set all blocked variables to empty string', () => {
       process.env.NODE_ENV = 'production';
       process.env.PORT = '6340';
       process.env.HOST = 'localhost';
@@ -54,9 +55,9 @@ describe('env-filter', () => {
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.NODE_ENV).toBeUndefined();
-      expect(childEnv.PORT).toBeUndefined();
-      expect(childEnv.HOST).toBeUndefined();
+      expect(childEnv.NODE_ENV).toBe('');
+      expect(childEnv.PORT).toBe('');
+      expect(childEnv.HOST).toBe('');
       expect(childEnv.HOME).toBe('/home/test');
       expect(childEnv.SHELL).toBe('/bin/zsh');
     });
