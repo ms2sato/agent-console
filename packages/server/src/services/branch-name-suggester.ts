@@ -1,14 +1,16 @@
 /**
  * Branch name suggestion service
  *
- * Uses Claude CLI in non-interactive mode (-p) to suggest branch names
+ * Uses the specified agent in non-interactive mode to suggest branch names
  * based on user's initial prompt and existing branch examples.
  */
 import { execSync } from 'child_process';
+import type { AgentDefinition } from '@agent-console/shared';
 
 interface BranchNameSuggestionRequest {
   prompt: string;
   repositoryPath: string;
+  agent: AgentDefinition;
   existingBranches?: string[];
 }
 
@@ -37,7 +39,7 @@ function getBranches(repositoryPath: string): string[] {
 }
 
 /**
- * Build the prompt for Claude to suggest a branch name
+ * Build the prompt for the agent to suggest a branch name
  */
 function buildSuggestionPrompt(userPrompt: string, exampleBranches: string): string {
   return `You are a branch name generator. Given the following task description, suggest a single git branch name.
@@ -58,12 +60,20 @@ Branch name:`;
 }
 
 /**
- * Suggest a branch name using Claude CLI
+ * Suggest a branch name using the specified agent
  */
 export async function suggestBranchName(
   request: BranchNameSuggestionRequest
 ): Promise<BranchNameSuggestionResponse> {
-  const { prompt, repositoryPath, existingBranches } = request;
+  const { prompt, repositoryPath, agent, existingBranches } = request;
+
+  // Check if agent supports print mode
+  if (!agent.printModeArgs || agent.printModeArgs.length === 0) {
+    return {
+      branch: '',
+      error: `Agent "${agent.name}" does not support non-interactive mode (printModeArgs not configured)`,
+    };
+  }
 
   // Get existing branches if not provided
   const branches = existingBranches ?? getBranches(repositoryPath);
@@ -74,20 +84,20 @@ export async function suggestBranchName(
   const suggestionPrompt = buildSuggestionPrompt(prompt, exampleBranches);
 
   try {
-    // Use claude -p for non-interactive mode
-    const result = execSync(
-      `claude -p "${suggestionPrompt.replace(/"/g, '\\"')}" --output-format text`,
-      {
-        cwd: repositoryPath,
-        encoding: 'utf-8',
-        timeout: 30000, // 30 second timeout
-        env: {
-          ...process.env,
-          // Ensure we don't inherit any interactive settings
-          TERM: 'dumb',
-        },
-      }
-    );
+    // Build command: {agent.command} {printModeArgs...} "prompt"
+    const escapedPrompt = suggestionPrompt.replace(/'/g, "'\\''");
+    const command = `${agent.command} ${agent.printModeArgs.join(' ')} '${escapedPrompt}'`;
+
+    const result = execSync(command, {
+      cwd: repositoryPath,
+      encoding: 'utf-8',
+      timeout: 30000, // 30 second timeout
+      env: {
+        ...process.env,
+        // Ensure we don't inherit any interactive settings
+        TERM: 'dumb',
+      },
+    });
 
     // Clean up the result - extract just the branch name
     const branchName = result

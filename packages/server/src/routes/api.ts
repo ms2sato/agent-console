@@ -233,15 +233,23 @@ api.post('/repositories/:id/worktrees', async (c) => {
   let branch: string;
   let baseBranch: string | undefined;
 
+  // Get the agent for branch name generation (if prompt mode)
+  const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
+  const agent = agentManager.getAgent(selectedAgentId);
+  if (!agent) {
+    throw new ValidationError(`Agent not found: ${selectedAgentId}`);
+  }
+
   switch (mode) {
     case 'prompt':
       if (!body.initialPrompt?.trim()) {
         throw new ValidationError('initialPrompt is required for prompt mode');
       }
-      // Generate branch name from prompt using Claude
+      // Generate branch name from prompt using the selected agent
       const suggestion = await suggestBranchName({
         prompt: body.initialPrompt.trim(),
         repositoryPath: repo.path,
+        agent,
       });
       if (suggestion.error || !suggestion.branch) {
         throw new ValidationError(suggestion.error || 'Failed to generate branch name');

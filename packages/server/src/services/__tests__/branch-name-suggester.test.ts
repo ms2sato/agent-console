@@ -1,7 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as childProcess from 'child_process';
+import type { AgentDefinition } from '@agent-console/shared';
 
 vi.mock('child_process');
+
+const mockAgent: AgentDefinition = {
+  id: 'test-agent',
+  name: 'Test Agent',
+  command: 'test-cli',
+  isBuiltIn: false,
+  registeredAt: new Date().toISOString(),
+  printModeArgs: ['-p', '--format', 'text'],
+};
+
+const mockAgentWithoutPrintMode: AgentDefinition = {
+  id: 'no-print-agent',
+  name: 'No Print Agent',
+  command: 'no-print-cli',
+  isBuiltIn: false,
+  registeredAt: new Date().toISOString(),
+};
 
 describe('branch-name-suggester', () => {
   beforeEach(() => {
@@ -40,8 +58,8 @@ describe('branch-name-suggester', () => {
   });
 
   describe('suggestBranchName', () => {
-    it('should return branch name from claude output', async () => {
-      // First call for git branch, second for claude
+    it('should return branch name from agent output', async () => {
+      // First call for git branch, second for agent
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n  feat/existing\n')
         .mockReturnValueOnce('feat/add-dark-mode\n');
@@ -51,10 +69,32 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Add a dark mode toggle',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       expect(result.branch).toBe('feat/add-dark-mode');
       expect(result.error).toBeUndefined();
+
+      // Verify command was built correctly
+      const calls = vi.mocked(childProcess.execSync).mock.calls;
+      const agentCall = calls[1][0] as string;
+      expect(agentCall).toContain('test-cli');
+      expect(agentCall).toContain('-p');
+      expect(agentCall).toContain('--format');
+      expect(agentCall).toContain('text');
+    });
+
+    it('should return error if agent does not support print mode', async () => {
+      const { suggestBranchName } = await import('../branch-name-suggester.js');
+
+      const result = await suggestBranchName({
+        prompt: 'Some task',
+        repositoryPath: '/repo',
+        agent: mockAgentWithoutPrintMode,
+      });
+
+      expect(result.branch).toBe('');
+      expect(result.error).toContain('does not support non-interactive mode');
     });
 
     it('should sanitize invalid branch names', async () => {
@@ -67,17 +107,18 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Add dark mode',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       // Should be sanitized to lowercase with hyphens
       expect(result.branch).toMatch(/^[a-z0-9/-]+$/);
     });
 
-    it('should return error when claude fails', async () => {
+    it('should return error when agent fails', async () => {
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n')
         .mockImplementationOnce(() => {
-          throw new Error('claude command not found');
+          throw new Error('command not found');
         });
 
       const { suggestBranchName } = await import('../branch-name-suggester.js');
@@ -85,6 +126,7 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Some task',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       expect(result.branch).toBe('');
@@ -101,6 +143,7 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Some task',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       expect(result.branch).toBe('');
@@ -115,10 +158,11 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Fix authentication',
         repositoryPath: '/repo',
+        agent: mockAgent,
         existingBranches: ['feat/login', 'feat/signup'],
       });
 
-      // Should only call execSync once (for claude), not for git branch
+      // Should only call execSync once (for agent), not for git branch
       expect(childProcess.execSync).toHaveBeenCalledTimes(1);
       expect(result.branch).toBe('fix/auth-bug');
     });
@@ -133,6 +177,7 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'Some feature',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       expect(result.branch).toBe('feat/quoted-branch');
@@ -148,6 +193,7 @@ describe('branch-name-suggester', () => {
       const result = await suggestBranchName({
         prompt: 'New feature',
         repositoryPath: '/repo',
+        agent: mockAgent,
       });
 
       expect(result.branch).toBe('feat/new-feature');

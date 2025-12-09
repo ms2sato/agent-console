@@ -34,6 +34,12 @@ export interface AgentDefinition {
    * This gives the agent time to initialize. Default: 1000ms
    */
   initialPromptDelayMs?: number;
+  /**
+   * Arguments for non-interactive "print" mode (e.g., ['-p', '--output-format', 'text'] for Claude Code).
+   * The prompt will be appended as the last argument.
+   * If not set, the agent does not support non-interactive mode.
+   */
+  printModeArgs?: string[];
 }
 
 /**
