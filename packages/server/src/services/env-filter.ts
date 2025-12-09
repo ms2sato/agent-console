@@ -21,5 +21,10 @@ export function getChildProcessEnv(): Record<string, string> {
     }
   }
 
+  // Ensure color support for PTY processes (required for bun-pty)
+  env['TERM'] = 'xterm-256color';
+  env['COLORTERM'] = 'truecolor';
+  env['FORCE_COLOR'] = '1';
+
   return env;
 }

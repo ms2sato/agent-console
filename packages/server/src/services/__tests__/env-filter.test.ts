@@ -79,5 +79,21 @@ describe('env-filter', () => {
 
       expect('UNDEFINED_VAR' in childEnv).toBe(false);
     });
+
+    it('should set color support environment variables for PTY', () => {
+      const childEnv = getChildProcessEnv();
+
+      expect(childEnv.TERM).toBe('xterm-256color');
+      expect(childEnv.COLORTERM).toBe('truecolor');
+      expect(childEnv.FORCE_COLOR).toBe('1');
+    });
+
+    it('should override existing TERM with xterm-256color', () => {
+      process.env.TERM = 'dumb';
+
+      const childEnv = getChildProcessEnv();
+
+      expect(childEnv.TERM).toBe('xterm-256color');
+    });
   });
 });
