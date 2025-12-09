@@ -2,7 +2,7 @@
  * Branch name suggestion service
  *
  * Uses Claude CLI in non-interactive mode (-p) to suggest branch names
- * based on user's initial prompt and existing branch naming conventions.
+ * based on user's initial prompt and existing branch examples.
  */
 import { execSync } from 'child_process';
 
@@ -15,38 +15,6 @@ interface BranchNameSuggestionRequest {
 interface BranchNameSuggestionResponse {
   branch: string;
   error?: string;
-}
-
-/**
- * Infer branch naming convention from existing branches
- */
-function inferBranchNamingConvention(branches: string[]): string {
-  // Filter out auto-generated worktree branches (wt-xxx-xxxx)
-  const meaningfulBranches = branches.filter(b => !b.match(/^wt-\d+-[a-z0-9]+$/));
-
-  if (meaningfulBranches.length === 0) {
-    return 'No clear naming convention detected. Use conventional prefixes: feat/, fix/, refactor/, chore/, docs/, test/';
-  }
-
-  // Analyze patterns
-  const patterns: Record<string, number> = {};
-  for (const branch of meaningfulBranches) {
-    const match = branch.match(/^([a-z]+)[/-]/);
-    if (match) {
-      const prefix = match[1];
-      patterns[prefix] = (patterns[prefix] || 0) + 1;
-    }
-  }
-
-  const sortedPatterns = Object.entries(patterns)
-    .sort((a, b) => b[1] - a[1])
-    .map(([prefix, count]) => `${prefix}/ (${count} branches)`);
-
-  if (sortedPatterns.length > 0) {
-    return `Common prefixes: ${sortedPatterns.join(', ')}. Example branches: ${meaningfulBranches.slice(0, 5).join(', ')}`;
-  }
-
-  return `Example branches: ${meaningfulBranches.slice(0, 10).join(', ')}`;
 }
 
 /**
@@ -71,14 +39,13 @@ function getBranches(repositoryPath: string): string[] {
 /**
  * Build the prompt for Claude to suggest a branch name
  */
-function buildSuggestionPrompt(userPrompt: string, namingConvention: string): string {
+function buildSuggestionPrompt(userPrompt: string, exampleBranches: string): string {
   return `You are a branch name generator. Given the following task description, suggest a single git branch name.
 
 Task description:
 ${userPrompt}
 
-Branch naming convention in this repository:
-${namingConvention}
+${exampleBranches}
 
 Rules:
 - Output ONLY the branch name, nothing else
@@ -100,9 +67,11 @@ export async function suggestBranchName(
 
   // Get existing branches if not provided
   const branches = existingBranches ?? getBranches(repositoryPath);
-  const namingConvention = inferBranchNamingConvention(branches);
+  const exampleBranches = branches.length > 0
+    ? `Example branches in this repository: ${branches.slice(0, 10).join(', ')}`
+    : '';
 
-  const suggestionPrompt = buildSuggestionPrompt(prompt, namingConvention);
+  const suggestionPrompt = buildSuggestionPrompt(prompt, exampleBranches);
 
   try {
     // Use claude -p for non-interactive mode
@@ -165,4 +134,4 @@ export async function suggestBranchName(
   }
 }
 
-export { getBranches, inferBranchNamingConvention };
+export { getBranches };

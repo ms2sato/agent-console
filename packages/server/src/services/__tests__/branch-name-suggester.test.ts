@@ -9,60 +9,6 @@ describe('branch-name-suggester', () => {
     vi.resetModules();
   });
 
-  describe('inferBranchNamingConvention', () => {
-    it('should detect common prefixes from branches', async () => {
-      const { inferBranchNamingConvention } = await import('../branch-name-suggester.js');
-
-      const branches = [
-        'feat/add-login',
-        'feat/user-profile',
-        'fix/button-color',
-        'feat/settings-page',
-        'main',
-      ];
-
-      const result = inferBranchNamingConvention(branches);
-
-      expect(result).toContain('feat/');
-      expect(result).toContain('fix/');
-    });
-
-    it('should filter out auto-generated worktree branches', async () => {
-      const { inferBranchNamingConvention } = await import('../branch-name-suggester.js');
-
-      const branches = [
-        'wt-001-abcd',
-        'wt-002-efgh',
-        'feat/real-feature',
-        'main',
-      ];
-
-      const result = inferBranchNamingConvention(branches);
-
-      expect(result).toContain('feat/');
-      expect(result).not.toContain('wt-001');
-    });
-
-    it('should return default message when no meaningful branches', async () => {
-      const { inferBranchNamingConvention } = await import('../branch-name-suggester.js');
-
-      const branches = ['wt-001-abcd', 'wt-002-efgh'];
-
-      const result = inferBranchNamingConvention(branches);
-
-      expect(result).toContain('No clear naming convention detected');
-      expect(result).toContain('feat/');
-    });
-
-    it('should handle empty branches array', async () => {
-      const { inferBranchNamingConvention } = await import('../branch-name-suggester.js');
-
-      const result = inferBranchNamingConvention([]);
-
-      expect(result).toContain('No clear naming convention detected');
-    });
-  });
-
   describe('getBranches', () => {
     it('should parse git branch output', async () => {
       vi.mocked(childProcess.execSync).mockReturnValue(
@@ -190,6 +136,21 @@ describe('branch-name-suggester', () => {
       });
 
       expect(result.branch).toBe('feat/quoted-branch');
+    });
+
+    it('should work with no existing branches', async () => {
+      vi.mocked(childProcess.execSync)
+        .mockReturnValueOnce('')  // No branches
+        .mockReturnValueOnce('feat/new-feature\n');
+
+      const { suggestBranchName } = await import('../branch-name-suggester.js');
+
+      const result = await suggestBranchName({
+        prompt: 'New feature',
+        repositoryPath: '/repo',
+      });
+
+      expect(result.branch).toBe('feat/new-feature');
     });
   });
 });
