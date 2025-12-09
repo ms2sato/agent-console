@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{NODE_PATH}}</string>
+        <string>{{COMMAND_PATH}}</string>
         <string>{{HOME}}/.agent-console/server/index.js</string>
     </array>
 

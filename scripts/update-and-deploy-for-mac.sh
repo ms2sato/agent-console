@@ -7,13 +7,13 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "==> Installing dependencies..."
-pnpm install
+bun install
 
 echo "==> Installing plist..."
-NODE_PATH=$(which node)
+COMMAND_PATH=$(which bun)
 PORT=${PORT:-6340}
 sed -e "s|{{HOME}}|$HOME|g" \
-    -e "s|{{NODE_PATH}}|$NODE_PATH|g" \
+    -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
     -e "s|{{PORT}}|$PORT|g" \
     "$SCRIPT_DIR/com.agent-console.plist.template" \
     > ~/Library/LaunchAgents/com.agent-console.plist
@@ -23,13 +23,13 @@ rm -rf ~/Library/Logs/agent-console
 mkdir -p ~/Library/Logs/agent-console
 
 echo "==> Building..."
-NODE_ENV=production pnpm build
+NODE_ENV=production bun run build
 
 echo "==> Deploying files..."
 mkdir -p ~/.agent-console/server
 rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/
 cd ~/.agent-console/server
-pnpm install --prod
+bun install --production
 
 echo "==> Restarting service..."
 SERVICE_TARGET="gui/$(id -u)/com.agent-console"

@@ -13,23 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version-file: '.node-version'
-          cache: 'pnpm'
+          bun-version: "1.3.4"
 
       - name: Install dependencies
-        run: pnpm install
+        run: bun install
 
       - name: Build shared package
-        run: pnpm --filter @agent-console/shared build
+        run: bun run --filter @agent-console/shared build
 
       - name: Test
-        run: pnpm test
+        run: bun run test
 
       - name: Build
-        run: pnpm build
+        run: bun run build

@@ -111,7 +111,7 @@ export function setupWebSocketRoutes(
           const FLUSH_INTERVAL = 50; // ms
 
           const flushBuffer = () => {
-            if (outputBuffer.length > 0 && ws.readyState === 1) {
+            if (outputBuffer.length > 0) {
               try {
                 ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
               } catch (error) {
@@ -131,12 +131,10 @@ export function setupWebSocketRoutes(
               }
             } else {
               // Send other messages immediately
-              if (ws.readyState === 1) {
-                try {
-                  ws.send(JSON.stringify(msg));
-                } catch (error) {
-                  console.error(`[WS] Error sending to worker ${workerId}:`, error);
-                }
+              try {
+                ws.send(JSON.stringify(msg));
+              } catch (error) {
+                console.error(`[WS] Error sending to worker ${workerId}:`, error);
               }
             }
           };
@@ -168,8 +166,10 @@ export function setupWebSocketRoutes(
             }
           }
         },
-        onMessage(event: { data: string | Buffer }, ws: WSContext) {
-          const data = typeof event.data === 'string' ? event.data : event.data.toString();
+        onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
+          const data = typeof event.data === 'string'
+            ? event.data
+            : new TextDecoder().decode(event.data);
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {

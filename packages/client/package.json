@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-console/shared": "workspace:*",
+    "@agent-console/shared": "*",
     "@tanstack/react-query": "^5.62.2",
     "@tanstack/react-router": "^1.86.1",
     "@xterm/addon-fit": "^0.10.0",

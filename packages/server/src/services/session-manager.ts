@@ -1,4 +1,4 @@
-import * as pty from 'node-pty';
+import { spawn, type IPty } from 'bun-pty';
 import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type {
@@ -39,7 +39,7 @@ interface InternalWorkerBase {
   id: string;
   name: string;
   createdAt: string;
-  pty: pty.IPty;
+  pty: IPty;
   outputBuffer: string;
   onData: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
@@ -371,7 +371,7 @@ export class SessionManager {
 
     const shell = process.env.SHELL || '/bin/bash';
     const fullCommand = [agent.command, ...args].join(' ');
-    const ptyProcess = pty.spawn(shell, ['-l', '-c', fullCommand], {
+    const ptyProcess = spawn(shell, ['-l', '-c', fullCommand], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -416,7 +416,7 @@ export class SessionManager {
     const { id, name, createdAt, locationPath } = params;
 
     const shell = process.env.SHELL || '/bin/bash';
-    const ptyProcess = pty.spawn(shell, ['-l'], {
+    const ptyProcess = spawn(shell, ['-l'], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
