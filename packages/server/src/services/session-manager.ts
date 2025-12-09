@@ -229,7 +229,7 @@ export class SessionManager {
         type: 'agent',
         agentId: request.agentId,
         name: 'Claude',
-      }, request.continueConversation ?? false);
+      }, request.continueConversation ?? false, request.initialPrompt);
     }
 
     this.persistSession(internalSession);
@@ -273,7 +273,8 @@ export class SessionManager {
   createWorker(
     sessionId: string,
     request: CreateWorkerRequest,
-    continueConversation: boolean = false
+    continueConversation: boolean = false,
+    initialPrompt?: string
   ): Worker | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -293,6 +294,7 @@ export class SessionManager {
         locationPath: session.locationPath,
         agentId: request.agentId,
         continueConversation,
+        initialPrompt,
       });
     } else {
       worker = this.initializeTerminalWorker({
@@ -358,8 +360,9 @@ export class SessionManager {
     locationPath: string;
     agentId: string;
     continueConversation: boolean;
+    initialPrompt?: string;
   }): InternalAgentWorker {
-    const { id, name, createdAt, sessionId, locationPath, agentId, continueConversation } = params;
+    const { id, name, createdAt, sessionId, locationPath, agentId, continueConversation, initialPrompt } = params;
 
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
@@ -367,6 +370,13 @@ export class SessionManager {
     const args: string[] = [];
     if (continueConversation && agent.continueArgs) {
       args.push(...agent.continueArgs);
+    }
+
+    // If initialPromptMode is 'arg', add the prompt as a command argument
+    if (initialPrompt && agent.initialPromptMode === 'arg') {
+      // Escape the prompt for shell and add as argument
+      const escapedPrompt = initialPrompt.replace(/'/g, "'\\''");
+      args.push(`'${escapedPrompt}'`);
     }
 
     const shell = process.env.SHELL || '/bin/bash';
@@ -403,6 +413,15 @@ export class SessionManager {
     });
 
     this.setupWorkerEventHandlers(worker, sessionId);
+
+    // Send initial prompt via stdin if mode is 'stdin' (arg mode is handled in command construction above)
+    if (initialPrompt && agent.initialPromptMode === 'stdin') {
+      const delay = agent.initialPromptDelayMs ?? 1000;
+      setTimeout(() => {
+        worker.pty.write(initialPrompt + '\r');
+        console.log(`[${new Date().toISOString()}] Initial prompt sent to worker ${worker.id}`);
+      }, delay);
+    }
 
     return worker;
   }

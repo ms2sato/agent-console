@@ -7,6 +7,13 @@ export interface AgentActivityPatterns {
 }
 
 /**
+ * How to pass the initial prompt to the agent
+ * - 'stdin': Write the prompt to stdin after the agent starts (default)
+ * - 'arg': Pass as command line argument
+ */
+export type InitialPromptMode = 'stdin' | 'arg';
+
+/**
  * Agent definition - stored and managed by AgentManager
  */
 export interface AgentDefinition {
@@ -20,6 +27,13 @@ export interface AgentDefinition {
   activityPatterns?: AgentActivityPatterns;
   /** Arguments to append when continuing conversation (e.g., ['-c'] for Claude Code) */
   continueArgs?: string[];
+  /** How to pass the initial prompt to the agent (default: 'stdin') */
+  initialPromptMode?: InitialPromptMode;
+  /**
+   * Delay in milliseconds before sending the initial prompt via stdin.
+   * This gives the agent time to initialize. Default: 1000ms
+   */
+  initialPromptDelayMs?: number;
 }
 
 /**
@@ -32,6 +46,8 @@ export interface CreateAgentRequest {
   icon?: string;
   activityPatterns?: AgentActivityPatterns;
   continueArgs?: string[];
+  initialPromptMode?: InitialPromptMode;
+  initialPromptDelayMs?: number;
 }
 
 /**
@@ -44,4 +60,6 @@ export interface UpdateAgentRequest {
   icon?: string;
   activityPatterns?: AgentActivityPatterns;
   continueArgs?: string[];
+  initialPromptMode?: InitialPromptMode;
+  initialPromptDelayMs?: number;
 }

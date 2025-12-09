@@ -44,4 +44,5 @@ export const claudeCodeAgent: AgentDefinition = {
     askingPatterns: ASKING_PATTERNS,
   },
   continueArgs: ['-c'],
+  initialPromptMode: 'arg', // Pass prompt as command argument: claude "prompt"
 };

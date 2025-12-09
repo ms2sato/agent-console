@@ -279,11 +279,10 @@ export class WorktreeService {
     branch: string,
     baseBranch?: string
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
-    // Generate worktree path: repositories/{org}/{repo}/worktrees/{branch}
-    // Falls back to repo directory name if remote URL cannot be parsed
+    // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
+    // Directory name is independent of branch name to avoid path issues with branch names containing slashes
     const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
-    const worktreePath = path.join(repoWorktreeDir, branch);
 
     // Ensure base directory exists
     if (!fs.existsSync(repoWorktreeDir)) {
@@ -293,6 +292,11 @@ export class WorktreeService {
     // Allocate index before creating worktree
     const indexStore = loadIndexStore(repoWorktreeDir);
     const newIndex = allocateIndex(indexStore);
+
+    // Generate directory name: wt-{index:3 digits}-{4 random alphanumeric}
+    const dirSuffix = generateRandomSuffix(4);
+    const dirName = `wt-${String(newIndex).padStart(3, '0')}-${dirSuffix}`;
+    const worktreePath = path.join(repoWorktreeDir, dirName);
 
     return new Promise((resolve) => {
       let command: string;
