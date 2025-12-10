@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { api } from './routes/api.js';
 import { setupWebSocketRoutes } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
+import { serverConfig } from './lib/server-config.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -40,7 +41,7 @@ process.on('SIGINT', () => {
 const app = new Hono();
 
 // Production mode: serve static files
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = serverConfig.NODE_ENV === 'production';
 
 // Global error handler
 app.onError(onApiError);
@@ -75,7 +76,7 @@ if (isProduction) {
   });
 }
 
-const PORT = Number(process.env.PORT) || 3457;
+const PORT = Number(serverConfig.PORT);
 
 console.log(`[${timestamp()}] Server starting on http://localhost:${PORT} (${isProduction ? 'production' : 'development'}) (PID: ${process.pid})`);
 
