@@ -1,12 +1,10 @@
+import { SERVER_ONLY_ENV_VARS } from '../lib/server-config.js';
+
 /**
  * Environment variables that should NOT be passed to child PTY processes.
- * These are server-specific settings that would interfere with child process behavior.
+ * Auto-generated from server-config.ts to ensure single source of truth.
  */
-const BLOCKED_ENV_VARS = [
-  'NODE_ENV',      // Server's NODE_ENV should not affect child processes
-  'PORT',          // Server's port binding
-  'HOST',          // Server's host binding
-];
+const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
 
 /**
  * Filter environment variables for child PTY processes.
