@@ -29,6 +29,8 @@ interface CreateWorktreeSessionRequest {
   locationPath: string;
   agentId?: string;              // If provided, create initial agent worker
   continueConversation?: boolean;
+  /** Initial prompt to send to the agent after starting */
+  initialPrompt?: string;
 }
 
 interface CreateQuickSessionRequest {
@@ -36,6 +38,8 @@ interface CreateQuickSessionRequest {
   locationPath: string;
   agentId?: string;
   continueConversation?: boolean;
+  /** Initial prompt to send to the agent after starting */
+  initialPrompt?: string;
 }
 
 export type CreateSessionRequest = CreateWorktreeSessionRequest | CreateQuickSessionRequest;

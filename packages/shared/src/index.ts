@@ -24,10 +24,14 @@ export interface CreateRepositoryRequest {
 interface CreateWorktreeBaseRequest {
   autoStartSession?: boolean;
   agentId?: string;
+  /** Initial prompt to send to the agent after starting */
+  initialPrompt?: string;
 }
 
-interface CreateWorktreeAutoRequest extends CreateWorktreeBaseRequest {
-  mode: 'auto';
+interface CreateWorktreePromptRequest extends CreateWorktreeBaseRequest {
+  mode: 'prompt';
+  /** Required for prompt mode - the prompt to generate branch name from */
+  initialPrompt: string;
   baseBranch?: string;
 }
 
@@ -43,7 +47,7 @@ interface CreateWorktreeExistingRequest extends CreateWorktreeBaseRequest {
 }
 
 export type CreateWorktreeRequest =
-  | CreateWorktreeAutoRequest
+  | CreateWorktreePromptRequest
   | CreateWorktreeCustomRequest
   | CreateWorktreeExistingRequest;
 
@@ -55,3 +59,4 @@ export interface ApiError {
   error: string;
   message: string;
 }
+

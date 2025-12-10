@@ -151,8 +151,11 @@ detached
 
   describe('createWorktree', () => {
     it('should create worktree with existing branch', async () => {
+      let capturedCommand = '';
+
       vi.mocked(childProcess.exec).mockImplementation(
-        (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+        (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
+          capturedCommand = cmd;
           if (callback) callback(null, '', '');
           return undefined as never;
         }
@@ -164,8 +167,11 @@ detached
       const result = await service.createWorktree('/repo', 'feature-branch');
 
       expect(result.error).toBeUndefined();
-      expect(result.worktreePath).toContain('feature-branch');
+      // Directory name is wt-XXX-xxxx format, independent of branch name
+      expect(result.worktreePath).toMatch(/wt-\d{3}-[a-z0-9]{4}$/);
       expect(result.index).toBeDefined();
+      // Branch name should be in the git command
+      expect(capturedCommand).toContain('feature-branch');
     });
 
     it('should create worktree with new branch from base', async () => {

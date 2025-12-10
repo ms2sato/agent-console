@@ -14,6 +14,7 @@ import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
+import { suggestBranchName } from '../services/branch-name-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 
 const api = new Hono();
@@ -227,14 +228,33 @@ api.post('/repositories/:id/worktrees', async (c) => {
   }
 
   const body = await c.req.json<CreateWorktreeRequest>();
-  const { mode, autoStartSession, agentId } = body;
+  const { mode, autoStartSession, agentId, initialPrompt } = body;
 
   let branch: string;
   let baseBranch: string | undefined;
 
+  // Get the agent for branch name generation (if prompt mode)
+  const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
+  const agent = agentManager.getAgent(selectedAgentId);
+  if (!agent) {
+    throw new ValidationError(`Agent not found: ${selectedAgentId}`);
+  }
+
   switch (mode) {
-    case 'auto':
-      branch = worktreeService.generateNextBranchName(repo.path);
+    case 'prompt':
+      if (!body.initialPrompt?.trim()) {
+        throw new ValidationError('initialPrompt is required for prompt mode');
+      }
+      // Generate branch name from prompt using the selected agent
+      const suggestion = await suggestBranchName({
+        prompt: body.initialPrompt.trim(),
+        repositoryPath: repo.path,
+        agent,
+      });
+      if (suggestion.error || !suggestion.branch) {
+        throw new ValidationError(suggestion.error || 'Failed to generate branch name');
+      }
+      branch = suggestion.branch;
       baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'custom':
@@ -246,7 +266,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
       baseBranch = undefined;
       break;
     default:
-      throw new ValidationError('Invalid mode. Must be "auto", "custom", or "existing"');
+      throw new ValidationError('Invalid mode. Must be "prompt", "custom", or "existing"');
   }
 
   const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
@@ -268,6 +288,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
       worktreeId: worktree.branch,
       locationPath: worktree.path,
       agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
+      initialPrompt,
     });
   }
 

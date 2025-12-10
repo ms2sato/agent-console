@@ -389,15 +389,16 @@ interface RepositoryCardProps {
   onUnregister: () => void;
 }
 
-type BranchNameMode = 'auto' | 'custom' | 'existing';
+type BranchNameMode = 'prompt' | 'custom' | 'existing';
 
 function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
-  const [branchNameMode, setBranchNameMode] = useState<BranchNameMode>('auto');
+  const [branchNameMode, setBranchNameMode] = useState<BranchNameMode>('prompt');
   const [customBranch, setCustomBranch] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
+  const [initialPrompt, setInitialPrompt] = useState('');
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -408,10 +409,11 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
   // Open dialog with default settings
   const handleOpenCreateDialog = useCallback(() => {
-    setBranchNameMode('auto');
+    setBranchNameMode('prompt');
     setCustomBranch('');
     setBaseBranch('');
     setSelectedAgentId(undefined);
+    setInitialPrompt('');
     setShowCreateWorktree(true);
   }, []);
 
@@ -433,6 +435,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       setCustomBranch('');
       setBaseBranch('');
       setSelectedAgentId(undefined);
+      setInitialPrompt('');
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
       }
@@ -440,17 +443,25 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   });
 
   const handleCreateWorktree = async () => {
-    if (branchNameMode !== 'auto' && !customBranch.trim()) {
+    // Validate based on mode
+    if (branchNameMode === 'prompt') {
+      if (!initialPrompt.trim()) {
+        alert('Initial prompt is required');
+        return;
+      }
+    } else if (!customBranch.trim()) {
       alert('Branch name is required');
       return;
     }
 
     try {
       let request: CreateWorktreeRequest;
+
       switch (branchNameMode) {
-        case 'auto':
+        case 'prompt':
           request = {
-            mode: 'auto',
+            mode: 'prompt',
+            initialPrompt: initialPrompt.trim(),
             baseBranch: baseBranch.trim() || undefined,
             autoStartSession: true,
             agentId: selectedAgentId,
@@ -501,19 +512,21 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       </div>
 
       {showCreateWorktree && (
-        <div className="bg-slate-800 p-4 rounded mb-4">
-          <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
-          <div className="flex flex-col gap-3">
+        <div className={`bg-slate-800 p-4 rounded mb-4 ${createWorktreeMutation.isPending ? 'opacity-70' : ''}`}>
+          <h3 className="text-sm font-medium mb-3">
+            {createWorktreeMutation.isPending ? 'Creating Worktree...' : 'Create Worktree'}
+          </h3>
+          <fieldset disabled={createWorktreeMutation.isPending} className="flex flex-col gap-3">
             {/* Branch name mode selection */}
             <div className="flex flex-col gap-2">
               <label className="text-sm text-gray-400 flex items-center gap-2">
                 <input
                   type="radio"
                   name="branchMode"
-                  checked={branchNameMode === 'auto'}
-                  onChange={() => setBranchNameMode('auto')}
+                  checked={branchNameMode === 'prompt'}
+                  onChange={() => setBranchNameMode('prompt')}
                 />
-                Auto-generate name
+                From initial prompt (recommended)
               </label>
               <label className="text-sm text-gray-400 flex items-center gap-2">
                 <input
@@ -535,8 +548,19 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
               </label>
             </div>
 
+            {/* Initial prompt input (for prompt mode) */}
+            {branchNameMode === 'prompt' && (
+              <textarea
+                placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
+                value={initialPrompt}
+                onChange={(e) => setInitialPrompt(e.target.value)}
+                className="input min-h-[80px] resize-y"
+                rows={3}
+              />
+            )}
+
             {/* Branch name input (only for custom/existing) */}
-            {branchNameMode !== 'auto' && (
+            {(branchNameMode === 'custom' || branchNameMode === 'existing') && (
               <input
                 type="text"
                 placeholder={branchNameMode === 'custom' ? 'New branch name' : 'Existing branch name'}
@@ -568,7 +592,6 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             <div className="flex gap-2">
               <button
                 onClick={handleCreateWorktree}
-                disabled={createWorktreeMutation.isPending}
                 className="btn btn-primary text-sm"
               >
                 {createWorktreeMutation.isPending ? 'Creating...' : 'Create & Start Session'}
@@ -579,13 +602,14 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                   setCustomBranch('');
                   setBaseBranch('');
                   setSelectedAgentId(undefined);
+                  setInitialPrompt('');
                 }}
                 className="btn btn-danger text-sm"
               >
                 Cancel
               </button>
             </div>
-          </div>
+          </fieldset>
         </div>
       )}
 

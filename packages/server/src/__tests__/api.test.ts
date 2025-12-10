@@ -679,32 +679,6 @@ describe('API Routes', () => {
         expect(body.worktree.branch).toBe('feature-branch');
       });
 
-      it('should auto-generate branch name with mode auto', async () => {
-        const { worktreeService } = await import('../services/worktree-service.js');
-        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
-          worktreePath: '/test/worktrees/wt-001-abcd',
-          index: 1,
-        });
-        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
-          {
-            path: '/test/worktrees/wt-001-abcd',
-            branch: 'wt-001-abcd',
-            repositoryId: 'test-repo-id',
-            isMain: false,
-            index: 1,
-          },
-        ]);
-
-        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'auto' }),
-        });
-        expect(res.status).toBe(201);
-
-        expect(vi.mocked(worktreeService.generateNextBranchName)).toHaveBeenCalled();
-      });
-
       it('should use existing branch with mode existing', async () => {
         const { worktreeService } = await import('../services/worktree-service.js');
         vi.mocked(worktreeService.createWorktree).mockResolvedValue({
