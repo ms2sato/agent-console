@@ -33,11 +33,8 @@ cd ~/.agent-console/server
 bun install --production
 
 echo "==> Restarting service..."
-SERVICE_TARGET="gui/$(id -u)/com.agent-console"
-if launchctl print "$SERVICE_TARGET" &>/dev/null; then
-    launchctl kickstart -k "$SERVICE_TARGET"
-else
-    launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.agent-console.plist
-fi
+# Use bootout + bootstrap to ensure plist changes (including environment variables) are reloaded
+launchctl bootout "gui/$(id -u)/com.agent-console" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.agent-console.plist
 
 echo "==> Done!"
