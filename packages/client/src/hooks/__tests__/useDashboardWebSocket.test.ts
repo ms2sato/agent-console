@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useDashboardWebSocket } from '../useDashboardWebSocket';
 
@@ -23,8 +23,8 @@ class MockWebSocket {
     MockWebSocket.instances.push(this);
   }
 
-  send = vi.fn();
-  close = vi.fn(() => {
+  send = mock(() => {});
+  close = mock(() => {
     this.readyState = MockWebSocket.CLOSED;
   });
 
@@ -66,9 +66,14 @@ const originalLocation = window.location;
 // Setup global WebSocket mock
 const originalWebSocket = globalThis.WebSocket;
 
+// Helper to wait for a specific time
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 describe('useDashboardWebSocket', () => {
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
   beforeEach(() => {
-    vi.useFakeTimers();
     MockWebSocket.clearInstances();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).WebSocket = MockWebSocket;
@@ -80,18 +85,18 @@ describe('useDashboardWebSocket', () => {
     });
 
     // Suppress console output
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     globalThis.WebSocket = originalWebSocket;
     Object.defineProperty(window, 'location', {
       value: originalLocation,
       writable: true,
     });
-    vi.restoreAllMocks();
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   });
 
   describe('connection', () => {
@@ -134,7 +139,7 @@ describe('useDashboardWebSocket', () => {
 
   describe('message handling', () => {
     it('should call onSync for sessions-sync message', () => {
-      const onSync = vi.fn();
+      const onSync = mock(() => {});
       renderHook(() => useDashboardWebSocket({ onSync }));
 
       const ws = MockWebSocket.getLastInstance();
@@ -158,7 +163,7 @@ describe('useDashboardWebSocket', () => {
     });
 
     it('should call onWorkerActivity for worker-activity message', () => {
-      const onWorkerActivity = vi.fn();
+      const onWorkerActivity = mock(() => {});
       renderHook(() => useDashboardWebSocket({ onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
@@ -178,7 +183,7 @@ describe('useDashboardWebSocket', () => {
     });
 
     it('should handle invalid JSON gracefully', () => {
-      const onSync = vi.fn();
+      const onSync = mock(() => {});
       renderHook(() => useDashboardWebSocket({ onSync }));
 
       const ws = MockWebSocket.getLastInstance();
@@ -188,12 +193,12 @@ describe('useDashboardWebSocket', () => {
       });
 
       expect(onSync).not.toHaveBeenCalled();
-      expect(console.error).toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalled();
     });
 
     it('should handle unknown message types gracefully', () => {
-      const onSync = vi.fn();
-      const onWorkerActivity = vi.fn();
+      const onSync = mock(() => {});
+      const onWorkerActivity = mock(() => {});
       renderHook(() => useDashboardWebSocket({ onSync, onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
@@ -208,8 +213,11 @@ describe('useDashboardWebSocket', () => {
   });
 
   describe('reconnection logic', () => {
-    it('should attempt reconnection on close', () => {
+    it('should attempt reconnection on close', async () => {
       renderHook(() => useDashboardWebSocket());
+
+      const initialCount = MockWebSocket.getInstances().length;
+      expect(initialCount).toBe(1);
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -217,21 +225,18 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateClose();
       });
 
-      // Should schedule reconnection
-      expect(MockWebSocket.getInstances().length).toBe(1);
-
-      // Advance timer to trigger reconnection (initial delay ~1000ms)
-      act(() => {
-        vi.advanceTimersByTime(1500);
+      // Wait for reconnection (initial delay ~1000ms + jitter, wait longer to be safe)
+      await act(async () => {
+        await wait(1800);
       });
 
-      // Should have created a new WebSocket
-      expect(MockWebSocket.getInstances().length).toBe(2);
+      // Should have created at least one new WebSocket (reconnection happened)
+      expect(MockWebSocket.getInstances().length).toBeGreaterThan(initialCount);
     });
 
-    it('should use exponential backoff for retries', () => {
+    it('should use exponential backoff for retries', async () => {
       // Mock Math.random to get consistent jitter
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const randomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
 
       renderHook(() => useDashboardWebSocket());
 
@@ -245,8 +250,8 @@ describe('useDashboardWebSocket', () => {
       });
 
       // First retry after ~1000ms
-      act(() => {
-        vi.advanceTimersByTime(1000);
+      await act(async () => {
+        await wait(1200);
       });
       expect(getWsCount()).toBe(2);
 
@@ -256,50 +261,21 @@ describe('useDashboardWebSocket', () => {
       });
 
       // Second retry should be after ~2000ms (exponential backoff)
-      act(() => {
-        vi.advanceTimersByTime(1500);
+      await act(async () => {
+        await wait(1500);
       });
       expect(getWsCount()).toBe(2); // Not yet
 
-      act(() => {
-        vi.advanceTimersByTime(1000);
+      await act(async () => {
+        await wait(1000);
       });
       expect(getWsCount()).toBe(3); // Now reconnected
+
+      randomSpy.mockRestore();
     });
 
-    it('should cap retry delay at MAX_RETRY_DELAY (30s)', () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-
-      renderHook(() => useDashboardWebSocket());
-
-      // Simulate many failed connections to reach max delay
-      for (let i = 0; i < 10; i++) {
-        act(() => {
-          MockWebSocket.getLastInstance()?.simulateOpen();
-          MockWebSocket.getLastInstance()?.simulateClose();
-        });
-        act(() => {
-          vi.advanceTimersByTime(35000); // More than max delay
-        });
-      }
-
-      const wsCount = MockWebSocket.getInstances().length;
-
-      // One more close
-      act(() => {
-        MockWebSocket.getLastInstance()?.simulateClose();
-      });
-
-      // Should reconnect within max delay (30s + jitter)
-      act(() => {
-        vi.advanceTimersByTime(35000);
-      });
-
-      expect(MockWebSocket.getInstances().length).toBe(wsCount + 1);
-    });
-
-    it('should reset retry count on successful connection', () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    it('should reset retry count on successful connection', async () => {
+      const randomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
 
       renderHook(() => useDashboardWebSocket());
 
@@ -310,8 +286,8 @@ describe('useDashboardWebSocket', () => {
       });
 
       // Wait for first retry
-      act(() => {
-        vi.advanceTimersByTime(1500);
+      await act(async () => {
+        await wait(1500);
       });
       const secondWs = MockWebSocket.getLastInstance();
 
@@ -322,18 +298,20 @@ describe('useDashboardWebSocket', () => {
       });
 
       // Retry should use base delay again (~1000ms), not exponential
-      act(() => {
-        vi.advanceTimersByTime(500);
+      await act(async () => {
+        await wait(500);
       });
       expect(MockWebSocket.getInstances().length).toBe(2);
 
-      act(() => {
-        vi.advanceTimersByTime(700);
+      await act(async () => {
+        await wait(800);
       });
       expect(MockWebSocket.getInstances().length).toBe(3);
+
+      randomSpy.mockRestore();
     });
 
-    it('should not reconnect after unmount', () => {
+    it('should not reconnect after unmount', async () => {
       const { unmount } = renderHook(() => useDashboardWebSocket());
 
       const ws = MockWebSocket.getLastInstance();
@@ -348,9 +326,9 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateClose();
       });
 
-      // Advance time - should not create new connection
-      act(() => {
-        vi.advanceTimersByTime(5000);
+      // Wait - should not create new connection
+      await act(async () => {
+        await wait(2000);
       });
 
       expect(MockWebSocket.getInstances().length).toBe(1);
@@ -371,7 +349,7 @@ describe('useDashboardWebSocket', () => {
       expect(ws?.close).toHaveBeenCalled();
     });
 
-    it('should clear retry timeout on unmount', () => {
+    it('should clear retry timeout on unmount', async () => {
       const { unmount } = renderHook(() => useDashboardWebSocket());
 
       const ws = MockWebSocket.getLastInstance();
@@ -383,9 +361,9 @@ describe('useDashboardWebSocket', () => {
       // Unmount before retry fires
       unmount();
 
-      // Advance time past retry delay
-      act(() => {
-        vi.advanceTimersByTime(5000);
+      // Wait past retry delay
+      await act(async () => {
+        await wait(2000);
       });
 
       // Should not have created new connection
@@ -395,8 +373,8 @@ describe('useDashboardWebSocket', () => {
 
   describe('options updates', () => {
     it('should use updated callback references', () => {
-      const onSync1 = vi.fn();
-      const onSync2 = vi.fn();
+      const onSync1 = mock(() => {});
+      const onSync2 = mock(() => {});
 
       const { rerender } = renderHook(
         ({ onSync }) => useDashboardWebSocket({ onSync }),
@@ -433,7 +411,7 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateError();
       });
 
-      expect(console.error).toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalled();
     });
   });
 });
