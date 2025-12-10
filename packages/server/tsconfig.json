@@ -6,8 +6,5 @@
     "lib": ["ES2022"],
     "types": ["bun", "node"]
   },
-  "include": ["src/**/*"],
-  "references": [
-    { "path": "../shared" }
-  ]
+  "include": ["src/**/*"]
 }
