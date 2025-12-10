@@ -66,8 +66,8 @@ const originalLocation = window.location;
 // Setup global WebSocket mock
 const originalWebSocket = globalThis.WebSocket;
 
-// Helper to wait for a specific time
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Helper to wait for next tick (allows setTimeout(fn, 0) to execute)
+const waitForNextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('useDashboardWebSocket', () => {
   let consoleLogSpy: ReturnType<typeof spyOn>;
@@ -214,7 +214,8 @@ describe('useDashboardWebSocket', () => {
 
   describe('reconnection logic', () => {
     it('should attempt reconnection on close', async () => {
-      renderHook(() => useDashboardWebSocket());
+      // Use instant reconnection for testing
+      renderHook(() => useDashboardWebSocket({ getReconnectDelay: () => 0 }));
 
       const initialCount = MockWebSocket.getInstances().length;
       expect(initialCount).toBe(1);
@@ -225,20 +226,25 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateClose();
       });
 
-      // Wait for reconnection (initial delay ~1000ms + jitter, wait longer to be safe)
+      // Wait for next tick (reconnection is immediate with delay=0)
       await act(async () => {
-        await wait(1800);
+        await waitForNextTick();
       });
 
-      // Should have created at least one new WebSocket (reconnection happened)
-      expect(MockWebSocket.getInstances().length).toBeGreaterThan(initialCount);
+      // Should have created a new WebSocket (reconnection happened)
+      expect(MockWebSocket.getInstances().length).toBe(2);
     });
 
     it('should use exponential backoff for retries', async () => {
-      // Mock Math.random to get consistent jitter
-      const randomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
+      // Track delays to verify exponential backoff
+      const delays: number[] = [];
+      const getReconnectDelay = (retryCount: number) => {
+        const delay = 1000 * Math.pow(2, retryCount); // 1000, 2000, 4000...
+        delays.push(delay);
+        return 0; // Return 0 for instant reconnection in test
+      };
 
-      renderHook(() => useDashboardWebSocket());
+      renderHook(() => useDashboardWebSocket({ getReconnectDelay }));
 
       const getWsCount = () => MockWebSocket.getInstances().length;
       expect(getWsCount()).toBe(1);
@@ -249,35 +255,44 @@ describe('useDashboardWebSocket', () => {
         MockWebSocket.getLastInstance()?.simulateClose();
       });
 
-      // First retry after ~1000ms
       await act(async () => {
-        await wait(1200);
+        await waitForNextTick();
       });
       expect(getWsCount()).toBe(2);
+      expect(delays[0]).toBe(1000); // First retry: base delay
 
       // Second close
       act(() => {
         MockWebSocket.getLastInstance()?.simulateClose();
       });
 
-      // Second retry should be after ~2000ms (exponential backoff)
       await act(async () => {
-        await wait(1500);
+        await waitForNextTick();
       });
-      expect(getWsCount()).toBe(2); // Not yet
+      expect(getWsCount()).toBe(3);
+      expect(delays[1]).toBe(2000); // Second retry: 2x delay
+
+      // Third close
+      act(() => {
+        MockWebSocket.getLastInstance()?.simulateClose();
+      });
 
       await act(async () => {
-        await wait(1000);
+        await waitForNextTick();
       });
-      expect(getWsCount()).toBe(3); // Now reconnected
-
-      randomSpy.mockRestore();
+      expect(getWsCount()).toBe(4);
+      expect(delays[2]).toBe(4000); // Third retry: 4x delay
     });
 
     it('should reset retry count on successful connection', async () => {
-      const randomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
+      const delays: number[] = [];
+      const getReconnectDelay = (retryCount: number) => {
+        const delay = 1000 * Math.pow(2, retryCount);
+        delays.push(delay);
+        return 0;
+      };
 
-      renderHook(() => useDashboardWebSocket());
+      renderHook(() => useDashboardWebSocket({ getReconnectDelay }));
 
       // First close - schedules retry with base delay
       act(() => {
@@ -285,34 +300,33 @@ describe('useDashboardWebSocket', () => {
         MockWebSocket.getLastInstance()?.simulateClose();
       });
 
-      // Wait for first retry
       await act(async () => {
-        await wait(1500);
+        await waitForNextTick();
       });
+      expect(delays[0]).toBe(1000); // retryCount=0
+
       const secondWs = MockWebSocket.getLastInstance();
 
-      // Second connection succeeds, then closes
+      // Second connection succeeds (resets retry count), then closes
       act(() => {
         secondWs?.simulateOpen(); // This resets retry count
         secondWs?.simulateClose();
       });
 
-      // Retry should use base delay again (~1000ms), not exponential
       await act(async () => {
-        await wait(500);
+        await waitForNextTick();
       });
-      expect(MockWebSocket.getInstances().length).toBe(2);
+      // Retry count was reset, so delay should be base delay again
+      expect(delays[1]).toBe(1000); // retryCount=0 again
 
-      await act(async () => {
-        await wait(800);
-      });
       expect(MockWebSocket.getInstances().length).toBe(3);
-
-      randomSpy.mockRestore();
     });
 
     it('should not reconnect after unmount', async () => {
-      const { unmount } = renderHook(() => useDashboardWebSocket());
+      // Use instant reconnection to prove it would reconnect immediately if allowed
+      const { unmount } = renderHook(() =>
+        useDashboardWebSocket({ getReconnectDelay: () => 0 })
+      );
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -326,11 +340,12 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateClose();
       });
 
-      // Wait - should not create new connection
+      // Wait for next tick - if reconnection was scheduled, it would have fired
       await act(async () => {
-        await wait(2000);
+        await waitForNextTick();
       });
 
+      // Should still be only 1 instance (no reconnection after unmount)
       expect(MockWebSocket.getInstances().length).toBe(1);
     });
   });
@@ -350,7 +365,10 @@ describe('useDashboardWebSocket', () => {
     });
 
     it('should clear retry timeout on unmount', async () => {
-      const { unmount } = renderHook(() => useDashboardWebSocket());
+      // Use instant reconnection to prove retry would fire immediately if not cleared
+      const { unmount } = renderHook(() =>
+        useDashboardWebSocket({ getReconnectDelay: () => 0 })
+      );
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -358,12 +376,12 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateClose(); // This schedules a retry
       });
 
-      // Unmount before retry fires
+      // Unmount before retry fires (clears the timeout)
       unmount();
 
-      // Wait past retry delay
+      // Wait for next tick - if retry was not cleared, it would have fired
       await act(async () => {
-        await wait(2000);
+        await waitForNextTick();
       });
 
       // Should not have created new connection

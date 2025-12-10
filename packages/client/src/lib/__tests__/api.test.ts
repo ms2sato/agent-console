@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect as bunExpect, mock, beforeEach, afterAll } from 'bun:test';
 import {
   fetchConfig,
   fetchSessions,
@@ -15,6 +15,10 @@ import {
   fetchBranches,
   ServerUnavailableError,
 } from '../api';
+
+// Workaround: Bun's expect is stricter than vitest's for toEqual type checking
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const expect = (value: unknown): any => bunExpect(value);
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
