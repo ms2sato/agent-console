@@ -15,6 +15,7 @@ PORT=${PORT:-6340}
 sed -e "s|{{HOME}}|$HOME|g" \
     -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
     -e "s|{{PORT}}|$PORT|g" \
+    -e "s|{{PATH}}|$PATH|g" \
     "$SCRIPT_DIR/com.agent-console.plist.template" \
     > ~/Library/LaunchAgents/com.agent-console.plist
 

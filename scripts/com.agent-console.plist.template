@@ -20,6 +20,8 @@
         <string>production</string>
         <key>PORT</key>
         <string>{{PORT}}</string>
+        <key>PATH</key>
+        <string>{{PATH}}</string>
     </dict>
 
     <key>RunAtLoad</key>
