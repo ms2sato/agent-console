@@ -36,18 +36,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pnpm dev        # Start development servers
-pnpm build      # Build all packages
-pnpm test       # Run tests
-pnpm typecheck  # Type check all packages
-pnpm lint       # Lint all packages
+bun run dev        # Start development servers (uses AGENT_CONSOLE_HOME=$HOME/.agent-console-dev)
+bun run build      # Build all packages
+bun run test       # Run typecheck then tests
+bun run test:only  # Run tests only (skip typecheck)
+bun run typecheck  # Type check all packages
+bun run lint       # Lint all packages
 ```
 
 ## Project Structure
 
-Monorepo with pnpm workspaces:
-- `packages/client` - React frontend with TanStack Router
-- `packages/server` - Node.js backend with Express + WebSocket
+Monorepo with Bun workspaces:
+- `packages/client` - React frontend with Vite, TanStack Router, TanStack Query, and Tailwind CSS
+- `packages/server` - Bun backend with Hono framework and native WebSocket
 - `packages/shared` - Shared types and utilities
 
 ## TypeScript
@@ -58,47 +59,75 @@ Monorepo with pnpm workspaces:
 
 ## Project Overview
 
-A web application for managing multiple Claude Code instances running in different git worktrees. Instead of scattered terminals, users control all instances through a unified browser interface using xterm.js.
+A web application for managing multiple AI coding agent instances (Claude Code, etc.) running in different git worktrees. Instead of scattered terminals, users control all instances through a unified browser interface using xterm.js.
+
+## Core Concepts
+
+- **Session**: A working context tied to a worktree or arbitrary directory. Each session can have multiple workers.
+- **Worker**: A PTY process running within a session. Two types:
+  - **Agent Worker**: Runs an AI agent (e.g., Claude Code)
+  - **Terminal Worker**: A plain terminal shell
+- **Agent**: Definition of an AI tool (command, activity patterns, etc.). Claude Code is built-in; custom agents can be registered.
 
 ## Architecture
 
 ```
-Backend (Node.js)              Frontend (Browser)
-┌─────────────────────┐        ┌─────────────────────┐
-│ sessions Map        │        │ xterm.js terminal   │
-│ ├── WT1: {pty}     │◄──────►│ WebSocket client    │
-│ ├── WT2: {pty}     │   WS   │                     │
-│ └── WT3: {pty}     │        │                     │
-└─────────────────────┘        └─────────────────────┘
+Backend (Bun + Hono)                Frontend (React + Vite)
+┌──────────────────────────┐        ┌──────────────────────────┐
+│ SessionManager           │        │ Dashboard                │
+│ ├── Session1             │        │ ├── SessionList          │
+│ │   ├── AgentWorker     │◄──────►│ │   └── WorkerTabs       │
+│ │   └── TerminalWorker   │  WS   │ └── Terminal (xterm.js)  │
+│ └── Session2             │        │                          │
+│     └── AgentWorker      │        │                          │
+└──────────────────────────┘        └──────────────────────────┘
 ```
 
 - **Backend** manages PTY processes that persist across browser reconnections (tmux-like)
 - **Frontend** is React with TanStack Router, using xterm.js for terminal rendering
-- **WebSocket** protocol for bidirectional terminal I/O
+- **WebSocket** endpoints:
+  - `/ws/dashboard` - Broadcasts session/worker lifecycle events
+  - `/ws/sessions/:sessionId/workers/:workerId` - Individual worker I/O
 
 ## Key Technical Details
 
-- Claude Code requires PTY (not regular spawn) because it's an interactive TUI
-- xterm.js handles ANSI escape sequences from Claude Code
-- Resize events must be propagated to PTY (`claude.resize(cols, rows)`)
+- AI agents require PTY (not regular spawn) because they are interactive TUIs
+- xterm.js handles ANSI escape sequences from agents
+- Resize events must be propagated to PTY
 - Output buffering enables reconnection without losing history
+- Activity detection: Parses agent output to determine state (active/idle/asking)
 
 ## WebSocket Message Protocol
+
+### Worker Connection (`/ws/sessions/:sessionId/workers/:workerId`)
 
 Client → Server:
 - `{ type: 'input', data: string }` - Terminal input
 - `{ type: 'resize', cols: number, rows: number }` - Terminal resize
+- `{ type: 'image', data: string, mimeType: string }` - Image data (base64)
 
 Server → Client:
 - `{ type: 'output', data: string }` - PTY output
-- `{ type: 'exit', exitCode: number, signal: string }` - Process exit
+- `{ type: 'exit', exitCode: number, signal: string | null }` - Process exit
 - `{ type: 'history', data: string }` - Buffered output on reconnect
+- `{ type: 'activity', state: AgentActivityState }` - Agent activity state change (agent workers only)
 
-## Dependencies
+### Dashboard Connection (`/ws/dashboard`)
 
-- `node-pty` - Pseudo-terminal for spawning Claude Code
-- `ws` - WebSocket server
+Server → Client:
+- `{ type: 'sessions-sync', sessions: [...] }` - Full session list sync
+- `{ type: 'session-created', session: Session }` - New session created
+- `{ type: 'session-updated', session: Session }` - Session updated
+- `{ type: 'session-deleted', sessionId: string }` - Session deleted
+- `{ type: 'worker-activity', sessionId, workerId, activityState }` - Worker activity state change
+
+## Key Dependencies
+
+- `bun-pty` - Pseudo-terminal for spawning agents (Bun native)
+- `hono` - Web framework for Bun
 - `@xterm/xterm` - Terminal rendering in browser
+- `@tanstack/react-query` - Server state management
+- `@tanstack/react-router` - File-based routing
 
 ## Testing
 
@@ -108,8 +137,8 @@ Follow the guidelines in [docs/testing-guidelines.md](docs/testing-guidelines.md
 
 Before completing any code changes, always verify the following:
 
-1. **Run tests:** Execute `pnpm test` and ensure all tests pass.
-2. **Run type check:** Execute `pnpm typecheck` and ensure no type errors.
+1. **Run tests:** Execute `bun run test` and ensure all tests pass.
+2. **Run type check:** Execute `bun run typecheck` and ensure no type errors.
 3. **Manual verification:** When Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
 
 **Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
