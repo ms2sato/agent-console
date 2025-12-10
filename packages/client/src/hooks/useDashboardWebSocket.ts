@@ -14,6 +14,8 @@ interface SessionActivityInfo {
 interface UseDashboardWebSocketOptions {
   onSync?: (sessions: SessionActivityInfo[]) => void;
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
+  /** Custom reconnect delay calculation for testing. Returns delay in ms. */
+  getReconnectDelay?: (retryCount: number) => number;
 }
 
 interface UseDashboardWebSocketReturn {
@@ -24,6 +26,17 @@ interface UseDashboardWebSocketReturn {
 const INITIAL_RETRY_DELAY = 1000; // 1 second
 const MAX_RETRY_DELAY = 30000; // 30 seconds
 const JITTER_FACTOR = 0.3; // ±30% randomization
+
+/** Default reconnect delay with exponential backoff and jitter */
+function defaultGetReconnectDelay(retryCount: number): number {
+  const baseDelay = Math.min(
+    INITIAL_RETRY_DELAY * Math.pow(2, retryCount),
+    MAX_RETRY_DELAY
+  );
+  // Add jitter to prevent thundering herd
+  const jitter = baseDelay * JITTER_FACTOR * (Math.random() * 2 - 1);
+  return Math.round(baseDelay + jitter);
+}
 
 export function useDashboardWebSocket(
   options: UseDashboardWebSocketOptions = {}
@@ -73,13 +86,8 @@ export function useDashboardWebSocket(
 
       // Schedule reconnection with exponential backoff
       if (!unmountedRef.current) {
-        const baseDelay = Math.min(
-          INITIAL_RETRY_DELAY * Math.pow(2, retryCountRef.current),
-          MAX_RETRY_DELAY
-        );
-        // Add jitter to prevent thundering herd
-        const jitter = baseDelay * JITTER_FACTOR * (Math.random() * 2 - 1);
-        const delay = Math.round(baseDelay + jitter);
+        const getDelay = optionsRef.current.getReconnectDelay ?? defaultGetReconnectDelay;
+        const delay = getDelay(retryCountRef.current);
 
         console.log(`Dashboard WebSocket reconnecting in ${delay}ms (attempt ${retryCountRef.current + 1})`);
         retryTimeoutRef.current = setTimeout(() => {

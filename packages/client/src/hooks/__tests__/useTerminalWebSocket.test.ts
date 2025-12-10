@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useTerminalWebSocket } from '../useTerminalWebSocket';
 
@@ -23,8 +23,8 @@ class MockWebSocket {
     MockWebSocket.instances.push(this);
   }
 
-  send = vi.fn();
-  close = vi.fn(() => {
+  send = mock(() => {});
+  close = mock(() => {
     this.readyState = MockWebSocket.CLOSED;
   });
 
@@ -59,29 +59,30 @@ class MockWebSocket {
 // Setup global WebSocket mock
 const originalWebSocket = globalThis.WebSocket;
 
+// Helper to wait for next tick
+const waitForNextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('useTerminalWebSocket', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     MockWebSocket.clearInstances();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).WebSocket = MockWebSocket;
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     globalThis.WebSocket = originalWebSocket;
   });
 
-  const defaultOptions = {
-    onOutput: vi.fn(),
-    onHistory: vi.fn(),
-    onExit: vi.fn(),
-    onConnectionChange: vi.fn(),
-    onActivity: vi.fn(),
-  };
+  const createDefaultOptions = () => ({
+    onOutput: mock(() => {}),
+    onHistory: mock(() => {}),
+    onExit: mock(() => {}),
+    onConnectionChange: mock(() => {}),
+    onActivity: mock(() => {}),
+  });
 
   it('should connect to WebSocket and update connected state', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
       useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
@@ -89,9 +90,9 @@ describe('useTerminalWebSocket', () => {
     // Initial state
     expect(result.current.connected).toBe(false);
 
-    // Advance timer to allow connection
+    // Wait for connection attempt
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -107,13 +108,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle output messages', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     renderHook(() =>
       useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -130,11 +131,11 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle history messages', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -147,11 +148,11 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle exit messages', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -164,11 +165,11 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle activity messages', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -181,13 +182,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle connection close', async () => {
-    const options = { ...defaultOptions };
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
       useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -206,12 +207,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should send input messages', async () => {
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', defaultOptions)
+      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -227,12 +229,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should send resize messages', async () => {
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', defaultOptions)
+      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -250,12 +253,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should send image messages', async () => {
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', defaultOptions)
+      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -273,12 +277,13 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should not send when WebSocket is not open', async () => {
+    const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', defaultOptions)
+      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -292,13 +297,16 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should handle invalid JSON gracefully', async () => {
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const options = { ...defaultOptions };
+    const consoleSpy = mock(() => {});
+    const originalError = console.error;
+    console.error = consoleSpy;
+
+    const options = createDefaultOptions();
 
     renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -310,16 +318,17 @@ describe('useTerminalWebSocket', () => {
     expect(consoleSpy).toHaveBeenCalled();
     expect(options.onOutput).not.toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    console.error = originalError;
   });
 
   it('should close WebSocket on unmount', async () => {
+    const options = createDefaultOptions();
     const { unmount } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', defaultOptions)
+      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const ws = MockWebSocket.getLastInstance();
@@ -333,13 +342,14 @@ describe('useTerminalWebSocket', () => {
   });
 
   it('should reconnect when URL changes', async () => {
+    const options = createDefaultOptions();
     const { rerender } = renderHook(
-      ({ url }) => useTerminalWebSocket(url, defaultOptions),
+      ({ url }) => useTerminalWebSocket(url, options),
       { initialProps: { url: 'ws://localhost/ws/terminal/123' } }
     );
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const firstWs = MockWebSocket.getLastInstance();
@@ -351,7 +361,7 @@ describe('useTerminalWebSocket', () => {
     rerender({ url: 'ws://localhost/ws/terminal/456' });
 
     await act(async () => {
-      vi.advanceTimersByTime(10);
+      await waitForNextTick();
     });
 
     const secondWs = MockWebSocket.getLastInstance();

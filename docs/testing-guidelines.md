@@ -23,7 +23,7 @@ Correct approach:
 
 ```typescript
 // ✅ Correct: Import and test production code directly
-import { SomeClass } from '../some-class.js';
+import { SomeClass } from '../some-class';
 
 describe('SomeClass', () => {
   it('should do something', () => {
@@ -33,12 +33,12 @@ describe('SomeClass', () => {
 });
 ```
 
-### 2. Do Not Change Production Code Specifications for Testing
+### 2. Do Not Unilaterally Change Production Code for Testing
 
-Changing production code interfaces to make testing easier is putting the cart before the horse.
+Changing production code interfaces to make testing easier should not be done without discussion.
 
 ```typescript
-// ❌ Wrong: Adding optional dependency injection just for testing
+// ❌ Wrong: Adding optional dependency injection just for testing without discussion
 class SessionManager {
   cleanupOrphanProcesses(
     deps: {
@@ -51,7 +51,7 @@ class SessionManager {
 }
 ```
 
-Exception: Adopting dependency injection at the design stage is good. However, it should be "for good design," not "for testing."
+If you find that testing requires changes to production code, **consult with the team first**. Changes that improve testability often also improve design (e.g., dependency injection), but this should be a deliberate decision, not an afterthought.
 
 ### 3. Do Not Directly Test Private Methods
 
@@ -66,40 +66,74 @@ If you feel the need to test a private method, it's a sign to reconsider the des
 describe('SessionManager', () => {
   it('should cleanup orphan processes on initialization', () => {
     // Test constructor behavior
-    // Use vi.mock to mock dependencies if needed
+    // Mock at the communication layer (fetch, WebSocket, etc.) if needed
   });
 });
 ```
 
 ## Testing Techniques
 
-### Module-Level Mocking
+### Mocking Strategy: Prefer Low-Level Mocks
 
-The correct way to mock external dependencies:
+**Mock at the lowest level possible** (e.g., `fetch`, `WebSocket`, file system) rather than mocking intermediate modules.
+
+#### Why Avoid Module-Level Mocking
+
+Module-level mocking (`mock.module()` in bun:test, `vi.mock()` in vitest) should be avoided because:
+
+1. **Fragile tests**: Tests break when internal implementation changes, even if behavior is correct
+2. **False confidence**: Tests pass even when integration between modules is broken
+3. **Global pollution**: In bun:test, `mock.module()` cannot be undone and affects all test files in the same process
+
+#### ✅ Correct: Mock at the Communication Layer
 
 ```typescript
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 
-// Mock the entire module
-vi.mock('../services/persistence-service.js', () => ({
-  persistenceService: {
-    loadSessions: vi.fn(() => [
-      { id: 'test-session', pid: 12345, serverPid: 99999 }
-    ]),
-    saveSessions: vi.fn(),
-  },
-}));
+// Mock fetch at the global level
+const originalFetch = globalThis.fetch;
+const mockFetch = mock(() => Promise.resolve(new Response()));
+globalThis.fetch = mockFetch as unknown as typeof fetch;
 
-// Import production code (mock is applied)
-import { SessionManager } from '../services/session-manager.js';
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
 
-describe('SessionManager', () => {
-  it('should work with mocked dependencies', () => {
-    const manager = new SessionManager();
-    // ...
+describe('MyComponent', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('should handle API response', async () => {
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ data: 'test' })));
+
+    // Test the component - actual API functions run, only fetch is mocked
+    // This tests URL construction, error handling, etc.
   });
 });
 ```
+
+Benefits:
+- API function logic (URL encoding, error handling) is actually tested
+- Refactoring API internals doesn't break tests
+- No global module pollution
+
+#### ❌ Avoid: Module-Level Mocking
+
+```typescript
+// Don't do this unless absolutely necessary
+import { mock } from 'bun:test';
+
+mock.module('../lib/api', () => ({
+  deleteWorktree: mock(() => Promise.resolve()),
+  fetchSessions: mock(() => Promise.resolve({ sessions: [] })),
+}));
+```
+
+Problems:
+- Bypasses actual API function logic
+- Tests don't catch bugs in URL construction or error handling
+- `mock.module()` is permanent in bun:test (cannot be reset between tests)
 
 ### Integration Tests
 
@@ -168,8 +202,9 @@ Before writing tests, verify:
 - [ ] Are you NOT trying to test private methods directly?
 - [ ] Are you NOT changing production code just for testing?
 - [ ] Are you NOT following existing bad patterns?
+- [ ] Are you mocking at the lowest level (fetch, WebSocket) instead of module-level?
 
 ## References
 
-- [Vitest Mocking](https://vitest.dev/guide/mocking.html)
+- [Bun Test Mocking](https://bun.sh/docs/test/mocks)
 - [Testing Best Practices](https://github.com/goldbergyoni/javascript-testing-best-practices)

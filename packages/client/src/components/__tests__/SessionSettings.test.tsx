@@ -1,22 +1,38 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { renderWithRouter } from '../../test/renderWithRouter';
 import { SessionSettings } from '../SessionSettings';
-import * as api from '../../lib/api';
 
-// Mock react-router
-const mockNavigate = vi.fn();
-vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => mockNavigate,
-}));
+// Save original fetch and set up mock
+const originalFetch = globalThis.fetch;
+const mockFetch = mock(() => Promise.resolve(new Response()));
+globalThis.fetch = mockFetch as unknown as typeof fetch;
 
-// Mock API module
-vi.mock('../../lib/api', () => ({
-  renameSessionBranch: vi.fn(),
-  restartSession: vi.fn(),
-  deleteSession: vi.fn(),
-  deleteWorktree: vi.fn(),
-  openPath: vi.fn(),
-}));
+// Restore original fetch after all tests
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
+// Helper to create mock Response
+function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
+  const { status = 200, ok = true } = options;
+  return {
+    ok,
+    status,
+    statusText: status === 200 ? 'OK' : 'Error',
+    json: mock(() => Promise.resolve(body)),
+  } as unknown as Response;
+}
+
+// Helper to create error Response
+function createErrorResponse(errorMessage: string, status = 400) {
+  return {
+    ok: false,
+    status,
+    statusText: 'Error',
+    json: mock(() => Promise.resolve({ error: errorMessage })),
+  } as unknown as Response;
+}
 
 describe('SessionSettings', () => {
   const defaultProps = {
@@ -24,16 +40,14 @@ describe('SessionSettings', () => {
     repositoryId: 'test-repo-id',
     currentBranch: 'test-branch',
     worktreePath: '/path/to/worktree',
-    onBranchChange: vi.fn(),
-    onSessionRestart: vi.fn(),
+    onBranchChange: mock(() => {}),
+    onSessionRestart: mock(() => {}),
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
+    mockFetch.mockReset();
+    defaultProps.onBranchChange.mockClear();
+    defaultProps.onSessionRestart.mockClear();
   });
 
   /**
@@ -69,44 +83,35 @@ describe('SessionSettings', () => {
 
   describe('handleDeleteWorktree', () => {
     it('should call deleteWorktree and navigate on success', async () => {
-      // Server-side deleteWorktree also terminates sessions, so no separate deleteSession call
-      vi.mocked(api.deleteWorktree).mockResolvedValue(undefined);
+      // Mock successful delete
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
-      render(<SessionSettings {...defaultProps} />);
+      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
       await openDeleteWorktreeDialogAndConfirm();
 
+      // Verify fetch was called with correct URL and method
       await waitFor(() => {
-        expect(api.deleteWorktree).toHaveBeenCalledWith(
-          'test-repo-id',
-          '/path/to/worktree',
-          false
+        expect(mockFetch).toHaveBeenCalledWith(
+          '/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree',
+          { method: 'DELETE' }
         );
       });
 
-      // deleteSession is NOT called from client - server handles it
-      expect(api.deleteSession).not.toHaveBeenCalled();
-
       // Should navigate to home
-      expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/');
+      });
     });
 
     it('should show Force Delete option when deleteWorktree fails with untracked files error', async () => {
-      vi.mocked(api.deleteWorktree).mockRejectedValue(
-        new Error('Worktree contains untracked files')
+      mockFetch.mockResolvedValue(
+        createErrorResponse('Worktree contains untracked files')
       );
 
-      render(<SessionSettings {...defaultProps} />);
+      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
       await openDeleteWorktreeDialogAndConfirm();
-
-      await waitFor(() => {
-        expect(api.deleteWorktree).toHaveBeenCalledWith(
-          'test-repo-id',
-          '/path/to/worktree',
-          false
-        );
-      });
 
       // Should show error with Force Delete option
       await waitFor(() => {
@@ -114,17 +119,17 @@ describe('SessionSettings', () => {
         expect(screen.getByText('Force Delete')).toBeTruthy();
       });
 
-      // Should NOT navigate
-      expect(mockNavigate).not.toHaveBeenCalled();
+      // Should NOT navigate (still on initial route)
+      expect(router.state.location.pathname).toBe('/');
     });
 
     it('should call deleteWorktree with force=true when Force Delete is clicked', async () => {
-      // First call fails with untracked files error
-      vi.mocked(api.deleteWorktree)
-        .mockRejectedValueOnce(new Error('Worktree contains untracked files'))
-        .mockResolvedValueOnce(undefined);
+      // First call fails with untracked files error, second succeeds
+      mockFetch
+        .mockResolvedValueOnce(createErrorResponse('Worktree contains untracked files'))
+        .mockResolvedValueOnce(createMockResponse({ success: true }));
 
-      render(<SessionSettings {...defaultProps} />);
+      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
       await openDeleteWorktreeDialogAndConfirm();
 
@@ -138,23 +143,24 @@ describe('SessionSettings', () => {
         fireEvent.click(screen.getByText('Force Delete'));
       });
 
-      // Should call deleteWorktree with force=true
+      // Should call deleteWorktree with force=true query param
       await waitFor(() => {
-        expect(api.deleteWorktree).toHaveBeenLastCalledWith(
-          'test-repo-id',
-          '/path/to/worktree',
-          true
+        expect(mockFetch).toHaveBeenLastCalledWith(
+          '/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true',
+          { method: 'DELETE' }
         );
       });
 
       // Should navigate to home
-      expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/');
+      });
     });
 
     it('should show generic error when deleteWorktree fails with non-untracked error', async () => {
-      vi.mocked(api.deleteWorktree).mockRejectedValue(new Error('Permission denied'));
+      mockFetch.mockResolvedValue(createErrorResponse('Permission denied'));
 
-      render(<SessionSettings {...defaultProps} />);
+      await renderWithRouter(<SessionSettings {...defaultProps} />);
 
       await openDeleteWorktreeDialogAndConfirm();
 

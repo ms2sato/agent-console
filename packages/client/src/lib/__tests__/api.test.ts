@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect as bunExpect, mock, beforeEach, afterAll } from 'bun:test';
 import {
   fetchConfig,
   fetchSessions,
@@ -16,6 +16,20 @@ import {
   ServerUnavailableError,
 } from '../api';
 
+// Workaround: Bun's expect is stricter than vitest's for toEqual type checking
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const expect = (value: unknown): any => bunExpect(value);
+
+// Save original fetch and set up mock
+const originalFetch = globalThis.fetch;
+const mockFetch = mock(() => Promise.resolve(new Response()));
+globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+// Restore original fetch after all tests
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
   const { status = 200, ok = true } = options;
@@ -23,19 +37,19 @@ function createMockResponse(body: unknown, options: { status?: number; ok?: bool
     ok,
     status,
     statusText: status === 200 ? 'OK' : 'Error',
-    json: vi.fn().mockResolvedValue(body),
+    json: mock(() => Promise.resolve(body)),
   } as unknown as Response;
 }
 
 describe('API Client', () => {
   beforeEach(() => {
-    vi.mocked(fetch).mockReset();
+    mockFetch.mockReset();
   });
 
   describe('fetchConfig', () => {
     it('should fetch config successfully', async () => {
       const mockConfig = { homeDir: '/home/user' };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockConfig));
+      mockFetch.mockResolvedValue(createMockResponse(mockConfig));
 
       const result = await fetchConfig();
 
@@ -44,7 +58,7 @@ describe('API Client', () => {
     });
 
     it('should throw error on failure', async () => {
-      vi.mocked(fetch).mockResolvedValue(
+      mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 500, ok: false })
       );
 
@@ -55,7 +69,7 @@ describe('API Client', () => {
   describe('fetchSessions', () => {
     it('should fetch sessions successfully', async () => {
       const mockSessions = { sessions: [{ id: '1' }, { id: '2' }] };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSessions));
+      mockFetch.mockResolvedValue(createMockResponse(mockSessions));
 
       const result = await fetchSessions();
 
@@ -67,7 +81,7 @@ describe('API Client', () => {
   describe('createSession', () => {
     it('should create worktree session', async () => {
       const mockSession = { session: { id: '1', type: 'worktree' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
+      mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await createSession({
         type: 'worktree',
@@ -91,7 +105,7 @@ describe('API Client', () => {
 
     it('should create quick session', async () => {
       const mockSession = { session: { id: '1', type: 'quick' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
+      mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await createSession({
         type: 'quick',
@@ -110,22 +124,22 @@ describe('API Client', () => {
     });
 
     it('should extract error message from JSON response', async () => {
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Detailed error message' }),
+        json: mock(() => Promise.resolve({ error: 'Detailed error message' })),
       } as unknown as Response);
 
       await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Detailed error message');
     });
 
     it('should fall back to statusText when JSON parsing fails', async () => {
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
-        json: vi.fn().mockRejectedValue(new Error('Parse error')),
+        json: mock(() => Promise.reject(new Error('Parse error'))),
       } as unknown as Response);
 
       await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Internal Server Error');
@@ -135,7 +149,7 @@ describe('API Client', () => {
   describe('getSession', () => {
     it('should return session when exists', async () => {
       const mockSession = { session: { id: '1', type: 'worktree', status: 'active' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockSession));
+      mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await getSession('session-id');
 
@@ -143,7 +157,7 @@ describe('API Client', () => {
     });
 
     it('should return null when session not found (404)', async () => {
-      vi.mocked(fetch).mockResolvedValue(
+      mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 404, ok: false })
       );
 
@@ -153,7 +167,7 @@ describe('API Client', () => {
     });
 
     it('should throw ServerUnavailableError on 5xx errors', async () => {
-      vi.mocked(fetch).mockResolvedValue(
+      mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 500, ok: false })
       );
 
@@ -161,7 +175,7 @@ describe('API Client', () => {
     });
 
     it('should throw ServerUnavailableError on network error', async () => {
-      vi.mocked(fetch).mockRejectedValue(new TypeError('Network error'));
+      mockFetch.mockRejectedValue(new TypeError('Network error'));
 
       await expect(getSession('session-id')).rejects.toThrow(ServerUnavailableError);
     });
@@ -169,7 +183,7 @@ describe('API Client', () => {
 
   describe('deleteSession', () => {
     it('should delete session successfully', async () => {
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await deleteSession('session-id');
 
@@ -182,7 +196,7 @@ describe('API Client', () => {
   describe('createWorker', () => {
     it('should create agent worker', async () => {
       const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await createWorker('session-id', { type: 'agent', agentId: 'claude-code' });
 
@@ -196,7 +210,7 @@ describe('API Client', () => {
 
     it('should create terminal worker', async () => {
       const mockWorker = { worker: { id: 'worker-2', type: 'terminal', name: 'Shell 1' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await createWorker('session-id', { type: 'terminal', name: 'Shell 1' });
 
@@ -211,7 +225,7 @@ describe('API Client', () => {
 
   describe('deleteWorker', () => {
     it('should delete worker successfully', async () => {
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await deleteWorker('session-id', 'worker-id');
 
@@ -224,7 +238,7 @@ describe('API Client', () => {
   describe('restartAgentWorker', () => {
     it('should restart agent worker', async () => {
       const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorker));
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await restartAgentWorker('session-id', 'worker-id', true);
 
@@ -240,7 +254,7 @@ describe('API Client', () => {
   describe('fetchRepositories', () => {
     it('should fetch repositories successfully', async () => {
       const mockRepos = { repositories: [{ id: '1', name: 'repo1' }] };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockRepos));
+      mockFetch.mockResolvedValue(createMockResponse(mockRepos));
 
       const result = await fetchRepositories();
 
@@ -252,7 +266,7 @@ describe('API Client', () => {
   describe('registerRepository', () => {
     it('should register repository successfully', async () => {
       const mockRepo = { repository: { id: '1', name: 'repo', path: '/path' } };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockRepo));
+      mockFetch.mockResolvedValue(createMockResponse(mockRepo));
 
       const result = await registerRepository('/path/to/repo');
 
@@ -265,11 +279,11 @@ describe('API Client', () => {
     });
 
     it('should throw error with message from response', async () => {
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Not a git repository' }),
+        json: mock(() => Promise.resolve({ error: 'Not a git repository' })),
       } as unknown as Response);
 
       await expect(registerRepository('/not/git')).rejects.toThrow('Not a git repository');
@@ -278,7 +292,7 @@ describe('API Client', () => {
 
   describe('unregisterRepository', () => {
     it('should unregister repository successfully', async () => {
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await unregisterRepository('repo-id');
 
@@ -291,7 +305,7 @@ describe('API Client', () => {
   describe('fetchWorktrees', () => {
     it('should fetch worktrees successfully', async () => {
       const mockWorktrees = { worktrees: [{ path: '/path', branch: 'main' }] };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockWorktrees));
+      mockFetch.mockResolvedValue(createMockResponse(mockWorktrees));
 
       const result = await fetchWorktrees('repo-id');
 
@@ -303,7 +317,7 @@ describe('API Client', () => {
   describe('fetchBranches', () => {
     it('should fetch branches successfully', async () => {
       const mockBranches = { local: ['main'], remote: ['origin/main'], defaultBranch: 'main' };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockBranches));
+      mockFetch.mockResolvedValue(createMockResponse(mockBranches));
 
       const result = await fetchBranches('repo-id');
 
@@ -319,7 +333,7 @@ describe('API Client', () => {
         worktree: { path: '/path/to/worktree', branch: 'feature-1' },
         session: null,
       };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockResponse));
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
 
       const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1' });
 
@@ -333,11 +347,11 @@ describe('API Client', () => {
 
     it('should throw error on failure', async () => {
       const { createWorktree } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Branch already exists' }),
+        json: mock(() => Promise.resolve({ error: 'Branch already exists' })),
       } as unknown as Response);
 
       await expect(createWorktree('repo-id', { mode: 'custom', branch: 'existing' })).rejects.toThrow(
@@ -349,7 +363,7 @@ describe('API Client', () => {
   describe('deleteWorktree', () => {
     it('should delete worktree successfully', async () => {
       const { deleteWorktree } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await deleteWorktree('repo-id', '/path/to/worktree');
 
@@ -361,7 +375,7 @@ describe('API Client', () => {
 
     it('should include force flag when specified', async () => {
       const { deleteWorktree } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await deleteWorktree('repo-id', '/path/to/worktree', true);
 
@@ -373,11 +387,11 @@ describe('API Client', () => {
 
     it('should throw error on failure', async () => {
       const { deleteWorktree } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Worktree has uncommitted changes' }),
+        json: mock(() => Promise.resolve({ error: 'Worktree has uncommitted changes' })),
       } as unknown as Response);
 
       await expect(deleteWorktree('repo-id', '/path')).rejects.toThrow(
@@ -394,7 +408,7 @@ describe('API Client', () => {
           { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
         ],
       };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgents));
+      mockFetch.mockResolvedValue(createMockResponse(mockAgents));
 
       const result = await fetchAgents();
 
@@ -404,7 +418,7 @@ describe('API Client', () => {
 
     it('should throw error on failure', async () => {
       const { fetchAgents } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue(
+      mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 500, ok: false })
       );
 
@@ -418,7 +432,7 @@ describe('API Client', () => {
       const mockAgent = {
         agent: { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
       };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+      mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
       const result = await fetchAgent('claude-code');
 
@@ -428,7 +442,7 @@ describe('API Client', () => {
 
     it('should throw error for non-existent agent', async () => {
       const { fetchAgent } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue(
+      mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 404, ok: false })
       );
 
@@ -442,7 +456,7 @@ describe('API Client', () => {
       const mockAgent = {
         agent: { id: 'new-agent', name: 'New Agent', command: 'new-cmd', isBuiltIn: false },
       };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+      mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
       const result = await registerAgent({ name: 'New Agent', command: 'new-cmd' });
 
@@ -456,11 +470,11 @@ describe('API Client', () => {
 
     it('should throw error on failure', async () => {
       const { registerAgent } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Invalid command' }),
+        json: mock(() => Promise.resolve({ error: 'Invalid command' })),
       } as unknown as Response);
 
       await expect(registerAgent({ name: 'Test', command: '' })).rejects.toThrow(
@@ -475,7 +489,7 @@ describe('API Client', () => {
       const mockAgent = {
         agent: { id: 'agent-1', name: 'Updated Agent', command: 'cmd', isBuiltIn: false },
       };
-      vi.mocked(fetch).mockResolvedValue(createMockResponse(mockAgent));
+      mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
       const result = await updateAgent('agent-1', { name: 'Updated Agent' });
 
@@ -489,11 +503,11 @@ describe('API Client', () => {
 
     it('should throw error when updating built-in agent', async () => {
       const { updateAgent } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Cannot update built-in agent' }),
+        json: mock(() => Promise.resolve({ error: 'Cannot update built-in agent' })),
       } as unknown as Response);
 
       await expect(updateAgent('claude-code', { name: 'New Name' })).rejects.toThrow(
@@ -505,7 +519,7 @@ describe('API Client', () => {
   describe('unregisterAgent', () => {
     it('should unregister agent successfully', async () => {
       const { unregisterAgent } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue(createMockResponse({ success: true }));
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await unregisterAgent('agent-1');
 
@@ -516,11 +530,11 @@ describe('API Client', () => {
 
     it('should throw error when unregistering built-in agent', async () => {
       const { unregisterAgent } = await import('../api');
-      vi.mocked(fetch).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: vi.fn().mockResolvedValue({ error: 'Cannot unregister built-in agent' }),
+        json: mock(() => Promise.resolve({ error: 'Cannot unregister built-in agent' })),
       } as unknown as Response);
 
       await expect(unregisterAgent('claude-code')).rejects.toThrow(
