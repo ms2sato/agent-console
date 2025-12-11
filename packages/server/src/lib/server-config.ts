@@ -13,7 +13,7 @@ export const serverConfig = {
   /** Server's environment mode (development/production) */
   NODE_ENV: process.env.NODE_ENV,
   /** Server's port binding */
-  PORT: process.env.PORT ?? '3457',
+  PORT: process.env.PORT || '3457',
   /** Server's host binding */
   HOST: process.env.HOST ?? 'localhost',
 } as const;
