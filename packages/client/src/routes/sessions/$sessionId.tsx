@@ -26,14 +26,6 @@ interface Tab {
   wsUrl: string;
 }
 
-function extractProjectName(locationPath: string): string {
-  // Path format: ~/.agent-console/worktrees/{org}/{repo}/{branch}
-  // or: ~/.agent-console/worktrees/{repo}/{branch}
-  // Branch is always the last part, repo is second to last
-  const parts = locationPath.split('/').filter(Boolean);
-  return parts[parts.length - 2] || 'project';
-}
-
 // Generate favicon based on activity state
 function generateFavicon(state: AgentActivityState, bounce: number = 0): string {
   const canvas = document.createElement('canvas');
@@ -102,11 +94,14 @@ function TerminalPage() {
 
   // Local branch name state (can be updated by settings dialog)
   const [branchName, setBranchName] = useState<string>('');
+  // Local session title state (can be updated by settings dialog)
+  const [sessionTitle, setSessionTitle] = useState<string>('');
 
-  // Sync branch name when state changes
+  // Sync branch name and title when state changes
   useEffect(() => {
     if (state.type === 'active' || state.type === 'disconnected') {
       setBranchName(getBranchName(state.session));
+      setSessionTitle(state.session.title ?? '');
     }
   }, [state]);
 
@@ -123,16 +118,15 @@ function TerminalPage() {
   useEffect(() => {
     if (state.type !== 'active' && state.type !== 'disconnected') return;
 
-    const session = state.session;
-    const branch = getBranchName(session);
-    const projectName = extractProjectName(session.locationPath);
-    document.title = `${branch}@${projectName} - Agent Console`;
+    // Use session title if available, otherwise use branch name
+    const displayTitle = sessionTitle || branchName;
+    document.title = `${displayTitle} - Agent Console`;
 
     // Cleanup: restore default title on unmount
     return () => {
       document.title = 'Agent Console';
     };
-  }, [state]);
+  }, [state, sessionTitle, branchName]);
 
   // Update favicon based on activity state (with animation for active)
   useEffect(() => {
@@ -439,6 +433,12 @@ function TerminalPage() {
         >
           Agent Console
         </Link>
+        {/* Session title (if set) */}
+        {sessionTitle && (
+          <div className="px-4 py-2 text-gray-300 text-sm border-r border-slate-700 truncate max-w-xs" title={sessionTitle}>
+            {sessionTitle}
+          </div>
+        )}
         {/* Tabs */}
         {tabs.map(tab => (
           <button
@@ -485,8 +485,10 @@ function TerminalPage() {
               sessionId={sessionId}
               repositoryId={repositoryId}
               currentBranch={branchName}
+              currentTitle={sessionTitle}
               worktreePath={session.locationPath}
               onBranchChange={setBranchName}
+              onTitleChange={setSessionTitle}
               onSessionRestart={() => {
                 // Reload page to reconnect WebSocket to restarted session
                 window.location.reload();

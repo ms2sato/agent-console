@@ -58,11 +58,11 @@ describe('session-metadata-suggester', () => {
   });
 
   describe('suggestSessionMetadata', () => {
-    it('should return branch name from agent output', async () => {
+    it('should return branch and title from JSON response', async () => {
       // First call for git branch, second for agent
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n  feat/existing\n')
-        .mockReturnValueOnce('feat/add-dark-mode\n');
+        .mockReturnValueOnce('{"branch": "feat/add-dark-mode", "title": "Add dark mode toggle"}');
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -73,6 +73,7 @@ describe('session-metadata-suggester', () => {
       });
 
       expect(result.branch).toBe('feat/add-dark-mode');
+      expect(result.title).toBe('Add dark mode toggle');
       expect(result.error).toBeUndefined();
 
       // Verify command was built correctly
@@ -97,10 +98,10 @@ describe('session-metadata-suggester', () => {
       expect(result.error).toContain('does not support non-interactive mode');
     });
 
-    it('should sanitize invalid branch names', async () => {
+    it('should sanitize branch names with invalid characters', async () => {
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('feat/Add Dark Mode!\n');
+        .mockReturnValueOnce('{"branch": "feat/Add Dark Mode!", "title": "Add dark mode"}');
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -111,7 +112,8 @@ describe('session-metadata-suggester', () => {
       });
 
       // Should be sanitized to lowercase with hyphens
-      expect(result.branch).toMatch(/^[a-z0-9/-]+$/);
+      expect(result.branch).toBe('feat/add-dark-mode');
+      expect(result.title).toBe('Add dark mode');
     });
 
     it('should return error when agent fails', async () => {
@@ -133,10 +135,10 @@ describe('session-metadata-suggester', () => {
       expect(result.error).toContain('Failed to suggest branch name');
     });
 
-    it('should return error on empty response', async () => {
+    it('should return error when response has no JSON', async () => {
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('   \n');
+        .mockReturnValueOnce('plain text response without JSON');
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -147,11 +149,47 @@ describe('session-metadata-suggester', () => {
       });
 
       expect(result.branch).toBeUndefined();
-      expect(result.error).toContain('empty response');
+      expect(result.error).toContain('Failed to extract JSON');
+    });
+
+    it('should return error when JSON is invalid', async () => {
+      vi.mocked(childProcess.execSync)
+        .mockReturnValueOnce('  main\n')
+        .mockReturnValueOnce('{invalid json}');
+
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Some task',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      expect(result.branch).toBeUndefined();
+      expect(result.error).toContain('Failed to parse JSON');
+    });
+
+    it('should return error when branch is missing from JSON', async () => {
+      vi.mocked(childProcess.execSync)
+        .mockReturnValueOnce('  main\n')
+        .mockReturnValueOnce('{"title": "Some title"}');
+
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Some task',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      expect(result.branch).toBeUndefined();
+      expect(result.error).toContain('missing branch');
     });
 
     it('should use provided existingBranches instead of fetching', async () => {
-      vi.mocked(childProcess.execSync).mockReturnValue('fix/auth-bug\n');
+      vi.mocked(childProcess.execSync).mockReturnValue(
+        '{"branch": "fix/auth-bug", "title": "Fix authentication bug"}'
+      );
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -165,12 +203,13 @@ describe('session-metadata-suggester', () => {
       // Should only call execSync once (for agent), not for git branch
       expect(childProcess.execSync).toHaveBeenCalledTimes(1);
       expect(result.branch).toBe('fix/auth-bug');
+      expect(result.title).toBe('Fix authentication bug');
     });
 
-    it('should remove quotes from branch name', async () => {
+    it('should extract JSON even with extra text', async () => {
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('"feat/quoted-branch"\n');
+        .mockReturnValueOnce('Here is the response:\n{"branch": "feat/feature", "title": "New feature"}\nDone.');
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -180,13 +219,14 @@ describe('session-metadata-suggester', () => {
         agent: mockAgent,
       });
 
-      expect(result.branch).toBe('feat/quoted-branch');
+      expect(result.branch).toBe('feat/feature');
+      expect(result.title).toBe('New feature');
     });
 
     it('should work with no existing branches', async () => {
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('')  // No branches
-        .mockReturnValueOnce('feat/new-feature\n');
+        .mockReturnValueOnce('{"branch": "feat/new-feature", "title": "New feature"}');
 
       const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
@@ -197,6 +237,41 @@ describe('session-metadata-suggester', () => {
       });
 
       expect(result.branch).toBe('feat/new-feature');
+      expect(result.title).toBe('New feature');
+    });
+
+    it('should handle title in same language as input (Japanese)', async () => {
+      vi.mocked(childProcess.execSync)
+        .mockReturnValueOnce('  main\n')
+        .mockReturnValueOnce('{"branch": "feat/dark-mode", "title": "ダークモードの追加"}');
+
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+
+      const result = await suggestSessionMetadata({
+        prompt: 'ダークモードを追加する',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      expect(result.branch).toBe('feat/dark-mode');
+      expect(result.title).toBe('ダークモードの追加');
+    });
+
+    it('should handle title with trailing whitespace', async () => {
+      vi.mocked(childProcess.execSync)
+        .mockReturnValueOnce('  main\n')
+        .mockReturnValueOnce('{"branch": "feat/feature", "title": "  Some title  "}');
+
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Some feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      expect(result.branch).toBe('feat/feature');
+      expect(result.title).toBe('Some title');
     });
   });
 });

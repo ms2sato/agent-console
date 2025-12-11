@@ -39,6 +39,8 @@ interface PersistedSessionBase {
   serverPid: number;
   createdAt: string;
   workers: PersistedWorker[];
+  initialPrompt?: string;
+  title?: string;
 }
 
 export interface PersistedWorktreeSession extends PersistedSessionBase {

@@ -65,6 +65,8 @@ interface InternalSessionBase {
   status: 'active' | 'inactive';
   createdAt: string;
   workers: Map<string, InternalWorker>;
+  initialPrompt?: string;
+  title?: string;
 }
 
 interface InternalWorktreeSession extends InternalSessionBase {
@@ -120,6 +122,8 @@ export class SessionManager {
           status: 'active', // Mark as active so it appears in the list
           createdAt: session.createdAt,
           workers: new Map(),
+          initialPrompt: session.initialPrompt,
+          title: session.title,
         };
       } else {
         internalSession = {
@@ -129,6 +133,8 @@ export class SessionManager {
           status: 'active',
           createdAt: session.createdAt,
           workers: new Map(),
+          initialPrompt: session.initialPrompt,
+          title: session.title,
         };
       }
 
@@ -209,6 +215,8 @@ export class SessionManager {
         status: 'active',
         createdAt,
         workers: new Map(),
+        initialPrompt: request.initialPrompt,
+        title: request.title,
       };
     } else {
       internalSession = {
@@ -218,6 +226,8 @@ export class SessionManager {
         status: 'active',
         createdAt,
         workers: new Map(),
+        initialPrompt: request.initialPrompt,
+        title: request.title,
       };
     }
 
@@ -614,6 +624,7 @@ export class SessionManager {
       }
 
       // For inactive sessions, only branch rename is supported (no restart possible)
+      // Title update for inactive sessions is not supported yet
       if (updates.branch) {
         if (metadata.type !== 'worktree') {
           return { success: false, error: 'Can only rename branch for worktree sessions' };
@@ -634,6 +645,11 @@ export class SessionManager {
       }
 
       return { success: true };
+    }
+
+    // Handle title update
+    if (updates.title !== undefined) {
+      session.title = updates.title;
     }
 
     // Handle branch rename for active session
@@ -667,6 +683,7 @@ export class SessionManager {
 
     return {
       success: true,
+      title: updates.title,
       branch: updates.branch,
     };
   }
@@ -729,6 +746,8 @@ export class SessionManager {
         serverPid: getServerPid(),
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       };
     } else {
       return {
@@ -738,6 +757,8 @@ export class SessionManager {
         serverPid: getServerPid(),
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       };
     }
   }
@@ -757,6 +778,8 @@ export class SessionManager {
         status: session.status,
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       } as WorktreeSession;
     } else {
       return {
@@ -766,6 +789,8 @@ export class SessionManager {
         status: session.status,
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       } as QuickSession;
     }
   }

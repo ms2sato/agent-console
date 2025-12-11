@@ -247,10 +247,11 @@ api.post('/repositories/:id/worktrees', async (c) => {
   }
 
   const body = await c.req.json<CreateWorktreeRequest>();
-  const { mode, autoStartSession, agentId, initialPrompt } = body;
+  const { mode, autoStartSession, agentId, initialPrompt, title } = body;
 
   let branch: string;
   let baseBranch: string | undefined;
+  let effectiveTitle: string | undefined = title;
 
   // Get the agent for branch name generation (if prompt mode)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
@@ -271,9 +272,13 @@ api.post('/repositories/:id/worktrees', async (c) => {
         agent,
       });
       if (suggestion.error || !suggestion.branch) {
-        throw new ValidationError(suggestion.error || 'Failed to generate branch name');
+        // Fallback: use timestamp-based branch name, empty title
+        branch = `task-${Date.now()}`;
+      } else {
+        branch = suggestion.branch;
+        // Use generated title if user didn't provide one
+        effectiveTitle = title ?? suggestion.title;
       }
-      branch = suggestion.branch;
       baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'custom':
@@ -308,6 +313,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
       locationPath: worktree.path,
       agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
       initialPrompt,
+      title: effectiveTitle,
     });
   }
 

@@ -22,35 +22,44 @@ interface SessionSettingsProps {
   sessionId: string;
   repositoryId: string;
   currentBranch: string;
+  currentTitle?: string;
   worktreePath: string;
   onBranchChange: (newBranch: string) => void;
+  onTitleChange?: (newTitle: string) => void;
   onSessionRestart?: () => void;
 }
 
-type DialogType = 'rename' | 'close' | 'restart' | 'delete-worktree' | null;
+type DialogType = 'edit' | 'close' | 'restart' | 'delete-worktree' | 'confirm-restart' | null;
 
 export function SessionSettings({
   sessionId,
   repositoryId,
   currentBranch,
+  currentTitle,
   worktreePath,
   onBranchChange,
+  onTitleChange,
   onSessionRestart,
 }: SessionSettingsProps) {
   const navigate = useNavigate();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
   const [branchName, setBranchName] = useState(currentBranch);
+  const [sessionTitle, setSessionTitle] = useState(currentTitle ?? '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Sync with current branch when it changes externally
+  // Sync with current values when they change externally
   useEffect(() => {
     setBranchName(currentBranch);
   }, [currentBranch]);
+
+  useEffect(() => {
+    setSessionTitle(currentTitle ?? '');
+  }, [currentTitle]);
 
   // Close menu on escape key or clicking outside
   useEffect(() => {
@@ -111,19 +120,19 @@ export function SessionSettings({
   const handleCloseDialog = useCallback(() => {
     setActiveDialog(null);
     setBranchName(currentBranch);
+    setSessionTitle(currentTitle ?? '');
     setError(null);
-  }, [currentBranch]);
+  }, [currentBranch, currentTitle]);
 
-  const handleRenameSubmit = async () => {
+  // Check if branch has changed
+  const branchChanged = branchName.trim() !== currentBranch;
+  const titleChanged = sessionTitle.trim() !== (currentTitle ?? '');
+
+  const handleEditSaveClick = () => {
     const trimmedBranch = branchName.trim();
 
     if (!trimmedBranch) {
       setError('Branch name is required');
-      return;
-    }
-
-    if (trimmedBranch === currentBranch) {
-      handleCloseDialog();
       return;
     }
 
@@ -135,23 +144,52 @@ export function SessionSettings({
       return;
     }
 
+    // If no changes, just close
+    if (!branchChanged && !titleChanged) {
+      handleCloseDialog();
+      return;
+    }
+
+    // If branch changed, show confirmation dialog
+    if (branchChanged) {
+      setActiveDialog('confirm-restart');
+      return;
+    }
+
+    // Only title changed - save directly
+    handleEditSubmit();
+  };
+
+  const handleEditSubmit = async () => {
     setIsSubmitting(true);
     setError(null);
 
     try {
-      // Server automatically restarts agent worker when branch is changed
-      const result = await updateSessionMetadata(sessionId, { branch: trimmedBranch });
+      const updates: { title?: string; branch?: string } = {};
+
+      if (titleChanged) {
+        updates.title = sessionTitle.trim();
+      }
+      if (branchChanged) {
+        updates.branch = branchName.trim();
+      }
+
+      const result = await updateSessionMetadata(sessionId, updates);
+
+      if (result.title !== undefined && onTitleChange) {
+        onTitleChange(result.title);
+      }
       if (result.branch) {
         onBranchChange(result.branch);
       }
       setActiveDialog(null);
 
-      // Notify parent that session was restarted (server does this automatically)
-      if (onSessionRestart) {
+      // Notify parent that session was restarted (server does this automatically when branch changes)
+      if (branchChanged && onSessionRestart) {
         onSessionRestart();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename branch');
+      setError(err instanceof Error ? err.message : 'Failed to update session');
     } finally {
       setIsSubmitting(false);
     }
@@ -263,11 +301,11 @@ export function SessionSettings({
         <div className="absolute right-0 top-full mt-1 w-48 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50">
           <div className="py-1">
             <button
-              onClick={() => openDialog('rename')}
+              onClick={() => openDialog('edit')}
               className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
             >
               <EditIcon />
-              Rename Branch
+              Edit Session
             </button>
             <button
               onClick={() => openDialog('restart')}
@@ -310,15 +348,28 @@ export function SessionSettings({
         </div>
       )}
 
-      {/* Rename Branch Dialog */}
-      {activeDialog === 'rename' && (
+      {/* Edit Session Dialog */}
+      {activeDialog === 'edit' && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
           <div className="fixed inset-0 bg-black/50" />
           <div
             ref={dialogRef}
             className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
           >
-            <h2 className="text-lg font-medium mb-4">Rename Branch</h2>
+            <h2 className="text-lg font-medium mb-4">Edit Session</h2>
+            <div className="mb-4">
+              <label className="block text-sm text-gray-400 mb-2">
+                Title
+              </label>
+              <input
+                type="text"
+                value={sessionTitle}
+                onChange={(e) => setSessionTitle(e.target.value)}
+                className="input w-full"
+                placeholder="Session title (optional)"
+                autoFocus
+              />
+            </div>
             <div className="mb-4">
               <label className="block text-sm text-gray-400 mb-2">
                 Branch Name
@@ -329,12 +380,11 @@ export function SessionSettings({
                 onChange={(e) => setBranchName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !isSubmitting) {
-                    handleRenameSubmit();
+                    handleEditSaveClick();
                   }
                 }}
                 className="input w-full"
                 placeholder="Enter branch name"
-                autoFocus
               />
               {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
             </div>
@@ -347,11 +397,44 @@ export function SessionSettings({
                 Cancel
               </button>
               <button
-                onClick={handleRenameSubmit}
+                onClick={handleEditSaveClick}
                 className="btn btn-primary"
                 disabled={isSubmitting}
               >
                 {isSubmitting ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Restart Dialog (shown when branch is changed) */}
+      {activeDialog === 'confirm-restart' && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
+          <div className="fixed inset-0 bg-black/50" />
+          <div
+            ref={dialogRef}
+            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
+          >
+            <h2 className="text-lg font-medium mb-4">Restart Required</h2>
+            <p className="text-gray-400 mb-6">
+              Branch name change requires restarting the agent. Do you want to continue?
+            </p>
+            {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setActiveDialog('edit')}
+                className="btn bg-slate-600 hover:bg-slate-500"
+                disabled={isSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleEditSubmit}
+                className="btn btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Saving...' : 'Restart & Save'}
               </button>
             </div>
           </div>

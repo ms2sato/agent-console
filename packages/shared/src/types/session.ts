@@ -8,6 +8,8 @@ export interface SessionBase {
   status: SessionStatus;
   createdAt: string;
   workers: Worker[];
+  initialPrompt?: string;    // The prompt used to start the session
+  title?: string;            // Human-readable title for the session
 }
 
 export interface WorktreeSession extends SessionBase {
@@ -31,6 +33,8 @@ interface CreateWorktreeSessionRequest {
   continueConversation?: boolean;
   /** Initial prompt to send to the agent after starting */
   initialPrompt?: string;
+  /** Human-readable title for the session */
+  title?: string;
 }
 
 interface CreateQuickSessionRequest {
@@ -40,6 +44,8 @@ interface CreateQuickSessionRequest {
   continueConversation?: boolean;
   /** Initial prompt to send to the agent after starting */
   initialPrompt?: string;
+  /** Human-readable title for the session */
+  title?: string;
 }
 
 export type CreateSessionRequest = CreateWorktreeSessionRequest | CreateQuickSessionRequest;

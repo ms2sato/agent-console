@@ -60,6 +60,8 @@ function createMockSession(request: CreateSessionRequest): Session {
       status: 'active',
       createdAt: now,
       workers,
+      initialPrompt: request.initialPrompt,
+      title: request.title,
     };
   } else {
     return {
@@ -69,6 +71,8 @@ function createMockSession(request: CreateSessionRequest): Session {
       status: 'active',
       createdAt: now,
       workers,
+      initialPrompt: request.initialPrompt,
+      title: request.title,
     };
   }
 }
@@ -174,6 +178,16 @@ vi.mock('../services/agent-manager.js', () => ({
     })),
   },
   CLAUDE_CODE_AGENT_ID: 'claude-code',
+}));
+
+// Mock session metadata suggester
+vi.mock('../services/session-metadata-suggester.js', () => ({
+  suggestSessionMetadata: vi.fn(() =>
+    Promise.resolve({
+      branch: 'feat/default-branch',
+      title: 'Default Generated Title',
+    })
+  ),
 }));
 
 describe('API Routes', () => {
@@ -740,6 +754,156 @@ describe('API Routes', () => {
           body: JSON.stringify({ mode: 'custom', branch: 'new-branch' }),
         });
         expect(res.status).toBe(404);
+      });
+
+      it('should pass initialPrompt and title to createSession when autoStartSession is true', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        const { sessionManager } = await import('../services/session-manager.js');
+
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/path/to/new/worktree',
+          error: undefined,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/path/to/new/worktree',
+            branch: 'feature-branch',
+            repositoryId: 'test-repo-id',
+            isMain: false,
+          },
+        ]);
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-branch',
+            autoStartSession: true,
+            initialPrompt: 'Add unit tests for session manager',
+            title: 'Session Manager Tests',
+          }),
+        });
+        expect(res.status).toBe(201);
+
+        // Verify createSession was called with initialPrompt and title
+        expect(vi.mocked(sessionManager.createSession)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'worktree',
+            initialPrompt: 'Add unit tests for session manager',
+            title: 'Session Manager Tests',
+          })
+        );
+
+        // Verify the response includes the session with initialPrompt and title
+        const body = (await res.json()) as { worktree: Worktree; session: Session };
+        expect(body.session).toBeDefined();
+        expect(body.session.initialPrompt).toBe('Add unit tests for session manager');
+        expect(body.session.title).toBe('Session Manager Tests');
+      });
+
+      it('should use generated title from suggester in prompt mode when title is not provided', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        const { sessionManager } = await import('../services/session-manager.js');
+        const { suggestSessionMetadata } = await import('../services/session-metadata-suggester.js');
+
+        // Mock suggester to return both branch and title
+        vi.mocked(suggestSessionMetadata).mockResolvedValue({
+          branch: 'feat/generated-branch',
+          title: 'Generated Title from Suggester',
+        });
+
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/path/to/generated/worktree',
+          error: undefined,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/path/to/generated/worktree',
+            branch: 'feat/generated-branch',
+            repositoryId: 'test-repo-id',
+            isMain: false,
+          },
+        ]);
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'prompt',
+            initialPrompt: 'Add a new feature for user authentication',
+            autoStartSession: true,
+            // Note: title is NOT provided - should use generated title
+          }),
+        });
+        expect(res.status).toBe(201);
+
+        // Verify createSession was called with the generated title
+        expect(vi.mocked(sessionManager.createSession)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'worktree',
+            initialPrompt: 'Add a new feature for user authentication',
+            title: 'Generated Title from Suggester',
+          })
+        );
+
+        // Verify the response includes the session with generated title
+        const body = (await res.json()) as { worktree: Worktree; session: Session };
+        expect(body.session).toBeDefined();
+        expect(body.session.title).toBe('Generated Title from Suggester');
+      });
+
+      it('should use fallback branch name when suggester fails', async () => {
+        const { worktreeService } = await import('../services/worktree-service.js');
+        const { sessionManager } = await import('../services/session-manager.js');
+        const { suggestSessionMetadata } = await import('../services/session-metadata-suggester.js');
+
+        // Mock suggester to return error (JSON extraction failed)
+        vi.mocked(suggestSessionMetadata).mockResolvedValue({
+          error: 'Failed to extract JSON from response',
+        });
+
+        vi.mocked(worktreeService.createWorktree).mockResolvedValue({
+          worktreePath: '/path/to/fallback/worktree',
+          error: undefined,
+        });
+        vi.mocked(worktreeService.listWorktrees).mockReturnValue([
+          {
+            path: '/path/to/fallback/worktree',
+            branch: 'task-1234567890',
+            repositoryId: 'test-repo-id',
+            isMain: false,
+          },
+        ]);
+
+        const res = await app.request('/api/repositories/test-repo-id/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'prompt',
+            initialPrompt: 'Add a new feature',
+            autoStartSession: true,
+          }),
+        });
+
+        // Should succeed with fallback branch name
+        expect(res.status).toBe(201);
+
+        // Verify worktree was created with fallback branch name pattern
+        expect(vi.mocked(worktreeService.createWorktree)).toHaveBeenCalledWith(
+          '/path/to/repo',
+          expect.stringMatching(/^task-\d+$/),
+          'main'
+        );
+
+        // Verify session was created without title (undefined)
+        expect(vi.mocked(sessionManager.createSession)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'worktree',
+            initialPrompt: 'Add a new feature',
+            title: undefined,
+          })
+        );
       });
     });
 
