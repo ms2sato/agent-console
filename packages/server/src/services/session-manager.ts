@@ -65,6 +65,8 @@ interface InternalSessionBase {
   status: 'active' | 'inactive';
   createdAt: string;
   workers: Map<string, InternalWorker>;
+  initialPrompt?: string;
+  title?: string;
 }
 
 interface InternalWorktreeSession extends InternalSessionBase {
@@ -120,6 +122,8 @@ export class SessionManager {
           status: 'active', // Mark as active so it appears in the list
           createdAt: session.createdAt,
           workers: new Map(),
+          initialPrompt: session.initialPrompt,
+          title: session.title,
         };
       } else {
         internalSession = {
@@ -129,6 +133,8 @@ export class SessionManager {
           status: 'active',
           createdAt: session.createdAt,
           workers: new Map(),
+          initialPrompt: session.initialPrompt,
+          title: session.title,
         };
       }
 
@@ -209,6 +215,8 @@ export class SessionManager {
         status: 'active',
         createdAt,
         workers: new Map(),
+        initialPrompt: request.initialPrompt,
+        title: request.title,
       };
     } else {
       internalSession = {
@@ -218,6 +226,8 @@ export class SessionManager {
         status: 'active',
         createdAt,
         workers: new Map(),
+        initialPrompt: request.initialPrompt,
+        title: request.title,
       };
     }
 
@@ -597,15 +607,53 @@ export class SessionManager {
   }
 
   /**
-   * Rename the branch for a worktree session
+   * Update session metadata (title and/or branch)
+   * If branch is changed, automatically restarts the agent worker
    */
-  renameBranch(
+  updateSessionMetadata(
     sessionId: string,
-    newBranch: string
-  ): { success: boolean; branch?: string; error?: string } {
+    updates: { title?: string; branch?: string }
+  ): { success: boolean; title?: string; branch?: string; error?: string } {
     const session = this.sessions.get(sessionId);
 
-    if (session) {
+    if (!session) {
+      // Check persisted metadata for inactive sessions
+      const metadata = persistenceService.getSessionMetadata(sessionId);
+      if (!metadata) {
+        return { success: false, error: 'session_not_found' };
+      }
+
+      // For inactive sessions, only branch rename is supported (no restart possible)
+      // Title update for inactive sessions is not supported yet
+      if (updates.branch) {
+        if (metadata.type !== 'worktree') {
+          return { success: false, error: 'Can only rename branch for worktree sessions' };
+        }
+
+        const currentBranch = getCurrentBranch(metadata.locationPath);
+
+        try {
+          execSync(`git branch -m "${currentBranch}" "${updates.branch}"`, {
+            cwd: metadata.locationPath,
+            encoding: 'utf-8',
+          });
+          return { success: true, branch: updates.branch };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return { success: false, error: message };
+        }
+      }
+
+      return { success: true };
+    }
+
+    // Handle title update
+    if (updates.title !== undefined) {
+      session.title = updates.title;
+    }
+
+    // Handle branch rename for active session
+    if (updates.branch) {
       if (session.type !== 'worktree') {
         return { success: false, error: 'Can only rename branch for worktree sessions' };
       }
@@ -613,40 +661,42 @@ export class SessionManager {
       const currentBranch = getCurrentBranch(session.locationPath);
 
       try {
-        execSync(`git branch -m "${currentBranch}" "${newBranch}"`, {
+        execSync(`git branch -m "${currentBranch}" "${updates.branch}"`, {
           cwd: session.locationPath,
           encoding: 'utf-8',
         });
-        session.worktreeId = newBranch;
-        return { success: true, branch: newBranch };
+        session.worktreeId = updates.branch;
+
+        // Automatically restart agent worker to pick up new branch name
+        const agentWorker = Array.from(session.workers.values()).find(w => w.type === 'agent');
+        if (agentWorker) {
+          this.restartAgentWorker(sessionId, agentWorker.id, true);
+          console.log(`[${new Date().toISOString()}] Agent worker auto-restarted after branch rename: ${agentWorker.id}`);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: message };
       }
     }
 
-    // Check persisted metadata for inactive sessions
-    const metadata = persistenceService.getSessionMetadata(sessionId);
-    if (!metadata) {
-      return { success: false, error: 'session_not_found' };
-    }
+    this.persistSession(session);
 
-    if (metadata.type !== 'worktree') {
-      return { success: false, error: 'Can only rename branch for worktree sessions' };
-    }
+    return {
+      success: true,
+      title: updates.title,
+      branch: updates.branch,
+    };
+  }
 
-    const currentBranch = getCurrentBranch(metadata.locationPath);
-
-    try {
-      execSync(`git branch -m "${currentBranch}" "${newBranch}"`, {
-        cwd: metadata.locationPath,
-        encoding: 'utf-8',
-      });
-      return { success: true, branch: newBranch };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, error: message };
-    }
+  /**
+   * @deprecated Use updateSessionMetadata instead
+   * Rename the branch for a worktree session
+   */
+  renameBranch(
+    sessionId: string,
+    newBranch: string
+  ): { success: boolean; branch?: string; error?: string } {
+    return this.updateSessionMetadata(sessionId, { branch: newBranch });
   }
 
   private persistSession(session: InternalSession): void {
@@ -696,6 +746,8 @@ export class SessionManager {
         serverPid: getServerPid(),
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       };
     } else {
       return {
@@ -705,6 +757,8 @@ export class SessionManager {
         serverPid: getServerPid(),
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       };
     }
   }
@@ -724,6 +778,8 @@ export class SessionManager {
         status: session.status,
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       } as WorktreeSession;
     } else {
       return {
@@ -733,6 +789,8 @@ export class SessionManager {
         status: session.status,
         createdAt: session.createdAt,
         workers,
+        initialPrompt: session.initialPrompt,
+        title: session.title,
       } as QuickSession;
     }
   }

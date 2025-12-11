@@ -154,23 +154,29 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
-export interface RenameBranchResponse {
-  success: boolean;
-  branch: string;
+export interface UpdateSessionMetadataRequest {
+  title?: string;
+  branch?: string;
 }
 
-export async function renameSessionBranch(
+export interface UpdateSessionMetadataResponse {
+  success: boolean;
+  title?: string;
+  branch?: string;
+}
+
+export async function updateSessionMetadata(
   sessionId: string,
-  newBranch: string
-): Promise<RenameBranchResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/branch`, {
+  updates: UpdateSessionMetadataRequest
+): Promise<UpdateSessionMetadataResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ newBranch }),
+    body: JSON.stringify(updates),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(error.error || 'Failed to rename branch');
+    throw new Error(error.error || 'Failed to update session');
   }
   return res.json();
 }

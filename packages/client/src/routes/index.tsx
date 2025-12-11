@@ -399,6 +399,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const [baseBranch, setBaseBranch] = useState('');
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
   const [initialPrompt, setInitialPrompt] = useState('');
+  const [sessionTitle, setSessionTitle] = useState('');
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -414,6 +415,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     setBaseBranch('');
     setSelectedAgentId(undefined);
     setInitialPrompt('');
+    setSessionTitle('');
     setShowCreateWorktree(true);
   }, []);
 
@@ -436,6 +438,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       setBaseBranch('');
       setSelectedAgentId(undefined);
       setInitialPrompt('');
+      setSessionTitle('');
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
       }
@@ -446,7 +449,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     // Validate based on mode
     if (branchNameMode === 'prompt') {
       if (!initialPrompt.trim()) {
-        alert('Initial prompt is required');
+        alert('Initial prompt is required for this mode');
         return;
       }
     } else if (!customBranch.trim()) {
@@ -461,10 +464,11 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         case 'prompt':
           request = {
             mode: 'prompt',
-            initialPrompt: initialPrompt.trim(),
+            initialPrompt: initialPrompt.trim(), // Required for this mode
             baseBranch: baseBranch.trim() || undefined,
             autoStartSession: true,
             agentId: selectedAgentId,
+            title: sessionTitle.trim() || undefined,
           };
           break;
         case 'custom':
@@ -474,6 +478,8 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             baseBranch: baseBranch.trim() || undefined,
             autoStartSession: true,
             agentId: selectedAgentId,
+            initialPrompt: initialPrompt.trim() || undefined,
+            title: sessionTitle.trim() || undefined,
           };
           break;
         case 'existing':
@@ -482,6 +488,8 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             branch: customBranch.trim(),
             autoStartSession: true,
             agentId: selectedAgentId,
+            initialPrompt: initialPrompt.trim() || undefined,
+            title: sessionTitle.trim() || undefined,
           };
           break;
       }
@@ -517,16 +525,45 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
             {createWorktreeMutation.isPending ? 'Creating Worktree...' : 'Create Worktree'}
           </h3>
           <fieldset disabled={createWorktreeMutation.isPending} className="flex flex-col gap-3">
+            {/* Initial prompt input (available for all modes) */}
+            <div>
+              <label className="text-sm text-gray-400 block mb-1">Initial prompt (optional)</label>
+              <textarea
+                placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
+                value={initialPrompt}
+                onChange={(e) => setInitialPrompt(e.target.value)}
+                className="input w-full min-h-[80px] resize-y"
+                rows={3}
+              />
+            </div>
+
+            {/* Session title input */}
+            <div>
+              <label className="text-sm text-gray-400 block mb-1">Title (optional)</label>
+              <input
+                type="text"
+                placeholder="Session title"
+                value={sessionTitle}
+                onChange={(e) => setSessionTitle(e.target.value)}
+                className="input w-full"
+              />
+              {initialPrompt.trim() && (
+                <p className="text-xs text-gray-500 mt-1">Leave empty to generate from prompt</p>
+              )}
+            </div>
+
             {/* Branch name mode selection */}
             <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-400 flex items-center gap-2">
+              <span className="text-sm text-gray-400">Branch name:</span>
+              <label className={`text-sm flex items-center gap-2 ${!initialPrompt.trim() ? 'text-gray-600' : 'text-gray-400'}`}>
                 <input
                   type="radio"
                   name="branchMode"
                   checked={branchNameMode === 'prompt'}
                   onChange={() => setBranchNameMode('prompt')}
+                  disabled={!initialPrompt.trim()}
                 />
-                From initial prompt (recommended)
+                Generate from prompt {initialPrompt.trim() ? '(recommended)' : '(requires prompt)'}
               </label>
               <label className="text-sm text-gray-400 flex items-center gap-2">
                 <input
@@ -547,17 +584,6 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                 Use existing branch
               </label>
             </div>
-
-            {/* Initial prompt input (for prompt mode) */}
-            {branchNameMode === 'prompt' && (
-              <textarea
-                placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
-                value={initialPrompt}
-                onChange={(e) => setInitialPrompt(e.target.value)}
-                className="input min-h-[80px] resize-y"
-                rows={3}
-              />
-            )}
 
             {/* Branch name input (only for custom/existing) */}
             {(branchNameMode === 'custom' || branchNameMode === 'existing') && (
@@ -603,6 +629,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
                   setBaseBranch('');
                   setSelectedAgentId(undefined);
                   setInitialPrompt('');
+                  setSessionTitle('');
                 }}
                 className="btn btn-danger text-sm"
               >

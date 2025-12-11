@@ -26,6 +26,8 @@ interface CreateWorktreeBaseRequest {
   agentId?: string;
   /** Initial prompt to send to the agent after starting */
   initialPrompt?: string;
+  /** Human-readable title for the session */
+  title?: string;
 }
 
 interface CreateWorktreePromptRequest extends CreateWorktreeBaseRequest {

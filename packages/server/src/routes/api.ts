@@ -14,7 +14,7 @@ import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { suggestBranchName } from '../services/branch-name-suggester.js';
+import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 
 const api = new Hono();
@@ -81,26 +81,45 @@ api.delete('/sessions/:id', (c) => {
   return c.json({ success: true });
 });
 
-// Rename branch for a session
-api.patch('/sessions/:id/branch', async (c) => {
+// Update session metadata (title and/or branch)
+// If branch is changed, agent worker is automatically restarted
+api.patch('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const body = await c.req.json<{ newBranch: string }>();
-  const { newBranch } = body;
+  const body = await c.req.json<{ title?: string; branch?: string }>();
+  const { title, branch } = body;
 
-  if (!newBranch?.trim()) {
-    throw new ValidationError('newBranch is required');
+  // At least one field must be provided
+  if (title === undefined && branch === undefined) {
+    throw new ValidationError('At least one of title or branch must be provided');
   }
 
-  const result = sessionManager.renameBranch(sessionId, newBranch.trim());
+  // Validate branch if provided
+  if (branch !== undefined && !branch.trim()) {
+    throw new ValidationError('branch cannot be empty');
+  }
+
+  const updates: { title?: string; branch?: string } = {};
+  if (title !== undefined) {
+    updates.title = title.trim();
+  }
+  if (branch !== undefined) {
+    updates.branch = branch.trim();
+  }
+
+  const result = sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
     if (result.error === 'session_not_found') {
       throw new NotFoundError('Session');
     }
-    throw new ValidationError(result.error || 'Failed to rename branch');
+    throw new ValidationError(result.error || 'Failed to update session');
   }
 
-  return c.json({ success: true, branch: result.branch });
+  return c.json({
+    success: true,
+    ...(result.title !== undefined && { title: result.title }),
+    ...(result.branch !== undefined && { branch: result.branch }),
+  });
 });
 
 // Get workers for a session
@@ -228,10 +247,11 @@ api.post('/repositories/:id/worktrees', async (c) => {
   }
 
   const body = await c.req.json<CreateWorktreeRequest>();
-  const { mode, autoStartSession, agentId, initialPrompt } = body;
+  const { mode, autoStartSession, agentId, initialPrompt, title } = body;
 
   let branch: string;
   let baseBranch: string | undefined;
+  let effectiveTitle: string | undefined = title;
 
   // Get the agent for branch name generation (if prompt mode)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
@@ -246,15 +266,19 @@ api.post('/repositories/:id/worktrees', async (c) => {
         throw new ValidationError('initialPrompt is required for prompt mode');
       }
       // Generate branch name from prompt using the selected agent
-      const suggestion = await suggestBranchName({
+      const suggestion = await suggestSessionMetadata({
         prompt: body.initialPrompt.trim(),
         repositoryPath: repo.path,
         agent,
       });
       if (suggestion.error || !suggestion.branch) {
-        throw new ValidationError(suggestion.error || 'Failed to generate branch name');
+        // Fallback: use timestamp-based branch name, empty title
+        branch = `task-${Date.now()}`;
+      } else {
+        branch = suggestion.branch;
+        // Use generated title if user didn't provide one
+        effectiveTitle = title ?? suggestion.title;
       }
-      branch = suggestion.branch;
       baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'custom':
@@ -289,6 +313,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
       locationPath: worktree.path,
       agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
       initialPrompt,
+      title: effectiveTitle,
     });
   }
 
