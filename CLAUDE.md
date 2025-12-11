@@ -12,6 +12,50 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
 
+## Subagent and Skill Usage Policy
+
+**Primary agent as coordinator.** The primary agent (first launched) should focus on understanding user requirements, planning the overall approach, and coordinating work. Delegate actual implementation tasks to specialized subagents and skills.
+
+**Delegate actual work to subagents.** Use subagents proactively for:
+
+Built-in subagents:
+- **Code exploration and search:** Use `Explore` subagent for codebase navigation and understanding
+- **Implementation planning:** Use `Plan` subagent for designing complex changes
+- **Code modifications:** Use `general-purpose` subagent for implementing features and fixes
+
+User-defined subagents (in `~/.claude/agents/`):
+- **Web research:** Use `web-research-specialist` subagent for technical documentation lookup
+
+Project-defined subagents (in `.claude/agents/`):
+- **Test execution:** Use `test-runner` subagent for running tests and analyzing failures
+- **Test quality review:** Use `test-reviewer` subagent for evaluating test adequacy and coverage
+
+**Propose missing subagents or skills.** When you identify a recurring task pattern that would benefit from a specialized subagent or skill but none exists, propose it to the user with a ready-to-use definition file.
+
+Subagent definition format (user chooses where to save):
+- `.claude/agents/<name>.md` - Project-specific (this repository only)
+- `~/.claude/agents/<name>.md` - User-wide (available in all projects)
+```markdown
+---
+name: test-runner
+description: Execute tests for specific packages and analyze failures. Use when running tests or investigating test failures.
+tools: Read, Grep, Glob, Bash
+model: haiku
+---
+
+Run tests for the specified package. Analyze any failures and suggest fixes.
+Report test coverage changes if applicable.
+Focus on identifying root causes rather than just reporting errors.
+```
+
+Alternatively, use the `/agents` command to create subagents interactively.
+
+Skills can be defined for complex workflows requiring multiple files, templates, or resources (user chooses where to save):
+- `.claude/skills/` - Project-specific
+- `~/.claude/skills/` - User-wide
+
+**Parallel execution.** When multiple independent tasks exist, launch subagents in parallel to maximize efficiency.
+
 ## Language Policy
 
 **Code and documentation:** Write all code comments, commit messages, issues, pull requests, and documentation (including files under `docs/`) in English.
@@ -139,6 +183,7 @@ Before completing any code changes, always verify the following:
 
 1. **Run tests:** Execute `bun run test` and ensure all tests pass.
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors.
-3. **Manual verification:** When Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
+3. **Review test quality:** When tests are added or modified, use `test-reviewer` to evaluate adequacy and coverage.
+4. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
 
 **Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
