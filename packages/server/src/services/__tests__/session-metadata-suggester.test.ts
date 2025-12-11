@@ -21,7 +21,7 @@ const mockAgentWithoutPrintMode: AgentDefinition = {
   registeredAt: new Date().toISOString(),
 };
 
-describe('branch-name-suggester', () => {
+describe('session-metadata-suggester', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.resetModules();
@@ -33,7 +33,7 @@ describe('branch-name-suggester', () => {
         '  main\n* feat/current-branch\n  fix/some-bug\n  remotes/origin/main\n'
       );
 
-      const { getBranches } = await import('../branch-name-suggester.js');
+      const { getBranches } = await import('../session-metadata-suggester.js');
 
       const branches = getBranches('/repo');
 
@@ -49,7 +49,7 @@ describe('branch-name-suggester', () => {
         throw new Error('not a git repository');
       });
 
-      const { getBranches } = await import('../branch-name-suggester.js');
+      const { getBranches } = await import('../session-metadata-suggester.js');
 
       const branches = getBranches('/not-a-repo');
 
@@ -57,16 +57,16 @@ describe('branch-name-suggester', () => {
     });
   });
 
-  describe('suggestBranchName', () => {
+  describe('suggestSessionMetadata', () => {
     it('should return branch name from agent output', async () => {
       // First call for git branch, second for agent
       vi.mocked(childProcess.execSync)
         .mockReturnValueOnce('  main\n  feat/existing\n')
         .mockReturnValueOnce('feat/add-dark-mode\n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Add a dark mode toggle',
         repositoryPath: '/repo',
         agent: mockAgent,
@@ -85,15 +85,15 @@ describe('branch-name-suggester', () => {
     });
 
     it('should return error if agent does not support print mode', async () => {
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgentWithoutPrintMode,
       });
 
-      expect(result.branch).toBe('');
+      expect(result.branch).toBeUndefined();
       expect(result.error).toContain('does not support non-interactive mode');
     });
 
@@ -102,9 +102,9 @@ describe('branch-name-suggester', () => {
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('feat/Add Dark Mode!\n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Add dark mode',
         repositoryPath: '/repo',
         agent: mockAgent,
@@ -121,15 +121,15 @@ describe('branch-name-suggester', () => {
           throw new Error('command not found');
         });
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
       });
 
-      expect(result.branch).toBe('');
+      expect(result.branch).toBeUndefined();
       expect(result.error).toContain('Failed to suggest branch name');
     });
 
@@ -138,24 +138,24 @@ describe('branch-name-suggester', () => {
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('   \n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
       });
 
-      expect(result.branch).toBe('');
+      expect(result.branch).toBeUndefined();
       expect(result.error).toContain('empty response');
     });
 
     it('should use provided existingBranches instead of fetching', async () => {
       vi.mocked(childProcess.execSync).mockReturnValue('fix/auth-bug\n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Fix authentication',
         repositoryPath: '/repo',
         agent: mockAgent,
@@ -172,9 +172,9 @@ describe('branch-name-suggester', () => {
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('"feat/quoted-branch"\n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'Some feature',
         repositoryPath: '/repo',
         agent: mockAgent,
@@ -188,9 +188,9 @@ describe('branch-name-suggester', () => {
         .mockReturnValueOnce('')  // No branches
         .mockReturnValueOnce('feat/new-feature\n');
 
-      const { suggestBranchName } = await import('../branch-name-suggester.js');
+      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
 
-      const result = await suggestBranchName({
+      const result = await suggestSessionMetadata({
         prompt: 'New feature',
         repositoryPath: '/repo',
         agent: mockAgent,

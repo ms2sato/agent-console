@@ -14,7 +14,7 @@ import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { suggestBranchName } from '../services/branch-name-suggester.js';
+import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 
 const api = new Hono();
@@ -246,7 +246,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
         throw new ValidationError('initialPrompt is required for prompt mode');
       }
       // Generate branch name from prompt using the selected agent
-      const suggestion = await suggestBranchName({
+      const suggestion = await suggestSessionMetadata({
         prompt: body.initialPrompt.trim(),
         repositoryPath: repo.path,
         agent,

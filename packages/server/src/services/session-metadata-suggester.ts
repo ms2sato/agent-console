@@ -1,21 +1,22 @@
 /**
- * Branch name suggestion service
+ * Session metadata suggestion service
  *
  * Uses the specified agent in non-interactive mode to suggest branch names
- * based on user's initial prompt and existing branch examples.
+ * and titles based on user's initial prompt and existing branch examples.
  */
 import { execSync } from 'child_process';
 import type { AgentDefinition } from '@agent-console/shared';
 
-interface BranchNameSuggestionRequest {
+interface SessionMetadataSuggestionRequest {
   prompt: string;
   repositoryPath: string;
   agent: AgentDefinition;
   existingBranches?: string[];
 }
 
-interface BranchNameSuggestionResponse {
-  branch: string;
+interface SessionMetadataSuggestionResponse {
+  branch?: string;
+  title?: string;
   error?: string;
 }
 
@@ -39,9 +40,9 @@ function getBranches(repositoryPath: string): string[] {
 }
 
 /**
- * Build the prompt for the agent to suggest a branch name
+ * Build the prompt for the agent to suggest session metadata
  */
-function buildSuggestionPrompt(userPrompt: string, exampleBranches: string): string {
+function buildMetadataSuggestionPrompt(userPrompt: string, exampleBranches: string): string {
   return `You are a branch name generator. Given the following task description, suggest a single git branch name.
 
 Task description:
@@ -60,17 +61,16 @@ Branch name:`;
 }
 
 /**
- * Suggest a branch name using the specified agent
+ * Suggest session metadata (branch name, title) using the specified agent
  */
-export async function suggestBranchName(
-  request: BranchNameSuggestionRequest
-): Promise<BranchNameSuggestionResponse> {
+export async function suggestSessionMetadata(
+  request: SessionMetadataSuggestionRequest
+): Promise<SessionMetadataSuggestionResponse> {
   const { prompt, repositoryPath, agent, existingBranches } = request;
 
   // Check if agent supports print mode
   if (!agent.printModeArgs || agent.printModeArgs.length === 0) {
     return {
-      branch: '',
       error: `Agent "${agent.name}" does not support non-interactive mode (printModeArgs not configured)`,
     };
   }
@@ -81,7 +81,7 @@ export async function suggestBranchName(
     ? `Example branches in this repository: ${branches.slice(0, 10).join(', ')}`
     : '';
 
-  const suggestionPrompt = buildSuggestionPrompt(prompt, exampleBranches);
+  const suggestionPrompt = buildMetadataSuggestionPrompt(prompt, exampleBranches);
 
   try {
     // Build command: {agent.command} {printModeArgs...} "prompt"
@@ -111,7 +111,6 @@ export async function suggestBranchName(
 
     if (!branchName) {
       return {
-        branch: '',
         error: 'Failed to generate branch name: empty response',
       };
     }
@@ -129,7 +128,6 @@ export async function suggestBranchName(
       }
 
       return {
-        branch: '',
         error: `Invalid branch name generated: ${branchName}`,
       };
     }
@@ -138,10 +136,10 @@ export async function suggestBranchName(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return {
-      branch: '',
       error: `Failed to suggest branch name: ${message}`,
     };
   }
 }
 
 export { getBranches };
+export type { SessionMetadataSuggestionRequest, SessionMetadataSuggestionResponse };
