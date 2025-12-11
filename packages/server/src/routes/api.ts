@@ -81,26 +81,45 @@ api.delete('/sessions/:id', (c) => {
   return c.json({ success: true });
 });
 
-// Rename branch for a session
-api.patch('/sessions/:id/branch', async (c) => {
+// Update session metadata (title and/or branch)
+// If branch is changed, agent worker is automatically restarted
+api.patch('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const body = await c.req.json<{ newBranch: string }>();
-  const { newBranch } = body;
+  const body = await c.req.json<{ title?: string; branch?: string }>();
+  const { title, branch } = body;
 
-  if (!newBranch?.trim()) {
-    throw new ValidationError('newBranch is required');
+  // At least one field must be provided
+  if (title === undefined && branch === undefined) {
+    throw new ValidationError('At least one of title or branch must be provided');
   }
 
-  const result = sessionManager.renameBranch(sessionId, newBranch.trim());
+  // Validate branch if provided
+  if (branch !== undefined && !branch.trim()) {
+    throw new ValidationError('branch cannot be empty');
+  }
+
+  const updates: { title?: string; branch?: string } = {};
+  if (title !== undefined) {
+    updates.title = title.trim();
+  }
+  if (branch !== undefined) {
+    updates.branch = branch.trim();
+  }
+
+  const result = sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
     if (result.error === 'session_not_found') {
       throw new NotFoundError('Session');
     }
-    throw new ValidationError(result.error || 'Failed to rename branch');
+    throw new ValidationError(result.error || 'Failed to update session');
   }
 
-  return c.json({ success: true, branch: result.branch });
+  return c.json({
+    success: true,
+    ...(result.title !== undefined && { title: result.title }),
+    ...(result.branch !== undefined && { branch: result.branch }),
+  });
 });
 
 // Get workers for a session

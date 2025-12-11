@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import {
-  renameSessionBranch,
+  updateSessionMetadata,
   restartAgentWorker,
   deleteSession,
   deleteWorktree,
@@ -139,20 +139,15 @@ export function SessionSettings({
     setError(null);
 
     try {
-      const result = await renameSessionBranch(sessionId, trimmedBranch);
-      onBranchChange(result.branch);
+      // Server automatically restarts agent worker when branch is changed
+      const result = await updateSessionMetadata(sessionId, { branch: trimmedBranch });
+      if (result.branch) {
+        onBranchChange(result.branch);
+      }
       setActiveDialog(null);
 
-      // Restart session with -c flag to pick up new branch name while keeping conversation
+      // Notify parent that session was restarted (server does this automatically)
       if (onSessionRestart) {
-        // Get the session to find the first agent worker
-        const session = await getSession(sessionId);
-        if (session) {
-          const agentWorker = session.workers.find(w => w.type === 'agent');
-          if (agentWorker) {
-            await restartAgentWorker(sessionId, agentWorker.id, true);
-          }
-        }
         onSessionRestart();
       }
     } catch (err) {
