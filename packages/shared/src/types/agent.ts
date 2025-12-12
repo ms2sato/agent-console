@@ -1,17 +1,13 @@
-/**
- * Agent-specific patterns for activity detection
- */
-export interface AgentActivityPatterns {
-  /** Regex patterns (as strings) that indicate "asking" state */
-  askingPatterns?: string[];
-}
+// Import types for local use
+import type { AgentActivityPatterns, InitialPromptMode } from '../schemas/agent.js';
 
-/**
- * How to pass the initial prompt to the agent
- * - 'stdin': Write the prompt to stdin after the agent starts (default)
- * - 'arg': Pass as command line argument
- */
-export type InitialPromptMode = 'stdin' | 'arg';
+// Re-export schema-derived types
+export type {
+  AgentActivityPatterns,
+  InitialPromptMode,
+  CreateAgentRequest,
+  UpdateAgentRequest,
+} from '../schemas/agent.js';
 
 /**
  * Agent definition - stored and managed by AgentManager
@@ -40,32 +36,4 @@ export interface AgentDefinition {
    * If not set, the agent does not support non-interactive mode.
    */
   printModeArgs?: string[];
-}
-
-/**
- * Request to create a new agent
- */
-export interface CreateAgentRequest {
-  name: string;
-  command: string;
-  description?: string;
-  icon?: string;
-  activityPatterns?: AgentActivityPatterns;
-  continueArgs?: string[];
-  initialPromptMode?: InitialPromptMode;
-  initialPromptDelayMs?: number;
-}
-
-/**
- * Request to update an existing agent
- */
-export interface UpdateAgentRequest {
-  name?: string;
-  command?: string;
-  description?: string;
-  icon?: string;
-  activityPatterns?: AgentActivityPatterns;
-  continueArgs?: string[];
-  initialPromptMode?: InitialPromptMode;
-  initialPromptDelayMs?: number;
 }

@@ -1,9 +1,13 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { AgentDefinition } from '@agent-console/shared';
+import { useForm } from 'react-hook-form';
+import { valibotResolver } from '@hookform/resolvers/valibot';
+import type { AgentDefinition, CreateAgentRequest } from '@agent-console/shared';
+import { CreateAgentRequestSchema } from '@agent-console/shared';
 import { registerAgent, unregisterAgent } from '../lib/api';
 import { useAgents } from './AgentSelector';
 import { ConfirmDialog } from './ui/confirm-dialog';
+import { FormField, Input } from './ui/FormField';
 
 export function AgentManagement() {
   const queryClient = useQueryClient();
@@ -134,9 +138,20 @@ interface AddAgentFormProps {
 }
 
 function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
-  const [name, setName] = useState('');
-  const [command, setCommand] = useState('');
-  const [description, setDescription] = useState('');
+  const {
+    register,
+    handleSubmit,
+    setError,
+    formState: { errors },
+  } = useForm<CreateAgentRequest>({
+    resolver: valibotResolver(CreateAgentRequestSchema),
+    defaultValues: {
+      name: '',
+      command: '',
+      description: '',
+    },
+    mode: 'onBlur',
+  });
 
   const registerMutation = useMutation({
     mutationFn: registerAgent,
@@ -145,61 +160,61 @@ function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
     },
   });
 
-  const handleSubmit = async () => {
-    if (!name.trim() || !command.trim()) {
-      alert('Name and command are required');
-      return;
-    }
-
+  const onSubmit = async (data: CreateAgentRequest) => {
     try {
       await registerMutation.mutateAsync({
-        name: name.trim(),
-        command: command.trim(),
-        description: description.trim() || undefined,
+        name: data.name,
+        command: data.command,
+        description: data.description || undefined,
       });
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to register agent');
+      setError('root', {
+        message: err instanceof Error ? err.message : 'Failed to register agent',
+      });
     }
   };
 
   return (
     <div className="bg-slate-800 p-4 rounded mb-4">
       <h3 className="text-sm font-medium mb-3">Add New Agent</h3>
-      <div className="flex flex-col gap-3">
-        <input
-          type="text"
-          placeholder="Agent name (e.g., My Custom Agent)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="input"
-        />
-        <input
-          type="text"
-          placeholder="Command (e.g., my-agent, /usr/local/bin/agent)"
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          className="input"
-        />
-        <input
-          type="text"
-          placeholder="Description (optional)"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          className="input"
-        />
+      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-3">
+        <FormField label="Name" error={errors.name}>
+          <Input
+            {...register('name')}
+            placeholder="Agent name (e.g., My Custom Agent)"
+            error={errors.name}
+          />
+        </FormField>
+        <FormField label="Command" error={errors.command}>
+          <Input
+            {...register('command')}
+            placeholder="Command (e.g., my-agent, /usr/local/bin/agent)"
+            error={errors.command}
+          />
+        </FormField>
+        <FormField label="Description (optional)" error={errors.description}>
+          <Input
+            {...register('description')}
+            placeholder="Description"
+            error={errors.description}
+          />
+        </FormField>
+        {errors.root && (
+          <p className="text-sm text-red-400">{errors.root.message}</p>
+        )}
         <div className="flex gap-2">
           <button
-            onClick={handleSubmit}
+            type="submit"
             disabled={registerMutation.isPending}
             className="btn btn-primary text-sm"
           >
             {registerMutation.isPending ? 'Adding...' : 'Add Agent'}
           </button>
-          <button onClick={onCancel} className="btn btn-danger text-sm">
+          <button type="button" onClick={onCancel} className="btn btn-danger text-sm">
             Cancel
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

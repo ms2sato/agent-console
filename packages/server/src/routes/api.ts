@@ -8,7 +8,20 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   CreateSessionRequest,
+  UpdateSessionRequest,
   CreateWorkerRequest,
+  RestartWorkerRequest,
+  CreateRepositoryRequest,
+} from '@agent-console/shared';
+import {
+  CreateSessionRequestSchema,
+  UpdateSessionRequestSchema,
+  CreateWorkerRequestSchema,
+  RestartWorkerRequestSchema,
+  CreateRepositoryRequestSchema,
+  CreateWorktreeRequestSchema,
+  CreateAgentRequestSchema,
+  UpdateAgentRequestSchema,
 } from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
@@ -16,6 +29,7 @@ import { worktreeService } from '../services/worktree-service.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { validateBody, getValidatedBody } from '../middleware/validation.js';
 
 const api = new Hono();
 
@@ -61,8 +75,8 @@ api.get('/sessions/:id', (c) => {
 });
 
 // Create a new session
-api.post('/sessions', async (c) => {
-  const body = await c.req.json<CreateSessionRequest>();
+api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
+  const body = getValidatedBody<CreateSessionRequest>(c);
 
   const session = sessionManager.createSession(body);
 
@@ -83,20 +97,10 @@ api.delete('/sessions/:id', (c) => {
 
 // Update session metadata (title and/or branch)
 // If branch is changed, agent worker is automatically restarted
-api.patch('/sessions/:id', async (c) => {
+api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) => {
   const sessionId = c.req.param('id');
-  const body = await c.req.json<{ title?: string; branch?: string }>();
+  const body = getValidatedBody<UpdateSessionRequest>(c);
   const { title, branch } = body;
-
-  // At least one field must be provided
-  if (title === undefined && branch === undefined) {
-    throw new ValidationError('At least one of title or branch must be provided');
-  }
-
-  // Validate branch if provided
-  if (branch !== undefined && !branch.trim()) {
-    throw new ValidationError('branch cannot be empty');
-  }
 
   const updates: { title?: string; branch?: string } = {};
   if (title !== undefined) {
@@ -135,16 +139,16 @@ api.get('/sessions/:sessionId/workers', (c) => {
 });
 
 // Create a worker in a session
-api.post('/sessions/:sessionId/workers', async (c) => {
+api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema), async (c) => {
   const sessionId = c.req.param('sessionId');
-  const body = await c.req.json<CreateWorkerRequest & { continueConversation?: boolean }>();
+  const body = getValidatedBody<CreateWorkerRequest>(c);
+  const { continueConversation = false, ...workerRequest } = body;
 
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
   }
 
-  const { continueConversation = false, ...workerRequest } = body;
   const worker = sessionManager.createWorker(sessionId, workerRequest, continueConversation);
 
   if (!worker) {
@@ -173,10 +177,10 @@ api.delete('/sessions/:sessionId/workers/:workerId', (c) => {
 });
 
 // Restart an agent worker
-api.post('/sessions/:sessionId/workers/:workerId/restart', async (c) => {
+api.post('/sessions/:sessionId/workers/:workerId/restart', validateBody(RestartWorkerRequestSchema), async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
-  const body = await c.req.json<{ continueConversation?: boolean }>();
+  const body = getValidatedBody<RestartWorkerRequest>(c);
   const { continueConversation = false } = body;
 
   const worker = sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
@@ -195,13 +199,9 @@ api.get('/repositories', (c) => {
 });
 
 // Register a repository
-api.post('/repositories', async (c) => {
-  const body = await c.req.json<{ path: string }>();
+api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c) => {
+  const body = getValidatedBody<CreateRepositoryRequest>(c);
   const { path } = body;
-
-  if (!path) {
-    throw new ValidationError('path is required');
-  }
 
   try {
     const repository = repositoryManager.registerRepository(path);
@@ -238,7 +238,7 @@ api.get('/repositories/:id/worktrees', (c) => {
 });
 
 // Create a worktree
-api.post('/repositories/:id/worktrees', async (c) => {
+api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema), async (c) => {
   const repoId = c.req.param('id');
   const repo = repositoryManager.getRepository(repoId);
 
@@ -246,7 +246,7 @@ api.post('/repositories/:id/worktrees', async (c) => {
     throw new NotFoundError('Repository');
   }
 
-  const body = await c.req.json<CreateWorktreeRequest>();
+  const body = getValidatedBody<CreateWorktreeRequest>(c);
   const { mode, autoStartSession, agentId, initialPrompt, title } = body;
 
   let branch: string;
@@ -262,12 +262,9 @@ api.post('/repositories/:id/worktrees', async (c) => {
 
   switch (mode) {
     case 'prompt':
-      if (!body.initialPrompt?.trim()) {
-        throw new ValidationError('initialPrompt is required for prompt mode');
-      }
       // Generate branch name from prompt using the selected agent
       const suggestion = await suggestSessionMetadata({
-        prompt: body.initialPrompt.trim(),
+        prompt: body.initialPrompt!.trim(),
         repositoryPath: repo.path,
         agent,
       });
@@ -282,15 +279,13 @@ api.post('/repositories/:id/worktrees', async (c) => {
       baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'custom':
-      branch = body.branch;
+      branch = body.branch!;
       baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'existing':
-      branch = body.branch;
+      branch = body.branch!;
       baseBranch = undefined;
       break;
-    default:
-      throw new ValidationError('Invalid mode. Must be "prompt", "custom", or "existing"');
   }
 
   const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
@@ -400,13 +395,9 @@ api.get('/agents/:id', (c) => {
 });
 
 // Register a new agent
-api.post('/agents', async (c) => {
-  const body = await c.req.json<CreateAgentRequest>();
+api.post('/agents', validateBody(CreateAgentRequestSchema), async (c) => {
+  const body = getValidatedBody<CreateAgentRequest>(c);
   const { name, command, description, icon, activityPatterns } = body;
-
-  if (!name || !command) {
-    throw new ValidationError('name and command are required');
-  }
 
   const agent = agentManager.registerAgent({
     name,
@@ -420,9 +411,9 @@ api.post('/agents', async (c) => {
 });
 
 // Update an agent
-api.patch('/agents/:id', async (c) => {
+api.patch('/agents/:id', validateBody(UpdateAgentRequestSchema), async (c) => {
   const agentId = c.req.param('id');
-  const body = await c.req.json<UpdateAgentRequest>();
+  const body = getValidatedBody<UpdateAgentRequest>(c);
 
   const agent = agentManager.updateAgent(agentId, body);
 

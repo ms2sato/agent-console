@@ -1,5 +1,20 @@
 import type { Worker, AgentActivityState } from './worker.js';
 
+// Re-export schema-derived types
+export type {
+  CreateWorktreeSessionRequest,
+  CreateQuickSessionRequest,
+  CreateSessionRequest,
+  UpdateSessionRequest,
+} from '../schemas/session.js';
+
+export type {
+  CreateAgentWorkerRequest,
+  CreateTerminalWorkerRequest,
+  CreateWorkerRequest,
+  RestartWorkerRequest,
+} from '../schemas/worker.js';
+
 export type SessionStatus = 'active' | 'inactive';
 
 export interface SessionBase {
@@ -24,49 +39,9 @@ export interface QuickSession extends SessionBase {
 
 export type Session = WorktreeSession | QuickSession;
 
-interface CreateWorktreeSessionRequest {
-  type: 'worktree';
-  repositoryId: string;
-  worktreeId: string;
-  locationPath: string;
-  agentId?: string;              // If provided, create initial agent worker
-  continueConversation?: boolean;
-  /** Initial prompt to send to the agent after starting */
-  initialPrompt?: string;
-  /** Human-readable title for the session */
-  title?: string;
-}
-
-interface CreateQuickSessionRequest {
-  type: 'quick';
-  locationPath: string;
-  agentId?: string;
-  continueConversation?: boolean;
-  /** Initial prompt to send to the agent after starting */
-  initialPrompt?: string;
-  /** Human-readable title for the session */
-  title?: string;
-}
-
-export type CreateSessionRequest = CreateWorktreeSessionRequest | CreateQuickSessionRequest;
-
 export interface CreateSessionResponse {
   session: Session;
 }
-
-// Worker creation
-interface CreateAgentWorkerRequest {
-  type: 'agent';
-  name?: string;
-  agentId: string;
-}
-
-interface CreateTerminalWorkerRequest {
-  type: 'terminal';
-  name?: string;
-}
-
-export type CreateWorkerRequest = CreateAgentWorkerRequest | CreateTerminalWorkerRequest;
 
 export interface CreateWorkerResponse {
   worker: Worker;
