@@ -436,6 +436,43 @@ describe('API Routes Integration', () => {
         });
         expect(patchRes.status).toBe(400);
       });
+
+      it('should return 400 when branch is empty string', async () => {
+        const app = await createApp();
+
+        // Create a session first
+        const createRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+          }),
+        });
+        const { session } = (await createRes.json()) as { session: Session };
+
+        // Try to update with empty branch
+        const patchRes = await app.request(`/api/sessions/${session.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch: '   ' }),
+        });
+        expect(patchRes.status).toBe(400);
+
+        const body = (await patchRes.json()) as { error: string };
+        expect(body.error).toContain('branch cannot be empty');
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const app = await createApp();
+
+        const patchRes = await app.request('/api/sessions/non-existent', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'New Title' }),
+        });
+        expect(patchRes.status).toBe(404);
+      });
     });
   });
 
@@ -534,6 +571,80 @@ describe('API Routes Integration', () => {
 
         const body = (await res.json()) as { success: boolean };
         expect(body.success).toBe(true);
+      });
+    });
+
+    describe('POST /api/sessions/:sessionId/workers/:workerId/restart', () => {
+      it('should restart an agent worker', async () => {
+        const app = await createApp();
+
+        // Create a session with an agent
+        const createRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        const { session } = (await createRes.json()) as { session: Session };
+        const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+
+        // Restart the agent worker
+        const res = await app.request(
+          `/api/sessions/${session.id}/workers/${agentWorker.id}/restart`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ continueConversation: false }),
+          }
+        );
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { worker: Worker };
+        expect(body.worker).toBeDefined();
+        expect(body.worker.type).toBe('agent');
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const app = await createApp();
+
+        const res = await app.request(
+          '/api/sessions/non-existent/workers/some-worker/restart',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          }
+        );
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 404 for non-existent worker', async () => {
+        const app = await createApp();
+
+        // Create a session
+        const createRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        const { session } = (await createRes.json()) as { session: Session };
+
+        const res = await app.request(
+          `/api/sessions/${session.id}/workers/non-existent/restart`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          }
+        );
+        expect(res.status).toBe(404);
       });
     });
   });
@@ -762,6 +873,57 @@ describe('API Routes Integration', () => {
           body: JSON.stringify({ mode: 'prompt' }),
         });
         expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when prompt mode has empty initialPrompt', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'prompt', initialPrompt: '   ' }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('initialPrompt is required for prompt mode');
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'custom', branch: 'test' }),
+        });
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe('DELETE /api/repositories/:id/worktrees/*', () => {
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/worktrees/%2Fsome%2Fpath', {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 400 when worktree path is invalid for repository', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Request with a path that doesn't belong to this repository's worktrees
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/%2Fother%2Fpath`, {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Invalid worktree path');
       });
     });
   });
