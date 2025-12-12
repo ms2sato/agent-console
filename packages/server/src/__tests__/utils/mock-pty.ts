@@ -1,4 +1,5 @@
-import { vi } from 'vitest';
+import { mock } from 'bun:test';
+import type { PtyProvider } from '../../lib/pty-provider.js';
 
 /**
  * Mock PTY class for testing bun-pty dependent code.
@@ -58,25 +59,29 @@ export class MockPty {
 /**
  * Creates a mock factory for bun-pty that tracks all created instances.
  * Usage:
- *   const { instances, createMock } = createMockPtyFactory();
- *   vi.mock('bun-pty', () => createMock());
+ *   const ptyFactory = createMockPtyFactory();
+ *   const manager = new SessionManager(ptyFactory.provider);
  */
 export function createMockPtyFactory(startPid = 10000) {
   const instances: MockPty[] = [];
   let nextPid = startPid;
 
-  const createMock = () => ({
-    spawn: vi.fn(() => {
-      const pty = new MockPty(nextPid++);
-      instances.push(pty);
-      return pty;
-    }),
+  const spawn = mock(() => {
+    const pty = new MockPty(nextPid++);
+    instances.push(pty);
+    return pty;
   });
 
   const reset = () => {
     instances.length = 0;
     nextPid = startPid;
+    spawn.mockClear();
   };
 
-  return { instances, createMock, reset };
+  // Create a PtyProvider that uses the mock spawn
+  const provider: PtyProvider = {
+    spawn: spawn as unknown as PtyProvider['spawn'],
+  };
+
+  return { instances, spawn, reset, provider };
 }

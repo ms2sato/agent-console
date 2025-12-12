@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ActivityDetector } from '../activity-detector.js';
 import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
 
@@ -16,22 +16,34 @@ const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
   ],
 };
 
+// Short timeouts for testing (real timers with short waits)
+const TEST_TIMEOUTS = {
+  rateWindowMs: 50,
+  noOutputIdleMs: 50,
+  userTypingTimeoutMs: 100,
+  debounceMs: 20,
+};
+
+// Helper to wait for a given number of milliseconds
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe('ActivityDetector', () => {
   let detector: ActivityDetector;
   let stateChanges: AgentActivityState[];
 
   beforeEach(() => {
-    vi.useFakeTimers();
     stateChanges = [];
     detector = new ActivityDetector({
       onStateChange: (state) => stateChanges.push(state),
       activityPatterns: CLAUDE_CODE_PATTERNS,
+      ...TEST_TIMEOUTS,
     });
   });
 
   afterEach(() => {
     detector.dispose();
-    vi.useRealTimers();
   });
 
   describe('initial state', () => {
@@ -42,7 +54,7 @@ describe('ActivityDetector', () => {
 
   describe('state transitions', () => {
     it('should transition to active when output count exceeds threshold', () => {
-      // Generate 20+ outputs quickly (threshold is 20 in 2000ms window)
+      // Generate 20+ outputs quickly (threshold is 20 in rateWindowMs)
       for (let i = 0; i < 25; i++) {
         detector.processOutput('some output');
       }
@@ -51,90 +63,90 @@ describe('ActivityDetector', () => {
       expect(stateChanges).toContain('active');
     });
 
-    it('should transition from active to idle after no output', () => {
+    it('should transition from active to idle after no output', async () => {
       // First become active
       for (let i = 0; i < 25; i++) {
         detector.processOutput('output');
       }
       expect(detector.getState()).toBe('active');
 
-      // Wait for idle timeout (2000ms + 100ms buffer)
-      vi.advanceTimersByTime(2200);
+      // Wait for idle timeout
+      await wait(TEST_TIMEOUTS.noOutputIdleMs + 150);
 
       expect(detector.getState()).toBe('idle');
       expect(stateChanges).toContain('idle');
     });
 
-    it('should detect asking state from permission prompt pattern', () => {
+    it('should detect asking state from permission prompt pattern', async () => {
       // Simulate permission prompt output
       detector.processOutput('Do you want to create this file?');
 
-      // Wait for debounce (300ms)
-      vi.advanceTimersByTime(400);
+      // Wait for debounce
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from Enter/Tab/Esc menu pattern', () => {
+    it('should detect asking state from Enter/Tab/Esc menu pattern', async () => {
       detector.processOutput('Enter to select, Tab to navigate, Esc to cancel');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from Yes/No selection pattern', () => {
+    it('should detect asking state from Yes/No selection pattern', async () => {
       detector.processOutput('[y] Yes  [n] No');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from Always allow pattern', () => {
+    it('should detect asking state from Always allow pattern', async () => {
       detector.processOutput('Allow once  [a] Always allow');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from Allow X? pattern', () => {
+    it('should detect asking state from Allow X? pattern', async () => {
       detector.processOutput('Allow reading file.txt?');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from A/B selection pattern', () => {
+    it('should detect asking state from A/B selection pattern', async () => {
       detector.processOutput('[A] Option A  [B] Option B');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from numbered selection pattern', () => {
+    it('should detect asking state from numbered selection pattern', async () => {
       detector.processOutput('[1] First choice  [2] Second choice');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should detect asking state from box bottom with prompt pattern', () => {
+    it('should detect asking state from box bottom with prompt pattern', async () => {
       detector.processOutput('╰─────────────────────────────────╯ > ');
 
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
 
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should keep asking state until user responds (suppressRateDetection)', () => {
+    it('should keep asking state until user responds (suppressRateDetection)', async () => {
       // First enter asking state
       detector.processOutput('Do you want to proceed?');
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
       expect(detector.getState()).toBe('asking');
 
       // Generate high output - should NOT transition to active due to suppressRateDetection
@@ -146,10 +158,10 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('asking');
     });
 
-    it('should transition from asking to idle when user responds', () => {
+    it('should transition from asking to idle when user responds', async () => {
       // First enter asking state
       detector.processOutput('Do you want to proceed?');
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
       expect(detector.getState()).toBe('asking');
 
       // User responds (e.g., pressing Enter)
@@ -158,10 +170,10 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('idle');
     });
 
-    it('should transition from asking to idle when user cancels with ESC', () => {
+    it('should transition from asking to idle when user cancels with ESC', async () => {
       // First enter asking state
       detector.processOutput('Do you want to proceed?');
-      vi.advanceTimersByTime(400);
+      await wait(TEST_TIMEOUTS.debounceMs + 50);
       expect(detector.getState()).toBe('asking');
 
       // User cancels (pressing ESC)
@@ -225,11 +237,11 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('idle');
     });
 
-    it('should timeout user typing after 5 seconds', () => {
+    it('should timeout user typing after configured timeout', async () => {
       detector.setUserTyping();
 
       // Advance time past typing timeout
-      vi.advanceTimersByTime(5100);
+      await wait(TEST_TIMEOUTS.userTypingTimeoutMs + 50);
 
       // Generate high output now
       for (let i = 0; i < 25; i++) {
@@ -273,12 +285,12 @@ describe('ActivityDetector', () => {
   });
 
   describe('getTimeSinceLastOutput', () => {
-    it('should return time since last output', () => {
+    it('should return time since last output', async () => {
       detector.processOutput('test');
 
-      vi.advanceTimersByTime(1000);
+      await wait(100);
 
-      expect(detector.getTimeSinceLastOutput()).toBeGreaterThanOrEqual(1000);
+      expect(detector.getTimeSinceLastOutput()).toBeGreaterThanOrEqual(100);
     });
   });
 });

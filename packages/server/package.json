@@ -11,8 +11,8 @@
     "build": "NODE_ENV=production bun build.ts",
     "start": "bun dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "bun test src/",
+    "test:watch": "bun test --watch src/"
   },
   "dependencies": {
     "@agent-console/shared": "*",
@@ -23,9 +23,11 @@
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",
+    "@types/mock-fs": "^4.13.4",
     "@types/node": "^22.10.1",
     "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.2",
-    "vitest": "^4.0.15"
+    "memfs": "^4.51.1",
+    "mock-fs": "^5.4.1",
+    "typescript": "^5.7.2"
   }
 }

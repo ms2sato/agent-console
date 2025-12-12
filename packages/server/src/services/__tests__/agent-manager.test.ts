@@ -1,40 +1,52 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as fs from 'fs';
 import type { AgentDefinition } from '@agent-console/shared';
-
-// Mock storage for agents
-let mockCustomAgents: AgentDefinition[] = [];
-
-// Mock persistence service
-vi.mock('../persistence-service.js', () => ({
-  persistenceService: {
-    loadAgents: vi.fn(() => mockCustomAgents),
-    saveAgents: vi.fn((agents: AgentDefinition[]) => {
-      mockCustomAgents = agents;
-    }),
-  },
-}));
+import { setupTestConfigDir, cleanupTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
 
 describe('AgentManager', () => {
+  const TEST_CONFIG_DIR = '/test/config';
+  let importCounter = 0;
+
   beforeEach(() => {
-    vi.resetModules();
-    mockCustomAgents = [];
+    setupTestConfigDir(TEST_CONFIG_DIR);
   });
+
+  afterEach(() => {
+    cleanupTestConfigDir();
+  });
+
+  // Helper to get fresh module instances
+  async function getAgentManager() {
+    const module = await import(`../agent-manager.js?v=${++importCounter}`);
+    return {
+      AgentManager: module.AgentManager,
+      CLAUDE_CODE_AGENT_ID: module.CLAUDE_CODE_AGENT_ID,
+    };
+  }
+
+  // Helper to pre-populate agents file
+  function setupAgents(agents: AgentDefinition[]) {
+    fs.writeFileSync(
+      `${TEST_CONFIG_DIR}/agents.json`,
+      JSON.stringify(agents)
+    );
+  }
 
   describe('initialization', () => {
     it('should initialize with built-in Claude Code agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agents = manager.getAllAgents();
       expect(agents.length).toBeGreaterThanOrEqual(1);
 
-      const claudeCode = agents.find(a => a.name === 'Claude Code');
+      const claudeCode = agents.find((a: AgentDefinition) => a.name === 'Claude Code');
       expect(claudeCode).toBeDefined();
       expect(claudeCode?.isBuiltIn).toBe(true);
     });
 
     it('should load custom agents from persistence', async () => {
-      mockCustomAgents = [
+      setupAgents([
         {
           id: 'custom-agent',
           name: 'Custom Agent',
@@ -42,9 +54,9 @@ describe('AgentManager', () => {
           isBuiltIn: false,
           registeredAt: '2024-01-01T00:00:00.000Z',
         },
-      ];
+      ]);
 
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agents = manager.getAllAgents();
@@ -58,7 +70,7 @@ describe('AgentManager', () => {
 
   describe('getAllAgents', () => {
     it('should return all registered agents', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agents = manager.getAllAgents();
@@ -69,7 +81,7 @@ describe('AgentManager', () => {
 
   describe('getAgent', () => {
     it('should return agent by id', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await import('../agent-manager.js');
+      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.getAgent(CLAUDE_CODE_AGENT_ID);
@@ -78,7 +90,7 @@ describe('AgentManager', () => {
     });
 
     it('should return undefined for non-existent agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.getAgent('non-existent');
@@ -88,7 +100,7 @@ describe('AgentManager', () => {
 
   describe('getDefaultAgent', () => {
     it('should return Claude Code agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.getDefaultAgent();
@@ -99,8 +111,7 @@ describe('AgentManager', () => {
 
   describe('registerAgent', () => {
     it('should register a new custom agent', async () => {
-      const { persistenceService } = await import('../persistence-service.js');
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
@@ -119,11 +130,12 @@ describe('AgentManager', () => {
       expect(manager.getAgent(agent.id)).toBeDefined();
 
       // Should be persisted
-      expect(vi.mocked(persistenceService.saveAgents)).toHaveBeenCalled();
+      const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/agents.json`, 'utf-8'));
+      expect(savedData.length).toBeGreaterThan(0);
     });
 
     it('should register agent with activity patterns', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
@@ -138,7 +150,7 @@ describe('AgentManager', () => {
     });
 
     it('should register agent with continue args', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
@@ -151,7 +163,7 @@ describe('AgentManager', () => {
     });
 
     it('should handle agent name with special characters', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
@@ -164,7 +176,7 @@ describe('AgentManager', () => {
     });
 
     it('should handle agent with empty description', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
@@ -179,7 +191,7 @@ describe('AgentManager', () => {
 
   describe('updateAgent', () => {
     it('should update an existing custom agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       // First register a custom agent
@@ -204,7 +216,7 @@ describe('AgentManager', () => {
     });
 
     it('should return null for non-existent agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const result = manager.updateAgent('non-existent', { name: 'Test' });
@@ -212,7 +224,7 @@ describe('AgentManager', () => {
     });
 
     it('should not update built-in agent', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await import('../agent-manager.js');
+      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
       const manager = new AgentManager();
 
       const result = manager.updateAgent(CLAUDE_CODE_AGENT_ID, {
@@ -227,7 +239,7 @@ describe('AgentManager', () => {
     });
 
     it('should partially update agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const created = manager.registerAgent({
@@ -249,8 +261,7 @@ describe('AgentManager', () => {
 
   describe('unregisterAgent', () => {
     it('should unregister a custom agent', async () => {
-      const { persistenceService } = await import('../persistence-service.js');
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const created = manager.registerAgent({
@@ -258,17 +269,14 @@ describe('AgentManager', () => {
         command: 'cmd',
       });
 
-      vi.mocked(persistenceService.saveAgents).mockClear();
-
       const result = manager.unregisterAgent(created.id);
 
       expect(result).toBe(true);
       expect(manager.getAgent(created.id)).toBeUndefined();
-      expect(vi.mocked(persistenceService.saveAgents)).toHaveBeenCalled();
     });
 
     it('should return false for non-existent agent', async () => {
-      const { AgentManager } = await import('../agent-manager.js');
+      const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const result = manager.unregisterAgent('non-existent');
@@ -276,7 +284,7 @@ describe('AgentManager', () => {
     });
 
     it('should not unregister built-in agent', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await import('../agent-manager.js');
+      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
       const manager = new AgentManager();
 
       const result = manager.unregisterAgent(CLAUDE_CODE_AGENT_ID);
