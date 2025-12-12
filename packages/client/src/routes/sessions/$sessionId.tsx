@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { SessionSettings } from '../../components/SessionSettings';
+import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
@@ -87,6 +88,7 @@ function TerminalPage() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const [activityState, setActivityState] = useState<AgentActivityState>('unknown');
+  const { errorDialogProps, showError } = useErrorDialog();
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -309,7 +311,7 @@ function TerminalPage() {
       }
     } catch (error) {
       console.error('Failed to restart session:', error);
-      alert(error instanceof Error ? error.message : 'Failed to restart session');
+      showError('Restart Failed', error instanceof Error ? error.message : 'Failed to restart session');
       setState({ type: 'disconnected', session });
     }
   };
@@ -553,6 +555,7 @@ function TerminalPage() {
           <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
         </span>
       </div>
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }
