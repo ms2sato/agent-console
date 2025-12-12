@@ -18,6 +18,7 @@ import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
+import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest } from '@agent-console/shared';
 
 // Request notification permission on load
@@ -114,6 +115,8 @@ function DashboardPage() {
   const queryClient = useQueryClient();
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [newRepoPath, setNewRepoPath] = useState('');
+  // Repository to unregister (for confirmation dialog)
+  const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
@@ -357,11 +360,7 @@ function DashboardPage() {
               key={repo.id}
               repository={repo}
               sessions={sessions.filter((s) => s.type === 'worktree' && s.repositoryId === repo.id)}
-              onUnregister={() => {
-                if (confirm(`Unregister ${repo.name}?`)) {
-                  unregisterMutation.mutate(repo.id);
-                }
-              }}
+              onUnregister={() => setRepoToUnregister(repo)}
             />
           ))}
         </div>
@@ -375,6 +374,21 @@ function DashboardPage() {
         <h2 className="text-lg font-medium text-gray-400 mb-4">Settings</h2>
         <AgentManagement />
       </div>
+
+      {/* Unregister Repository Confirmation */}
+      <ConfirmDialog
+        open={repoToUnregister !== null}
+        onOpenChange={(open) => !open && setRepoToUnregister(null)}
+        title="Unregister Repository"
+        description={`Are you sure you want to unregister "${repoToUnregister?.name}"?`}
+        confirmLabel="Unregister"
+        onConfirm={() => {
+          if (repoToUnregister) {
+            unregisterMutation.mutate(repoToUnregister.id);
+            setRepoToUnregister(null);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -667,20 +681,22 @@ interface WorktreeRowProps {
 function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const queryClient = useQueryClient();
   const [isStarting, setIsStarting] = useState(false);
+  // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
+  const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
 
   const deleteWorktreeMutation = useMutation({
     mutationFn: (force: boolean) => deleteWorktree(repositoryId, worktree.path, force),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setDeleteConfirmType(null);
     },
     onError: (error: Error, force: boolean) => {
-      // If deletion failed without force and error mentions untracked/modified files, retry with force
+      // If deletion failed without force and error mentions untracked/modified files, offer force delete
       if (!force && error.message.includes('untracked')) {
-        if (confirm(`Worktree has untracked files. Force delete "${worktree.branch}"?`)) {
-          deleteWorktreeMutation.mutate(true);
-        }
+        setDeleteConfirmType('force');
       } else {
+        setDeleteConfirmType(null);
         alert(error.message);
       }
     },
@@ -709,13 +725,11 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       alert('Cannot delete main worktree');
       return;
     }
-    const force = session !== undefined;
-    const msg = force
-      ? `Delete worktree "${worktree.branch}"? This will also terminate the running session.`
-      : `Delete worktree "${worktree.branch}"?`;
-    if (confirm(msg)) {
-      deleteWorktreeMutation.mutate(force);
-    }
+    setDeleteConfirmType('normal');
+  };
+
+  const executeDelete = (force: boolean) => {
+    deleteWorktreeMutation.mutate(force);
   };
 
   const statusColor = session
@@ -769,6 +783,28 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           </button>
         )}
       </div>
+
+      {/* Delete Worktree Confirmation */}
+      <ConfirmDialog
+        open={deleteConfirmType !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteConfirmType(null);
+          }
+        }}
+        title={deleteConfirmType === 'force' ? 'Force Delete Worktree' : 'Delete Worktree'}
+        description={
+          deleteConfirmType === 'force'
+            ? `Worktree has untracked files. Force delete "${worktree.branch}"?`
+            : session
+              ? `Delete worktree "${worktree.branch}"? This will also terminate the running session.`
+              : `Delete worktree "${worktree.branch}"?`
+        }
+        confirmLabel={deleteConfirmType === 'force' ? 'Force Delete' : 'Delete'}
+        variant="danger"
+        onConfirm={() => executeDelete(deleteConfirmType === 'force' || session !== undefined)}
+        isLoading={deleteWorktreeMutation.isPending}
+      />
     </div>
   );
 }
@@ -884,11 +920,13 @@ interface SessionCardProps {
 
 function SessionCard({ session }: SessionCardProps) {
   const queryClient = useQueryClient();
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
 
   const deleteMutation = useMutation({
     mutationFn: deleteSession,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setShowStopConfirm(false);
     },
   });
 
@@ -898,34 +936,43 @@ function SessionCard({ session }: SessionCardProps) {
       : 'bg-gray-500';
 
   return (
-    <div className="card flex items-center gap-4">
-      <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
-          <PathLink path={session.locationPath} className="truncate" />
-          <ActivityBadge state={session.activityState} />
+    <>
+      <div className="card flex items-center gap-4">
+        <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
+            <PathLink path={session.locationPath} className="truncate" />
+            <ActivityBadge state={session.activityState} />
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}
+          </div>
         </div>
-        <div className="text-xs text-gray-500 mt-1">
-          Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}
-        </div>
+        <Link
+          to="/sessions/$sessionId"
+          params={{ sessionId: session.id }}
+          className="btn btn-primary text-sm no-underline"
+        >
+          Open
+        </Link>
+        <button
+          onClick={() => setShowStopConfirm(true)}
+          className="btn btn-danger text-sm"
+        >
+          Stop
+        </button>
       </div>
-      <Link
-        to="/sessions/$sessionId"
-        params={{ sessionId: session.id }}
-        className="btn btn-primary text-sm no-underline"
-      >
-        Open
-      </Link>
-      <button
-        onClick={() => {
-          if (confirm('Stop this session?')) {
-            deleteMutation.mutate(session.id);
-          }
-        }}
-        className="btn btn-danger text-sm"
-      >
-        Stop
-      </button>
-    </div>
+
+      <ConfirmDialog
+        open={showStopConfirm}
+        onOpenChange={setShowStopConfirm}
+        title="Stop Session"
+        description="Are you sure you want to stop this session?"
+        confirmLabel="Stop"
+        variant="danger"
+        onConfirm={() => deleteMutation.mutate(session.id)}
+        isLoading={deleteMutation.isPending}
+      />
+    </>
   );
 }
