@@ -18,6 +18,7 @@ import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
+import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest } from '@agent-console/shared';
 
@@ -466,6 +467,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const [isStarting, setIsStarting] = useState(false);
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
+  const { errorDialogProps, showError } = useErrorDialog();
 
   const deleteWorktreeMutation = useMutation({
     mutationFn: (force: boolean) => deleteWorktree(repositoryId, worktree.path, force),
@@ -480,7 +482,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         setDeleteConfirmType('force');
       } else {
         setDeleteConfirmType(null);
-        alert(error.message);
+        showError('Delete Failed', error.message);
       }
     },
   });
@@ -497,7 +499,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       window.open(`/sessions/${newSession.id}`, '_blank');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to start session');
+      showError('Session Error', err instanceof Error ? err.message : 'Failed to start session');
     } finally {
       setIsStarting(false);
     }
@@ -505,7 +507,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
 
   const handleDeleteWorktree = () => {
     if (worktree.isMain) {
-      alert('Cannot delete main worktree');
+      showError('Cannot Delete', 'Cannot delete main worktree');
       return;
     }
     setDeleteConfirmType('normal');
@@ -588,6 +590,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         onConfirm={() => executeDelete(deleteConfirmType === 'force' || session !== undefined)}
         isLoading={deleteWorktreeMutation.isPending}
       />
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }

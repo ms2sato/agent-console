@@ -7,6 +7,7 @@ import { CreateAgentRequestSchema } from '@agent-console/shared';
 import { registerAgent, unregisterAgent } from '../lib/api';
 import { useAgents } from './AgentSelector';
 import { ConfirmDialog } from './ui/confirm-dialog';
+import { ErrorDialog, useErrorDialog } from './ui/error-dialog';
 import { FormField, Input } from './ui/FormField';
 
 export function AgentManagement() {
@@ -14,6 +15,7 @@ export function AgentManagement() {
   const { agents, isLoading } = useAgents();
   const [showAddForm, setShowAddForm] = useState(false);
   const [agentToDelete, setAgentToDelete] = useState<AgentDefinition | null>(null);
+  const { errorDialogProps, showError } = useErrorDialog();
 
   const unregisterMutation = useMutation({
     mutationFn: unregisterAgent,
@@ -25,7 +27,7 @@ export function AgentManagement() {
 
   const handleDelete = (agent: AgentDefinition) => {
     if (agent.isBuiltIn) {
-      alert('Built-in agents cannot be deleted');
+      showError('Cannot Delete', 'Built-in agents cannot be deleted');
       return;
     }
     setAgentToDelete(agent);
@@ -87,6 +89,7 @@ export function AgentManagement() {
         }}
         isLoading={unregisterMutation.isPending}
       />
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }
