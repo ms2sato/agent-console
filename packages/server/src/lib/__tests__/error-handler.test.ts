@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, spyOn, beforeEach } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../error-handler.js';
 import { ValidationError, NotFoundError, ConflictError, InternalError } from '../errors.js';
@@ -71,7 +71,7 @@ describe('Error Handler', () => {
     });
 
     it('should handle non-ApiError with 500 status', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
 
       app.get('/test', () => {
         throw new Error('Unexpected error');
@@ -88,7 +88,7 @@ describe('Error Handler', () => {
     });
 
     it('should handle TypeError', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
 
       app.get('/test', () => {
         throw new TypeError('Type error occurred');

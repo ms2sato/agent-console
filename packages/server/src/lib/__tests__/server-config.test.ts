@@ -1,13 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 describe('server-config', () => {
-  const originalEnv = process.env;
+  const originalEnv = { ...process.env };
+  let importCounter = 0;
 
   beforeEach(() => {
     // Reset process.env before each test
     process.env = { ...originalEnv };
-    // Clear module cache to test fresh imports
-    vi.resetModules();
   });
 
   afterEach(() => {
@@ -15,13 +14,20 @@ describe('server-config', () => {
     process.env = originalEnv;
   });
 
+  // Helper to import the module with cache bypass
+  async function importServerConfig() {
+    // Use unique query string to bypass module cache
+    const module = await import(`../server-config.js?v=${++importCounter}`);
+    return module;
+  }
+
   describe('serverConfig', () => {
     it('should use default values when environment variables are not set', async () => {
       delete process.env.NODE_ENV;
       delete process.env.PORT;
       delete process.env.HOST;
 
-      const { serverConfig } = await import('../server-config.js');
+      const { serverConfig } = await importServerConfig();
 
       expect(serverConfig.NODE_ENV).toBeUndefined();
       expect(serverConfig.PORT).toBe('3457');
@@ -33,7 +39,7 @@ describe('server-config', () => {
       process.env.PORT = '8080';
       process.env.HOST = '0.0.0.0';
 
-      const { serverConfig } = await import('../server-config.js');
+      const { serverConfig } = await importServerConfig();
 
       expect(serverConfig.NODE_ENV).toBe('production');
       expect(serverConfig.PORT).toBe('8080');
@@ -43,16 +49,14 @@ describe('server-config', () => {
 
   describe('SERVER_ONLY_ENV_VARS', () => {
     it('should contain all serverConfig keys', async () => {
-      const { serverConfig, SERVER_ONLY_ENV_VARS } = await import(
-        '../server-config.js'
-      );
+      const { serverConfig, SERVER_ONLY_ENV_VARS } = await importServerConfig();
 
       const configKeys = Object.keys(serverConfig);
       expect(SERVER_ONLY_ENV_VARS).toEqual(configKeys);
     });
 
     it('should include NODE_ENV, PORT, and HOST', async () => {
-      const { SERVER_ONLY_ENV_VARS } = await import('../server-config.js');
+      const { SERVER_ONLY_ENV_VARS } = await importServerConfig();
 
       expect(SERVER_ONLY_ENV_VARS).toContain('NODE_ENV');
       expect(SERVER_ONLY_ENV_VARS).toContain('PORT');
@@ -60,7 +64,7 @@ describe('server-config', () => {
     });
 
     it('should be readonly array', async () => {
-      const { SERVER_ONLY_ENV_VARS } = await import('../server-config.js');
+      const { SERVER_ONLY_ENV_VARS } = await importServerConfig();
 
       // TypeScript enforces this at compile time, but we can verify the runtime behavior
       expect(Array.isArray(SERVER_ONLY_ENV_VARS)).toBe(true);

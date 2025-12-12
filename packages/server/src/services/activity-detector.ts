@@ -9,6 +9,11 @@ export interface ActivityDetectorOptions {
   debounceMs?: number;        // Debounce time (default: 300ms)
   onStateChange?: (state: AgentActivityState) => void;
   activityPatterns?: AgentActivityPatterns; // Optional patterns from agent definition
+  // Configurable timeouts for testing
+  rateWindowMs?: number;      // Time window for rate calculation (default: 2000ms)
+  activeCountThreshold?: number; // Threshold outputs to consider "active" (default: 20)
+  noOutputIdleMs?: number;    // Time with no output to transition to idle (default: 2000ms)
+  userTypingTimeoutMs?: number; // User typing timeout (default: 5000ms)
 }
 
 export class ActivityDetector {
@@ -24,16 +29,16 @@ export class ActivityDetector {
   // User typing detection
   private userTyping: boolean = false;
   private userTypingTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly userTypingTimeoutMs: number = 5000;
+  private readonly userTypingTimeoutMs: number;
 
   // Rate-based detection: track output over sliding time windows
   private outputHistory: { time: number }[] = [];
   // Time window for rate calculation (ms)
-  private readonly rateWindowMs: number = 2000;
+  private readonly rateWindowMs: number;
   // Threshold: number of outputs in window to consider "active"
-  private readonly activeCountThreshold: number = 20;
+  private readonly activeCountThreshold: number;
   // How long with no output to transition to idle (ms)
-  private readonly noOutputIdleMs: number = 2000;
+  private readonly noOutputIdleMs: number;
 
   // Flag to suppress rate-based detection after entering asking state
   // (TUI redraws should not trigger active while waiting for user input)
@@ -46,6 +51,10 @@ export class ActivityDetector {
     this.bufferSize = options.bufferSize ?? 1000;
     this.debounceMs = options.debounceMs ?? 300;
     this.onStateChange = options.onStateChange;
+    this.rateWindowMs = options.rateWindowMs ?? 2000;
+    this.activeCountThreshold = options.activeCountThreshold ?? 20;
+    this.noOutputIdleMs = options.noOutputIdleMs ?? 2000;
+    this.userTypingTimeoutMs = options.userTypingTimeoutMs ?? 5000;
 
     // Compile asking patterns if provided
     if (options.activityPatterns?.askingPatterns) {

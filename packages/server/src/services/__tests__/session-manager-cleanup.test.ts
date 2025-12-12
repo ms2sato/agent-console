@@ -1,102 +1,81 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import * as fs from 'fs';
 import type { PersistedSession } from '../persistence-service.js';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 
-// Track which PIDs were killed
-const killedPids: number[] = [];
+// Test config directory
+const TEST_CONFIG_DIR = '/test/config';
+
+// Track process states for mocking
+let killedPids: number[] = [];
 const alivePids = new Set<number>();
 
-// Mock persistence service
-vi.mock('../persistence-service.js', () => ({
-  persistenceService: {
-    loadSessions: vi.fn(() => []),
-    saveSessions: vi.fn(),
-    removeSession: vi.fn(),
-    getSessionMetadata: vi.fn(),
-    clearSessions: vi.fn(),
-    loadRepositories: vi.fn(() => []),
-    saveRepositories: vi.fn(),
-    loadAgents: vi.fn(() => []),
-    saveAgents: vi.fn(),
-    getAgent: vi.fn(),
-    removeAgent: vi.fn(),
-  },
-}));
-
-// Mock bun-pty to prevent actual PTY spawning
-vi.mock('bun-pty', () => ({
-  spawn: vi.fn(() => ({
-    pid: 99999,
-    onData: vi.fn(() => ({ dispose: () => {} })),
-    onExit: vi.fn(() => ({ dispose: () => {} })),
-    write: vi.fn(),
-    resize: vi.fn(),
-    kill: vi.fn(),
-  })),
-}));
-
-// Mock agent-manager
-vi.mock('./agent-manager.js', () => ({
-  agentManager: {
-    getAgent: vi.fn(() => ({
-      id: 'claude-code',
-      name: 'Claude Code',
-      command: 'claude',
-      isBuiltIn: true,
-    })),
-    getDefaultAgent: vi.fn(() => ({
-      id: 'claude-code',
-      name: 'Claude Code',
-      command: 'claude',
-      isBuiltIn: true,
-    })),
-  },
-  CLAUDE_CODE_AGENT_ID: 'claude-code',
-}));
-
-// Mock config
-vi.mock('../lib/config.js', () => ({
-  getServerPid: vi.fn(() => 12345),
-  getConfigDir: vi.fn(() => '/tmp/test-config'),
-}));
-
-// Mock process.kill to track kills and simulate process existence
-const originalProcessKill = process.kill;
-beforeEach(() => {
-  // Reset modules FIRST to ensure fresh imports
-  vi.resetModules();
-
-  killedPids.length = 0;
-  alivePids.clear();
-
-  // @ts-expect-error - mocking process.kill
-  process.kill = vi.fn((pid: number, signal?: string | number) => {
-    if (signal === 0) {
-      // Check if process exists
-      if (!alivePids.has(pid)) {
-        const error = new Error('Process does not exist');
-        (error as NodeJS.ErrnoException).code = 'ESRCH';
-        throw error;
-      }
-      return true;
-    }
-    // Actual kill
+// Mock process-utils module
+mock.module('../../lib/process-utils.js', () => ({
+  processKill: (pid: number) => {
     killedPids.push(pid);
     return true;
-  });
-});
+  },
+  isProcessAlive: (pid: number) => alivePids.has(pid),
+}));
 
-afterEach(() => {
-  process.kill = originalProcessKill;
-});
+// Helper to check if a PID was killed
+function isKilled(pid: number): boolean {
+  return killedPids.includes(pid);
+}
+
+// Helper to mark a PID as alive
+function markPidAlive(pid: number): void {
+  alivePids.add(pid);
+}
+
+// Import counter for cache busting
+let importCounter = 0;
+
+// Shared mock PTY factory for the test module
+let ptyFactory: ReturnType<typeof createMockPtyFactory>;
 
 describe('SessionManager cleanup on initialization', () => {
-  // Note: session-manager.ts exports a singleton `sessionManager` which is created
-  // when the module is imported. The cleanup runs in the constructor, so we test
-  // by setting up mocks BEFORE importing the module.
+  beforeEach(() => {
+    // Setup memfs with config directory structure
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Reset tracking
+    killedPids = [];
+    alivePids.clear();
+
+    // Create fresh PTY factory
+    ptyFactory = createMockPtyFactory();
+  });
+
+  afterEach(() => {
+    cleanupMemfs();
+    delete process.env.AGENT_CONSOLE_HOME;
+  });
+
+  // Helper to persist sessions to memfs
+  function persistSessions(sessions: PersistedSession[]): void {
+    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(`${TEST_CONFIG_DIR}/sessions.json`, JSON.stringify(sessions));
+  }
+
+  // Helper to persist agents config
+  function persistAgents(): void {
+    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(`${TEST_CONFIG_DIR}/agents.json`, JSON.stringify([]));
+  }
+
+  // Helper to get fresh SessionManager class
+  async function getSessionManager() {
+    const module = await import(`../session-manager.js?v=${++importCounter}`);
+    return module.SessionManager;
+  }
 
   it('should skip sessions without serverPid (legacy sessions)', async () => {
-    const { persistenceService } = await import('../persistence-service.js');
-
     const legacySession: PersistedSession = {
       id: 'legacy-session',
       type: 'quick',
@@ -114,21 +93,21 @@ describe('SessionManager cleanup on initialization', () => {
       serverPid: undefined as unknown as number,
       createdAt: '2024-01-01T00:00:00.000Z',
     };
-    vi.mocked(persistenceService.loadSessions).mockReturnValue([legacySession]);
+    persistSessions([legacySession]);
+    persistAgents();
 
     // Mark the session process as alive
-    alivePids.add(11111);
+    markPidAlive(11111);
 
-    // Import session-manager - singleton is created and cleanup runs
-    await import('../session-manager.js');
+    // Create SessionManager - cleanup runs in constructor
+    const SessionManager = await getSessionManager();
+    new SessionManager(ptyFactory.provider);
 
     // Legacy session should NOT be killed
-    expect(killedPids).not.toContain(11111);
+    expect(isKilled(11111)).toBe(false);
   });
 
   it('should preserve sessions when parent server is still alive', async () => {
-    const { persistenceService } = await import('../persistence-service.js');
-
     const activeSession: PersistedSession = {
       id: 'active-session',
       type: 'worktree',
@@ -148,21 +127,21 @@ describe('SessionManager cleanup on initialization', () => {
       serverPid: 33333, // Parent server PID
       createdAt: '2024-01-01T00:00:00.000Z',
     };
-    vi.mocked(persistenceService.loadSessions).mockReturnValue([activeSession]);
+    persistSessions([activeSession]);
+    persistAgents();
 
     // Mark both session process and parent server as alive
-    alivePids.add(22222);
-    alivePids.add(33333);
+    markPidAlive(22222);
+    markPidAlive(33333);
 
-    await import('../session-manager.js');
+    const SessionManager = await getSessionManager();
+    new SessionManager(ptyFactory.provider);
 
     // Session should NOT be killed because parent server is alive
-    expect(killedPids).not.toContain(22222);
+    expect(isKilled(22222)).toBe(false);
   });
 
   it('should kill sessions when parent server is dead', async () => {
-    const { persistenceService } = await import('../persistence-service.js');
-
     const orphanSession: PersistedSession = {
       id: 'orphan-session',
       type: 'quick',
@@ -180,21 +159,21 @@ describe('SessionManager cleanup on initialization', () => {
       serverPid: 55555, // Dead parent server
       createdAt: '2024-01-01T00:00:00.000Z',
     };
-    vi.mocked(persistenceService.loadSessions).mockReturnValue([orphanSession]);
+    persistSessions([orphanSession]);
+    persistAgents();
 
     // Mark session process as alive, but parent server as dead
-    alivePids.add(44444);
+    markPidAlive(44444);
     // Note: 55555 is NOT in alivePids, so it's dead
 
-    await import('../session-manager.js');
+    const SessionManager = await getSessionManager();
+    new SessionManager(ptyFactory.provider);
 
     // Orphan session should be killed
-    expect(killedPids).toContain(44444);
+    expect(isKilled(44444)).toBe(true);
   });
 
   it('should handle mixed sessions correctly', async () => {
-    const { persistenceService } = await import('../persistence-service.js');
-
     const sessions: PersistedSession[] = [
       {
         id: 'legacy-session',
@@ -250,28 +229,31 @@ describe('SessionManager cleanup on initialization', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
       },
     ];
-    vi.mocked(persistenceService.loadSessions).mockReturnValue(sessions);
+    persistSessions(sessions);
+    persistAgents();
 
     // Set up process states
-    alivePids.add(10001); // Legacy session process
-    alivePids.add(10002); // Active session process
-    alivePids.add(10003); // Orphan session process
-    alivePids.add(20001); // Alive parent server
+    markPidAlive(10001); // Legacy session process
+    markPidAlive(10002); // Active session process
+    markPidAlive(10003); // Orphan session process
+    markPidAlive(20001); // Alive parent server
     // 20002 is dead (not in alivePids)
 
-    await import('../session-manager.js');
+    const SessionManager = await getSessionManager();
+    new SessionManager(ptyFactory.provider);
 
     // Only orphan session should be killed
-    expect(killedPids).toContain(10003);
-    expect(killedPids).not.toContain(10001);
-    expect(killedPids).not.toContain(10002);
+    expect(isKilled(10003)).toBe(true);
+    expect(isKilled(10001)).toBe(false);
+    expect(isKilled(10002)).toBe(false);
   });
 
   it('should handle empty sessions list', async () => {
-    const { persistenceService } = await import('../persistence-service.js');
-    vi.mocked(persistenceService.loadSessions).mockReturnValue([]);
+    persistSessions([]);
+    persistAgents();
 
-    await import('../session-manager.js');
+    const SessionManager = await getSessionManager();
+    new SessionManager(ptyFactory.provider);
 
     // No processes should be killed
     expect(killedPids.length).toBe(0);

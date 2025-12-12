@@ -1,4 +1,3 @@
-import { spawn, type IPty } from 'bun-pty';
 import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type {
@@ -23,6 +22,8 @@ import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
 import { getServerPid } from '../lib/config.js';
+import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
+import { processKill, isProcessAlive } from '../lib/process-utils.js';
 
 function getCurrentBranch(cwd: string): string {
   try {
@@ -39,7 +40,7 @@ interface InternalWorkerBase {
   id: string;
   name: string;
   createdAt: string;
-  pty: IPty;
+  pty: PtyInstance;
   outputBuffer: string;
   onData: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
@@ -92,8 +93,10 @@ interface WorkerCallbacks {
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private globalActivityCallback?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
+  private ptyProvider: PtyProvider;
 
-  constructor() {
+  constructor(ptyProvider: PtyProvider = bunPtyProvider) {
+    this.ptyProvider = ptyProvider;
     this.cleanupOrphanProcesses();
     this.initializeSessions();
   }
@@ -167,34 +170,22 @@ export class SessionManager {
         continue;
       }
 
-      if (this.isProcessAlive(session.serverPid)) {
+      if (isProcessAlive(session.serverPid)) {
         preservedCount++;
         continue;
       }
 
       // Kill all workers in this session
       for (const worker of session.workers) {
-        try {
-          process.kill(worker.pid, 0);
-          process.kill(worker.pid, 'SIGTERM');
+        if (isProcessAlive(worker.pid)) {
+          processKill(worker.pid, 'SIGTERM');
           console.log(`Killed orphan worker process: PID ${worker.pid} (worker ${worker.id}, session ${session.id})`);
           killedCount++;
-        } catch {
-          // Process doesn't exist
         }
       }
     }
 
     console.log(`Orphan process cleanup: killed ${killedCount} workers, preserved ${preservedCount} sessions (server PID: ${currentServerPid})`);
-  }
-
-  private isProcessAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   // ========== Session Lifecycle ==========
@@ -391,7 +382,7 @@ export class SessionManager {
 
     const shell = process.env.SHELL || '/bin/bash';
     const fullCommand = [agent.command, ...args].join(' ');
-    const ptyProcess = spawn(shell, ['-l', '-c', fullCommand], {
+    const ptyProcess = this.ptyProvider.spawn(shell, ['-l', '-c', fullCommand], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -445,7 +436,7 @@ export class SessionManager {
     const { id, name, createdAt, locationPath } = params;
 
     const shell = process.env.SHELL || '/bin/bash';
-    const ptyProcess = spawn(shell, ['-l'], {
+    const ptyProcess = this.ptyProvider.spawn(shell, ['-l'], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,

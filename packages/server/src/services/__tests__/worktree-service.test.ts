@@ -1,41 +1,40 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from 'bun:test';
 import * as fs from 'fs';
-import * as childProcess from 'child_process';
+import type { ExecSyncOptions, ExecOptions } from 'child_process';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
-// Mock config - must be before any imports that use it
-vi.mock('../../lib/config.js', () => ({
-  getConfigDir: vi.fn(() => '/test/config'),
-  getRepositoriesDir: vi.fn(() => '/test/config/repositories'),
-  getRepositoryDir: vi.fn((orgRepo: string) => `/test/config/repositories/${orgRepo}`),
+// Test config directory
+const TEST_CONFIG_DIR = '/test/config';
+
+// Create typed mock functions for child_process
+type ExecSyncFn = (cmd: string, options?: ExecSyncOptions) => string;
+type ExecFn = (cmd: string, options: ExecOptions, callback: (error: Error | null, stdout: string, stderr: string) => void) => void;
+
+const mockExecSync: Mock<ExecSyncFn> = mock(() => '');
+const mockExec: Mock<ExecFn> = mock(() => undefined);
+
+// Mock child_process module (built-in module - acceptable per testing guidelines)
+mock.module('child_process', () => ({
+  execSync: mockExecSync,
+  exec: mockExec,
 }));
 
-// Mock fs
-vi.mock('fs', () => ({
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  readFileSync: vi.fn(() => JSON.stringify({ indexes: {} })),
-  writeFileSync: vi.fn(),
-  readdirSync: vi.fn(() => []),
-  statSync: vi.fn(() => ({ isDirectory: () => true })),
-}));
-
-// Mock child_process
-vi.mock('child_process', () => ({
-  execSync: vi.fn(),
-  exec: vi.fn(),
-}));
+let importCounter = 0;
 
 describe('WorktreeService', () => {
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.clearAllMocks();
+  beforeEach(() => {
+    // Setup memfs with config directory structure
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    // Reset default mock implementations
-    vi.mocked(fs.existsSync).mockReturnValue(false);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ indexes: {} }));
+    // Reset mocks
+    mockExecSync.mockReset();
+    mockExec.mockReset();
 
     // Default git commands
-    vi.mocked(childProcess.execSync).mockImplementation((cmd) => {
+    mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') return '';
 
       if (cmd.includes('git worktree list --porcelain')) {
@@ -63,7 +62,7 @@ branch refs/heads/feature-1
       return '';
     });
 
-    vi.mocked(childProcess.exec).mockImplementation(
+    mockExec.mockImplementation(
       (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
         if (callback) {
           callback(null, '', '');
@@ -73,15 +72,27 @@ branch refs/heads/feature-1
     );
   });
 
+  afterEach(() => {
+    cleanupMemfs();
+  });
+
+  // Helper to get fresh module instance
+  async function getWorktreeService() {
+    const module = await import(`../worktree-service.js?v=${++importCounter}`);
+    return module.WorktreeService;
+  }
+
   describe('listWorktrees', () => {
     it('should only return main worktree and worktrees registered in index store', async () => {
-      // Mock index store with one registered worktree
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(
+      // Create index store with one registered worktree
+      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      fs.mkdirSync(indexStorePath, { recursive: true });
+      fs.writeFileSync(
+        `${indexStorePath}/worktree-indexes.json`,
         JSON.stringify({ indexes: { '/worktrees/feature-1': 1 } })
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const worktrees = service.listWorktrees('/repo/main', 'repo-1');
@@ -99,11 +110,15 @@ branch refs/heads/feature-1
     });
 
     it('should filter out worktrees not registered in index store', async () => {
-      // Mock empty index store - no worktrees registered
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ indexes: {} }));
+      // Create empty index store
+      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      fs.mkdirSync(indexStorePath, { recursive: true });
+      fs.writeFileSync(
+        `${indexStorePath}/worktree-indexes.json`,
+        JSON.stringify({ indexes: {} })
+      );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const worktrees = service.listWorktrees('/repo/main', 'repo-1');
@@ -115,7 +130,8 @@ branch refs/heads/feature-1
     });
 
     it('should handle detached HEAD worktree', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation((cmd) => {
+      mockExecSync.mockImplementation((cmd: string) => {
+        if (typeof cmd !== 'string') return '';
         if (cmd.includes('git worktree list --porcelain')) {
           return `worktree /repo/main
 HEAD abc1234567890
@@ -128,7 +144,7 @@ detached
         return '';
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const worktrees = service.listWorktrees('/repo/main', 'repo-1');
@@ -137,11 +153,11 @@ detached
     });
 
     it('should return empty array on error', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation(() => {
+      mockExecSync.mockImplementation(() => {
         throw new Error('git error');
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const worktrees = service.listWorktrees('/repo', 'repo-1');
@@ -153,7 +169,7 @@ detached
     it('should create worktree with existing branch', async () => {
       let capturedCommand = '';
 
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           capturedCommand = cmd;
           if (callback) callback(null, '', '');
@@ -161,7 +177,7 @@ detached
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = await service.createWorktree('/repo', 'feature-branch');
@@ -177,7 +193,7 @@ detached
     it('should create worktree with new branch from base', async () => {
       let capturedCommand = '';
 
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           capturedCommand = cmd;
           if (callback) callback(null, '', '');
@@ -185,7 +201,7 @@ detached
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       await service.createWorktree('/repo', 'new-feature', 'main');
@@ -195,14 +211,14 @@ detached
     });
 
     it('should return error on failure', async () => {
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(new Error('branch already exists'), '', 'fatal: branch already exists');
           return undefined as never;
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = await service.createWorktree('/repo', 'existing-branch');
@@ -214,14 +230,14 @@ detached
 
   describe('removeWorktree', () => {
     it('should remove worktree successfully', async () => {
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(null, '', '');
           return undefined as never;
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
@@ -233,7 +249,7 @@ detached
     it('should use force flag when specified', async () => {
       let capturedCommand = '';
 
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           capturedCommand = cmd;
           if (callback) callback(null, '', '');
@@ -241,7 +257,7 @@ detached
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       await service.removeWorktree('/repo', '/worktrees/feature', true);
@@ -250,14 +266,14 @@ detached
     });
 
     it('should return error on failure', async () => {
-      vi.mocked(childProcess.exec).mockImplementation(
+      mockExec.mockImplementation(
         (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
           if (callback) callback(new Error('worktree has changes'), '', 'fatal: worktree has uncommitted changes');
           return undefined as never;
         }
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
@@ -269,7 +285,7 @@ detached
 
   describe('listBranches', () => {
     it('should list local and remote branches', async () => {
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.listBranches('/repo');
@@ -281,11 +297,11 @@ detached
     });
 
     it('should return empty arrays on error', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation(() => {
+      mockExecSync.mockImplementation(() => {
         throw new Error('git error');
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.listBranches('/repo');
@@ -298,7 +314,7 @@ detached
 
   describe('getDefaultBranch', () => {
     it('should return default branch from symbolic ref', async () => {
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.getDefaultBranch('/repo');
@@ -306,7 +322,8 @@ detached
     });
 
     it('should fallback to main if symbolic ref fails', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation((cmd) => {
+      mockExecSync.mockImplementation((cmd: string) => {
+        if (typeof cmd !== 'string') return '';
         if (cmd.includes('symbolic-ref')) {
           throw new Error('not found');
         }
@@ -316,7 +333,7 @@ detached
         throw new Error('unknown command');
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.getDefaultBranch('/repo');
@@ -324,7 +341,8 @@ detached
     });
 
     it('should fallback to master if main does not exist', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation((cmd) => {
+      mockExecSync.mockImplementation((cmd: string) => {
+        if (typeof cmd !== 'string') return '';
         if (cmd.includes('symbolic-ref')) {
           throw new Error('not found');
         }
@@ -337,7 +355,7 @@ detached
         throw new Error('unknown command');
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.getDefaultBranch('/repo');
@@ -345,11 +363,11 @@ detached
     });
 
     it('should return null if no default branch found', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation((_cmd: string) => {
+      mockExecSync.mockImplementation(() => {
         throw new Error('not found');
       });
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.getDefaultBranch('/repo');
@@ -359,7 +377,7 @@ detached
 
   describe('isWorktreeOf', () => {
     it('should return true for valid worktree path', async () => {
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       // listWorktrees will return /repo/main and /worktrees/feature-1
@@ -368,13 +386,15 @@ detached
     });
 
     it('should return true for secondary worktree path', async () => {
-      // Mock index store with registered worktree
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(
+      // Create index store with registered worktree
+      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      fs.mkdirSync(indexStorePath, { recursive: true });
+      fs.writeFileSync(
+        `${indexStorePath}/worktree-indexes.json`,
         JSON.stringify({ indexes: { '/worktrees/feature-1': 1 } })
       );
 
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.isWorktreeOf('/repo/main', '/worktrees/feature-1');
@@ -382,7 +402,7 @@ detached
     });
 
     it('should return false for invalid worktree path', async () => {
-      const { WorktreeService } = await import('../worktree-service.js');
+      const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
       const result = service.isWorktreeOf('/repo/main', '/other/path');

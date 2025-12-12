@@ -1,65 +1,57 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { WSContext } from 'hono/ws';
-
-// Mock session manager
-vi.mock('../../services/session-manager.js', () => ({
-  sessionManager: {
-    getSession: vi.fn(),
-    getWorkerOutputBuffer: vi.fn(() => ''),
-    writeWorkerInput: vi.fn(),
-    resizeWorker: vi.fn(),
-    createSession: vi.fn(),
-    attachWorkerCallbacks: vi.fn(),
-  },
-}));
-
-// Mock fs for image handling tests
-vi.mock('node:fs', () => ({
-  writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-}));
+import { createWorkerMessageHandler, type WorkerHandlerDependencies } from '../worker-handler.js';
 
 describe('Worker Handler', () => {
   let mockWs: WSContext;
+  let mockSessionManager: WorkerHandlerDependencies['sessionManager'];
+  let mockWriteFileSync: ReturnType<typeof mock>;
+  let mockMkdirSync: ReturnType<typeof mock>;
+  let handleWorkerMessage: ReturnType<typeof createWorkerMessageHandler>;
 
   beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-
     // Create mock WebSocket context
     mockWs = {
-      send: vi.fn(),
-      close: vi.fn(),
+      send: mock(),
+      close: mock(),
       readyState: 1, // OPEN
     } as unknown as WSContext;
+
+    // Create mock session manager
+    mockSessionManager = {
+      writeWorkerInput: mock(),
+      resizeWorker: mock(),
+    };
+
+    // Create mock fs functions
+    mockWriteFileSync = mock();
+    mockMkdirSync = mock();
+
+    // Create handler with mocked dependencies
+    handleWorkerMessage = createWorkerMessageHandler({
+      sessionManager: mockSessionManager,
+      writeFileSync: mockWriteFileSync as unknown as WorkerHandlerDependencies['writeFileSync'],
+      mkdirSync: mockMkdirSync as unknown as WorkerHandlerDependencies['mkdirSync'],
+      tmpdir: () => '/tmp/test',
+    });
   });
 
   describe('handleWorkerMessage', () => {
-    it('should handle input message', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle input message', () => {
       const message = JSON.stringify({ type: 'input', data: 'hello world' });
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-      expect(sessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'hello world');
+      expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'hello world');
     });
 
-    it('should handle resize message', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle resize message', () => {
       const message = JSON.stringify({ type: 'resize', cols: 80, rows: 24 });
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-      expect(sessionManager.resizeWorker).toHaveBeenCalledWith('test-session', 'worker-1', 80, 24);
+      expect(mockSessionManager.resizeWorker).toHaveBeenCalledWith('test-session', 'worker-1', 80, 24);
     });
 
-    it('should handle image message', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const fs = await import('node:fs');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle image message', () => {
       // Base64 encoded small PNG
       const base64Image = 'iVBORw0KGgo='; // minimal base64 data
       const message = JSON.stringify({
@@ -71,53 +63,42 @@ describe('Worker Handler', () => {
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // Should write file
-      expect(fs.writeFileSync).toHaveBeenCalled();
+      expect(mockWriteFileSync).toHaveBeenCalled();
 
       // Should write file path to session
-      expect(sessionManager.writeWorkerInput).toHaveBeenCalled();
-      const writtenPath = vi.mocked(sessionManager.writeWorkerInput).mock.calls[0][2];
+      expect(mockSessionManager.writeWorkerInput).toHaveBeenCalled();
+      const writtenPath = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0][2];
       expect(writtenPath).toContain('.png');
     });
 
-    it('should handle ArrayBuffer message', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle ArrayBuffer message', () => {
       const message = new TextEncoder().encode(
         JSON.stringify({ type: 'input', data: 'test' })
       ).buffer;
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-      expect(sessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'test');
+      expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'test');
     });
 
-    it('should handle invalid JSON gracefully', async () => {
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle invalid JSON gracefully', () => {
       // Should not throw
       expect(() => {
         handleWorkerMessage(mockWs, 'test-session', 'worker-1', 'not valid json');
       }).not.toThrow();
     });
 
-    it('should handle unknown message type gracefully', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should handle unknown message type gracefully', () => {
       const message = JSON.stringify({ type: 'unknown', data: 'test' });
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // Should not call any methods
-      expect(sessionManager.writeWorkerInput).not.toHaveBeenCalled();
-      expect(sessionManager.resizeWorker).not.toHaveBeenCalled();
+      expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+      expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
     });
   });
 
   describe('getExtensionFromMimeType (via image handling)', () => {
-    it('should use correct extension for different mime types', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should use correct extension for different mime types', () => {
       const testCases = [
         { mimeType: 'image/png', expectedExt: '.png' },
         { mimeType: 'image/jpeg', expectedExt: '.jpg' },
@@ -127,7 +108,8 @@ describe('Worker Handler', () => {
       ];
 
       for (const { mimeType, expectedExt } of testCases) {
-        vi.mocked(sessionManager.writeWorkerInput).mockClear();
+        // Reset mock
+        (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mockClear();
 
         const message = JSON.stringify({
           type: 'image',
@@ -136,15 +118,12 @@ describe('Worker Handler', () => {
         });
         handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-        const writtenPath = vi.mocked(sessionManager.writeWorkerInput).mock.calls[0][2];
+        const writtenPath = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0][2];
         expect(writtenPath).toContain(expectedExt);
       }
     });
 
-    it('should fallback to png for unknown mime type', async () => {
-      const { sessionManager } = await import('../../services/session-manager.js');
-      const { handleWorkerMessage } = await import('../worker-handler.js');
-
+    it('should fallback to png for unknown mime type', () => {
       const message = JSON.stringify({
         type: 'image',
         data: 'dGVzdA==',
@@ -152,7 +131,7 @@ describe('Worker Handler', () => {
       });
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-      const writtenPath = vi.mocked(sessionManager.writeWorkerInput).mock.calls[0][2];
+      const writtenPath = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0][2];
       expect(writtenPath).toContain('.png');
     });
   });

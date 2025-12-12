@@ -1,8 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import * as childProcess from 'child_process';
 import type { AgentDefinition } from '@agent-console/shared';
 
-vi.mock('child_process');
+// Mock child_process module (built-in module - acceptable per testing guidelines)
+mock.module('child_process', () => ({
+  execSync: mock(() => ''),
+}));
 
 const mockAgent: AgentDefinition = {
   id: 'test-agent',
@@ -21,19 +24,27 @@ const mockAgentWithoutPrintMode: AgentDefinition = {
   registeredAt: new Date().toISOString(),
 };
 
+// Get reference to mock function for configuration
+const mockExecSync = childProcess.execSync as ReturnType<typeof mock>;
+let importCounter = 0;
+
 describe('session-metadata-suggester', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
-    vi.resetModules();
+    mockExecSync.mockReset();
   });
+
+  // Helper to get fresh module instance
+  async function getModule() {
+    return import(`../session-metadata-suggester.js?v=${++importCounter}`);
+  }
 
   describe('getBranches', () => {
     it('should parse git branch output', async () => {
-      vi.mocked(childProcess.execSync).mockReturnValue(
+      mockExecSync.mockReturnValue(
         '  main\n* feat/current-branch\n  fix/some-bug\n  remotes/origin/main\n'
       );
 
-      const { getBranches } = await import('../session-metadata-suggester.js');
+      const { getBranches } = await getModule();
 
       const branches = getBranches('/repo');
 
@@ -41,15 +52,15 @@ describe('session-metadata-suggester', () => {
       expect(branches).toContain('feat/current-branch');
       expect(branches).toContain('fix/some-bug');
       // Should not duplicate main from remotes
-      expect(branches.filter(b => b === 'main').length).toBe(1);
+      expect(branches.filter((b: string) => b === 'main').length).toBe(1);
     });
 
     it('should return empty array on error', async () => {
-      vi.mocked(childProcess.execSync).mockImplementation(() => {
+      mockExecSync.mockImplementation(() => {
         throw new Error('not a git repository');
       });
 
-      const { getBranches } = await import('../session-metadata-suggester.js');
+      const { getBranches } = await getModule();
 
       const branches = getBranches('/not-a-repo');
 
@@ -60,11 +71,11 @@ describe('session-metadata-suggester', () => {
   describe('suggestSessionMetadata', () => {
     it('should return branch and title from JSON response', async () => {
       // First call for git branch, second for agent
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n  feat/existing\n')
         .mockReturnValueOnce('{"branch": "feat/add-dark-mode", "title": "Add dark mode toggle"}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Add a dark mode toggle',
@@ -77,7 +88,7 @@ describe('session-metadata-suggester', () => {
       expect(result.error).toBeUndefined();
 
       // Verify command was built correctly
-      const calls = vi.mocked(childProcess.execSync).mock.calls;
+      const calls = mockExecSync.mock.calls;
       const agentCall = calls[1][0] as string;
       expect(agentCall).toContain('test-cli');
       expect(agentCall).toContain('-p');
@@ -86,7 +97,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error if agent does not support print mode', async () => {
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
@@ -99,11 +110,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should sanitize branch names with invalid characters', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('{"branch": "feat/Add Dark Mode!", "title": "Add dark mode"}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Add dark mode',
@@ -117,13 +128,13 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when agent fails', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockImplementationOnce(() => {
           throw new Error('command not found');
         });
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
@@ -136,11 +147,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when response has no JSON', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('plain text response without JSON');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
@@ -153,11 +164,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when JSON is invalid', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('{invalid json}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
@@ -170,11 +181,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when branch is missing from JSON', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('{"title": "Some title"}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
@@ -187,11 +198,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should use provided existingBranches instead of fetching', async () => {
-      vi.mocked(childProcess.execSync).mockReturnValue(
+      mockExecSync.mockReturnValue(
         '{"branch": "fix/auth-bug", "title": "Fix authentication bug"}'
       );
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Fix authentication',
@@ -201,17 +212,17 @@ describe('session-metadata-suggester', () => {
       });
 
       // Should only call execSync once (for agent), not for git branch
-      expect(childProcess.execSync).toHaveBeenCalledTimes(1);
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
       expect(result.branch).toBe('fix/auth-bug');
       expect(result.title).toBe('Fix authentication bug');
     });
 
     it('should extract JSON even with extra text', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('Here is the response:\n{"branch": "feat/feature", "title": "New feature"}\nDone.');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some feature',
@@ -224,11 +235,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should work with no existing branches', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('')  // No branches
         .mockReturnValueOnce('{"branch": "feat/new-feature", "title": "New feature"}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'New feature',
@@ -241,11 +252,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should handle title in same language as input (Japanese)', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('{"branch": "feat/dark-mode", "title": "ダークモードの追加"}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'ダークモードを追加する',
@@ -258,11 +269,11 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should handle title with trailing whitespace', async () => {
-      vi.mocked(childProcess.execSync)
+      mockExecSync
         .mockReturnValueOnce('  main\n')
         .mockReturnValueOnce('{"branch": "feat/feature", "title": "  Some title  "}');
 
-      const { suggestSessionMetadata } = await import('../session-metadata-suggester.js');
+      const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some feature',

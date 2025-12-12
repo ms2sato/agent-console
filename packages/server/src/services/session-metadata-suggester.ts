@@ -178,3 +178,8 @@ export async function suggestSessionMetadata(
 
 export { getBranches };
 export type { SessionMetadataSuggestionRequest, SessionMetadataSuggestionResponse };
+
+/**
+ * Function type for suggestSessionMetadata (for dependency injection)
+ */
+export type SuggestSessionMetadataFn = typeof suggestSessionMetadata;
