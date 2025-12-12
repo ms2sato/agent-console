@@ -16,10 +16,10 @@ import {
 } from '../lib/api';
 import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
 import { formatPath } from '../lib/path';
-import { AgentSelector } from '../components/AgentSelector';
 import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest } from '@agent-console/shared';
+import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -114,7 +114,6 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
 function DashboardPage() {
   const queryClient = useQueryClient();
   const [showAddRepo, setShowAddRepo] = useState(false);
-  const [newRepoPath, setNewRepoPath] = useState('');
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
@@ -277,7 +276,6 @@ function DashboardPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['repositories'] });
       setShowAddRepo(false);
-      setNewRepoPath('');
     },
   });
 
@@ -290,13 +288,8 @@ function DashboardPage() {
 
   const repositories = reposData?.repositories ?? [];
 
-  const handleAddRepo = async () => {
-    if (!newRepoPath.trim()) return;
-    try {
-      await registerMutation.mutateAsync(newRepoPath.trim());
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to register repository');
-    }
+  const handleAddRepo = async (data: CreateRepositoryRequest) => {
+    await registerMutation.mutateAsync(data.path);
   };
 
   return (
@@ -312,35 +305,11 @@ function DashboardPage() {
       </div>
 
       {showAddRepo && (
-        <div className="card mb-5">
-          <h2 className="mb-3 text-lg font-medium">Add Repository</h2>
-          <div className="flex gap-3 items-center">
-            <input
-              type="text"
-              placeholder="Repository path (e.g., /path/to/repo)"
-              value={newRepoPath}
-              onChange={(e) => setNewRepoPath(e.target.value)}
-              className="input flex-1"
-              onKeyDown={(e) => e.key === 'Enter' && handleAddRepo()}
-            />
-            <button
-              onClick={handleAddRepo}
-              disabled={registerMutation.isPending}
-              className="btn btn-primary"
-            >
-              {registerMutation.isPending ? 'Adding...' : 'Add'}
-            </button>
-            <button
-              onClick={() => {
-                setShowAddRepo(false);
-                setNewRepoPath('');
-              }}
-              className="btn btn-danger"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <AddRepositoryForm
+          isPending={registerMutation.isPending}
+          onSubmit={handleAddRepo}
+          onCancel={() => setShowAddRepo(false)}
+        />
       )}
 
       {repositories.length === 0 ? (
@@ -403,17 +372,9 @@ interface RepositoryCardProps {
   onUnregister: () => void;
 }
 
-type BranchNameMode = 'prompt' | 'custom' | 'existing';
-
 function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
-  const [branchNameMode, setBranchNameMode] = useState<BranchNameMode>('prompt');
-  const [customBranch, setCustomBranch] = useState('');
-  const [baseBranch, setBaseBranch] = useState('');
-  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
-  const [initialPrompt, setInitialPrompt] = useState('');
-  const [sessionTitle, setSessionTitle] = useState('');
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -421,17 +382,6 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   });
 
   const worktrees = worktreesData?.worktrees ?? [];
-
-  // Open dialog with default settings
-  const handleOpenCreateDialog = useCallback(() => {
-    setBranchNameMode('prompt');
-    setCustomBranch('');
-    setBaseBranch('');
-    setSelectedAgentId(undefined);
-    setInitialPrompt('');
-    setSessionTitle('');
-    setShowCreateWorktree(true);
-  }, []);
 
   const { data: branchesData } = useQuery({
     queryKey: ['branches', repository.id],
@@ -448,69 +398,14 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       queryClient.invalidateQueries({ queryKey: ['worktrees', repository.id] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowCreateWorktree(false);
-      setCustomBranch('');
-      setBaseBranch('');
-      setSelectedAgentId(undefined);
-      setInitialPrompt('');
-      setSessionTitle('');
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
       }
     },
   });
 
-  const handleCreateWorktree = async () => {
-    // Validate based on mode
-    if (branchNameMode === 'prompt') {
-      if (!initialPrompt.trim()) {
-        alert('Initial prompt is required for this mode');
-        return;
-      }
-    } else if (!customBranch.trim()) {
-      alert('Branch name is required');
-      return;
-    }
-
-    try {
-      let request: CreateWorktreeRequest;
-
-      switch (branchNameMode) {
-        case 'prompt':
-          request = {
-            mode: 'prompt',
-            initialPrompt: initialPrompt.trim(), // Required for this mode
-            baseBranch: baseBranch.trim() || undefined,
-            autoStartSession: true,
-            agentId: selectedAgentId,
-            title: sessionTitle.trim() || undefined,
-          };
-          break;
-        case 'custom':
-          request = {
-            mode: 'custom',
-            branch: customBranch.trim(),
-            baseBranch: baseBranch.trim() || undefined,
-            autoStartSession: true,
-            agentId: selectedAgentId,
-            initialPrompt: initialPrompt.trim() || undefined,
-            title: sessionTitle.trim() || undefined,
-          };
-          break;
-        case 'existing':
-          request = {
-            mode: 'existing',
-            branch: customBranch.trim(),
-            autoStartSession: true,
-            agentId: selectedAgentId,
-            initialPrompt: initialPrompt.trim() || undefined,
-            title: sessionTitle.trim() || undefined,
-          };
-          break;
-      }
-      await createWorktreeMutation.mutateAsync(request);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to create worktree');
-    }
+  const handleCreateWorktree = async (request: CreateWorktreeRequest) => {
+    await createWorktreeMutation.mutateAsync(request);
   };
 
   return (
@@ -522,7 +417,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         </div>
         <div className="flex gap-2">
           <button
-            onClick={handleOpenCreateDialog}
+            onClick={() => setShowCreateWorktree(true)}
             className="btn btn-primary text-sm"
           >
             + Worktree
@@ -534,124 +429,12 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       </div>
 
       {showCreateWorktree && (
-        <div className={`bg-slate-800 p-4 rounded mb-4 ${createWorktreeMutation.isPending ? 'opacity-70' : ''}`}>
-          <h3 className="text-sm font-medium mb-3">
-            {createWorktreeMutation.isPending ? 'Creating Worktree...' : 'Create Worktree'}
-          </h3>
-          <fieldset disabled={createWorktreeMutation.isPending} className="flex flex-col gap-3">
-            {/* Initial prompt input (available for all modes) */}
-            <div>
-              <label className="text-sm text-gray-400 block mb-1">Initial prompt (optional)</label>
-              <textarea
-                placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
-                value={initialPrompt}
-                onChange={(e) => setInitialPrompt(e.target.value)}
-                className="input w-full min-h-[80px] resize-y"
-                rows={3}
-              />
-            </div>
-
-            {/* Session title input */}
-            <div>
-              <label className="text-sm text-gray-400 block mb-1">Title (optional)</label>
-              <input
-                type="text"
-                placeholder="Session title"
-                value={sessionTitle}
-                onChange={(e) => setSessionTitle(e.target.value)}
-                className="input w-full"
-              />
-              {initialPrompt.trim() && (
-                <p className="text-xs text-gray-500 mt-1">Leave empty to generate from prompt</p>
-              )}
-            </div>
-
-            {/* Branch name mode selection */}
-            <div className="flex flex-col gap-2">
-              <span className="text-sm text-gray-400">Branch name:</span>
-              <label className={`text-sm flex items-center gap-2 ${!initialPrompt.trim() ? 'text-gray-600' : 'text-gray-400'}`}>
-                <input
-                  type="radio"
-                  name="branchMode"
-                  checked={branchNameMode === 'prompt'}
-                  onChange={() => setBranchNameMode('prompt')}
-                  disabled={!initialPrompt.trim()}
-                />
-                Generate from prompt {initialPrompt.trim() ? '(recommended)' : '(requires prompt)'}
-              </label>
-              <label className="text-sm text-gray-400 flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="branchMode"
-                  checked={branchNameMode === 'custom'}
-                  onChange={() => setBranchNameMode('custom')}
-                />
-                Custom name (new branch)
-              </label>
-              <label className="text-sm text-gray-400 flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="branchMode"
-                  checked={branchNameMode === 'existing'}
-                  onChange={() => setBranchNameMode('existing')}
-                />
-                Use existing branch
-              </label>
-            </div>
-
-            {/* Branch name input (only for custom/existing) */}
-            {(branchNameMode === 'custom' || branchNameMode === 'existing') && (
-              <input
-                type="text"
-                placeholder={branchNameMode === 'custom' ? 'New branch name' : 'Existing branch name'}
-                value={customBranch}
-                onChange={(e) => setCustomBranch(e.target.value)}
-                className="input"
-              />
-            )}
-
-            {/* Base branch input (only for new branches) */}
-            {branchNameMode !== 'existing' && (
-              <input
-                type="text"
-                placeholder={`Base branch (default: ${defaultBranch})`}
-                value={baseBranch}
-                onChange={(e) => setBaseBranch(e.target.value)}
-                className="input"
-              />
-            )}
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">Agent:</span>
-              <AgentSelector
-                value={selectedAgentId}
-                onChange={setSelectedAgentId}
-                className="flex-1"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleCreateWorktree}
-                className="btn btn-primary text-sm"
-              >
-                {createWorktreeMutation.isPending ? 'Creating...' : 'Create & Start Session'}
-              </button>
-              <button
-                onClick={() => {
-                  setShowCreateWorktree(false);
-                  setCustomBranch('');
-                  setBaseBranch('');
-                  setSelectedAgentId(undefined);
-                  setInitialPrompt('');
-                  setSessionTitle('');
-                }}
-                className="btn btn-danger text-sm"
-              >
-                Cancel
-              </button>
-            </div>
-          </fieldset>
-        </div>
+        <CreateWorktreeForm
+          defaultBranch={defaultBranch}
+          isPending={createWorktreeMutation.isPending}
+          onSubmit={handleCreateWorktree}
+          onCancel={() => setShowCreateWorktree(false)}
+        />
       )}
 
       {worktrees.length === 0 ? (
@@ -816,29 +599,18 @@ interface QuickSessionsSectionProps {
 function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
   const queryClient = useQueryClient();
   const [showAddSession, setShowAddSession] = useState(false);
-  const [newPath, setNewPath] = useState('');
-  const [isStarting, setIsStarting] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
 
-  const handleStartSession = async () => {
-    if (!newPath.trim()) return;
-    setIsStarting(true);
-    try {
-      const { session } = await createSession({
-        type: 'quick',
-        locationPath: newPath.trim(),
-        agentId: selectedAgentId,
-      });
+  const createSessionMutation = useMutation({
+    mutationFn: createSession,
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowAddSession(false);
-      setNewPath('');
-      setSelectedAgentId(undefined);
-      window.open(`/sessions/${session.id}`, '_blank');
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to start session');
-    } finally {
-      setIsStarting(false);
-    }
+      window.open(`/sessions/${data.session.id}`, '_blank');
+    },
+  });
+
+  const handleStartSession = async (data: CreateQuickSessionRequest) => {
+    await createSessionMutation.mutateAsync(data);
   };
 
   return (
@@ -854,47 +626,11 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
       </div>
 
       {showAddSession && (
-        <div className="card mb-4 bg-slate-800">
-          <h3 className="text-sm font-medium mb-3">Start Session in Any Directory</h3>
-          <div className="flex flex-col gap-3">
-            <input
-              type="text"
-              placeholder="Path (e.g., /path/to/project)"
-              value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
-              className="input"
-              onKeyDown={(e) => e.key === 'Enter' && handleStartSession()}
-              autoFocus
-            />
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">Agent:</span>
-              <AgentSelector
-                value={selectedAgentId}
-                onChange={setSelectedAgentId}
-                className="flex-1"
-              />
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={handleStartSession}
-                disabled={isStarting}
-                className="btn btn-primary text-sm"
-              >
-                {isStarting ? 'Starting...' : 'Start'}
-              </button>
-              <button
-                onClick={() => {
-                  setShowAddSession(false);
-                  setNewPath('');
-                  setSelectedAgentId(undefined);
-                }}
-                className="btn btn-danger text-sm"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <QuickSessionForm
+          isPending={createSessionMutation.isPending}
+          onSubmit={handleStartSession}
+          onCancel={() => setShowAddSession(false)}
+        />
       )}
 
       {sessions.length === 0 && !showAddSession && (

@@ -19,7 +19,8 @@
     "bun-pty": "^0.4.2",
     "hono": "^4.6.13",
     "open": "^11.0.0",
-    "uuid": "^11.0.3"
+    "uuid": "^11.0.3",
+    "valibot": "^1.2.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",

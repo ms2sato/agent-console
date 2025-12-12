@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { valibotResolver } from '@hookform/resolvers/valibot';
 import {
   Dialog,
   DialogContent,
@@ -16,6 +18,8 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
+import { FormField, Input } from '../ui/FormField';
+import { EditSessionFormSchema, type EditSessionFormData } from '../../schemas/edit-session-form';
 import { updateSessionMetadata } from '../../lib/api';
 
 export interface EditSessionDialogProps {
@@ -42,53 +46,55 @@ export function EditSessionDialog({
   onSessionRestart,
 }: EditSessionDialogProps) {
   const [mode, setMode] = useState<DialogMode>('edit');
-  const [branchName, setBranchName] = useState(currentBranch);
-  const [sessionTitle, setSessionTitle] = useState(currentTitle ?? '');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    watch,
+    formState: { errors },
+  } = useForm<EditSessionFormData>({
+    resolver: valibotResolver(EditSessionFormSchema),
+    defaultValues: {
+      title: currentTitle ?? '',
+      branch: currentBranch,
+    },
+    mode: 'onBlur',
+  });
+
+  const branchValue = watch('branch');
+  const titleValue = watch('title');
+
+  const branchChanged = branchValue?.trim() !== currentBranch;
+  const titleChanged = (titleValue?.trim() ?? '') !== (currentTitle ?? '');
 
   // Sync with current values when they change externally
   useEffect(() => {
-    setBranchName(currentBranch);
-  }, [currentBranch]);
-
-  useEffect(() => {
-    setSessionTitle(currentTitle ?? '');
-  }, [currentTitle]);
+    reset({
+      title: currentTitle ?? '',
+      branch: currentBranch,
+    });
+  }, [currentBranch, currentTitle, reset]);
 
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
       setMode('edit');
-      setBranchName(currentBranch);
-      setSessionTitle(currentTitle ?? '');
-      setError(null);
+      setSubmitError(null);
+      reset({
+        title: currentTitle ?? '',
+        branch: currentBranch,
+      });
     }
-  }, [open, currentBranch, currentTitle]);
-
-  const branchChanged = branchName.trim() !== currentBranch;
-  const titleChanged = sessionTitle.trim() !== (currentTitle ?? '');
+  }, [open, currentBranch, currentTitle, reset]);
 
   const handleClose = () => {
     onOpenChange(false);
   };
 
-  const handleSaveClick = () => {
-    const trimmedBranch = branchName.trim();
-
-    if (!trimmedBranch) {
-      setError('Branch name is required');
-      return;
-    }
-
-    // Validate branch name (basic git branch name rules)
-    if (!/^[a-zA-Z0-9._/-]+$/.test(trimmedBranch)) {
-      setError(
-        'Invalid branch name. Use alphanumeric, dots, underscores, slashes, or hyphens.'
-      );
-      return;
-    }
-
+  const onFormSubmit = (data: EditSessionFormData) => {
     // If no changes, just close
     if (!branchChanged && !titleChanged) {
       handleClose();
@@ -102,21 +108,21 @@ export function EditSessionDialog({
     }
 
     // Only title changed - save directly
-    handleSubmit();
+    handleSave(data);
   };
 
-  const handleSubmit = async () => {
+  const handleSave = async (data: EditSessionFormData) => {
     setIsSubmitting(true);
-    setError(null);
+    setSubmitError(null);
 
     try {
       const updates: { title?: string; branch?: string } = {};
 
       if (titleChanged) {
-        updates.title = sessionTitle.trim();
+        updates.title = data.title?.trim() ?? '';
       }
       if (branchChanged) {
-        updates.branch = branchName.trim();
+        updates.branch = data.branch;
       }
 
       const result = await updateSessionMetadata(sessionId, updates);
@@ -134,10 +140,19 @@ export function EditSessionDialog({
         onSessionRestart();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update session');
+      setSubmitError(err instanceof Error ? err.message : 'Failed to update session');
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleConfirmRestart = () => {
+    // Get current form values and save
+    const data: EditSessionFormData = {
+      title: titleValue?.trim(),
+      branch: branchValue?.trim() ?? currentBranch,
+    };
+    handleSave(data);
   };
 
   if (mode === 'confirm-restart') {
@@ -150,12 +165,12 @@ export function EditSessionDialog({
               Branch name change requires restarting the agent. Do you want to continue?
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {submitError && <p className="text-sm text-red-400" role="alert">{submitError}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isSubmitting}>
               Cancel
             </AlertDialogCancel>
-            <AlertDialogAction onClick={handleSubmit} disabled={isSubmitting}>
+            <AlertDialogAction onClick={handleConfirmRestart} disabled={isSubmitting}>
               {isSubmitting ? 'Saving...' : 'Restart & Save'}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -170,55 +185,43 @@ export function EditSessionDialog({
         <DialogHeader>
           <DialogTitle>Edit Session</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">
-              Title
-            </label>
-            <input
-              type="text"
-              value={sessionTitle}
-              onChange={(e) => setSessionTitle(e.target.value)}
-              className="input w-full"
+        <form onSubmit={handleSubmit(onFormSubmit)} className="space-y-4">
+          <FormField label="Title" error={errors.title}>
+            <Input
+              {...register('title')}
+              error={errors.title}
+              className="w-full"
               placeholder="Session title (optional)"
               autoFocus
             />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">
-              Branch Name
-            </label>
-            <input
-              type="text"
-              value={branchName}
-              onChange={(e) => setBranchName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !isSubmitting) {
-                  handleSaveClick();
-                }
-              }}
-              className="input w-full"
+          </FormField>
+          <FormField label="Branch Name" error={errors.branch}>
+            <Input
+              {...register('branch')}
+              error={errors.branch}
+              className="w-full"
               placeholder="Enter branch name"
             />
-            {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
-          </div>
-        </div>
-        <DialogFooter>
-          <button
-            onClick={handleClose}
-            className="btn bg-slate-600 hover:bg-slate-500"
-            disabled={isSubmitting}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSaveClick}
-            className="btn btn-primary"
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? 'Saving...' : 'Save'}
-          </button>
-        </DialogFooter>
+          </FormField>
+          {submitError && <p className="text-sm text-red-400" role="alert">{submitError}</p>}
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="btn bg-slate-600 hover:bg-slate-500"
+              disabled={isSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Saving...' : 'Save'}
+            </button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

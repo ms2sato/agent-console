@@ -316,6 +316,34 @@ describe('API Routes Integration', () => {
         expect(savedData.length).toBe(1);
         expect(savedData[0].locationPath).toBe('/test/path');
       });
+
+      it('should return 400 for invalid JSON body', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: 'invalid json',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Invalid JSON body');
+      });
+
+      it('should return 400 for empty request body', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Invalid JSON body');
+      });
     });
 
     describe('GET /api/sessions/:id', () => {
@@ -460,7 +488,7 @@ describe('API Routes Integration', () => {
         expect(patchRes.status).toBe(400);
 
         const body = (await patchRes.json()) as { error: string };
-        expect(body.error).toContain('branch cannot be empty');
+        expect(body.error).toContain('Branch name cannot be empty');
       });
 
       it('should return 404 for non-existent session', async () => {
@@ -887,7 +915,7 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(400);
 
         const body = (await res.json()) as { error: string };
-        expect(body.error).toContain('initialPrompt is required for prompt mode');
+        expect(body.error).toContain('Initial prompt is required for prompt mode');
       });
 
       it('should return 404 for non-existent repository', async () => {
