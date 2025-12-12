@@ -146,13 +146,15 @@ branch refs/heads/main
 
 describe('API Routes Integration', () => {
   beforeEach(() => {
-    // Setup memfs with config directory and mock git repo
+    // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
       [`${TEST_CONFIG_DIR}/agents.json`]: JSON.stringify([]),
       [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
       [`${TEST_CONFIG_DIR}/repositories.json`]: JSON.stringify([]),
       ...createMockGitRepoFiles(TEST_REPO_PATH),
+      // Common test path used by session creation tests
+      '/test/path/.keep': '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
@@ -272,6 +274,24 @@ describe('API Routes Integration', () => {
 
         // Verify PTY was spawned
         expect(mockPtyInstances.length).toBe(1);
+      });
+
+      it('should return 400 for non-existent locationPath', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/nonexistent/path/that/does/not/exist',
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Path does not exist');
       });
 
       it('should create a new worktree session', async () => {

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
 import { resolve as resolvePath, dirname } from 'node:path';
-import { existsSync, statSync } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
 import open from 'open';
 import type {
   CreateWorktreeRequest,
@@ -77,6 +77,14 @@ api.get('/sessions/:id', (c) => {
 // Create a new session
 api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
   const body = getValidatedBody<CreateSessionRequest>(c);
+
+  // Validate that locationPath exists
+  const absolutePath = resolvePath(body.locationPath);
+  try {
+    await access(absolutePath);
+  } catch {
+    throw new ValidationError(`Path does not exist: ${body.locationPath}`);
+  }
 
   const session = sessionManager.createSession(body);
 
@@ -204,7 +212,7 @@ api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c)
   const { path } = body;
 
   try {
-    const repository = repositoryManager.registerRepository(path);
+    const repository = await repositoryManager.registerRepository(path);
     return c.json({ repository }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
@@ -460,14 +468,10 @@ api.post('/system/open', async (c) => {
   // Resolve to absolute path
   const absolutePath = resolvePath(path);
 
-  // Check if path exists
-  if (!existsSync(absolutePath)) {
-    throw new NotFoundError('Path');
-  }
-
   try {
+    // Check if path exists and get stats in one call
+    const stats = await stat(absolutePath);
     // For files, open the containing directory
-    const stats = statSync(absolutePath);
     if (stats.isFile()) {
       // Open the parent directory
       await open(dirname(absolutePath));
@@ -477,6 +481,10 @@ api.post('/system/open', async (c) => {
     }
     return c.json({ success: true });
   } catch (error) {
+    // ENOENT means path does not exist
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      throw new NotFoundError('Path');
+    }
     const message = error instanceof Error ? error.message : 'Failed to open path';
     throw new ValidationError(message);
   }

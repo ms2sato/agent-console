@@ -41,7 +41,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const repo = manager.registerRepository(TEST_REPO_DIR);
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
 
       expect(repo.id).toBeDefined();
       expect(repo.name).toBe('repo');
@@ -53,9 +53,9 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      expect(() => {
-        manager.registerRepository('/non/existent/path');
-      }).toThrow('Path does not exist');
+      await expect(
+        manager.registerRepository('/non/existent/path')
+      ).rejects.toThrow('Path does not exist');
     });
 
     it('should throw error for non-git directory', async () => {
@@ -65,27 +65,27 @@ describe('RepositoryManager', () => {
       // Create a non-git directory
       fs.mkdirSync('/non-git-dir', { recursive: true });
 
-      expect(() => {
-        manager.registerRepository('/non-git-dir');
-      }).toThrow('Not a git repository');
+      await expect(
+        manager.registerRepository('/non-git-dir')
+      ).rejects.toThrow('Not a git repository');
     });
 
     it('should throw error for duplicate registration', async () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      manager.registerRepository(TEST_REPO_DIR);
+      await manager.registerRepository(TEST_REPO_DIR);
 
-      expect(() => {
-        manager.registerRepository(TEST_REPO_DIR);
-      }).toThrow('Repository already registered');
+      await expect(
+        manager.registerRepository(TEST_REPO_DIR)
+      ).rejects.toThrow('Repository already registered');
     });
 
     it('should persist repository via persistence service', async () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      manager.registerRepository(TEST_REPO_DIR);
+      await manager.registerRepository(TEST_REPO_DIR);
 
       // Check persisted data
       const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/repositories.json`, 'utf-8'));
@@ -99,7 +99,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const repo = manager.registerRepository(TEST_REPO_DIR);
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
       const result = manager.unregisterRepository(repo.id);
 
       expect(result).toBe(true);
@@ -118,7 +118,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const repo = manager.registerRepository(TEST_REPO_DIR);
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
       manager.unregisterRepository(repo.id);
 
       // Check persisted data
@@ -132,7 +132,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const registered = manager.registerRepository(TEST_REPO_DIR);
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
       const retrieved = manager.getRepository(registered.id);
 
       expect(retrieved).toEqual(registered);
@@ -161,7 +161,7 @@ describe('RepositoryManager', () => {
       const manager = new RepositoryManager();
 
       // Register first repo
-      const repo1 = manager.registerRepository(TEST_REPO_DIR);
+      const repo1 = await manager.registerRepository(TEST_REPO_DIR);
       expect(manager.getAllRepositories().length).toBe(1);
 
       // Create and register second repo
@@ -171,7 +171,7 @@ describe('RepositoryManager', () => {
         fs.writeFileSync(path, content);
       }
 
-      const repo2 = manager.registerRepository('/test/repo2');
+      const repo2 = await manager.registerRepository('/test/repo2');
 
       const repos = manager.getAllRepositories();
       expect(repos.length).toBe(2);
@@ -187,7 +187,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const registered = manager.registerRepository(TEST_REPO_DIR);
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
       const found = manager.findRepositoryByPath(TEST_REPO_DIR);
 
       expect(found).toEqual(registered);

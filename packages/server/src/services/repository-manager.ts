@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
+import { access } from 'fs/promises';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
@@ -56,18 +57,22 @@ export class RepositoryManager {
     persistenceService.saveRepositories(repos);
   }
 
-  registerRepository(repoPath: string): Repository {
+  async registerRepository(repoPath: string): Promise<Repository> {
     // Resolve to absolute path
     const absolutePath = path.resolve(repoPath);
 
     // Check if path exists
-    if (!fs.existsSync(absolutePath)) {
+    try {
+      await access(absolutePath);
+    } catch {
       throw new Error(`Path does not exist: ${absolutePath}`);
     }
 
     // Check if it's a git repository
     const gitDir = path.join(absolutePath, '.git');
-    if (!fs.existsSync(gitDir)) {
+    try {
+      await access(gitDir);
+    } catch {
       throw new Error(`Not a git repository: ${absolutePath}`);
     }
 
