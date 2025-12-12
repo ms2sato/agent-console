@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import {
   updateSessionMetadata,
@@ -17,6 +17,23 @@ import {
   CloseIcon,
   TrashIcon,
 } from './Icons';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from './ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from './ui/alert-dialog';
 
 interface SessionSettingsProps {
   sessionId: string;
@@ -49,8 +66,6 @@ export function SessionSettings({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
 
   // Sync with current values when they change externally
   useEffect(() => {
@@ -72,7 +87,8 @@ export function SessionSettings({
     };
 
     const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-settings-menu]')) {
         setIsMenuOpen(false);
       }
     };
@@ -88,34 +104,6 @@ export function SessionSettings({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isMenuOpen]);
-
-  // Close dialog on escape key or clicking outside
-  useEffect(() => {
-    if (!activeDialog) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleCloseDialog();
-      }
-    };
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (dialogRef.current && !dialogRef.current.contains(e.target as Node)) {
-        handleCloseDialog();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    const timeout = setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 0);
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      clearTimeout(timeout);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [activeDialog]);
 
   const handleCloseDialog = useCallback(() => {
     setActiveDialog(null);
@@ -286,7 +274,7 @@ export function SessionSettings({
   };
 
   return (
-    <div className="relative" ref={menuRef}>
+    <div className="relative" data-settings-menu>
       {/* Settings button */}
       <button
         onClick={() => setIsMenuOpen(!isMenuOpen)}
@@ -349,15 +337,13 @@ export function SessionSettings({
       )}
 
       {/* Edit Session Dialog */}
-      {activeDialog === 'edit' && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
-          <div className="fixed inset-0 bg-black/50" />
-          <div
-            ref={dialogRef}
-            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
-          >
-            <h2 className="text-lg font-medium mb-4">Edit Session</h2>
-            <div className="mb-4">
+      <Dialog open={activeDialog === 'edit'} onOpenChange={(open) => !open && handleCloseDialog()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Session</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
               <label className="block text-sm text-gray-400 mb-2">
                 Title
               </label>
@@ -370,7 +356,7 @@ export function SessionSettings({
                 autoFocus
               />
             </div>
-            <div className="mb-4">
+            <div>
               <label className="block text-sm text-gray-400 mb-2">
                 Branch Name
               </label>
@@ -388,184 +374,144 @@ export function SessionSettings({
               />
               {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
             </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={handleCloseDialog}
-                className="btn bg-slate-600 hover:bg-slate-500"
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleEditSaveClick}
-                className="btn btn-primary"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Saving...' : 'Save'}
-              </button>
-            </div>
           </div>
-        </div>
-      )}
+          <DialogFooter>
+            <button
+              onClick={handleCloseDialog}
+              className="btn bg-slate-600 hover:bg-slate-500"
+              disabled={isSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleEditSaveClick}
+              className="btn btn-primary"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Saving...' : 'Save'}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Confirm Restart Dialog (shown when branch is changed) */}
-      {activeDialog === 'confirm-restart' && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
-          <div className="fixed inset-0 bg-black/50" />
-          <div
-            ref={dialogRef}
-            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
-          >
-            <h2 className="text-lg font-medium mb-4">Restart Required</h2>
-            <p className="text-gray-400 mb-6">
+      <AlertDialog open={activeDialog === 'confirm-restart'} onOpenChange={(open) => !open && setActiveDialog('edit')}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart Required</AlertDialogTitle>
+            <AlertDialogDescription>
               Branch name change requires restarting the agent. Do you want to continue?
-            </p>
-            {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setActiveDialog('edit')}
-                className="btn bg-slate-600 hover:bg-slate-500"
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleEditSubmit}
-                className="btn btn-primary"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Saving...' : 'Restart & Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleEditSubmit} disabled={isSubmitting}>
+              {isSubmitting ? 'Saving...' : 'Restart & Save'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Restart Session Dialog */}
-      {activeDialog === 'restart' && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
-          <div className="fixed inset-0 bg-black/50" />
-          <div
-            ref={dialogRef}
-            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
-          >
-            <h2 className="text-lg font-medium mb-4">Restart Session</h2>
-            <p className="text-gray-400 mb-6">
+      <AlertDialog open={activeDialog === 'restart'} onOpenChange={(open) => !open && handleCloseDialog()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart Session</AlertDialogTitle>
+            <AlertDialogDescription>
               How would you like to restart this session?
-            </p>
-            {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={handleCloseDialog}
-                className="btn bg-slate-600 hover:bg-slate-500"
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleRestart(false)}
-                className="btn bg-slate-600 hover:bg-slate-500"
-                disabled={isSubmitting}
-              >
-                New Session
-              </button>
-              <button
-                onClick={() => handleRestart(true)}
-                className="btn btn-primary"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Restarting...' : 'Continue (-c)'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>
+              Cancel
+            </AlertDialogCancel>
+            <button
+              onClick={() => handleRestart(false)}
+              className="btn bg-slate-600 hover:bg-slate-500"
+              disabled={isSubmitting}
+            >
+              New Session
+            </button>
+            <AlertDialogAction onClick={() => handleRestart(true)} disabled={isSubmitting}>
+              {isSubmitting ? 'Restarting...' : 'Continue (-c)'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Close Session Dialog */}
-      {activeDialog === 'close' && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
-          <div className="fixed inset-0 bg-black/50" />
-          <div
-            ref={dialogRef}
-            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
-          >
-            <h2 className="text-lg font-medium mb-4">Close Session</h2>
-            <p className="text-gray-400 mb-2">
-              Are you sure you want to close this session?
-            </p>
-            <p className="text-sm text-gray-500 mb-6">
-              This will stop the Claude process. The worktree will remain and
-              you can start a new session from it later.
-            </p>
-            {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={handleCloseDialog}
-                className="btn bg-slate-600 hover:bg-slate-500"
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCloseSession}
-                className="btn btn-primary"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Closing...' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AlertDialog open={activeDialog === 'close'} onOpenChange={(open) => !open && handleCloseDialog()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close Session</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Are you sure you want to close this session?</p>
+                <p className="text-xs text-gray-500">
+                  This will stop the Claude process. The worktree will remain and
+                  you can start a new session from it later.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleCloseSession} disabled={isSubmitting}>
+              {isSubmitting ? 'Closing...' : 'Close'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete Worktree Dialog */}
-      {activeDialog === 'delete-worktree' && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
-          <div className="fixed inset-0 bg-black/50" />
-          <div
-            ref={dialogRef}
-            className="relative bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
-          >
-            <h2 className="text-lg font-medium mb-4 text-red-400">Delete Worktree</h2>
-            <p className="text-gray-400 mb-2">
-              Are you sure you want to delete this worktree?
-            </p>
-            <p className="text-sm text-gray-500 mb-2">
-              This will permanently delete the worktree directory and all its contents.
-            </p>
-            <p className="text-sm text-red-400 mb-6">
-              This action cannot be undone.
-            </p>
-            {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
-            <div className="flex justify-end gap-2">
+      <AlertDialog open={activeDialog === 'delete-worktree'} onOpenChange={(open) => !open && handleCloseDialog()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-red-400">Delete Worktree</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Are you sure you want to delete this worktree?</p>
+                <p className="text-xs text-gray-500">
+                  This will permanently delete the worktree directory and all its contents.
+                </p>
+                <p className="text-xs text-red-400">
+                  This action cannot be undone.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>
+              Cancel
+            </AlertDialogCancel>
+            {error?.includes('untracked') ? (
               <button
-                onClick={handleCloseDialog}
-                className="btn bg-slate-600 hover:bg-slate-500"
+                onClick={() => handleDeleteWorktree(true)}
+                className="btn btn-danger"
                 disabled={isSubmitting}
               >
-                Cancel
+                {isSubmitting ? 'Deleting...' : 'Force Delete'}
               </button>
-              {error?.includes('untracked') ? (
-                <button
-                  onClick={() => handleDeleteWorktree(true)}
-                  className="btn btn-danger"
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? 'Deleting...' : 'Force Delete'}
-                </button>
-              ) : (
-                <button
-                  onClick={() => handleDeleteWorktree(false)}
-                  className="btn btn-danger"
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? 'Deleting...' : 'Delete Worktree'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+            ) : (
+              <button
+                onClick={() => handleDeleteWorktree(false)}
+                className="btn btn-danger"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Deleting...' : 'Delete Worktree'}
+              </button>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

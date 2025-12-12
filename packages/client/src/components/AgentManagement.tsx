@@ -3,16 +3,19 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { registerAgent, unregisterAgent } from '../lib/api';
 import { useAgents } from './AgentSelector';
+import { ConfirmDialog } from './ui/confirm-dialog';
 
 export function AgentManagement() {
   const queryClient = useQueryClient();
   const { agents, isLoading } = useAgents();
   const [showAddForm, setShowAddForm] = useState(false);
+  const [agentToDelete, setAgentToDelete] = useState<AgentDefinition | null>(null);
 
   const unregisterMutation = useMutation({
     mutationFn: unregisterAgent,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] });
+      setAgentToDelete(null);
     },
   });
 
@@ -21,9 +24,7 @@ export function AgentManagement() {
       alert('Built-in agents cannot be deleted');
       return;
     }
-    if (confirm(`Delete agent "${agent.name}"?`)) {
-      unregisterMutation.mutate(agent.id);
-    }
+    setAgentToDelete(agent);
   };
 
   if (isLoading) {
@@ -66,6 +67,22 @@ export function AgentManagement() {
       {agents.length === 0 && (
         <p className="text-sm text-gray-500">No agents registered</p>
       )}
+
+      {/* Delete Agent Confirmation */}
+      <ConfirmDialog
+        open={agentToDelete !== null}
+        onOpenChange={(open) => !open && setAgentToDelete(null)}
+        title="Delete Agent"
+        description={`Are you sure you want to delete "${agentToDelete?.name}"?`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => {
+          if (agentToDelete) {
+            unregisterMutation.mutate(agentToDelete.id);
+          }
+        }}
+        isLoading={unregisterMutation.isPending}
+      />
     </div>
   );
 }
