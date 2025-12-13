@@ -210,6 +210,125 @@ export async function removeWorktree(
 }
 
 // ============================================================
+// Diff Operations
+// ============================================================
+
+/**
+ * Get the merge-base commit of two refs (their common ancestor).
+ * Useful for finding where a branch diverged from the base branch.
+ *
+ * @example
+ * const mergeBase = await getMergeBase('main', 'HEAD', repoPath);
+ */
+export async function getMergeBase(ref1: string, ref2: string, cwd: string): Promise<string> {
+  return git(['merge-base', ref1, ref2], cwd);
+}
+
+/**
+ * Get the merge-base commit of two refs, returning null on failure.
+ */
+export async function getMergeBaseSafe(ref1: string, ref2: string, cwd: string): Promise<string | null> {
+  return gitSafe(['merge-base', ref1, ref2], cwd);
+}
+
+/**
+ * Get unified diff between a base ref and working directory (including staged and unstaged).
+ * If targetRef is provided, compares base to that ref instead of working directory.
+ *
+ * @example
+ * // Diff from merge-base to working directory
+ * const diff = await getDiff(mergeBase, undefined, repoPath);
+ *
+ * // Diff between two commits
+ * const diff = await getDiff(commit1, commit2, repoPath);
+ */
+export async function getDiff(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
+  if (targetRef) {
+    return git(['diff', baseRef, targetRef], cwd);
+  } else {
+    // Diff from baseRef to working directory (staged + unstaged)
+    return git(['diff', baseRef], cwd);
+  }
+}
+
+/**
+ * Get diff statistics in numstat format (machine-readable).
+ * Returns lines of: additions<TAB>deletions<TAB>filename
+ * For binary files, returns "-<TAB>-<TAB>filename"
+ *
+ * @example
+ * const stats = await getDiffNumstat(mergeBase, undefined, repoPath);
+ * // "12\t5\tsrc/index.ts"
+ * // "0\t3\tREADME.md"
+ */
+export async function getDiffNumstat(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
+  if (targetRef) {
+    return git(['diff', '--numstat', baseRef, targetRef], cwd);
+  } else {
+    return git(['diff', '--numstat', baseRef], cwd);
+  }
+}
+
+/**
+ * Get list of staged files with their status.
+ * Returns lines of: status<TAB>filename (e.g., "M\tsrc/index.ts")
+ *
+ * Status codes: A=added, M=modified, D=deleted, R=renamed, C=copied
+ */
+export async function getStagedFiles(cwd: string): Promise<string> {
+  return git(['diff', '--cached', '--name-status'], cwd);
+}
+
+/**
+ * Get list of unstaged files (modified tracked files).
+ * Returns lines of: status<TAB>filename
+ */
+export async function getUnstagedFiles(cwd: string): Promise<string> {
+  return git(['diff', '--name-status'], cwd);
+}
+
+/**
+ * Get list of untracked files.
+ */
+export async function getUntrackedFiles(cwd: string): Promise<string[]> {
+  try {
+    const output = await git(['ls-files', '--others', '--exclude-standard'], cwd);
+    return output.split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get summary of changes between base ref and working directory.
+ * Includes both tracked (staged/unstaged) and untracked files.
+ */
+export interface DiffFileSummary {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked';
+  oldPath?: string; // For renamed files
+  additions: number;
+  deletions: number;
+  isBinary: boolean;
+  isStaged: boolean;
+  isUnstaged: boolean;
+}
+
+export interface DiffSummary {
+  files: DiffFileSummary[];
+  totalAdditions: number;
+  totalDeletions: number;
+}
+
+/**
+ * Parse git status output to understand staged/unstaged state.
+ * Uses porcelain format for reliable parsing.
+ */
+export async function getStatusPorcelain(cwd: string): Promise<string> {
+  return git(['status', '--porcelain', '-uall'], cwd);
+}
+
+// ============================================================
 // Org/Repo Extraction
 // ============================================================
 

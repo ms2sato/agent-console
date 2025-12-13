@@ -185,7 +185,7 @@ describe('SessionManager', () => {
         name: 'Shell',
       };
 
-      const worker = manager.createWorker(session.id, workerRequest);
+      const worker = await manager.createWorker(session.id, workerRequest);
 
       expect(worker).not.toBeNull();
       expect(worker?.type).toBe('terminal');
@@ -200,7 +200,7 @@ describe('SessionManager', () => {
         name: 'Shell',
       };
 
-      const worker = manager.createWorker('non-existent', workerRequest);
+      const worker = await manager.createWorker('non-existent', workerRequest);
       expect(worker).toBeNull();
     });
   });

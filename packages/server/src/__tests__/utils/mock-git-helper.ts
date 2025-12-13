@@ -66,6 +66,16 @@ export const mockGit = {
     return null;
   }) as Mock<(remoteUrl: string) => string | null>,
   getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')) as Mock<AsyncStringNullFn>,
+
+  // Diff operations
+  getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string>>,
+  getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string | null>>,
+  getDiff: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string) => Promise<string>>,
+  getDiffNumstat: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string) => Promise<string>>,
+  getStagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
+  getUnstagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
+  getUntrackedFiles: mock(() => Promise.resolve([])) as Mock<AsyncStringArrayFn>,
+  getStatusPorcelain: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
 };
 
 // Register mock once at module load time
@@ -94,6 +104,14 @@ export function resetGitMocks(): void {
   mockGit.removeWorktree.mockReset();
   mockGit.parseOrgRepo.mockReset();
   mockGit.getOrgRepoFromPath.mockReset();
+  mockGit.getMergeBase.mockReset();
+  mockGit.getMergeBaseSafe.mockReset();
+  mockGit.getDiff.mockReset();
+  mockGit.getDiffNumstat.mockReset();
+  mockGit.getStagedFiles.mockReset();
+  mockGit.getUnstagedFiles.mockReset();
+  mockGit.getUntrackedFiles.mockReset();
+  mockGit.getStatusPorcelain.mockReset();
 
   // Set default implementations
   mockGit.git.mockImplementation(() => Promise.resolve(''));
@@ -117,4 +135,12 @@ export function resetGitMocks(): void {
     return null;
   });
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/repo'));
+  mockGit.getMergeBase.mockImplementation(() => Promise.resolve('abc1234'));
+  mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('abc1234'));
+  mockGit.getDiff.mockImplementation(() => Promise.resolve(''));
+  mockGit.getDiffNumstat.mockImplementation(() => Promise.resolve(''));
+  mockGit.getStagedFiles.mockImplementation(() => Promise.resolve(''));
+  mockGit.getUnstagedFiles.mockImplementation(() => Promise.resolve(''));
+  mockGit.getUntrackedFiles.mockImplementation(() => Promise.resolve([]));
+  mockGit.getStatusPorcelain.mockImplementation(() => Promise.resolve(''));
 }

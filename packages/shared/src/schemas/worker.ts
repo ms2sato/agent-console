@@ -29,11 +29,22 @@ export const CreateTerminalWorkerRequestSchema = v.object({
 });
 
 /**
+ * Schema for creating a git diff worker
+ */
+export const CreateGitDiffWorkerRequestSchema = v.object({
+  name: v.optional(v.string()),
+  type: v.literal('git-diff'),
+  // baseCommit is optional - if not provided, server calculates merge-base with default branch
+  baseCommit: v.optional(v.string()),
+});
+
+/**
  * Schema for creating any worker (union)
  */
 export const CreateWorkerRequestSchema = v.union([
   CreateAgentWorkerRequestSchema,
   CreateTerminalWorkerRequestSchema,
+  CreateGitDiffWorkerRequestSchema,
 ]);
 
 /**
@@ -46,5 +57,6 @@ export const RestartWorkerRequestSchema = v.object({
 // Inferred types from schemas
 export type CreateAgentWorkerRequest = v.InferOutput<typeof CreateAgentWorkerRequestSchema>;
 export type CreateTerminalWorkerRequest = v.InferOutput<typeof CreateTerminalWorkerRequestSchema>;
+export type CreateGitDiffWorkerRequest = v.InferOutput<typeof CreateGitDiffWorkerRequestSchema>;
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;

@@ -98,3 +98,24 @@ export function TrashIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+
+export function DiffIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      {/* Plus sign (addition) */}
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2.5}
+        d="M5 8h6M8 5v6"
+      />
+      {/* Minus sign (deletion) */}
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2.5}
+        d="M13 16h6"
+      />
+    </svg>
+  );
+}
