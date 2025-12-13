@@ -1,5 +1,8 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { ApiError } from './errors.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('error-handler');
 
 /**
  * Error response format
@@ -26,14 +29,22 @@ export const errorHandler: MiddlewareHandler = async (c, next) => {
  */
 function handleError(c: Context, error: unknown): Response {
   if (error instanceof ApiError) {
+    // Log API errors at warn level (expected errors)
+    logger.warn(
+      { method: c.req.method, path: c.req.path, status: error.statusCode, message: error.message },
+      'API error'
+    );
     const body: ErrorResponse = {
       error: error.message,
     };
     return c.json(body, error.statusCode as 400 | 404 | 409 | 500);
   }
 
-  // Log unexpected errors
-  console.error('Unexpected error:', error);
+  // Log unexpected errors at error level
+  logger.error(
+    { method: c.req.method, path: c.req.path, err: error },
+    'Unexpected error'
+  );
 
   // Return generic error for non-API errors
   const message = error instanceof Error ? error.message : 'Unknown error';

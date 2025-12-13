@@ -35,6 +35,9 @@ import {
   startWatching,
   stopWatching,
 } from './git-diff-service.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('session-manager');
 
 // Base for all workers
 interface InternalWorkerBase {
@@ -157,7 +160,7 @@ export class SessionManager {
       this.sessions.set(session.id, internalSession);
     }
 
-    console.log(`Initialized ${this.sessions.size} sessions from persistence`);
+    logger.info({ count: this.sessions.size }, 'Initialized sessions from persistence');
   }
 
   /**
@@ -178,7 +181,7 @@ export class SessionManager {
 
     for (const session of persistedSessions) {
       if (!session.serverPid) {
-        console.warn(`[WARN] Session ${session.id} has no serverPid (legacy session), skipping cleanup`);
+        logger.warn({ sessionId: session.id }, 'Session has no serverPid (legacy session), skipping cleanup');
         preservedCount++;
         continue;
       }
@@ -193,13 +196,13 @@ export class SessionManager {
         if (worker.type === 'git-diff') continue; // Git diff workers have no process
         if (isProcessAlive(worker.pid)) {
           processKill(worker.pid, 'SIGTERM');
-          console.log(`Killed orphan worker process: PID ${worker.pid} (worker ${worker.id}, session ${session.id})`);
+          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
           killedCount++;
         }
       }
     }
 
-    console.log(`Orphan process cleanup: killed ${killedCount} workers, preserved ${preservedCount} sessions (server PID: ${currentServerPid})`);
+    logger.info({ killedCount, preservedCount, serverPid: currentServerPid }, 'Orphan process cleanup completed');
   }
 
   // ========== Session Lifecycle ==========
@@ -249,7 +252,7 @@ export class SessionManager {
 
     this.persistSession(internalSession);
 
-    console.log(`[${new Date().toISOString()}] Session created: ${id}`);
+    logger.info({ sessionId: id, type: internalSession.type }, 'Session created');
 
     return this.toPublicSession(internalSession);
   }
@@ -283,7 +286,7 @@ export class SessionManager {
 
     this.sessions.delete(id);
     persistenceService.removeSession(id);
-    console.log(`Session deleted: ${id}`);
+    logger.info({ sessionId: id }, 'Session deleted');
     return true;
   }
 
@@ -338,7 +341,7 @@ export class SessionManager {
     session.workers.set(workerId, worker);
     this.persistSession(session);
 
-    console.log(`[${new Date().toISOString()}] Worker created: ${workerId} (type: ${request.type}, session: ${sessionId})`);
+    logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
 
     return this.toPublicWorker(worker);
   }
@@ -369,7 +372,7 @@ export class SessionManager {
     session.workers.delete(workerId);
     this.persistSession(session);
 
-    console.log(`Worker deleted: ${workerId} (session: ${sessionId})`);
+    logger.info({ workerId, sessionId }, 'Worker deleted');
     return true;
   }
 
@@ -459,7 +462,7 @@ export class SessionManager {
       const delay = agent.initialPromptDelayMs ?? 1000;
       setTimeout(() => {
         worker.pty.write(initialPrompt + '\r');
-        console.log(`[${new Date().toISOString()}] Initial prompt sent to worker ${worker.id}`);
+        logger.debug({ workerId: worker.id }, 'Initial prompt sent to worker');
       }, delay);
     }
 
@@ -532,7 +535,7 @@ export class SessionManager {
     // Start file watching for this worker
     startWatching(locationPath, () => {
       // Callback will be used when WebSocket handler is connected
-      console.log(`[GitDiffWorker] File change detected in ${locationPath}`);
+      logger.debug({ locationPath }, 'File change detected in git-diff worker');
     });
 
     return worker;
@@ -554,7 +557,7 @@ export class SessionManager {
 
     worker.pty.onExit(({ exitCode, signal }) => {
       const signalStr = signal !== undefined ? String(signal) : null;
-      console.log(`[${new Date().toISOString()}] Worker exited: ${worker.id} (PID: ${worker.pty.pid}, exitCode: ${exitCode}, signal: ${signalStr})`);
+      logger.info({ workerId: worker.id, pid: worker.pty.pid, exitCode, signal: signalStr }, 'Worker exited');
 
       if (worker.type === 'agent') {
         worker.activityDetector.dispose();
@@ -664,7 +667,7 @@ export class SessionManager {
     session.workers.set(workerId, newWorker);
     this.persistSession(session);
 
-    console.log(`[${new Date().toISOString()}] Agent worker restarted: ${workerId} (session: ${sessionId})${continueConversation ? ' [continuing]' : ''}`);
+    logger.info({ workerId, sessionId, continueConversation }, 'Agent worker restarted');
 
     return this.toPublicWorker(newWorker);
   }
@@ -735,7 +738,7 @@ export class SessionManager {
         const agentWorker = Array.from(session.workers.values()).find(w => w.type === 'agent');
         if (agentWorker) {
           this.restartAgentWorker(sessionId, agentWorker.id, true);
-          console.log(`[${new Date().toISOString()}] Agent worker auto-restarted after branch rename: ${agentWorker.id}`);
+          logger.info({ workerId: agentWorker.id, sessionId }, 'Agent worker auto-restarted after branch rename');
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';

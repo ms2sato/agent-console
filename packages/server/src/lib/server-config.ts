@@ -16,6 +16,8 @@ export const serverConfig = {
   PORT: process.env.PORT || '3457',
   /** Server's host binding */
   HOST: process.env.HOST ?? 'localhost',
+  /** Log level (trace, debug, info, warn, error, fatal) */
+  LOG_LEVEL: process.env.LOG_LEVEL,
 } as const;
 
 /**

@@ -1,4 +1,7 @@
 import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('activity-detector');
 
 // ANSI escape sequence removal regex
 const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
@@ -76,7 +79,7 @@ export class ActivityDetector {
 
     // Debug: Log all incoming output
     if (cleanData.length > 0) {
-      console.log(`[ActivityDetector] Received output (${cleanData.length} chars): ${JSON.stringify(cleanData)}`);
+      logger.trace({ charCount: cleanData.length, data: cleanData }, 'Received output');
     }
 
     // Add to buffer for pattern analysis
@@ -96,7 +99,7 @@ export class ActivityDetector {
     // Count outputs in window
     const outputCount = this.outputHistory.length;
 
-    console.log(`[ActivityDetector] Output count: ${outputCount} in ${this.rateWindowMs}ms window`);
+    logger.trace({ outputCount, rateWindowMs: this.rateWindowMs }, 'Output count in window');
 
     // Count-based state transitions (skip if user is typing or rate detection is suppressed)
     if (outputCount >= this.activeCountThreshold && !this.userTyping && !this.suppressRateDetection) {
@@ -134,7 +137,7 @@ export class ActivityDetector {
       this.idleCheckTimer = setTimeout(() => {
         this.idleCheckTimer = null;
         const timeSinceLastOutput = Date.now() - this.lastOutputTime;
-        console.log(`[ActivityDetector] Idle check: ${timeSinceLastOutput}ms since last output`);
+        logger.trace({ timeSinceLastOutput }, 'Idle check');
 
         if (timeSinceLastOutput >= this.noOutputIdleMs && this.currentState === 'active') {
           this.setState('idle');
@@ -182,7 +185,7 @@ export class ActivityDetector {
     // If currently in asking state but no asking pattern found,
     // transition to idle (e.g., after ESC dismissed the prompt)
     if (this.currentState === 'asking') {
-      console.log(`[ActivityDetector] No asking pattern found, transitioning from asking to idle`);
+      logger.debug('No asking pattern found, transitioning from asking to idle');
       this.setState('idle');
       return;
     }
@@ -195,7 +198,7 @@ export class ActivityDetector {
    */
   private setState(newState: AgentActivityState): void {
     if (this.currentState !== newState) {
-      console.log(`[ActivityDetector] State change: ${this.currentState} → ${newState}`);
+      logger.debug({ prevState: this.currentState, newState }, 'State change');
       this.currentState = newState;
 
       // When entering asking state, suppress rate-based detection
@@ -203,7 +206,7 @@ export class ActivityDetector {
       if (newState === 'asking') {
         this.outputHistory = [];
         this.suppressRateDetection = true;
-        console.log(`[ActivityDetector] Rate detection suppressed (entering asking state)`);
+        logger.debug('Rate detection suppressed (entering asking state)');
       }
 
       this.onStateChange?.(newState);
@@ -228,9 +231,9 @@ export class ActivityDetector {
     // Clear output history when typing starts (not on every keystroke)
     if (!wasTyping) {
       this.outputHistory = [];
-      console.log(`[ActivityDetector] User typing: ON (history cleared)`);
+      logger.trace('User typing: ON (history cleared)');
     } else {
-      console.log(`[ActivityDetector] User typing: ON`);
+      logger.trace('User typing: ON');
     }
 
     // Clear existing timer
@@ -242,7 +245,7 @@ export class ActivityDetector {
     this.userTypingTimer = setTimeout(() => {
       this.userTyping = false;
       this.userTypingTimer = null;
-      console.log(`[ActivityDetector] User typing: OFF (timeout)`);
+      logger.trace('User typing: OFF (timeout)');
       // When user stops typing, check output rate and transition accordingly
       if (this.currentState !== 'asking') {
         const outputCount = this.outputHistory.length;
@@ -262,7 +265,7 @@ export class ActivityDetector {
    */
   clearUserTyping(fromEsc: boolean = false): void {
     this.userTyping = false;
-    console.log(`[ActivityDetector] User typing: OFF (${fromEsc ? 'cancel' : 'submit'})`);
+    logger.trace({ action: fromEsc ? 'cancel' : 'submit' }, 'User typing: OFF');
 
     // Clear existing timer
     if (this.userTypingTimer) {
@@ -275,7 +278,7 @@ export class ActivityDetector {
     // - Re-enable rate detection
     // - Transition to idle (Claude will trigger active if it starts working)
     if (fromEsc && this.currentState === 'asking') {
-      console.log(`[ActivityDetector] Clearing buffer and re-enabling rate detection (ESC in asking state)`);
+      logger.debug('Clearing buffer and re-enabling rate detection (ESC in asking state)');
       this.buffer = '';
       this.suppressRateDetection = false;
       // Don't return early - let it transition to idle below
@@ -285,7 +288,7 @@ export class ActivityDetector {
     // so old asking patterns don't trigger detection after user responds
     // Also re-enable rate detection since user has responded
     if (!fromEsc && this.currentState === 'asking') {
-      console.log(`[ActivityDetector] Clearing buffer and re-enabling rate detection (Enter in asking state)`);
+      logger.debug('Clearing buffer and re-enabling rate detection (Enter in asking state)');
       this.buffer = '';
       this.suppressRateDetection = false;
     }

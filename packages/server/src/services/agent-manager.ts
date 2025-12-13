@@ -6,6 +6,9 @@ import type {
 } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
 import { claudeCodeAgent, CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('agent-manager');
 
 // Re-export for backward compatibility
 export { CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
@@ -34,7 +37,7 @@ export class AgentManager {
       this.agents.set(agent.id, agent);
     }
 
-    console.log(`AgentManager initialized with ${this.agents.size} agents`);
+    logger.info({ count: this.agents.size }, 'AgentManager initialized');
   }
 
   /**
@@ -80,7 +83,7 @@ export class AgentManager {
     this.agents.set(id, agent);
     this.persistAgents();
 
-    console.log(`Agent registered: ${agent.name} (${id})`);
+    logger.info({ agentId: id, agentName: agent.name }, 'Agent registered');
     return agent;
   }
 
@@ -95,7 +98,7 @@ export class AgentManager {
 
     // Built-in agents cannot be modified (except possibly activityPatterns in future)
     if (existing.isBuiltIn) {
-      console.warn(`Cannot modify built-in agent: ${id}`);
+      logger.warn({ agentId: id }, 'Cannot modify built-in agent');
       return null;
     }
 
@@ -112,7 +115,7 @@ export class AgentManager {
     this.agents.set(id, updated);
     this.persistAgents();
 
-    console.log(`Agent updated: ${updated.name} (${id})`);
+    logger.info({ agentId: id, agentName: updated.name }, 'Agent updated');
     return updated;
   }
 
@@ -127,14 +130,14 @@ export class AgentManager {
 
     // Built-in agents cannot be deleted
     if (agent.isBuiltIn) {
-      console.warn(`Cannot delete built-in agent: ${id}`);
+      logger.warn({ agentId: id }, 'Cannot delete built-in agent');
       return false;
     }
 
     this.agents.delete(id);
     this.persistAgents();
 
-    console.log(`Agent unregistered: ${agent.name} (${id})`);
+    logger.info({ agentId: id, agentName: agent.name }, 'Agent unregistered');
     return true;
   }
 
