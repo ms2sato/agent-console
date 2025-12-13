@@ -3,6 +3,7 @@ import { useGitDiffWorker } from '../../hooks/useGitDiffWorker';
 import { RefreshIcon } from '../Icons';
 import { DiffViewer } from './DiffViewer';
 import { DiffFileList } from './DiffFileList';
+import { ErrorBoundary } from '../ui/ErrorBoundary';
 
 interface GitDiffWorkerViewProps {
   sessionId: string;
@@ -143,12 +144,31 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
 
         {/* Right: Diff viewer - shows all files stacked */}
         <div className="flex-1 min-w-0 overflow-hidden">
-          <DiffViewer
-            rawDiff={rawDiff}
-            files={files}
-            scrollToFile={scrollToFile}
-            onFileVisible={handleFileVisible}
-          />
+          <ErrorBoundary
+            fallback={(error, resetError) => (
+              <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">
+                <div className="text-red-400 text-lg font-medium mb-2">Failed to parse diff</div>
+                <div className="text-gray-500 text-sm mb-4 max-w-md font-mono bg-slate-800 p-3 rounded">
+                  {error.message}
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={resetError} className="btn btn-primary text-sm">
+                    Retry
+                  </button>
+                  <button onClick={refresh} className="btn bg-slate-600 hover:bg-slate-500 text-sm">
+                    Refresh Diff
+                  </button>
+                </div>
+              </div>
+            )}
+          >
+            <DiffViewer
+              rawDiff={rawDiff}
+              files={files}
+              scrollToFile={scrollToFile}
+              onFileVisible={handleFileVisible}
+            />
+          </ErrorBoundary>
         </div>
       </div>
 
