@@ -1,19 +1,13 @@
-import { vol } from 'memfs';
-import { mock } from 'bun:test';
-
 /**
- * Helper for setting up memfs in tests.
- * Provides consistent setup/teardown and common directory structures.
+ * Centralized fs module mock for tests using memfs.
  *
- * IMPORTANT: Call setupMemfs() in beforeEach and cleanupMemfs() in afterEach.
- */
-
-/**
- * Sets up memfs to mock the fs module.
- * Call this in beforeEach before any fs operations.
+ * IMPORTANT: Import this module in test files that need fs mocking.
+ * The mock.module calls are executed once when this module is imported.
  *
  * @example
  * ```typescript
+ * import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+ *
  * beforeEach(() => {
  *   setupMemfs({
  *     '/test/config/repositories.json': JSON.stringify([]),
@@ -25,18 +19,25 @@ import { mock } from 'bun:test';
  * });
  * ```
  */
+import { vol, fs } from 'memfs';
+import { mock } from 'bun:test';
+
+// Register mocks once at module load time
+mock.module('fs', () => fs);
+mock.module('node:fs', () => fs);
+mock.module('fs/promises', () => fs.promises);
+mock.module('node:fs/promises', () => fs.promises);
+
+/**
+ * Sets up memfs with the given file structure.
+ * Call this in beforeEach before any fs operations.
+ */
 export function setupMemfs(files: Record<string, string> = {}): void {
   // Reset volume
   vol.reset();
 
   // Create directory structure from files
   vol.fromJSON(files, '/');
-
-  // Mock fs and fs/promises modules
-  mock.module('fs', () => require('memfs').fs);
-  mock.module('node:fs', () => require('memfs').fs);
-  mock.module('fs/promises', () => require('memfs').fs.promises);
-  mock.module('node:fs/promises', () => require('memfs').fs.promises);
 }
 
 /**
