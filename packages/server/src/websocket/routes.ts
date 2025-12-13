@@ -8,7 +8,7 @@ import type {
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
-import { handleGitDiffConnection, handleGitDiffMessage } from './git-diff-handler.js';
+import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('websocket');
@@ -120,7 +120,9 @@ export function setupWebSocketRoutes(
               workerId,
               session.locationPath,
               currentGitDiffBaseCommit
-            );
+            ).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error handling git-diff connection');
+            });
             return;
           }
 
@@ -208,11 +210,10 @@ export function setupWebSocketRoutes(
               workerId,
               session.locationPath,
               currentGitDiffBaseCommit || (worker as GitDiffWorker).baseCommit,
-              data,
-              (newBaseCommit) => {
-                currentGitDiffBaseCommit = newBaseCommit;
-              }
-            );
+              data
+            ).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error handling git-diff message');
+            });
             return;
           }
 
@@ -221,8 +222,20 @@ export function setupWebSocketRoutes(
         },
         onClose() {
           logger.info({ sessionId, workerId }, 'Worker WebSocket disconnected');
-          // Detach callbacks but keep worker alive (only for PTY workers)
-          sessionManager.detachWorkerCallbacks(sessionId, workerId);
+
+          // Check if this was a git-diff worker
+          const session = sessionManager.getSession(sessionId);
+          const worker = session?.workers.find(w => w.id === workerId);
+
+          if (worker?.type === 'git-diff') {
+            // Stop file watching for git-diff workers
+            handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error handling git-diff disconnection');
+            });
+          } else {
+            // Detach callbacks but keep worker alive (only for PTY workers)
+            sessionManager.detachWorkerCallbacks(sessionId, workerId);
+          }
         },
         onError(event: Event) {
           logger.error({ sessionId, workerId, event }, 'Worker WebSocket error');

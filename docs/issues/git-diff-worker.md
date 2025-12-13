@@ -398,14 +398,13 @@ type PersistedWorker =
 ### Phase 6: Frontend - Integration (client)
 
 25. Add GitDiffWorker tab support in session page
-26. Add "New Git Diff" button/menu option
-27. Add base commit selector in GitDiffWorkerView
+26. Add base commit selector in GitDiffWorkerView
 
 ### Phase 7: Testing
 
-28. Add REST API tests
-29. Add WebSocket handler tests
-30. Manual testing via browser
+27. Add REST API tests
+28. Add WebSocket handler tests
+29. Manual testing via browser
 
 ## Future Considerations
 
