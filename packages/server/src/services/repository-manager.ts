@@ -1,35 +1,19 @@
 import { v4 as uuidv4 } from 'uuid';
-import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { access } from 'fs/promises';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
 import { getRepositoryDir } from '../lib/config.js';
+import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
 
 /**
  * Extract org/repo from git remote URL
  * Falls back to directory name if no remote
  */
-function getOrgRepoFromPath(repoPath: string): string {
-  try {
-    const remoteUrl = execSync('git remote get-url origin', {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-
-    // SSH format: git@github.com:org/repo.git
-    const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (sshMatch) return sshMatch[1];
-
-    // HTTPS format: https://github.com/org/repo.git
-    const httpsMatch = remoteUrl.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (httpsMatch) return httpsMatch[1];
-  } catch {
-    // No remote or error - fall through
-  }
-  return path.basename(repoPath);
+async function getOrgRepoFromPath(repoPath: string): Promise<string> {
+  const orgRepo = await gitGetOrgRepoFromPath(repoPath);
+  return orgRepo ?? path.basename(repoPath);
 }
 
 export class RepositoryManager {
@@ -100,12 +84,12 @@ export class RepositoryManager {
     return repository;
   }
 
-  unregisterRepository(id: string): boolean {
+  async unregisterRepository(id: string): Promise<boolean> {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
     // Clean up related directories
-    this.cleanupRepositoryData(repo.path);
+    await this.cleanupRepositoryData(repo.path);
 
     this.repositories.delete(id);
     this.saveToDisk();
@@ -116,8 +100,8 @@ export class RepositoryManager {
   /**
    * Clean up repository data directory (worktrees and templates)
    */
-  private cleanupRepositoryData(repoPath: string): void {
-    const orgRepo = getOrgRepoFromPath(repoPath);
+  private async cleanupRepositoryData(repoPath: string): Promise<void> {
+    const orgRepo = await getOrgRepoFromPath(repoPath);
     const repoDir = getRepositoryDir(orgRepo);
 
     // Clean up entire repository directory

@@ -118,7 +118,7 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
     updates.branch = branch.trim();
   }
 
-  const result = sessionManager.updateSessionMetadata(sessionId, updates);
+  const result = await sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
     if (result.error === 'session_not_found') {
@@ -221,9 +221,9 @@ api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c)
 });
 
 // Unregister a repository
-api.delete('/repositories/:id', (c) => {
+api.delete('/repositories/:id', async (c) => {
   const repoId = c.req.param('id');
-  const success = repositoryManager.unregisterRepository(repoId);
+  const success = await repositoryManager.unregisterRepository(repoId);
 
   if (!success) {
     throw new NotFoundError('Repository');
@@ -233,7 +233,7 @@ api.delete('/repositories/:id', (c) => {
 });
 
 // Get worktrees for a repository
-api.get('/repositories/:id/worktrees', (c) => {
+api.get('/repositories/:id/worktrees', async (c) => {
   const repoId = c.req.param('id');
   const repo = repositoryManager.getRepository(repoId);
 
@@ -241,7 +241,7 @@ api.get('/repositories/:id/worktrees', (c) => {
     throw new NotFoundError('Repository');
   }
 
-  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
   return c.json({ worktrees });
 });
 
@@ -284,11 +284,11 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
         // Use generated title if user didn't provide one
         effectiveTitle = title ?? suggestion.title;
       }
-      baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
+      baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'custom':
       branch = body.branch!;
-      baseBranch = body.baseBranch || worktreeService.getDefaultBranch(repo.path) || 'main';
+      baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
       break;
     case 'existing':
       branch = body.branch!;
@@ -303,7 +303,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   }
 
   // Get the created worktree info
-  const worktrees = worktreeService.listWorktrees(repo.path, repoId);
+  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
   const worktree = worktrees.find(wt => wt.path === result.worktreePath);
 
   // Optionally start a session
@@ -345,7 +345,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   const worktreePath = resolvePath(rawWorktreePath);
 
   // Verify this is actually a worktree of this repository
-  if (!worktreeService.isWorktreeOf(repo.path, worktreePath)) {
+  if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
     throw new ValidationError('Invalid worktree path for this repository');
   }
 
@@ -372,7 +372,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
 });
 
 // Get branches for a repository
-api.get('/repositories/:id/branches', (c) => {
+api.get('/repositories/:id/branches', async (c) => {
   const repoId = c.req.param('id');
   const repo = repositoryManager.getRepository(repoId);
 
@@ -380,7 +380,7 @@ api.get('/repositories/:id/branches', (c) => {
     throw new NotFoundError('Repository');
   }
 
-  const branches = worktreeService.listBranches(repo.path);
+  const branches = await worktreeService.listBranches(repo.path);
   return c.json(branches);
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -11,6 +11,7 @@ import type {
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { MockPty } from './utils/mock-pty.js';
+import { mockGit } from './utils/mock-git-helper.js';
 
 // =============================================================================
 // Infrastructure Mocks (must be before any service imports)
@@ -33,22 +34,6 @@ mock.module('../lib/pty-provider.js', () => ({
       return pty;
     },
   },
-}));
-
-// Mock child_process for git commands
-type ExecSyncFn = (cmd: string, options?: unknown) => string;
-type ExecFn = (cmd: string, options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => void;
-
-const mockExecSync: Mock<ExecSyncFn> = mock(() => '');
-const mockExec: Mock<ExecFn> = mock(() => undefined);
-
-mock.module('child_process', () => ({
-  execSync: mockExecSync,
-  exec: mockExec,
-}));
-mock.module('node:child_process', () => ({
-  execSync: mockExecSync,
-  exec: mockExec,
 }));
 
 // Mock process-utils for process management
@@ -84,64 +69,19 @@ const CLAUDE_CODE_AGENT_ID = 'claude-code-builtin';
 
 // Helper to set up default git command responses
 function setupDefaultGitMocks() {
-  mockExecSync.mockImplementation((cmd: string) => {
-    if (typeof cmd !== 'string') return '';
-
-    // Worktree list
-    if (cmd.includes('git worktree list --porcelain')) {
-      return `worktree ${TEST_REPO_PATH}
+  mockGit.listWorktrees.mockImplementation(() => Promise.resolve(`worktree ${TEST_REPO_PATH}
 HEAD abc123
 branch refs/heads/main
-
-`;
-    }
-
-    // Remote URL (for repository name)
-    if (cmd.includes('git remote get-url origin')) {
-      return 'git@github.com:owner/test-repo.git';
-    }
-
-    // Local branches
-    if (cmd.includes('git branch --format')) {
-      return 'main\ndevelop\nfeature-1';
-    }
-
-    // Remote branches
-    if (cmd.includes('git branch -r --format')) {
-      return 'origin/main\norigin/develop';
-    }
-
-    // Default branch
-    if (cmd.includes('git symbolic-ref refs/remotes/origin/HEAD')) {
-      return 'refs/remotes/origin/main';
-    }
-
-    // Rev-parse for bare repo check
-    if (cmd.includes('git rev-parse --is-bare-repository')) {
-      return 'false';
-    }
-
-    // Rev-parse for git directory
-    if (cmd.includes('git rev-parse --git-dir')) {
-      return '.git';
-    }
-
-    // Session metadata suggester (claude command)
-    if (cmd.includes('claude')) {
-      return JSON.stringify({ branch: 'feat/generated-branch', title: 'Generated Title' });
-    }
-
-    return '';
-  });
-
-  mockExec.mockImplementation(
-    (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
-      if (callback) {
-        callback(null, '', '');
-      }
-      return undefined as never;
-    }
-  );
+`));
+  mockGit.createWorktree.mockImplementation(() => Promise.resolve());
+  mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
+  mockGit.listLocalBranches.mockImplementation(() => Promise.resolve(['main', 'develop', 'feature-1']));
+  mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main', 'origin/develop']));
+  mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+  mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/test-repo.git'));
+  mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
+  mockGit.renameBranch.mockImplementation(() => Promise.resolve());
+  mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/test-repo'));
 }
 
 describe('API Routes Integration', () => {
@@ -166,9 +106,17 @@ describe('API Routes Integration', () => {
     killedPids.length = 0;
     alivePids.clear();
 
-    // Reset mocks
-    mockExecSync.mockReset();
-    mockExec.mockReset();
+    // Reset git mocks
+    mockGit.listWorktrees.mockReset();
+    mockGit.createWorktree.mockReset();
+    mockGit.removeWorktree.mockReset();
+    mockGit.listLocalBranches.mockReset();
+    mockGit.listRemoteBranches.mockReset();
+    mockGit.getDefaultBranch.mockReset();
+    mockGit.getRemoteUrl.mockReset();
+    mockGit.getCurrentBranch.mockReset();
+    mockGit.renameBranch.mockReset();
+    mockGit.getOrgRepoFromPath.mockReset();
     mockOpen.mockClear();
 
     // Setup default git command responses
@@ -823,20 +771,10 @@ describe('API Routes Integration', () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
 
-        // Mock worktree list for this specific repo path
-        mockExecSync.mockImplementation((cmd: string) => {
-          if (typeof cmd !== 'string') return '';
-          if (cmd.includes('git worktree list --porcelain')) {
-            return `worktree ${repoPath}\nHEAD abc123\nbranch refs/heads/main\n\n`;
-          }
-          if (cmd.includes('git remote get-url origin')) {
-            return 'git@github.com:owner/test-repo.git';
-          }
-          if (cmd.includes('git symbolic-ref refs/remotes/origin/HEAD')) {
-            return 'refs/remotes/origin/main';
-          }
-          return '';
-        });
+        // Mock worktree list for this specific repo path using git module mocks
+        mockGit.listWorktrees.mockImplementation(() => Promise.resolve(
+          `worktree ${repoPath}\nHEAD abc123\nbranch refs/heads/main\n\n`
+        ));
 
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`);
         expect(res.status).toBe(200);
@@ -874,15 +812,7 @@ describe('API Routes Integration', () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
-        // Mock the worktree creation (git worktree add command)
-        mockExec.mockImplementation(
-          (_cmd: string, _options: unknown, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
-            if (callback) {
-              callback(null, '', '');
-            }
-            return undefined as never;
-          }
-        );
+        // Worktree creation is mocked via mockGitCreateWorktree in setupDefaultGitMocks
 
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
           method: 'POST',
