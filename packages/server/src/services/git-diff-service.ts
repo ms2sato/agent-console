@@ -217,22 +217,26 @@ async function generateUntrackedFileDiff(
       return { diff, lineCount: 0, isBinary: false };
     }
 
+    // Build content lines with + prefix
+    const contentLines: string[] = [];
+    for (let i = 0; i < lineCount; i++) {
+      contentLines.push(`+${lines[i]}`);
+    }
+
     // Generate diff lines
+    // Note: The hunk header line count must match the actual number of added lines (lines starting with '+')
     const diffLines = [
       `diff --git a/${filePath} b/${filePath}`,
       'new file mode 100644',
       'index 0000000..0000000',
       '--- /dev/null',
       `+++ b/${filePath}`,
-      `@@ -0,0 +1,${lineCount} @@`,
+      `@@ -0,0 +1,${contentLines.length} @@`,
+      ...contentLines,
     ];
 
-    // Add content lines with + prefix
-    for (let i = 0; i < lineCount; i++) {
-      diffLines.push(`+${lines[i]}`);
-    }
-
     // Add "No newline at end of file" if applicable
+    // Note: This line does NOT count toward hunk line count - it's metadata
     if (!hasTrailingNewline && lineCount > 0) {
       diffLines.push('\\ No newline at end of file');
     }

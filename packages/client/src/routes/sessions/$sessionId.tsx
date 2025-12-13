@@ -4,6 +4,7 @@ import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
+import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { DiffIcon } from '../../components/Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
@@ -82,6 +83,33 @@ function workersToTabs(sessionId: string, workers: Worker[]): Tab[] {
 // Find the first agent worker in the list
 function findFirstAgentWorker(workers: Worker[]): AgentWorker | undefined {
   return workers.find((w): w is AgentWorker => w.type === 'agent');
+}
+
+// Error fallback UI for worker tabs
+interface WorkerErrorFallbackProps {
+  error: Error;
+  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerName: string;
+  onRetry: () => void;
+}
+
+function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
+  const typeLabel = workerType === 'git-diff' ? 'Diff View' :
+                    workerType === 'agent' ? 'Agent' : 'Terminal';
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">
+      <div className="text-red-400 text-lg font-medium mb-2">
+        {typeLabel} Error: {workerName}
+      </div>
+      <div className="text-gray-500 text-sm mb-4 max-w-md font-mono bg-slate-800 p-3 rounded overflow-auto max-h-32">
+        {error.message}
+      </div>
+      <button onClick={onRetry} className="btn btn-primary text-sm">
+        Retry
+      </button>
+    </div>
+  );
 }
 
 function TerminalPage() {
@@ -530,19 +558,30 @@ function TerminalPage() {
               tab.id === activeTabId ? 'z-10' : 'z-0 invisible'
             }`}
           >
-            {tab.workerType === 'git-diff' ? (
-              <GitDiffWorkerView
-                sessionId={sessionId}
-                workerId={tab.id}
-              />
-            ) : (
-              <Terminal
-                wsUrl={tab.wsUrl}
-                onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
-                onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
-                hideStatusBar
-              />
-            )}
+            <ErrorBoundary
+              fallback={(error, resetError) => (
+                <WorkerErrorFallback
+                  error={error}
+                  workerType={tab.workerType}
+                  workerName={tab.name}
+                  onRetry={resetError}
+                />
+              )}
+            >
+              {tab.workerType === 'git-diff' ? (
+                <GitDiffWorkerView
+                  sessionId={sessionId}
+                  workerId={tab.id}
+                />
+              ) : (
+                <Terminal
+                  wsUrl={tab.wsUrl}
+                  onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
+                  onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
+                  hideStatusBar
+                />
+              )}
+            </ErrorBoundary>
           </div>
         ))}
       </div>
