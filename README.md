@@ -99,6 +99,10 @@ agent-console/
 └── dist/                # Production build output (generated)
 ```
 
+## Contributing
+
+See `AGENTS.md` for repository guidelines, commands, and testing expectations.
+
 ## Tech Stack
 
 - **Backend**: [Bun](https://bun.sh), [TypeScript](https://www.typescriptlang.org), [Hono](https://hono.dev), [bun-pty](https://github.com/sursaone/bun-pty)
