@@ -532,7 +532,13 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium flex items-center gap-2">
-          {worktree.branch}
+          {session?.title && (
+            <>
+              <span className="truncate" title={session.title}>{session.title}</span>
+              <span className="text-gray-500">-</span>
+            </>
+          )}
+          <span className={session?.title ? 'text-gray-400' : ''}>{worktree.branch}</span>
           {worktree.isMain && (
             <span className="text-xs text-gray-500">(primary)</span>
           )}
@@ -679,6 +685,11 @@ function SessionCard({ session }: SessionCardProps) {
       <div className="card flex items-center gap-4">
         <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
         <div className="flex-1 min-w-0">
+          {session.title && (
+            <div className="text-sm font-medium text-gray-200 truncate" title={session.title}>
+              {session.title}
+            </div>
+          )}
           <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
             <PathLink path={session.locationPath} className="truncate" />
             <ActivityBadge state={session.activityState} />
