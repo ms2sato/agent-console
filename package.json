@@ -8,7 +8,7 @@
   },
   "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "AGENT_CONSOLE_HOME=$HOME/.agent-console-dev bun run --filter '*' dev",
+    "dev": "./scripts/dev.sh",
     "build": "bun run --filter '@agent-console/shared' build && bun run --filter '@agent-console/client' build && bun run --filter '@agent-console/server' build",
     "start": "NODE_ENV=production bun dist/index.js",
     "typecheck": "bun run --filter '*' typecheck",
@@ -17,6 +17,7 @@
     "lint": "bun run --filter '*' lint"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "typescript": "^5.7.2"
   },
   "dependencies": {}
