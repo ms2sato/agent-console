@@ -25,6 +25,7 @@ export const CreateWorktreeFormSchema = v.pipe(
       v.pipe(
         v.string(),
         v.trim(),
+        v.minLength(1, 'Branch name is required'),
         v.regex(branchNamePattern, branchNameErrorMessage)
       )
     ),

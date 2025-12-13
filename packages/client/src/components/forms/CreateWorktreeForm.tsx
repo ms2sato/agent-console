@@ -37,6 +37,7 @@ export function CreateWorktreeForm({
       agentId: undefined,
     },
     mode: 'onBlur',
+    shouldUnregister: true,
   });
 
   const branchNameMode = watch('branchNameMode');
