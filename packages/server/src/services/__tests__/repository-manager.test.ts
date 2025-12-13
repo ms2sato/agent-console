@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
 describe('RepositoryManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
@@ -16,6 +17,10 @@ describe('RepositoryManager', () => {
       ...gitRepoFiles,
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Reset git mocks
+    mockGit.getOrgRepoFromPath.mockReset();
+    mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('test-org/repo'));
   });
 
   afterEach(() => {
@@ -100,7 +105,7 @@ describe('RepositoryManager', () => {
       const manager = new RepositoryManager();
 
       const repo = await manager.registerRepository(TEST_REPO_DIR);
-      const result = manager.unregisterRepository(repo.id);
+      const result = await manager.unregisterRepository(repo.id);
 
       expect(result).toBe(true);
       expect(manager.getRepository(repo.id)).toBeUndefined();
@@ -110,7 +115,7 @@ describe('RepositoryManager', () => {
       const RepositoryManager = await getRepositoryManager();
       const manager = new RepositoryManager();
 
-      const result = manager.unregisterRepository('non-existent-id');
+      const result = await manager.unregisterRepository('non-existent-id');
       expect(result).toBe(false);
     });
 
@@ -119,7 +124,7 @@ describe('RepositoryManager', () => {
       const manager = new RepositoryManager();
 
       const repo = await manager.registerRepository(TEST_REPO_DIR);
-      manager.unregisterRepository(repo.id);
+      await manager.unregisterRepository(repo.id);
 
       // Check persisted data
       const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/repositories.json`, 'utf-8'));

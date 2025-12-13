@@ -1,4 +1,3 @@
-import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   Session,
@@ -24,17 +23,10 @@ import { getChildProcessEnv } from './env-filter.js';
 import { getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
-
-function getCurrentBranch(cwd: string): string {
-  try {
-    return execSync('git branch --show-current', {
-      cwd,
-      encoding: 'utf-8',
-    }).trim() || '(detached)';
-  } catch {
-    return '(unknown)';
-  }
-}
+import {
+  getCurrentBranch as gitGetCurrentBranch,
+  renameBranch as gitRenameBranch,
+} from '../lib/git.js';
 
 interface InternalWorkerBase {
   id: string;
@@ -593,18 +585,18 @@ export class SessionManager {
   /**
    * Get current branch name for a given path
    */
-  getBranchForPath(locationPath: string): string {
-    return getCurrentBranch(locationPath);
+  async getBranchForPath(locationPath: string): Promise<string> {
+    return gitGetCurrentBranch(locationPath);
   }
 
   /**
    * Update session metadata (title and/or branch)
    * If branch is changed, automatically restarts the agent worker
    */
-  updateSessionMetadata(
+  async updateSessionMetadata(
     sessionId: string,
     updates: { title?: string; branch?: string }
-  ): { success: boolean; title?: string; branch?: string; error?: string } {
+  ): Promise<{ success: boolean; title?: string; branch?: string; error?: string }> {
     const session = this.sessions.get(sessionId);
 
     if (!session) {
@@ -621,13 +613,10 @@ export class SessionManager {
           return { success: false, error: 'Can only rename branch for worktree sessions' };
         }
 
-        const currentBranch = getCurrentBranch(metadata.locationPath);
+        const currentBranch = await gitGetCurrentBranch(metadata.locationPath);
 
         try {
-          execSync(`git branch -m "${currentBranch}" "${updates.branch}"`, {
-            cwd: metadata.locationPath,
-            encoding: 'utf-8',
-          });
+          await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
           return { success: true, branch: updates.branch };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -649,13 +638,10 @@ export class SessionManager {
         return { success: false, error: 'Can only rename branch for worktree sessions' };
       }
 
-      const currentBranch = getCurrentBranch(session.locationPath);
+      const currentBranch = await gitGetCurrentBranch(session.locationPath);
 
       try {
-        execSync(`git branch -m "${currentBranch}" "${updates.branch}"`, {
-          cwd: session.locationPath,
-          encoding: 'utf-8',
-        });
+        await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
         session.worktreeId = updates.branch;
 
         // Automatically restart agent worker to pick up new branch name
@@ -683,10 +669,10 @@ export class SessionManager {
    * @deprecated Use updateSessionMetadata instead
    * Rename the branch for a worktree session
    */
-  renameBranch(
+  async renameBranch(
     sessionId: string,
     newBranch: string
-  ): { success: boolean; branch?: string; error?: string } {
+  ): Promise<{ success: boolean; branch?: string; error?: string }> {
     return this.updateSessionMetadata(sessionId, { branch: newBranch });
   }
 

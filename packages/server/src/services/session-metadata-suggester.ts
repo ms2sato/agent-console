@@ -4,8 +4,8 @@
  * Uses the specified agent in non-interactive mode to suggest branch names
  * and titles based on user's initial prompt and existing branch examples.
  */
-import { execSync } from 'child_process';
 import type { AgentDefinition } from '@agent-console/shared';
+import { listAllBranches } from '../lib/git.js';
 
 interface SessionMetadataSuggestionRequest {
   prompt: string;
@@ -47,20 +47,8 @@ function sanitizeBranchName(name: string): string | null {
 /**
  * Get list of branches from a repository
  */
-function getBranches(repositoryPath: string): string[] {
-  try {
-    const output = execSync('git branch -a --list', {
-      cwd: repositoryPath,
-      encoding: 'utf-8',
-    });
-    return output
-      .split('\n')
-      .map(line => line.replace(/^\*?\s+/, '').replace(/^remotes\/[^/]+\//, '').trim())
-      .filter(Boolean)
-      .filter((branch, index, self) => self.indexOf(branch) === index); // unique
-  } catch {
-    return [];
-  }
+async function getBranches(repositoryPath: string): Promise<string[]> {
+  return listAllBranches(repositoryPath);
 }
 
 /**
@@ -107,7 +95,7 @@ export async function suggestSessionMetadata(
   }
 
   // Get existing branches if not provided
-  const branches = existingBranches ?? getBranches(repositoryPath);
+  const branches = existingBranches ?? await getBranches(repositoryPath);
   const exampleBranches = branches.length > 0
     ? `Example branches in this repository: ${branches.slice(0, 10).join(', ')}`
     : '';
@@ -115,20 +103,37 @@ export async function suggestSessionMetadata(
   const suggestionPrompt = buildMetadataSuggestionPrompt(prompt, exampleBranches);
 
   try {
-    // Build command: {agent.command} {printModeArgs...} "prompt"
-    const escapedPrompt = suggestionPrompt.replace(/'/g, "'\\''");
-    const command = `${agent.command} ${agent.printModeArgs.join(' ')} '${escapedPrompt}'`;
+    // Build command args: [agent.command, ...printModeArgs, prompt]
+    // Using Bun.spawn with args array avoids shell injection
+    const args = [...agent.printModeArgs, suggestionPrompt];
 
-    const result = execSync(command, {
+    const proc = Bun.spawn([agent.command, ...args], {
       cwd: repositoryPath,
-      encoding: 'utf-8',
-      timeout: 30000, // 30 second timeout
+      stdout: 'pipe',
+      stderr: 'pipe',
       env: {
         ...process.env,
         // Ensure we don't inherit any interactive settings
         TERM: 'dumb',
       },
     });
+
+    // Set up timeout
+    const timeoutId = setTimeout(() => {
+      proc.kill();
+    }, 30000);
+
+    const exitCode = await proc.exited;
+    clearTimeout(timeoutId);
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return {
+        error: `Agent command failed: ${stderr.trim() || `exit code ${exitCode}`}`,
+      };
+    }
+
+    const result = await new Response(proc.stdout).text();
 
     // Clean up the result - try to parse as JSON
     const trimmedResult = result.trim();

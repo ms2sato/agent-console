@@ -1,11 +1,26 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import * as childProcess from 'child_process';
+import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
 import type { AgentDefinition } from '@agent-console/shared';
+import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
-// Mock child_process module (built-in module - acceptable per testing guidelines)
-mock.module('child_process', () => ({
-  execSync: mock(() => ''),
-}));
+// Mock Bun.spawn for agent command execution
+let mockSpawnResult = {
+  exited: Promise.resolve(0),
+  stdout: new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"branch": "feat/test", "title": "Test"}'));
+      controller.close();
+    },
+  }),
+  stderr: new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  }),
+  kill: () => {},
+};
+
+const originalBunSpawn = Bun.spawn;
+let spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
 
 const mockAgent: AgentDefinition = {
   id: 'test-agent',
@@ -24,13 +39,41 @@ const mockAgentWithoutPrintMode: AgentDefinition = {
   registeredAt: new Date().toISOString(),
 };
 
-// Get reference to mock function for configuration
-const mockExecSync = childProcess.execSync as ReturnType<typeof mock>;
 let importCounter = 0;
 
 describe('session-metadata-suggester', () => {
   beforeEach(() => {
-    mockExecSync.mockReset();
+    mockGit.listAllBranches.mockReset();
+    mockGit.listAllBranches.mockImplementation(() => Promise.resolve(['main', 'feat/existing']));
+
+    spawnCalls = [];
+    // Reset mock spawn result
+    mockSpawnResult = {
+      exited: Promise.resolve(0),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"branch": "feat/test", "title": "Test"}'));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    // Mock Bun.spawn
+    (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+      spawnCalls.push({ args, options: options || {} });
+      return mockSpawnResult;
+    }) as typeof Bun.spawn;
+  });
+
+  // Restore original Bun.spawn after all tests
+  afterAll(() => {
+    (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
   });
 
   // Helper to get fresh module instance
@@ -38,31 +81,47 @@ describe('session-metadata-suggester', () => {
     return import(`../session-metadata-suggester.js?v=${++importCounter}`);
   }
 
+  // Helper to set mock spawn result
+  function setMockSpawnResult(stdout: string, exitCode = 0, stderr = '') {
+    mockSpawnResult = {
+      exited: Promise.resolve(exitCode),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(stdout));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(stderr));
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+  }
+
   describe('getBranches', () => {
-    it('should parse git branch output', async () => {
-      mockExecSync.mockReturnValue(
-        '  main\n* feat/current-branch\n  fix/some-bug\n  remotes/origin/main\n'
+    it('should return branches from git module', async () => {
+      mockGit.listAllBranches.mockImplementation(() =>
+        Promise.resolve(['main', 'feat/current-branch', 'fix/some-bug'])
       );
 
       const { getBranches } = await getModule();
 
-      const branches = getBranches('/repo');
+      const branches = await getBranches('/repo');
 
       expect(branches).toContain('main');
       expect(branches).toContain('feat/current-branch');
       expect(branches).toContain('fix/some-bug');
-      // Should not duplicate main from remotes
-      expect(branches.filter((b: string) => b === 'main').length).toBe(1);
     });
 
     it('should return empty array on error', async () => {
-      mockExecSync.mockImplementation(() => {
-        throw new Error('not a git repository');
-      });
+      mockGit.listAllBranches.mockImplementation(() => Promise.resolve([]));
 
       const { getBranches } = await getModule();
 
-      const branches = getBranches('/not-a-repo');
+      const branches = await getBranches('/not-a-repo');
 
       expect(branches).toEqual([]);
     });
@@ -70,10 +129,7 @@ describe('session-metadata-suggester', () => {
 
   describe('suggestSessionMetadata', () => {
     it('should return branch and title from JSON response', async () => {
-      // First call for git branch, second for agent
-      mockExecSync
-        .mockReturnValueOnce('  main\n  feat/existing\n')
-        .mockReturnValueOnce('{"branch": "feat/add-dark-mode", "title": "Add dark mode toggle"}');
+      setMockSpawnResult('{"branch": "feat/add-dark-mode", "title": "Add dark mode toggle"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -87,13 +143,12 @@ describe('session-metadata-suggester', () => {
       expect(result.title).toBe('Add dark mode toggle');
       expect(result.error).toBeUndefined();
 
-      // Verify command was built correctly
-      const calls = mockExecSync.mock.calls;
-      const agentCall = calls[1][0] as string;
-      expect(agentCall).toContain('test-cli');
-      expect(agentCall).toContain('-p');
-      expect(agentCall).toContain('--format');
-      expect(agentCall).toContain('text');
+      // Verify spawn was called correctly
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args[0]).toBe('test-cli');
+      expect(spawnCalls[0].args).toContain('-p');
+      expect(spawnCalls[0].args).toContain('--format');
+      expect(spawnCalls[0].args).toContain('text');
     });
 
     it('should return error if agent does not support print mode', async () => {
@@ -110,9 +165,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should sanitize branch names with invalid characters', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('{"branch": "feat/Add Dark Mode!", "title": "Add dark mode"}');
+      setMockSpawnResult('{"branch": "feat/Add Dark Mode!", "title": "Add dark mode"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -128,11 +181,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when agent fails', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockImplementationOnce(() => {
-          throw new Error('command not found');
-        });
+      setMockSpawnResult('', 1, 'command not found');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -143,13 +192,11 @@ describe('session-metadata-suggester', () => {
       });
 
       expect(result.branch).toBeUndefined();
-      expect(result.error).toContain('Failed to suggest branch name');
+      expect(result.error).toContain('Agent command failed');
     });
 
     it('should return error when response has no JSON', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('plain text response without JSON');
+      setMockSpawnResult('plain text response without JSON');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -164,9 +211,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when JSON is invalid', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('{invalid json}');
+      setMockSpawnResult('{invalid json}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -181,9 +226,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should return error when branch is missing from JSON', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('{"title": "Some title"}');
+      setMockSpawnResult('{"title": "Some title"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -198,9 +241,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should use provided existingBranches instead of fetching', async () => {
-      mockExecSync.mockReturnValue(
-        '{"branch": "fix/auth-bug", "title": "Fix authentication bug"}'
-      );
+      setMockSpawnResult('{"branch": "fix/auth-bug", "title": "Fix authentication bug"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -211,16 +252,14 @@ describe('session-metadata-suggester', () => {
         existingBranches: ['feat/login', 'feat/signup'],
       });
 
-      // Should only call execSync once (for agent), not for git branch
-      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      // Should not call listAllBranches
+      expect(mockGit.listAllBranches).not.toHaveBeenCalled();
       expect(result.branch).toBe('fix/auth-bug');
       expect(result.title).toBe('Fix authentication bug');
     });
 
     it('should extract JSON even with extra text', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('Here is the response:\n{"branch": "feat/feature", "title": "New feature"}\nDone.');
+      setMockSpawnResult('Here is the response:\n{"branch": "feat/feature", "title": "New feature"}\nDone.');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -235,9 +274,8 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should work with no existing branches', async () => {
-      mockExecSync
-        .mockReturnValueOnce('')  // No branches
-        .mockReturnValueOnce('{"branch": "feat/new-feature", "title": "New feature"}');
+      mockGit.listAllBranches.mockImplementation(() => Promise.resolve([]));
+      setMockSpawnResult('{"branch": "feat/new-feature", "title": "New feature"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -252,9 +290,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should handle title in same language as input (Japanese)', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('{"branch": "feat/dark-mode", "title": "ダークモードの追加"}');
+      setMockSpawnResult('{"branch": "feat/dark-mode", "title": "ダークモードの追加"}');
 
       const { suggestSessionMetadata } = await getModule();
 
@@ -269,9 +305,7 @@ describe('session-metadata-suggester', () => {
     });
 
     it('should handle title with trailing whitespace', async () => {
-      mockExecSync
-        .mockReturnValueOnce('  main\n')
-        .mockReturnValueOnce('{"branch": "feat/feature", "title": "  Some title  "}');
+      setMockSpawnResult('{"branch": "feat/feature", "title": "  Some title  "}');
 
       const { suggestSessionMetadata } = await getModule();
 

@@ -1,8 +1,18 @@
-import { execSync, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Worktree } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
+import {
+  getRemoteUrl,
+  parseOrgRepo,
+  listWorktrees as gitListWorktrees,
+  createWorktree as gitCreateWorktree,
+  removeWorktree as gitRemoveWorktree,
+  listLocalBranches,
+  listRemoteBranches,
+  getDefaultBranch as gitGetDefaultBranch,
+  GitError,
+} from '../lib/git.js';
 
 interface IndexStore {
   // Map of worktree path -> index number
@@ -169,44 +179,24 @@ function copyTemplateFiles(
  *   git@github.com:owner/repo-name.git -> owner/repo-name
  *   https://github.com/anthropics/claude-code.git -> anthropics/claude-code
  */
-const getOrgRepoFromRemote = (repoPath: string): string | null => {
-  try {
-    const remoteUrl = execSync('git remote get-url origin', {
-      cwd: repoPath,
-      encoding: 'utf-8',
-    }).trim();
-
-    // SSH format: git@github.com:org/repo.git
-    const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (sshMatch) {
-      return sshMatch[1];
-    }
-
-    // HTTPS format: https://github.com/org/repo.git
-    const httpsMatch = remoteUrl.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (httpsMatch) {
-      return httpsMatch[1];
-    }
-
-    return null;
-  } catch {
+async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
+  const remoteUrl = await getRemoteUrl(repoPath);
+  if (!remoteUrl) {
     return null;
   }
-};
+  return parseOrgRepo(remoteUrl);
+}
 
 export class WorktreeService {
   /**
    * List all worktrees for a repository
    */
-  listWorktrees(repoPath: string, repositoryId: string): Worktree[] {
+  async listWorktrees(repoPath: string, repositoryId: string): Promise<Worktree[]> {
     try {
-      const output = execSync('git worktree list --porcelain', {
-        cwd: repoPath,
-        encoding: 'utf-8',
-      });
+      const output = await gitListWorktrees(repoPath);
 
       // Get org/repo for index store path
-      const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+      const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
       const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
       const indexStore = loadIndexStore(repoWorktreeDir);
 
@@ -281,7 +271,7 @@ export class WorktreeService {
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
     // Directory name is independent of branch name to avoid path issues with branch names containing slashes
-    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     // Ensure base directory exists
@@ -298,50 +288,38 @@ export class WorktreeService {
     const dirName = `wt-${String(newIndex).padStart(3, '0')}-${dirSuffix}`;
     const worktreePath = path.join(repoWorktreeDir, dirName);
 
-    return new Promise((resolve) => {
-      let command: string;
+    try {
+      await gitCreateWorktree(worktreePath, branch, repoPath, { baseBranch });
 
-      if (baseBranch) {
-        // Create new branch from baseBranch
-        command = `git worktree add -b "${branch}" "${worktreePath}" "${baseBranch}"`;
-      } else {
-        // Use existing branch
-        command = `git worktree add "${worktreePath}" "${branch}"`;
+      // Save index assignment
+      indexStore.indexes[worktreePath] = newIndex;
+      saveIndexStore(repoWorktreeDir, indexStore);
+
+      console.log(`Worktree created: ${worktreePath} (index: ${newIndex})`);
+
+      // Copy template files
+      const templatesDir = findTemplatesDir(repoPath, orgRepo);
+      let copiedFiles: string[] = [];
+
+      if (templatesDir) {
+        const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
+        copiedFiles = copyTemplateFiles(templatesDir, worktreePath, {
+          worktreeNum: newIndex,
+          branch,
+          repo: repoName,
+          worktreePath,
+        });
+        if (copiedFiles.length > 0) {
+          console.log(`Template files copied: ${copiedFiles.join(', ')}`);
+        }
       }
 
-      exec(command, { cwd: repoPath }, (error, _stdout, stderr) => {
-        if (error) {
-          console.error('Failed to create worktree:', stderr);
-          resolve({ worktreePath: '', error: stderr || error.message });
-          return;
-        }
-
-        // Save index assignment
-        indexStore.indexes[worktreePath] = newIndex;
-        saveIndexStore(repoWorktreeDir, indexStore);
-
-        console.log(`Worktree created: ${worktreePath} (index: ${newIndex})`);
-
-        // Copy template files
-        const templatesDir = findTemplatesDir(repoPath, orgRepo);
-        let copiedFiles: string[] = [];
-
-        if (templatesDir) {
-          const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
-          copiedFiles = copyTemplateFiles(templatesDir, worktreePath, {
-            worktreeNum: newIndex,
-            branch,
-            repo: repoName,
-            worktreePath,
-          });
-          if (copiedFiles.length > 0) {
-            console.log(`Template files copied: ${copiedFiles.join(', ')}`);
-          }
-        }
-
-        resolve({ worktreePath, index: newIndex, copiedFiles });
-      });
-    });
+      return { worktreePath, index: newIndex, copiedFiles };
+    } catch (error) {
+      const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
+      console.error('Failed to create worktree:', message);
+      return { worktreePath: '', error: message };
+    }
   }
 
   /**
@@ -353,53 +331,37 @@ export class WorktreeService {
     force: boolean = false
   ): Promise<{ success: boolean; error?: string }> {
     // Get org/repo for index store
-    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
-    return new Promise((resolve) => {
-      const forceFlag = force ? ' --force' : '';
-      const command = `git worktree remove "${worktreePath}"${forceFlag}`;
+    try {
+      await gitRemoveWorktree(worktreePath, repoPath, { force });
 
-      exec(command, { cwd: repoPath }, (error, _stdout, stderr) => {
-        if (error) {
-          console.error('Failed to remove worktree:', stderr);
-          resolve({ success: false, error: stderr || error.message });
-          return;
-        }
+      // Remove index assignment
+      const indexStore = loadIndexStore(repoWorktreeDir);
+      const removedIndex = indexStore.indexes[worktreePath];
+      delete indexStore.indexes[worktreePath];
+      saveIndexStore(repoWorktreeDir, indexStore);
 
-        // Remove index assignment
-        const indexStore = loadIndexStore(repoWorktreeDir);
-        const removedIndex = indexStore.indexes[worktreePath];
-        delete indexStore.indexes[worktreePath];
-        saveIndexStore(repoWorktreeDir, indexStore);
-
-        console.log(`Worktree removed: ${worktreePath} (index ${removedIndex} freed)`);
-        resolve({ success: true });
-      });
-    });
+      console.log(`Worktree removed: ${worktreePath} (index ${removedIndex} freed)`);
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
+      console.error('Failed to remove worktree:', message);
+      return { success: false, error: message };
+    }
   }
 
   /**
    * List branches in a repository
    */
-  listBranches(repoPath: string): { local: string[]; remote: string[]; defaultBranch: string | null } {
+  async listBranches(repoPath: string): Promise<{ local: string[]; remote: string[]; defaultBranch: string | null }> {
     try {
-      // Get local branches
-      const localOutput = execSync('git branch --format="%(refname:short)"', {
-        cwd: repoPath,
-        encoding: 'utf-8',
-      });
-      const local = localOutput.trim().split('\n').filter(Boolean);
-
-      // Get remote branches
-      const remoteOutput = execSync('git branch -r --format="%(refname:short)"', {
-        cwd: repoPath,
-        encoding: 'utf-8',
-      });
-      const remote = remoteOutput.trim().split('\n').filter(Boolean);
-
-      // Get default branch from remote HEAD
-      const defaultBranch = this.getDefaultBranch(repoPath);
+      const [local, remote, defaultBranch] = await Promise.all([
+        listLocalBranches(repoPath),
+        listRemoteBranches(repoPath),
+        this.getDefaultBranch(repoPath),
+      ]);
 
       return { local, remote, defaultBranch };
     } catch (error) {
@@ -411,35 +373,15 @@ export class WorktreeService {
   /**
    * Get the default branch name from remote origin
    */
-  getDefaultBranch(repoPath: string): string | null {
-    try {
-      const output = execSync('git symbolic-ref refs/remotes/origin/HEAD', {
-        cwd: repoPath,
-        encoding: 'utf-8',
-      });
-      // refs/remotes/origin/main -> main
-      return output.trim().replace('refs/remotes/origin/', '');
-    } catch {
-      // Fallback: check if main or master exists
-      try {
-        execSync('git rev-parse --verify main', { cwd: repoPath, stdio: 'ignore' });
-        return 'main';
-      } catch {
-        try {
-          execSync('git rev-parse --verify master', { cwd: repoPath, stdio: 'ignore' });
-          return 'master';
-        } catch {
-          return null;
-        }
-      }
-    }
+  async getDefaultBranch(repoPath: string): Promise<string | null> {
+    return gitGetDefaultBranch(repoPath);
   }
 
   /**
    * Check if a worktree path belongs to a specific repository
    */
-  isWorktreeOf(repoPath: string, worktreePath: string): boolean {
-    const worktrees = this.listWorktrees(repoPath, '');
+  async isWorktreeOf(repoPath: string, worktreePath: string): Promise<boolean> {
+    const worktrees = await this.listWorktrees(repoPath, '');
     return worktrees.some(wt => wt.path === worktreePath);
   }
 
@@ -447,8 +389,8 @@ export class WorktreeService {
    * Generate next branch name: wt-{index:3 digits}-{4 random alphanumeric}
    * Uses the next available index from the index store
    */
-  generateNextBranchName(repoPath: string): string {
-    const orgRepo = getOrgRepoFromRemote(repoPath) || path.basename(repoPath);
+  async generateNextBranchName(repoPath: string): Promise<string> {
+    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     // Ensure directory exists for index store
