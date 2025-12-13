@@ -19,7 +19,11 @@ import {
   gitSafe,
 } from '../lib/git.js';
 import { readFile, stat } from 'fs/promises';
+import { watch, type FSWatcher } from 'node:fs';
 import { join } from 'path';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('git-diff-service');
 
 // ============================================================
 // Types
@@ -488,14 +492,16 @@ export async function getFileDiff(
 }
 
 // ============================================================
-// File Watching (placeholder for chokidar integration)
+// File Watching (using Bun-native fs.watch)
 // ============================================================
 
 type FileChangeCallback = () => void;
 
+/** Debounce delay for file change notifications (ms) */
+const DEBOUNCE_DELAY = 300;
+
 interface WatcherState {
-  // Placeholder for chokidar watcher instance
-  // watcher: FSWatcher;
+  watcher: FSWatcher;
   callback: FileChangeCallback;
   debounceTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -503,43 +509,106 @@ interface WatcherState {
 const watchers = new Map<string, WatcherState>();
 
 /**
- * Start watching a repository for file changes.
- * Uses debounced callbacks to avoid excessive updates.
- *
- * Note: This is a placeholder implementation. For production use,
- * integrate chokidar for proper file system watching.
- *
- * @param repoPath - Path to the git repository
- * @param onChange - Callback when files change
+ * Patterns to ignore when watching for file changes.
+ * Simple string matching for performance.
  */
-export function startWatching(repoPath: string, onChange: FileChangeCallback): void {
-  // Stop any existing watcher
-  stopWatching(repoPath);
+const IGNORE_PATTERNS = [
+  '.git',
+  'node_modules',
+  '.DS_Store',
+  'dist',
+  'build',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '.log',
+  '.env.local',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
 
-  // For now, store callback for manual refresh
-  // TODO: Integrate chokidar for real-time file watching
-  watchers.set(repoPath, {
-    callback: onChange,
-    debounceTimer: null,
-  });
-
-  console.log(`[GitDiffService] Watching started for: ${repoPath}`);
+/**
+ * Check if a filename should be ignored.
+ */
+function shouldIgnore(filename: string | null): boolean {
+  if (!filename) return true;
+  return IGNORE_PATTERNS.some(pattern => filename.includes(pattern));
 }
 
 /**
- * Stop watching a repository.
+ * Start watching a repository for file changes.
+ * Uses Bun-native fs.watch for efficient file system watching with debounced callbacks.
+ *
+ * @param repoPath - Path to the git repository
+ * @param onChange - Callback when files change (debounced)
+ */
+export function startWatching(repoPath: string, onChange: FileChangeCallback): void {
+  // Stop any existing watcher for this path
+  stopWatching(repoPath);
+
+  const log = logger.child({ repoPath });
+
+  try {
+    const state: WatcherState = {
+      watcher: null as unknown as FSWatcher, // Will be set below
+      callback: onChange,
+      debounceTimer: null,
+    };
+
+    // Create fs.watch watcher with recursive option
+    const watcher = watch(repoPath, { recursive: true }, (eventType, filename) => {
+      if (shouldIgnore(filename)) return;
+
+      log.debug({ eventType, filename }, 'File change detected');
+
+      // Clear existing timer
+      if (state.debounceTimer) {
+        clearTimeout(state.debounceTimer);
+      }
+
+      // Set new debounced callback
+      state.debounceTimer = setTimeout(() => {
+        log.debug('Triggering diff refresh after debounce');
+        state.callback();
+        state.debounceTimer = null;
+      }, DEBOUNCE_DELAY);
+    });
+
+    watcher.on('error', (error) => {
+      log.error({ error }, 'File watcher error');
+    });
+
+    state.watcher = watcher;
+    watchers.set(repoPath, state);
+    log.info('File watching started');
+  } catch (error) {
+    log.error({ error }, 'Failed to start file watching');
+    throw error;
+  }
+}
+
+/**
+ * Stop watching a repository and clean up resources.
  *
  * @param repoPath - Path to the git repository
  */
 export function stopWatching(repoPath: string): void {
   const state = watchers.get(repoPath);
   if (state) {
+    const log = logger.child({ repoPath });
+
+    // Clear any pending debounce timer
     if (state.debounceTimer) {
       clearTimeout(state.debounceTimer);
     }
-    // TODO: Close chokidar watcher
+
+    // Close the fs.watch watcher
+    state.watcher.close();
+
     watchers.delete(repoPath);
-    console.log(`[GitDiffService] Watching stopped for: ${repoPath}`);
+    log.info('File watching stopped');
   }
 }
 
@@ -551,18 +620,21 @@ export function isWatching(repoPath: string): boolean {
 }
 
 /**
- * Trigger a refresh for watched repository (for testing/manual refresh).
+ * Trigger a manual refresh for a watched repository.
+ * Useful for testing or when a manual refresh is requested.
+ *
+ * @param repoPath - Path to the git repository
  */
 export function triggerRefresh(repoPath: string): void {
   const state = watchers.get(repoPath);
   if (state) {
-    // Debounce the callback
+    // Clear existing timer and trigger immediately with short debounce
     if (state.debounceTimer) {
       clearTimeout(state.debounceTimer);
     }
     state.debounceTimer = setTimeout(() => {
       state.callback();
       state.debounceTimer = null;
-    }, 100); // 100ms debounce
+    }, 100);
   }
 }

@@ -32,7 +32,6 @@ import {
 import {
   calculateBaseCommit,
   resolveRef,
-  startWatching,
   stopWatching,
 } from './git-diff-service.js';
 import { createLogger } from '../lib/logger.js';
@@ -365,8 +364,8 @@ export class SessionManager {
     } else if (worker.type === 'terminal') {
       worker.pty.kill();
     } else {
-      // git-diff worker: stop file watcher
-      stopWatching(session.locationPath);
+      // git-diff worker: stop file watcher (fire-and-forget)
+      void stopWatching(session.locationPath);
     }
 
     session.workers.delete(workerId);
@@ -532,11 +531,8 @@ export class SessionManager {
       baseCommit: resolvedBaseCommit,
     };
 
-    // Start file watching for this worker
-    startWatching(locationPath, () => {
-      // Callback will be used when WebSocket handler is connected
-      logger.debug({ locationPath }, 'File change detected in git-diff worker');
-    });
+    // Note: File watching is started when WebSocket connects (in git-diff-handler.ts)
+    // This allows the watcher callback to send updates via WebSocket
 
     return worker;
   }
