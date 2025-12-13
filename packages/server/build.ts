@@ -26,6 +26,7 @@ if (!result.success) {
 const distPackageJson = {
   name: 'agent-console',
   version: '0.1.0',
+  description: 'A web application for managing multiple Claude Code instances',
   type: 'module',
   bin: {
     'agent-console': './index.js',
@@ -39,6 +40,20 @@ const distPackageJson = {
   dependencies: {
     'bun-pty': '^0.4.2',
   },
+  engines: {
+    bun: '>=1.3.0',
+  },
+  repository: {
+    type: 'git',
+    url: 'git+https://github.com/ms2sato/agent-console.git',
+  },
+  keywords: ['claude', 'claude-code', 'terminal', 'pty', 'bun'],
+  author: 'ms2sato',
+  license: 'MIT',
+  bugs: {
+    url: 'https://github.com/ms2sato/agent-console/issues',
+  },
+  homepage: 'https://github.com/ms2sato/agent-console#readme',
 };
 
 mkdirSync(distDir, { recursive: true });
