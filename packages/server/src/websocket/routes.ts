@@ -9,6 +9,9 @@ import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage } from './git-diff-handler.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('websocket');
 
 // Track connected dashboard clients for broadcasting
 const dashboardClients = new Set<WSContext>();
@@ -26,7 +29,7 @@ sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
     try {
       client.send(msgStr);
     } catch (e) {
-      console.error('Failed to send to dashboard client:', e);
+      logger.warn({ err: e }, 'Failed to send to dashboard client');
     }
   }
 });
@@ -45,7 +48,7 @@ export function setupWebSocketRoutes(
       return {
         onOpen(_event: unknown, ws: WSContext) {
           dashboardClients.add(ws);
-          console.log(`Dashboard WebSocket connected (${dashboardClients.size} clients)`);
+          logger.info({ clientCount: dashboardClients.size }, 'Dashboard WebSocket connected');
 
           // Send current state of all sessions on connect
           const allSessions = sessionManager.getAllSessions();
@@ -62,11 +65,11 @@ export function setupWebSocketRoutes(
             })),
           };
           ws.send(JSON.stringify(syncMsg));
-          console.log(`Sent sessions-sync with ${allSessions.length} sessions`);
+          logger.debug({ sessionCount: allSessions.length }, 'Sent sessions-sync');
         },
         onClose(_event: unknown, ws: WSContext) {
           dashboardClients.delete(ws);
-          console.log(`Dashboard WebSocket disconnected (${dashboardClients.size} clients)`);
+          logger.info({ clientCount: dashboardClients.size }, 'Dashboard WebSocket disconnected');
         },
       };
     })
@@ -122,7 +125,7 @@ export function setupWebSocketRoutes(
           }
 
           // PTY-based worker handling (agent/terminal)
-          console.log(`Worker WebSocket connected: session=${sessionId}, worker=${workerId}`);
+          logger.info({ sessionId, workerId, workerType: worker.type }, 'Worker WebSocket connected');
 
           // Helper to safely send WebSocket messages with buffering
           let outputBuffer = '';
@@ -134,7 +137,7 @@ export function setupWebSocketRoutes(
               try {
                 ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
               } catch (error) {
-                console.error(`[WS] Error sending to worker ${workerId}:`, error);
+                logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
               }
               outputBuffer = '';
             }
@@ -153,7 +156,7 @@ export function setupWebSocketRoutes(
               try {
                 ws.send(JSON.stringify(msg));
               } catch (error) {
-                console.error(`[WS] Error sending to worker ${workerId}:`, error);
+                logger.warn({ workerId, err: error }, 'Error sending message to worker');
               }
             }
           };
@@ -217,12 +220,12 @@ export function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {
-          console.log(`Worker WebSocket disconnected: session=${sessionId}, worker=${workerId}`);
+          logger.info({ sessionId, workerId }, 'Worker WebSocket disconnected');
           // Detach callbacks but keep worker alive (only for PTY workers)
           sessionManager.detachWorkerCallbacks(sessionId, workerId);
         },
         onError(event: Event) {
-          console.error(`Worker WebSocket error: session=${sessionId}, worker=${workerId}:`, event);
+          logger.error({ sessionId, workerId, event }, 'Worker WebSocket error');
         },
       };
     })

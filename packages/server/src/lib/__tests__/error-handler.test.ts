@@ -1,4 +1,4 @@
-import { describe, it, expect, spyOn, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../error-handler.js';
 import { ValidationError, NotFoundError, ConflictError, InternalError } from '../errors.js';
@@ -71,8 +71,6 @@ describe('Error Handler', () => {
     });
 
     it('should handle non-ApiError with 500 status', async () => {
-      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
-
       app.get('/test', () => {
         throw new Error('Unexpected error');
       });
@@ -82,14 +80,10 @@ describe('Error Handler', () => {
       expect(res.status).toBe(500);
       const body = await res.json() as { error: string };
       expect(body.error).toBe('Unexpected error');
-      expect(consoleSpy).toHaveBeenCalled();
-
-      consoleSpy.mockRestore();
+      // Error is logged via Pino logger (not console.error)
     });
 
     it('should handle TypeError', async () => {
-      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
-
       app.get('/test', () => {
         throw new TypeError('Type error occurred');
       });
@@ -99,8 +93,7 @@ describe('Error Handler', () => {
       expect(res.status).toBe(500);
       const body = await res.json() as { error: string };
       expect(body.error).toBe('Type error occurred');
-
-      consoleSpy.mockRestore();
+      // Error is logged via Pino logger (not console.error)
     });
   });
 
