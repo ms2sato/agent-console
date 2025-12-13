@@ -101,6 +101,26 @@ Monorepo with Bun workspaces:
 - Do not use `unknown` as a shortcut to bypass type checking. Casting through `unknown` (e.g., `value as unknown as TargetType`) is prohibited.
 - Define shared types in `packages/shared`.
 
+## Schema Validation (Valibot)
+
+**Always add `minLength(1)` before regex validation.** When an empty string reaches a regex, it fails with a confusing error message (e.g., "Invalid branch name" instead of "Branch name is required"). Users cannot understand what to fix.
+
+```typescript
+// ❌ Bug: empty string shows "Invalid branch name"
+v.pipe(
+  v.string(),
+  v.regex(branchNamePattern, branchNameErrorMessage)
+)
+
+// ✅ Correct: empty string shows "Branch name is required"
+v.pipe(
+  v.string(),
+  v.trim(),
+  v.minLength(1, 'Branch name is required'),
+  v.regex(branchNamePattern, branchNameErrorMessage)
+)
+```
+
 ## Project Overview
 
 A web application for managing multiple AI coding agent instances (Claude Code, etc.) running in different git worktrees. Instead of scattered terminals, users control all instances through a unified browser interface using xterm.js.

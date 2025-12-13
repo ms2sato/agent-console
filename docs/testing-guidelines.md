@@ -161,6 +161,85 @@ describe('Integration: SessionManager', () => {
 });
 ```
 
+## Form Component Testing
+
+Forms using React Hook Form + Valibot require component-level tests. Schema unit tests alone are insufficient because they cannot catch integration issues between the form library and validation.
+
+### 1. Write Component Tests for Forms
+
+```typescript
+// ❌ Insufficient: schema unit test only
+describe('CreateWorktreeFormSchema', () => {
+  it('should validate correctly', () => {
+    const result = v.safeParse(schema, data);
+    expect(result.success).toBe(true);
+  });
+});
+
+// ✅ Required: actual form interaction test
+describe('CreateWorktreeForm', () => {
+  it('should submit with valid data', async () => {
+    const user = userEvent.setup();
+    await user.type(input, 'value');
+    await user.click(submitButton);
+    expect(onSubmit).toHaveBeenCalled();
+  });
+});
+```
+
+### 2. Test Conditional Fields When Hidden
+
+When fields are conditionally shown/hidden, verify that hidden fields do not block form submission.
+
+```typescript
+// customBranch is hidden in prompt mode
+// Verify hidden field doesn't prevent submission
+it('should submit in prompt mode without customBranch', async () => {
+  await user.type(promptInput, 'Some prompt');
+  await user.click(submitButton);
+  expect(onSubmit).toHaveBeenCalled();
+});
+```
+
+### 3. Test Submission with Empty Default Values
+
+React Hook Form uses empty strings in `defaultValues`. Test that validation handles this correctly.
+
+```typescript
+it('should show validation error when submitting with empty default value', async () => {
+  // Submit immediately - field is '' from defaultValues
+  await user.click(submitButton);
+
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(screen.getByText(/required/)).toBeTruthy();
+});
+```
+
+### 4. Test Validation Error Messages
+
+Verify that the **correct message** is displayed, not just that an error exists.
+
+```typescript
+// ❌ Insufficient: only checks error existence
+expect(screen.getByRole('alert')).toBeTruthy();
+
+// ✅ Correct: verifies message content
+expect(screen.getByText('Branch name is required')).toBeTruthy();
+```
+
+### 5. Explicitly Test "Cannot Submit" Cases
+
+When validation fails, explicitly verify that `onSubmit` is NOT called.
+
+```typescript
+it('should NOT call onSubmit when validation fails', async () => {
+  await user.click(submitButton);
+
+  // Explicitly test that it was NOT called
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+```
+
 ## Anti-Patterns
 
 ### 1. Logic Duplication
