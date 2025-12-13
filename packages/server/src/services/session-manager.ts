@@ -6,6 +6,7 @@ import type {
   Worker,
   AgentWorker,
   TerminalWorker,
+  GitDiffWorker,
   AgentActivityState,
   CreateSessionRequest,
   CreateWorkerRequest,
@@ -16,6 +17,7 @@ import {
   type PersistedWorker,
   type PersistedAgentWorker,
   type PersistedTerminalWorker,
+  type PersistedGitDiffWorker,
 } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -27,18 +29,29 @@ import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
+import {
+  calculateBaseCommit,
+  resolveRef,
+  startWatching,
+  stopWatching,
+} from './git-diff-service.js';
 
+// Base for all workers
 interface InternalWorkerBase {
   id: string;
   name: string;
   createdAt: string;
+}
+
+// Base for PTY-based workers (agent, terminal)
+interface InternalPtyWorkerBase extends InternalWorkerBase {
   pty: PtyInstance;
   outputBuffer: string;
   onData: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
 }
 
-interface InternalAgentWorker extends InternalWorkerBase {
+interface InternalAgentWorker extends InternalPtyWorkerBase {
   type: 'agent';
   agentId: string;
   activityState: AgentActivityState;
@@ -46,11 +59,19 @@ interface InternalAgentWorker extends InternalWorkerBase {
   onActivityChange?: (state: AgentActivityState) => void;
 }
 
-interface InternalTerminalWorker extends InternalWorkerBase {
+interface InternalTerminalWorker extends InternalPtyWorkerBase {
   type: 'terminal';
 }
 
-type InternalWorker = InternalAgentWorker | InternalTerminalWorker;
+// GitDiffWorker does not use PTY - runs in server process
+interface InternalGitDiffWorker extends InternalWorkerBase {
+  type: 'git-diff';
+  baseCommit: string;
+  // File watcher and callbacks will be added in Phase 2
+}
+
+type InternalPtyWorker = InternalAgentWorker | InternalTerminalWorker;
+type InternalWorker = InternalAgentWorker | InternalTerminalWorker | InternalGitDiffWorker;
 
 interface InternalSessionBase {
   id: string;
@@ -167,8 +188,9 @@ export class SessionManager {
         continue;
       }
 
-      // Kill all workers in this session
+      // Kill all workers in this session (only PTY workers have pid)
       for (const worker of session.workers) {
+        if (worker.type === 'git-diff') continue; // Git diff workers have no process
         if (isProcessAlive(worker.pid)) {
           processKill(worker.pid, 'SIGTERM');
           console.log(`Killed orphan worker process: PID ${worker.pid} (worker ${worker.id}, session ${session.id})`);
@@ -247,9 +269,15 @@ export class SessionManager {
 
     // Kill all workers
     for (const worker of session.workers.values()) {
-      worker.pty.kill();
-      if (worker.type === 'agent') {
-        worker.activityDetector.dispose();
+      if (worker.type === 'git-diff') {
+        // Stop file watcher for git-diff workers
+        stopWatching(session.locationPath);
+      } else {
+        // Kill PTY for agent/terminal workers
+        worker.pty.kill();
+        if (worker.type === 'agent') {
+          worker.activityDetector.dispose();
+        }
       }
     }
 
@@ -263,12 +291,12 @@ export class SessionManager {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
   }
 
-  createWorker(
+  async createWorker(
     sessionId: string,
     request: CreateWorkerRequest,
     continueConversation: boolean = false,
     initialPrompt?: string
-  ): Worker | null {
+  ): Promise<Worker | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -289,12 +317,21 @@ export class SessionManager {
         continueConversation,
         initialPrompt,
       });
-    } else {
+    } else if (request.type === 'terminal') {
       worker = this.initializeTerminalWorker({
         id: workerId,
         name: workerName,
         createdAt,
         locationPath: session.locationPath,
+      });
+    } else {
+      // git-diff worker (async initialization for base commit calculation)
+      worker = await this.initializeGitDiffWorker({
+        id: workerId,
+        name: workerName,
+        createdAt,
+        locationPath: session.locationPath,
+        baseCommit: request.baseCommit,
       });
     }
 
@@ -318,9 +355,15 @@ export class SessionManager {
     const worker = session.workers.get(workerId);
     if (!worker) return false;
 
-    worker.pty.kill();
+    // Clean up based on worker type
     if (worker.type === 'agent') {
+      worker.pty.kill();
       worker.activityDetector.dispose();
+    } else if (worker.type === 'terminal') {
+      worker.pty.kill();
+    } else {
+      // git-diff worker: stop file watcher
+      stopWatching(session.locationPath);
     }
 
     session.workers.delete(workerId);
@@ -330,9 +373,13 @@ export class SessionManager {
     return true;
   }
 
-  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal'): string {
+  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff'): string {
     if (type === 'agent') {
       return 'Claude';
+    }
+
+    if (type === 'git-diff') {
+      return 'Git Diff';
     }
 
     // Count existing terminal workers
@@ -452,7 +499,46 @@ export class SessionManager {
     return worker;
   }
 
-  private setupWorkerEventHandlers(worker: InternalWorker, _sessionId: string | null): void {
+  private async initializeGitDiffWorker(params: {
+    id: string;
+    name: string;
+    createdAt: string;
+    locationPath: string;
+    baseCommit?: string;
+  }): Promise<InternalGitDiffWorker> {
+    const { id, name, createdAt, locationPath, baseCommit } = params;
+
+    // Calculate or resolve the base commit
+    let resolvedBaseCommit: string;
+
+    if (baseCommit) {
+      // If baseCommit is provided, resolve it (could be branch name or commit hash)
+      const resolved = await resolveRef(baseCommit, locationPath);
+      resolvedBaseCommit = resolved ?? 'HEAD';
+    } else {
+      // Calculate merge-base with default branch
+      const mergeBase = await calculateBaseCommit(locationPath);
+      resolvedBaseCommit = mergeBase ?? 'HEAD';
+    }
+
+    const worker: InternalGitDiffWorker = {
+      id,
+      type: 'git-diff',
+      name,
+      createdAt,
+      baseCommit: resolvedBaseCommit,
+    };
+
+    // Start file watching for this worker
+    startWatching(locationPath, () => {
+      // Callback will be used when WebSocket handler is connected
+      console.log(`[GitDiffWorker] File change detected in ${locationPath}`);
+    });
+
+    return worker;
+  }
+
+  private setupWorkerEventHandlers(worker: InternalPtyWorker, _sessionId: string | null): void {
     worker.pty.onData((data) => {
       worker.outputBuffer += data;
       if (worker.outputBuffer.length > MAX_BUFFER_SIZE) {
@@ -480,7 +566,7 @@ export class SessionManager {
 
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker) return false;
+    if (!worker || worker.type === 'git-diff') return false;
 
     worker.onData = callbacks.onData;
     worker.onExit = callbacks.onExit;
@@ -494,7 +580,7 @@ export class SessionManager {
 
   detachWorkerCallbacks(sessionId: string, workerId: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker) return false;
+    if (!worker || worker.type === 'git-diff') return false;
 
     worker.onData = () => {};
     worker.onExit = () => {};
@@ -508,7 +594,7 @@ export class SessionManager {
 
   writeWorkerInput(sessionId: string, workerId: string, data: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker) return false;
+    if (!worker || worker.type === 'git-diff') return false;
 
     // Handle activity detection for agent workers
     if (worker.type === 'agent') {
@@ -529,7 +615,7 @@ export class SessionManager {
 
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker) return false;
+    if (!worker || worker.type === 'git-diff') return false;
 
     worker.pty.resize(cols, rows);
     return true;
@@ -537,7 +623,8 @@ export class SessionManager {
 
   getWorkerOutputBuffer(sessionId: string, workerId: string): string {
     const worker = this.getWorker(sessionId, workerId);
-    return worker?.outputBuffer ?? '';
+    if (!worker || worker.type === 'git-diff') return '';
+    return worker.outputBuffer;
   }
 
   getWorkerActivityState(sessionId: string, workerId: string): AgentActivityState | undefined {
@@ -702,7 +789,7 @@ export class SessionManager {
           pid: w.pty.pid,
           createdAt: w.createdAt,
         } as PersistedAgentWorker;
-      } else {
+      } else if (w.type === 'terminal') {
         return {
           id: w.id,
           type: 'terminal',
@@ -710,6 +797,14 @@ export class SessionManager {
           pid: w.pty.pid,
           createdAt: w.createdAt,
         } as PersistedTerminalWorker;
+      } else {
+        return {
+          id: w.id,
+          type: 'git-diff',
+          name: w.name,
+          baseCommit: w.baseCommit,
+          createdAt: w.createdAt,
+        } as PersistedGitDiffWorker;
       }
     });
 
@@ -781,13 +876,21 @@ export class SessionManager {
         agentId: worker.agentId,
         createdAt: worker.createdAt,
       } as AgentWorker;
-    } else {
+    } else if (worker.type === 'terminal') {
       return {
         id: worker.id,
         type: 'terminal',
         name: worker.name,
         createdAt: worker.createdAt,
       } as TerminalWorker;
+    } else {
+      return {
+        id: worker.id,
+        type: 'git-diff',
+        name: worker.name,
+        baseCommit: worker.baseCommit,
+        createdAt: worker.createdAt,
+      } as GitDiffWorker;
     }
   }
 }

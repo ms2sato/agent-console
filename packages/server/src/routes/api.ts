@@ -150,14 +150,16 @@ api.get('/sessions/:sessionId/workers', (c) => {
 api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema), async (c) => {
   const sessionId = c.req.param('sessionId');
   const body = getValidatedBody<CreateWorkerRequest>(c);
-  const { continueConversation = false, ...workerRequest } = body;
 
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
   }
 
-  const worker = sessionManager.createWorker(sessionId, workerRequest, continueConversation);
+  // Extract continueConversation only for PTY-based workers (agent/terminal)
+  const continueConversation = body.type !== 'git-diff' && body.continueConversation === true;
+
+  const worker = await sessionManager.createWorker(sessionId, body, continueConversation);
 
   if (!worker) {
     throw new ValidationError('Failed to create worker');
@@ -198,6 +200,61 @@ api.post('/sessions/:sessionId/workers/:workerId/restart', validateBody(RestartW
   }
 
   return c.json({ worker });
+});
+
+// Get diff data for a git-diff worker
+api.get('/sessions/:sessionId/workers/:workerId/diff', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const workerId = c.req.param('workerId');
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  const worker = session.workers.find(w => w.id === workerId);
+  if (!worker) {
+    throw new NotFoundError('Worker');
+  }
+
+  if (worker.type !== 'git-diff') {
+    throw new ValidationError('Worker is not a git-diff worker');
+  }
+
+  const { getDiffData } = await import('../services/git-diff-service.js');
+  const diffData = await getDiffData(session.locationPath, worker.baseCommit);
+
+  return c.json(diffData);
+});
+
+// Get diff for a specific file
+api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const workerId = c.req.param('workerId');
+  const filePath = c.req.query('path');
+
+  if (!filePath) {
+    throw new ValidationError('path query parameter is required');
+  }
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  const worker = session.workers.find(w => w.id === workerId);
+  if (!worker) {
+    throw new NotFoundError('Worker');
+  }
+
+  if (worker.type !== 'git-diff') {
+    throw new ValidationError('Worker is not a git-diff worker');
+  }
+
+  const { getFileDiff } = await import('../services/git-diff-service.js');
+  const rawDiff = await getFileDiff(session.locationPath, worker.baseCommit, filePath);
+
+  return c.json({ rawDiff });
 });
 
 // Get all repositories

@@ -13,7 +13,12 @@ export interface TerminalWorker extends WorkerBase {
   type: 'terminal';
 }
 
-export type Worker = AgentWorker | TerminalWorker;
+export interface GitDiffWorker extends WorkerBase {
+  type: 'git-diff';
+  baseCommit: string;  // Comparison base commit hash (calculated at creation)
+}
+
+export type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
 
 // Agent activity state (detected by parsing output)
 export type AgentActivityState =

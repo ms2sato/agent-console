@@ -11,6 +11,7 @@ export type {
 export type {
   CreateAgentWorkerRequest,
   CreateTerminalWorkerRequest,
+  CreateGitDiffWorkerRequest,
   CreateWorkerRequest,
   RestartWorkerRequest,
 } from '../schemas/worker.js';

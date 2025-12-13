@@ -3,10 +3,12 @@ import type {
   WorkerServerMessage,
   AgentActivityState,
   DashboardServerMessage,
+  GitDiffWorker,
 } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
+import { handleGitDiffConnection, handleGitDiffMessage } from './git-diff-handler.js';
 
 // Track connected dashboard clients for broadcasting
 const dashboardClients = new Set<WSContext>();
@@ -77,6 +79,9 @@ export function setupWebSocketRoutes(
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
 
+      // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
+      let currentGitDiffBaseCommit: string | null = null;
+
       return {
         onOpen(_event: unknown, ws: WSContext) {
           const session = sessionManager.getSession(sessionId);
@@ -103,6 +108,20 @@ export function setupWebSocketRoutes(
             return;
           }
 
+          // Handle git-diff workers differently
+          if (worker.type === 'git-diff') {
+            currentGitDiffBaseCommit = (worker as GitDiffWorker).baseCommit;
+            handleGitDiffConnection(
+              ws,
+              sessionId,
+              workerId,
+              session.locationPath,
+              currentGitDiffBaseCommit
+            );
+            return;
+          }
+
+          // PTY-based worker handling (agent/terminal)
           console.log(`Worker WebSocket connected: session=${sessionId}, worker=${workerId}`);
 
           // Helper to safely send WebSocket messages with buffering
@@ -170,11 +189,36 @@ export function setupWebSocketRoutes(
           const data = typeof event.data === 'string'
             ? event.data
             : new TextDecoder().decode(event.data);
+
+          // Get session to check worker type
+          const session = sessionManager.getSession(sessionId);
+          if (!session) return;
+
+          const worker = session.workers.find(w => w.id === workerId);
+          if (!worker) return;
+
+          // Handle git-diff messages differently
+          if (worker.type === 'git-diff') {
+            handleGitDiffMessage(
+              ws,
+              sessionId,
+              workerId,
+              session.locationPath,
+              currentGitDiffBaseCommit || (worker as GitDiffWorker).baseCommit,
+              data,
+              (newBaseCommit) => {
+                currentGitDiffBaseCommit = newBaseCommit;
+              }
+            );
+            return;
+          }
+
+          // PTY-based worker message handling
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {
           console.log(`Worker WebSocket disconnected: session=${sessionId}, worker=${workerId}`);
-          // Detach callbacks but keep worker alive
+          // Detach callbacks but keep worker alive (only for PTY workers)
           sessionManager.detachWorkerCallbacks(sessionId, workerId);
         },
         onError(event: Event) {

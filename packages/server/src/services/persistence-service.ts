@@ -15,23 +15,30 @@ export interface PersistedRepository {
   registeredAt: string;
 }
 
+// Base for all persisted workers
 interface PersistedWorkerBase {
   id: string;
   name: string;
-  pid: number;
   createdAt: string;
 }
 
 export interface PersistedAgentWorker extends PersistedWorkerBase {
   type: 'agent';
   agentId: string;
+  pid: number;  // PTY process ID
 }
 
 export interface PersistedTerminalWorker extends PersistedWorkerBase {
   type: 'terminal';
+  pid: number;  // PTY process ID
 }
 
-export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker;
+export interface PersistedGitDiffWorker extends PersistedWorkerBase {
+  type: 'git-diff';
+  baseCommit: string;  // No pid - runs in server process
+}
+
+export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | PersistedGitDiffWorker;
 
 interface PersistedSessionBase {
   id: string;

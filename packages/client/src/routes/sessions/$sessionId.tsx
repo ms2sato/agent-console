@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
+import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
+import { DiffIcon } from '../../components/Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
@@ -22,7 +24,7 @@ type PageState =
 // Tab representation - links to workers
 interface Tab {
   id: string;           // Worker ID
-  workerType: 'agent' | 'terminal';
+  workerType: 'agent' | 'terminal' | 'git-diff';
   name: string;
   wsUrl: string;
 }
@@ -178,25 +180,39 @@ function TerminalPage() {
     if (state.type === 'active' && tabs.length === 0) {
       const workers = state.session.workers;
 
-      // If no workers exist, create an agent worker automatically
+      // If no workers exist, create agent and git-diff workers automatically
       if (workers.length === 0) {
         (async () => {
           try {
-            const { worker } = await createWorker(sessionId, {
+            // Create agent worker
+            const { worker: agentWorker } = await createWorker(sessionId, {
               type: 'agent',
               agentId: 'claude-code-builtin',
               name: 'Claude',
             });
-            const newTab: Tab = {
-              id: worker.id,
+            const agentTab: Tab = {
+              id: agentWorker.id,
               workerType: 'agent',
-              name: worker.name,
-              wsUrl: buildWorkerWsUrl(sessionId, worker.id),
+              name: agentWorker.name,
+              wsUrl: buildWorkerWsUrl(sessionId, agentWorker.id),
             };
-            setTabs([newTab]);
-            setActiveTabId(worker.id);
+
+            // Create git-diff worker
+            const { worker: diffWorker } = await createWorker(sessionId, {
+              type: 'git-diff',
+              name: 'Diff',
+            });
+            const diffTab: Tab = {
+              id: diffWorker.id,
+              workerType: 'git-diff',
+              name: diffWorker.name,
+              wsUrl: buildWorkerWsUrl(sessionId, diffWorker.id),
+            };
+
+            setTabs([agentTab, diffTab]);
+            setActiveTabId(agentWorker.id);
           } catch (error) {
-            console.error('Failed to create agent worker:', error);
+            console.error('Failed to create workers:', error);
           }
         })();
         return;
@@ -238,8 +254,9 @@ function TerminalPage() {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
 
-    // Don't allow closing agent workers (primary Claude tab)
-    if (tab.workerType === 'agent') return;
+    // Don't allow closing agent or git-diff workers (fixed tabs)
+    // Only terminal workers can be closed
+    if (tab.workerType === 'agent' || tab.workerType === 'git-diff') return;
 
     try {
       await deleteWorker(sessionId, tabId);
@@ -452,9 +469,13 @@ function TerminalPage() {
                 : 'text-gray-400'
             }`}
           >
-            <span className={`inline-block w-2 h-2 rounded-full ${
-              tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
-            }`} />
+            {tab.workerType === 'git-diff' ? (
+              <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
+            ) : (
+              <span className={`inline-block w-2 h-2 rounded-full ${
+                tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
+              }`} />
+            )}
             {tab.name}
             {tab.workerType === 'terminal' && (
               <span
@@ -500,7 +521,7 @@ function TerminalPage() {
         )}
       </div>
 
-      {/* Terminal panels - render all but only show active */}
+      {/* Worker panels - render all but only show active */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
         {tabs.map(tab => (
           <div
@@ -509,12 +530,19 @@ function TerminalPage() {
               tab.id === activeTabId ? 'z-10' : 'z-0 invisible'
             }`}
           >
-            <Terminal
-              wsUrl={tab.wsUrl}
-              onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
-              onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
-              hideStatusBar
-            />
+            {tab.workerType === 'git-diff' ? (
+              <GitDiffWorkerView
+                sessionId={sessionId}
+                workerId={tab.id}
+              />
+            ) : (
+              <Terminal
+                wsUrl={tab.wsUrl}
+                onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
+                onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
+                hideStatusBar
+              />
+            )}
           </div>
         ))}
       </div>

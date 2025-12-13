@@ -1,6 +1,7 @@
 export * from './types/agent.js';
 export * from './types/worker.js';
 export * from './types/session.js';
+export * from './types/git-diff.js';
 export * from './schemas/index.js';
 
 export interface Repository {
