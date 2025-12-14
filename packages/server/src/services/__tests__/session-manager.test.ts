@@ -606,6 +606,179 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('restoreWorker', () => {
+    it('should return existing internal worker if it exists', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // PTY count before restore
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore should return existing worker without creating new PTY
+      const restored = manager.restoreWorker(session.id, workerId);
+
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(workerId);
+      // No new PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+    });
+
+    it('should restore agent worker from persisted metadata when internal worker does not exist', async () => {
+      const manager = await getSessionManager();
+
+      // Create session and get persisted data
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // Get persisted session count before
+      const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      expect(savedDataBefore.length).toBe(1);
+
+      // Simulate server restart: create new manager that loads from persistence
+      // but doesn't have internal workers
+      const manager2 = await getSessionManager();
+
+      // Session exists but internal worker map is empty
+      const session2 = manager2.getSession(session.id);
+      expect(session2).toBeDefined();
+
+      // PTY count before restore
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore worker
+      const restored = manager2.restoreWorker(session.id, workerId);
+
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(workerId);
+      expect(restored?.type).toBe('agent');
+
+      // New PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+
+      // Persistence should be updated (not added as new entry)
+      const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      expect(savedDataAfter.length).toBe(1); // Still 1 session, not 2
+    });
+
+    it('should restore terminal worker from persisted metadata', async () => {
+      const manager = await getSessionManager();
+
+      // Create session with terminal worker
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      const terminalWorkerId = terminalWorker!.id;
+
+      // Simulate server restart
+      const manager2 = await getSessionManager();
+
+      // PTY count before restore
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore terminal worker
+      const restored = manager2.restoreWorker(session.id, terminalWorkerId);
+
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(terminalWorkerId);
+      expect(restored?.type).toBe('terminal');
+
+      // New PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+    });
+
+    it('should return null for git-diff worker (does not need PTY restoration)', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Explicitly create git-diff worker (createSession's git-diff is async and may not be ready)
+      const gitDiffWorker = await manager.createWorker(session.id, {
+        type: 'git-diff',
+        name: 'Test Diff',
+      });
+      expect(gitDiffWorker).toBeDefined();
+
+      // Simulate server restart
+      const manager2 = await getSessionManager();
+
+      // Restore should return null for git-diff worker
+      const restored = manager2.restoreWorker(session.id, gitDiffWorker!.id);
+      expect(restored).toBeNull();
+    });
+
+    it('should return null for non-existent session', async () => {
+      const manager = await getSessionManager();
+
+      const restored = manager.restoreWorker('non-existent', 'worker-1');
+      expect(restored).toBeNull();
+    });
+
+    it('should return null if worker not found in persisted metadata', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Simulate server restart
+      const manager2 = await getSessionManager();
+
+      // Try to restore non-existent worker
+      const restored = manager2.restoreWorker(session.id, 'non-existent-worker');
+      expect(restored).toBeNull();
+    });
+
+    it('should update persistence with new PID after restoration', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // Get original PID from persistence
+      const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      const originalPid = savedDataBefore[0].workers.find((w: { id: string }) => w.id === workerId)?.pid;
+      expect(originalPid).toBeDefined();
+
+      // Simulate server restart
+      const manager2 = await getSessionManager();
+
+      // Restore worker
+      manager2.restoreWorker(session.id, workerId);
+
+      // Check that PID was updated in persistence
+      const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      const newPid = savedDataAfter[0].workers.find((w: { id: string }) => w.id === workerId)?.pid;
+      expect(newPid).toBeDefined();
+      expect(newPid).not.toBe(originalPid); // PID should be different
+    });
+  });
+
   describe('error recovery', () => {
     it('should propagate callback errors (caller is responsible for error handling)', async () => {
       const manager = await getSessionManager();

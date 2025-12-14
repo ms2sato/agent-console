@@ -674,6 +674,59 @@ export class SessionManager {
   }
 
   /**
+   * Restore a PTY worker from persisted metadata.
+   * Called when WebSocket connection is established but the internal worker doesn't exist
+   * (e.g., after server restart).
+   *
+   * Returns the existing internal worker if it exists, or creates a new one from persisted data.
+   * Returns null if the worker cannot be restored (session not found, worker not in persistence, etc.)
+   */
+  restoreWorker(sessionId: string, workerId: string): InternalWorker | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    // If internal worker already exists, return it (normal browser reload case)
+    const existingWorker = session.workers.get(workerId);
+    if (existingWorker) return existingWorker;
+
+    // Get persisted worker metadata
+    const metadata = persistenceService.getSessionMetadata(sessionId);
+    const persistedWorker = metadata?.workers.find(w => w.id === workerId);
+    if (!persistedWorker) return null;
+
+    // Only restore PTY workers (agent/terminal)
+    if (persistedWorker.type === 'git-diff') return null;
+
+    let worker: InternalWorker;
+
+    if (persistedWorker.type === 'agent') {
+      worker = this.initializeAgentWorker({
+        id: workerId,
+        name: persistedWorker.name,
+        createdAt: persistedWorker.createdAt,
+        sessionId,
+        locationPath: session.locationPath,
+        agentId: persistedWorker.agentId,
+        continueConversation: true, // Continue existing session
+      });
+    } else {
+      worker = this.initializeTerminalWorker({
+        id: workerId,
+        name: persistedWorker.name,
+        createdAt: persistedWorker.createdAt,
+        locationPath: session.locationPath,
+      });
+    }
+
+    session.workers.set(workerId, worker);
+    this.persistSession(session);
+
+    logger.info({ workerId, sessionId, workerType: persistedWorker.type }, 'Worker restored from persistence');
+
+    return worker;
+  }
+
+  /**
    * Get current branch name for a given path
    */
   async getBranchForPath(locationPath: string): Promise<string> {
@@ -840,9 +893,17 @@ export class SessionManager {
   }
 
   private toPublicSession(session: InternalSession): Session {
-    const workers = Array.from(session.workers.values())
+    let workers = Array.from(session.workers.values())
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map(w => this.toPublicWorker(w));
+
+    // If workers are empty (after server restart), restore from persisted data
+    if (workers.length === 0) {
+      const metadata = persistenceService.getSessionMetadata(session.id);
+      if (metadata && metadata.workers.length > 0) {
+        workers = metadata.workers.map(w => this.persistedWorkerToPublic(w));
+      }
+    }
 
     if (session.type === 'worktree') {
       return {
@@ -872,6 +933,33 @@ export class SessionManager {
   }
 
   private toPublicWorker(worker: InternalWorker): Worker {
+    if (worker.type === 'agent') {
+      return {
+        id: worker.id,
+        type: 'agent',
+        name: worker.name,
+        agentId: worker.agentId,
+        createdAt: worker.createdAt,
+      } as AgentWorker;
+    } else if (worker.type === 'terminal') {
+      return {
+        id: worker.id,
+        type: 'terminal',
+        name: worker.name,
+        createdAt: worker.createdAt,
+      } as TerminalWorker;
+    } else {
+      return {
+        id: worker.id,
+        type: 'git-diff',
+        name: worker.name,
+        baseCommit: worker.baseCommit,
+        createdAt: worker.createdAt,
+      } as GitDiffWorker;
+    }
+  }
+
+  private persistedWorkerToPublic(worker: PersistedWorker): Worker {
     if (worker.type === 'agent') {
       return {
         id: worker.id,
