@@ -9,7 +9,7 @@ import type {
   GitDiffWorker,
   AgentActivityState,
   CreateSessionRequest,
-  CreateWorkerRequest,
+  CreateWorkerParams,
 } from '@agent-console/shared';
 import {
   persistenceService,
@@ -300,7 +300,7 @@ export class SessionManager {
 
   async createWorker(
     sessionId: string,
-    request: CreateWorkerRequest,
+    request: CreateWorkerParams,
     continueConversation: boolean = false,
     initialPrompt?: string
   ): Promise<Worker | null> {

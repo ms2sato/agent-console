@@ -194,19 +194,8 @@ describe('API Client', () => {
   });
 
   describe('createWorker', () => {
-    it('should create agent worker', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
-      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
-
-      const result = await createWorker('session-id', { type: 'agent', agentId: 'claude-code' });
-
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'agent', agentId: 'claude-code' }),
-      });
-      expect(result).toEqual(mockWorker);
-    });
+    // Note: Client API only supports creating terminal workers
+    // Agent workers are created automatically by the server during session creation
 
     it('should create terminal worker', async () => {
       const mockWorker = { worker: { id: 'worker-2', type: 'terminal', name: 'Shell 1' } };
