@@ -523,7 +523,22 @@ export class SessionManager {
       env: getChildProcessEnv(),
     });
 
-    const worker: InternalAgentWorker = {
+    // Declare worker first - the callback closure captures the variable reference,
+    // not the value, so worker will be defined when the callback executes
+    let worker!: InternalAgentWorker;
+
+    // Create ActivityDetector first (callback executes later, when worker is assigned)
+    const activityDetector = new ActivityDetector({
+      onStateChange: (state) => {
+        worker.activityState = state;
+        worker.onActivityChange?.(state);
+        this.globalActivityCallback?.(sessionId, id, state);
+      },
+      activityPatterns: agent.activityPatterns,
+    });
+
+    // Now create the complete worker object with activityDetector
+    worker = {
       id,
       type: 'agent',
       name,
@@ -532,19 +547,10 @@ export class SessionManager {
       pty: ptyProcess,
       outputBuffer: '',
       activityState: 'unknown',
-      activityDetector: null as unknown as ActivityDetector, // Set below
+      activityDetector,
       onData: () => {},
       onExit: () => {},
     };
-
-    worker.activityDetector = new ActivityDetector({
-      onStateChange: (state) => {
-        worker.activityState = state;
-        worker.onActivityChange?.(state);
-        this.globalActivityCallback?.(sessionId, id, state);
-      },
-      activityPatterns: agent.activityPatterns,
-    });
 
     this.setupWorkerEventHandlers(worker, sessionId);
 

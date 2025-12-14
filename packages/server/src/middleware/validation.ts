@@ -37,7 +37,12 @@ export function validateBody<TSchema extends v.GenericSchema>(schema: TSchema) {
 /**
  * Get validated body from context
  * Type-safe helper to retrieve validated data
+ * @throws ValidationError if called without validateBody middleware
  */
 export function getValidatedBody<T>(c: Context): T {
-  return c.get('validatedBody') as T;
+  const val = c.get('validatedBody');
+  if (val === undefined) {
+    throw new ValidationError('getValidatedBody called without validateBody middleware');
+  }
+  return val as T;
 }

@@ -1150,6 +1150,17 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(400);
       });
 
+      it('should return 400 when path is whitespace only', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/system/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '   ' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
       it('should return 404 when path does not exist', async () => {
         const app = await createApp();
 

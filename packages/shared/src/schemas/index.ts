@@ -53,3 +53,9 @@ export {
   type CreateWorktreeRequest,
   type DeleteWorktreeRequest,
 } from './repository.js';
+
+// System schemas
+export {
+  SystemOpenRequestSchema,
+  type SystemOpenRequest,
+} from './system.js';
