@@ -28,6 +28,8 @@ import { repositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
+import { sessionValidationService } from '../services/session-validation-service.js';
+import { persistenceService } from '../services/persistence-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 
@@ -47,6 +49,33 @@ api.get('/config', (c) => {
 api.get('/sessions', (c) => {
   const sessions = sessionManager.getAllSessions();
   return c.json({ sessions });
+});
+
+// Validate all sessions
+api.get('/sessions/validate', async (c) => {
+  const response = await sessionValidationService.validateAllSessions();
+  return c.json(response);
+});
+
+// Delete an invalid session (removes from persistence without trying to stop workers)
+api.delete('/sessions/:id/invalid', (c) => {
+  const sessionId = c.req.param('id');
+
+  // Try to delete via sessionManager first (handles active sessions)
+  const deleted = sessionManager.deleteSession(sessionId);
+  if (deleted) {
+    return c.json({ success: true });
+  }
+
+  // If not found in sessionManager, try direct removal from persistence
+  // This handles orphaned sessions that exist only in sessions.json
+  const metadata = persistenceService.getSessionMetadata(sessionId);
+  if (!metadata) {
+    throw new NotFoundError('Session');
+  }
+
+  persistenceService.removeSession(sessionId);
+  return c.json({ success: true });
 });
 
 // Get a single session
