@@ -1,3 +1,12 @@
+/**
+ * ActivityDetector - Agent activity state machine
+ *
+ * Monitors terminal output to detect agent states (unknown/active/idle/asking)
+ * using output rate monitoring and pattern matching.
+ *
+ * @see docs/activity-detector.md for state diagram and design details
+ */
+
 import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
 

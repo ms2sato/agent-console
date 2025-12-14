@@ -23,6 +23,7 @@ import { ActivityDetector } from './activity-detector.js';
 import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
 import { getServerPid } from '../lib/config.js';
+import { serverConfig } from '../lib/server-config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
 import {
@@ -96,8 +97,6 @@ interface InternalQuickSession extends InternalSessionBase {
 }
 
 type InternalSession = InternalWorktreeSession | InternalQuickSession;
-
-const MAX_BUFFER_SIZE = 100000; // 100KB
 
 interface WorkerCallbacks {
   onData: (data: string) => void;
@@ -637,8 +636,9 @@ export class SessionManager {
   private setupWorkerEventHandlers(worker: InternalPtyWorker, _sessionId: string | null): void {
     worker.pty.onData((data) => {
       worker.outputBuffer += data;
-      if (worker.outputBuffer.length > MAX_BUFFER_SIZE) {
-        worker.outputBuffer = worker.outputBuffer.slice(-MAX_BUFFER_SIZE);
+      const maxBufferSize = serverConfig.WORKER_OUTPUT_BUFFER_SIZE;
+      if (worker.outputBuffer.length > maxBufferSize) {
+        worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
       }
 
       if (worker.type === 'agent') {
