@@ -21,31 +21,30 @@
  * ```
  */
 import { mock } from 'bun:test';
+import path from 'path';
 
 // Track process states
 const alivePids = new Set<number>();
 const killedPids: number[] = [];
 
-// Register mock once at module load time
-// Default behavior: processKill does nothing, isProcessAlive returns false
-mock.module('../../lib/process-utils.js', () => ({
-  processKill: (pid: number, _signal?: NodeJS.Signals | number) => {
-    killedPids.push(pid);
-    alivePids.delete(pid);
-    return true;
-  },
-  isProcessAlive: (pid: number) => alivePids.has(pid),
-}));
+// Build absolute path to process-utils.js from this file's location
+const processUtilsPath = path.resolve(
+  path.dirname(new URL(import.meta.url).pathname),
+  '../../lib/process-utils.js'
+);
 
-// Also mock with different import paths that might be used
-mock.module('../lib/process-utils.js', () => ({
+// Mock implementation
+const mockImplementation = () => ({
   processKill: (pid: number, _signal?: NodeJS.Signals | number) => {
     killedPids.push(pid);
     alivePids.delete(pid);
     return true;
   },
   isProcessAlive: (pid: number) => alivePids.has(pid),
-}));
+});
+
+// Register mock once at module load time using absolute path
+mock.module(processUtilsPath, mockImplementation);
 
 /**
  * Mock process utilities for controlling process simulation in tests.
