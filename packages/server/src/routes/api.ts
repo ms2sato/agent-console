@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
 import { resolve as resolvePath, dirname } from 'node:path';
-import { access, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import open from 'open';
+import { validateSessionPath } from '../lib/path-validator.js';
 import type {
   CreateWorktreeRequest,
   CreateAgentRequest,
@@ -107,12 +108,10 @@ api.get('/sessions/:id', (c) => {
 api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
   const body = getValidatedBody<CreateSessionRequest>(c);
 
-  // Validate that locationPath exists
-  const absolutePath = resolvePath(body.locationPath);
-  try {
-    await access(absolutePath);
-  } catch {
-    throw new ValidationError(`Path does not exist: ${body.locationPath}`);
+  // Validate that locationPath is safe and exists
+  const validation = await validateSessionPath(body.locationPath);
+  if (!validation.valid) {
+    throw new ValidationError(validation.error || 'Invalid path');
   }
 
   const session = sessionManager.createSession(body);
