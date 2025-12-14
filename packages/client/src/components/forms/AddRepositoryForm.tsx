@@ -1,6 +1,7 @@
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
+import { FormOverlay } from '../ui/Spinner';
 import type { CreateRepositoryRequest } from '@agent-console/shared';
 import { CreateRepositoryRequestSchema } from '@agent-console/shared';
 
@@ -37,10 +38,11 @@ export function AddRepositoryForm({
   };
 
   return (
-    <div className="card mb-5">
+    <div className="relative card mb-5">
+      <FormOverlay isVisible={isPending} message="Adding repository..." />
       <h2 className="mb-3 text-lg font-medium">Add Repository</h2>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
-        <div className="flex gap-3 items-start">
+        <fieldset disabled={isPending} className="flex gap-3 items-start">
           <div className="flex-1">
             <FormField error={errors.path}>
               <Input
@@ -55,10 +57,9 @@ export function AddRepositoryForm({
           </div>
           <button
             type="submit"
-            disabled={isPending}
             className="btn btn-primary"
           >
-            {isPending ? 'Adding...' : 'Add'}
+            Add
           </button>
           <button
             type="button"
@@ -67,7 +68,7 @@ export function AddRepositoryForm({
           >
             Cancel
           </button>
-        </div>
+        </fieldset>
       </form>
     </div>
   );

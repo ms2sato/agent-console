@@ -9,6 +9,7 @@ import { useAgents } from './AgentSelector';
 import { ConfirmDialog } from './ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from './ui/error-dialog';
 import { FormField, Input } from './ui/FormField';
+import { FormOverlay, Spinner } from './ui/Spinner';
 
 export function AgentManagement() {
   const queryClient = useQueryClient();
@@ -34,7 +35,12 @@ export function AgentManagement() {
   };
 
   if (isLoading) {
-    return <div className="text-gray-500">Loading agents...</div>;
+    return (
+      <div className="flex items-center gap-2 text-gray-500">
+        <Spinner size="sm" />
+        <span>Loading agents...</span>
+      </div>
+    );
   }
 
   return (
@@ -177,46 +183,50 @@ function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
     }
   };
 
+  const isPending = registerMutation.isPending;
+
   return (
-    <div className="bg-slate-800 p-4 rounded mb-4">
+    <div className="relative bg-slate-800 p-4 rounded mb-4">
+      <FormOverlay isVisible={isPending} message="Adding agent..." />
       <h3 className="text-sm font-medium mb-3">Add New Agent</h3>
-      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-3">
-        <FormField label="Name" error={errors.name}>
-          <Input
-            {...register('name')}
-            placeholder="Agent name (e.g., My Custom Agent)"
-            error={errors.name}
-          />
-        </FormField>
-        <FormField label="Command" error={errors.command}>
-          <Input
-            {...register('command')}
-            placeholder="Command (e.g., my-agent, /usr/local/bin/agent)"
-            error={errors.command}
-          />
-        </FormField>
-        <FormField label="Description (optional)" error={errors.description}>
-          <Input
-            {...register('description')}
-            placeholder="Description"
-            error={errors.description}
-          />
-        </FormField>
-        {errors.root && (
-          <p className="text-sm text-red-400">{errors.root.message}</p>
-        )}
-        <div className="flex gap-2">
-          <button
-            type="submit"
-            disabled={registerMutation.isPending}
-            className="btn btn-primary text-sm"
-          >
-            {registerMutation.isPending ? 'Adding...' : 'Add Agent'}
-          </button>
-          <button type="button" onClick={onCancel} className="btn btn-danger text-sm">
-            Cancel
-          </button>
-        </div>
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <fieldset disabled={isPending} className="flex flex-col gap-3">
+          <FormField label="Name" error={errors.name}>
+            <Input
+              {...register('name')}
+              placeholder="Agent name (e.g., My Custom Agent)"
+              error={errors.name}
+            />
+          </FormField>
+          <FormField label="Command" error={errors.command}>
+            <Input
+              {...register('command')}
+              placeholder="Command (e.g., my-agent, /usr/local/bin/agent)"
+              error={errors.command}
+            />
+          </FormField>
+          <FormField label="Description (optional)" error={errors.description}>
+            <Input
+              {...register('description')}
+              placeholder="Description"
+              error={errors.description}
+            />
+          </FormField>
+          {errors.root && (
+            <p className="text-sm text-red-400">{errors.root.message}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="btn btn-primary text-sm"
+            >
+              Add Agent
+            </button>
+            <button type="button" onClick={onCancel} className="btn btn-danger text-sm">
+              Cancel
+            </button>
+          </div>
+        </fieldset>
       </form>
     </div>
   );

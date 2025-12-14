@@ -9,6 +9,7 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from './alert-dialog';
+import { ButtonSpinner } from './Spinner';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -56,11 +57,15 @@ export function ConfirmDialog({
               className="btn btn-danger"
               disabled={isLoading}
             >
-              {isLoading ? 'Processing...' : confirmLabel}
+              <ButtonSpinner isPending={isLoading} pendingText="Processing...">
+                {confirmLabel}
+              </ButtonSpinner>
             </button>
           ) : (
             <AlertDialogAction onClick={onConfirm} disabled={isLoading}>
-              {isLoading ? 'Processing...' : confirmLabel}
+              <ButtonSpinner isPending={isLoading} pendingText="Processing...">
+                {confirmLabel}
+              </ButtonSpinner>
             </AlertDialogAction>
           )}
         </AlertDialogFooter>
