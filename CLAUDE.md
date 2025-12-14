@@ -154,6 +154,14 @@ Backend (Bun + Hono)                Frontend (React + Vite)
   - `/ws/dashboard` - Broadcasts session/worker lifecycle events
   - `/ws/sessions/:sessionId/workers/:workerId` - Individual worker I/O
 
+### Client-Server Responsibility
+
+**Server is the source of truth.** The client should always follow the server's state, not make independent decisions about application state.
+
+- **Session/Worker lifecycle:** Server creates, manages, and destroys sessions and workers. Client only displays what server provides.
+- **State synchronization:** Client receives state updates via WebSocket and renders accordingly. No client-side state that contradicts server.
+- **User actions:** Client sends user intent to server (e.g., "create session"), server executes and broadcasts result.
+
 ## Key Technical Details
 
 - AI agents require PTY (not regular spawn) because they are interactive TUIs
