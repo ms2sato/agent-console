@@ -112,20 +112,46 @@ export class SessionManager {
 
   constructor(ptyProvider: PtyProvider = bunPtyProvider) {
     this.ptyProvider = ptyProvider;
-    this.cleanupOrphanProcesses();
+    // First load sessions into memory, then cleanup orphans from OTHER dead servers
+    // Order matters: initializeSessions must run before cleanupOrphanProcesses
+    // to avoid deleting sessions that should be inherited by this server
     this.initializeSessions();
+    this.cleanupOrphanProcesses();
   }
 
   /**
-   * Load persisted sessions into memory (without starting processes)
-   * These sessions will have workers=[] until a new worker is created or session is restarted
+   * Load persisted sessions into memory (without starting processes).
+   * Only inherits sessions whose serverPid is dead (or missing).
+   * Sessions owned by other live servers are left untouched.
+   * Also kills orphan worker processes from inherited sessions.
    */
   private initializeSessions(): void {
     const persistedSessions = persistenceService.loadSessions();
+    const currentServerPid = getServerPid();
+    const sessionsToSave: PersistedSession[] = [];
+    let inheritedCount = 0;
+    let killedWorkerCount = 0;
 
     for (const session of persistedSessions) {
       // Skip if already in memory (shouldn't happen, but safety check)
       if (this.sessions.has(session.id)) continue;
+
+      // If serverPid is alive, this session belongs to another active server
+      // Keep it in persistence unchanged
+      if (session.serverPid && isProcessAlive(session.serverPid)) {
+        sessionsToSave.push(session);
+        continue;
+      }
+
+      // serverPid is dead or missing - inherit this session
+      // Kill any orphan worker processes first
+      for (const worker of session.workers) {
+        if (worker.type !== 'git-diff' && isProcessAlive(worker.pid)) {
+          processKill(worker.pid, 'SIGTERM');
+          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
+          killedWorkerCount++;
+        }
+      }
 
       // Create internal session without workers (they were killed or died)
       let internalSession: InternalSession;
@@ -157,9 +183,25 @@ export class SessionManager {
       }
 
       this.sessions.set(session.id, internalSession);
+      inheritedCount++;
+
+      // Update serverPid to claim ownership
+      sessionsToSave.push({
+        ...session,
+        serverPid: currentServerPid,
+      });
     }
 
-    logger.info({ count: this.sessions.size }, 'Initialized sessions from persistence');
+    // Save all sessions (inherited with updated PID, others unchanged)
+    if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
+      persistenceService.saveSessions(sessionsToSave);
+    }
+
+    logger.info({
+      inheritedSessions: inheritedCount,
+      killedWorkerProcesses: killedWorkerCount,
+      serverPid: currentServerPid,
+    }, 'Initialized sessions from persistence');
   }
 
   /**
@@ -170,7 +212,9 @@ export class SessionManager {
   }
 
   /**
-   * Kill orphan processes from previous server run and remove orphan sessions
+   * Kill orphan processes from previous server run and remove orphan sessions.
+   * Sessions that have been loaded into this.sessions (by initializeSessions) are preserved.
+   * Only sessions from OTHER dead servers are considered orphans.
    */
   private cleanupOrphanProcesses(): void {
     const persistedSessions = persistenceService.loadSessions();
@@ -180,6 +224,12 @@ export class SessionManager {
     const orphanSessionIds: string[] = [];
 
     for (const session of persistedSessions) {
+      // Skip sessions that this server has inherited (already in memory)
+      if (this.sessions.has(session.id)) {
+        preservedCount++;
+        continue;
+      }
+
       if (!session.serverPid) {
         logger.warn({ sessionId: session.id }, 'Session has no serverPid (legacy session), skipping cleanup');
         preservedCount++;
@@ -191,7 +241,7 @@ export class SessionManager {
         continue;
       }
 
-      // This session's server is dead - mark for removal
+      // This session's server is dead AND not inherited by this server - mark for removal
       orphanSessionIds.push(session.id);
 
       // Kill all workers in this session (only PTY workers have pid)

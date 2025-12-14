@@ -422,6 +422,47 @@ class SessionManager {
 }
 ```
 
+## Server Startup Behavior
+
+### Session Inheritance on Restart
+
+When the server starts, it performs the following steps in order:
+
+1. **Initialize Sessions** (`initializeSessions`)
+   - Load all sessions from `sessions.json`
+   - For each session:
+     - If `serverPid` is alive (another server instance is running): Skip (don't inherit)
+     - If `serverPid` is dead or missing: Inherit the session
+   - For inherited sessions:
+     - Kill any orphan worker processes that are still alive
+     - Update `serverPid` to the current server's PID
+     - Save the updated session to persistence
+
+2. **Cleanup Orphan Processes** (`cleanupOrphanProcesses`)
+   - After `initializeSessions`, all sessions that should be inherited have been claimed
+   - This step handles any remaining edge cases (e.g., sessions from other dead servers that weren't inherited)
+
+### Key Behaviors
+
+| Scenario | Server A Session | Server B Session |
+|----------|------------------|------------------|
+| Server A restarts | Inherited by new Server A | Not touched |
+| Server A dies, Server C starts | Inherited by Server C | Not touched |
+| Both servers die, Server D starts | Inherited by Server D | Inherited by Server D |
+
+### serverPid Field
+
+The `serverPid` field in `sessions.json` tracks which server instance owns each session:
+
+- When a session is created: `serverPid` = current server's PID
+- When a session is inherited on restart: `serverPid` is updated to the new server's PID
+- Used to determine if a session should be inherited (dead PID) or left alone (alive PID)
+
+This design supports:
+- Single server restart (sessions are preserved)
+- Multiple server instances (each server manages its own sessions)
+- Orphan cleanup (dead server's sessions are inherited by the next server to start)
+
 ## Migration Strategy
 
 ### Data Migration
