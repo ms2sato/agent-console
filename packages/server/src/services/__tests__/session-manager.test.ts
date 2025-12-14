@@ -7,6 +7,20 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 
+// Mock process-utils to ensure isProcessAlive returns true for current process
+// This prevents test interference from other test files that mock this module
+mock.module('../../lib/process-utils.js', () => ({
+  processKill: (pid: number, signal?: NodeJS.Signals | number) => process.kill(pid, signal),
+  isProcessAlive: (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+}));
+
 // Create mock PTY factory (will be reset in beforeEach)
 const ptyFactory = createMockPtyFactory(10000);
 
