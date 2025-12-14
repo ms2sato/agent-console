@@ -2,6 +2,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
 import { AgentSelector } from '../AgentSelector';
+import { FormOverlay } from '../ui/Spinner';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
 
@@ -44,11 +45,12 @@ export function QuickSessionForm({
   };
 
   return (
-    <div className="card mb-4 bg-slate-800">
+    <div className="relative card mb-4 bg-slate-800">
+      <FormOverlay isVisible={isPending} message="Starting session..." />
       <h3 className="text-sm font-medium mb-3">Start Session in Any Directory</h3>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <input type="hidden" {...register('type')} value="quick" />
-        <div className="flex flex-col gap-3">
+        <fieldset disabled={isPending} className="flex flex-col gap-3">
           <FormField error={errors.locationPath}>
             <Input
               {...register('locationPath')}
@@ -71,10 +73,9 @@ export function QuickSessionForm({
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={isPending}
               className="btn btn-primary text-sm"
             >
-              {isPending ? 'Starting...' : 'Start'}
+              Start
             </button>
             <button
               type="button"
@@ -84,7 +85,7 @@ export function QuickSessionForm({
               Cancel
             </button>
           </div>
-        </div>
+        </fieldset>
       </form>
     </div>
   );

@@ -143,12 +143,15 @@ describe('AddRepositoryForm', () => {
   });
 
   describe('UI state', () => {
-    it('should disable submit button when isPending is true', () => {
+    it('should disable form when isPending is true', () => {
       renderAddRepositoryForm({ isPending: true });
 
-      // Submit button should show "Adding..." and be disabled
-      const submitButton = screen.getByText('Adding...');
-      expect((submitButton as HTMLButtonElement).disabled).toBe(true);
+      // Form overlay should be visible with loading message
+      expect(screen.getByText('Adding repository...')).toBeTruthy();
+
+      // Form fields should be disabled via fieldset
+      const pathInput = screen.getByPlaceholderText(/Repository path/);
+      expect(pathInput.closest('fieldset')?.disabled).toBe(true);
     });
 
     it('should call onCancel when cancel button is clicked', async () => {

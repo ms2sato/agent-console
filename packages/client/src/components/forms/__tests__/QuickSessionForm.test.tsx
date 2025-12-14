@@ -216,7 +216,7 @@ describe('QuickSessionForm', () => {
   });
 
   describe('UI state', () => {
-    it('should disable submit button when isPending is true', async () => {
+    it('should disable form when isPending is true', async () => {
       renderQuickSessionForm({ isPending: true });
 
       // Wait for agents to load
@@ -224,9 +224,12 @@ describe('QuickSessionForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Submit button should show "Starting..." and be disabled
-      const submitButton = screen.getByText('Starting...');
-      expect((submitButton as HTMLButtonElement).disabled).toBe(true);
+      // Form overlay should be visible with loading message
+      expect(screen.getByText('Starting session...')).toBeTruthy();
+
+      // Form fields should be disabled via fieldset
+      const pathInput = screen.getByPlaceholderText(/Path/);
+      expect(pathInput.closest('fieldset')?.disabled).toBe(true);
     });
 
     it('should call onCancel when cancel button is clicked', async () => {

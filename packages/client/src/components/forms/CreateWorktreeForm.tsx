@@ -2,6 +2,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { AgentSelector } from '../AgentSelector';
+import { FormOverlay } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
 import type { CreateWorktreeRequest } from '@agent-console/shared';
@@ -89,10 +90,9 @@ export function CreateWorktreeForm({
   };
 
   return (
-    <div className={`bg-slate-800 p-4 rounded mb-4 ${isPending ? 'opacity-70' : ''}`}>
-      <h3 className="text-sm font-medium mb-3">
-        {isPending ? 'Creating Worktree...' : 'Create Worktree'}
-      </h3>
+    <div className="relative bg-slate-800 p-4 rounded mb-4">
+      <FormOverlay isVisible={isPending} message="Creating worktree..." />
+      <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset disabled={isPending} className="flex flex-col gap-3">
           {/* Initial prompt input (available for all modes) */}
@@ -189,7 +189,7 @@ export function CreateWorktreeForm({
               type="submit"
               className="btn btn-primary text-sm"
             >
-              {isPending ? 'Creating...' : 'Create & Start Session'}
+              Create & Start Session
             </button>
             <button
               type="button"

@@ -350,8 +350,8 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Submit button should show "Creating..."
-      expect(screen.getByText('Creating...')).toBeTruthy();
+      // Form overlay should be visible with loading message
+      expect(screen.getByText('Creating worktree...')).toBeTruthy();
 
       // Form fields should be disabled
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
