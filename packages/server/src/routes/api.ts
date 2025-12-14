@@ -12,6 +12,7 @@ import type {
   CreateWorkerRequest,
   RestartWorkerRequest,
   CreateRepositoryRequest,
+  SystemOpenRequest,
 } from '@agent-console/shared';
 import {
   CreateSessionRequestSchema,
@@ -22,6 +23,7 @@ import {
   CreateWorktreeRequestSchema,
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
+  SystemOpenRequestSchema,
 } from '@agent-console/shared';
 import { sessionManager } from '../services/session-manager.js';
 import { repositoryManager } from '../services/repository-manager.js';
@@ -575,13 +577,8 @@ api.delete('/agents/:id', (c) => {
 });
 
 // Open a file or directory in the default application (Finder/Explorer)
-api.post('/system/open', async (c) => {
-  const body = await c.req.json<{ path: string }>();
-  const { path } = body;
-
-  if (!path) {
-    throw new ValidationError('path is required');
-  }
+api.post('/system/open', validateBody(SystemOpenRequestSchema), async (c) => {
+  const { path } = getValidatedBody<SystemOpenRequest>(c);
 
   // Resolve to absolute path
   const absolutePath = resolvePath(path);

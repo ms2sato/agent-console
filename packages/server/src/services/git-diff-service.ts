@@ -252,7 +252,7 @@ async function generateUntrackedFileDiff(
     };
   } catch (error) {
     // File might have been deleted or is not readable
-    console.warn(`[GitDiffService] Failed to read untracked file ${filePath}:`, error);
+    logger.warn({ error, filePath }, 'Failed to read untracked file');
     return { diff: '', lineCount: 0, isBinary: false };
   }
 }
@@ -306,7 +306,8 @@ export async function getDiffData(
   let rawDiff: string;
   try {
     rawDiff = await getDiff(baseCommit, gitTargetRef, repoPath);
-  } catch {
+  } catch (error) {
+    logger.warn({ error, repoPath, baseCommit, targetRef: gitTargetRef }, 'Git diff failed, using empty diff');
     rawDiff = '';
   }
 
@@ -314,7 +315,8 @@ export async function getDiffData(
   let numstatOutput: string;
   try {
     numstatOutput = await getDiffNumstat(baseCommit, gitTargetRef, repoPath);
-  } catch {
+  } catch (error) {
+    logger.warn({ error, repoPath, baseCommit, targetRef: gitTargetRef }, 'Git diff numstat failed, using empty output');
     numstatOutput = '';
   }
 
@@ -324,13 +326,15 @@ export async function getDiffData(
   if (isWorkingDir) {
     try {
       statusOutput = await getStatusPorcelain(repoPath);
-    } catch {
+    } catch (error) {
+      logger.warn({ error, repoPath }, 'Git status porcelain failed, using empty output');
       statusOutput = '';
     }
 
     try {
       untrackedFiles = await getUntrackedFiles(repoPath);
-    } catch {
+    } catch (error) {
+      logger.warn({ error, repoPath }, 'Git untracked files failed, using empty list');
       untrackedFiles = [];
     }
   } else {
@@ -503,7 +507,8 @@ export async function getFileDiff(
     }
 
     return '';
-  } catch {
+  } catch (error) {
+    logger.warn({ error, repoPath, baseCommit, filePath }, 'Git file diff failed, returning empty');
     return '';
   }
 }
