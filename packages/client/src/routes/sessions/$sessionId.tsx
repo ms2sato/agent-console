@@ -6,7 +6,7 @@ import { SessionSettings } from '../../components/SessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { DiffIcon } from '../../components/Icons';
-import { getSession, createWorker, deleteWorker, restartAgentWorker, ServerUnavailableError } from '../../lib/api';
+import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
 
@@ -552,7 +552,7 @@ function TerminalPage() {
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
         <span
           onClick={() => {
-            import('../../lib/api').then(({ openPath }) => openPath(session.locationPath));
+            openPath(session.locationPath);
           }}
           className="text-gray-500 text-xs font-mono truncate flex-1 text-left hover:text-blue-400 hover:underline cursor-pointer select-all"
           title={`Open ${session.locationPath} in Finder`}
@@ -560,7 +560,7 @@ function TerminalPage() {
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
-              import('../../lib/api').then(({ openPath }) => openPath(session.locationPath));
+              openPath(session.locationPath);
             }
           }}
         >
