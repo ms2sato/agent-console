@@ -127,6 +127,20 @@ export function setupWebSocketRoutes(
           }
 
           // PTY-based worker handling (agent/terminal)
+          // Restore worker if it doesn't exist internally (e.g., after server restart)
+          const restoredWorker = sessionManager.restoreWorker(sessionId, workerId);
+          if (!restoredWorker) {
+            logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
+            const errorMsg: WorkerServerMessage = {
+              type: 'exit',
+              exitCode: 1,
+              signal: null,
+            };
+            ws.send(JSON.stringify(errorMsg));
+            ws.close();
+            return;
+          }
+
           logger.info({ sessionId, workerId, workerType: worker.type }, 'Worker WebSocket connected');
 
           // Helper to safely send WebSocket messages with buffering
