@@ -318,5 +318,66 @@ describe('session-metadata-suggester', () => {
       expect(result.branch).toBe('feat/feature');
       expect(result.title).toBe('Some title');
     });
+
+    it('should include existing branches in prompt to avoid duplicates', async () => {
+      mockGit.listAllBranches.mockImplementation(() =>
+        Promise.resolve(['main', 'feat/existing-feature', 'fix/old-bug'])
+      );
+      setMockSpawnResult('{"branch": "feat/new-feature", "title": "New feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      await suggestSessionMetadata({
+        prompt: 'Add new feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      // Verify the prompt includes instruction to avoid existing branches
+      expect(spawnCalls.length).toBe(1);
+      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
+      expect(promptArg).toContain('Do NOT use any of these existing branch names');
+      expect(promptArg).toContain('main');
+      expect(promptArg).toContain('feat/existing-feature');
+      expect(promptArg).toContain('fix/old-bug');
+    });
+
+    it('should include provided existingBranches in prompt to avoid duplicates', async () => {
+      setMockSpawnResult('{"branch": "feat/unique-name", "title": "Unique feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      await suggestSessionMetadata({
+        prompt: 'Add feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        existingBranches: ['feat/conflicting-name', 'fix/another-branch'],
+      });
+
+      // Verify the prompt includes instruction to avoid provided branches
+      expect(spawnCalls.length).toBe(1);
+      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
+      expect(promptArg).toContain('Do NOT use any of these existing branch names');
+      expect(promptArg).toContain('feat/conflicting-name');
+      expect(promptArg).toContain('fix/another-branch');
+    });
+
+    it('should not include duplicate avoidance instruction when no branches exist', async () => {
+      mockGit.listAllBranches.mockImplementation(() => Promise.resolve([]));
+      setMockSpawnResult('{"branch": "feat/first-feature", "title": "First feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      await suggestSessionMetadata({
+        prompt: 'Add first feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      // Verify the prompt does NOT include duplicate avoidance instruction
+      expect(spawnCalls.length).toBe(1);
+      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
+      expect(promptArg).not.toContain('Do NOT use any of these existing branch names');
+    });
   });
 });

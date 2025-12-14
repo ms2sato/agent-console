@@ -54,7 +54,19 @@ async function getBranches(repositoryPath: string): Promise<string[]> {
 /**
  * Build the prompt for the agent to suggest session metadata
  */
-function buildMetadataSuggestionPrompt(userPrompt: string, exampleBranches: string): string {
+function buildMetadataSuggestionPrompt(
+  userPrompt: string,
+  existingBranches: string[],
+): string {
+  const exampleBranches = existingBranches.length > 0
+    ? `Example branches in this repository: ${existingBranches.slice(0, 10).join(', ')}`
+    : '';
+
+  const avoidBranchesInstruction = existingBranches.length > 0
+    ? `\n- IMPORTANT: Do NOT use any of these existing branch names: ${existingBranches.join(', ')}
+- If your first choice conflicts, generate a contextually different name (e.g., use a more specific description, add a distinguishing word, or use a different perspective on the task)`
+    : '';
+
   return `You are a session metadata generator. Given the following task description, suggest a git branch name and a short title for the session.
 
 Task description:
@@ -66,7 +78,7 @@ Rules for branch name:
 - Use lowercase letters, numbers, and hyphens only
 - Use a prefix like feat/, fix/, refactor/, chore/, docs/, test/ if the repository uses them
 - Keep it concise but descriptive (max 50 characters total)
-- No spaces, underscores, or special characters except hyphens and forward slash for prefix
+- No spaces, underscores, or special characters except hyphens and forward slash for prefix${avoidBranchesInstruction}
 
 Rules for title:
 - A short, human-readable title describing the task (max 60 characters)
@@ -96,11 +108,8 @@ export async function suggestSessionMetadata(
 
   // Get existing branches if not provided
   const branches = existingBranches ?? await getBranches(repositoryPath);
-  const exampleBranches = branches.length > 0
-    ? `Example branches in this repository: ${branches.slice(0, 10).join(', ')}`
-    : '';
 
-  const suggestionPrompt = buildMetadataSuggestionPrompt(prompt, exampleBranches);
+  const suggestionPrompt = buildMetadataSuggestionPrompt(prompt, branches);
 
   try {
     // Build command args: [agent.command, ...printModeArgs, prompt]
