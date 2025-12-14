@@ -20,7 +20,7 @@ import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -117,6 +117,10 @@ function DashboardPage() {
   const [showAddRepo, setShowAddRepo] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
+  // Sessions from WebSocket (source of truth after initial sync)
+  const [wsSessions, setWsSessions] = useState<Session[]>([]);
+  // Track if we've received initial sync from WebSocket
+  const [wsInitialized, setWsInitialized] = useState(false);
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
@@ -138,25 +142,56 @@ function DashboardPage() {
     requestNotificationPermission();
   }, []);
 
-  // Handle WebSocket sync (initializes prevStatesRef from server state)
-  const handleSessionsSync = useCallback((sessions: Array<{ id: string; workers: Array<{ id: string; activityState?: AgentActivityState }> }>) => {
+  // Handle WebSocket sync (initializes sessions and activity states)
+  const handleSessionsSync = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
-    for (const session of sessions) {
-      for (const worker of session.workers) {
-        if (worker.activityState) {
-          const key = `${session.id}:${worker.id}`;
-          console.log(`[Sync] ${key}: ${worker.activityState}`);
-          if (!prevStatesRef.current[session.id]) {
-            prevStatesRef.current[session.id] = {};
-          }
-          prevStatesRef.current[session.id][worker.id] = worker.activityState;
-          setWorkerActivityStates(prev => ({
-            ...prev,
-            [session.id]: { ...(prev[session.id] ?? {}), [worker.id]: worker.activityState! },
-          }));
-        }
+
+    // Update sessions list
+    setWsSessions(sessions);
+    setWsInitialized(true);
+    sessionsRef.current = sessions;
+
+    // Initialize activity states
+    for (const { sessionId, workerId, activityState } of activityStates) {
+      const key = `${sessionId}:${workerId}`;
+      console.log(`[Sync] ${key}: ${activityState}`);
+      if (!prevStatesRef.current[sessionId]) {
+        prevStatesRef.current[sessionId] = {};
       }
+      prevStatesRef.current[sessionId][workerId] = activityState;
+      setWorkerActivityStates(prev => ({
+        ...prev,
+        [sessionId]: { ...(prev[sessionId] ?? {}), [workerId]: activityState },
+      }));
     }
+  }, []);
+
+  // Handle new session created
+  const handleSessionCreated = useCallback((session: Session) => {
+    console.log(`[Session] Created: ${session.id}`);
+    setWsSessions(prev => [...prev, session]);
+    sessionsRef.current = [...sessionsRef.current, session];
+  }, []);
+
+  // Handle session updated
+  const handleSessionUpdated = useCallback((session: Session) => {
+    console.log(`[Session] Updated: ${session.id}`);
+    setWsSessions(prev => prev.map(s => s.id === session.id ? session : s));
+    sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
+  }, []);
+
+  // Handle session deleted
+  const handleSessionDeleted = useCallback((sessionId: string) => {
+    console.log(`[Session] Deleted: ${sessionId}`);
+    setWsSessions(prev => prev.filter(s => s.id !== sessionId));
+    sessionsRef.current = sessionsRef.current.filter(s => s.id !== sessionId);
+    // Clean up activity states for this session
+    setWorkerActivityStates(prev => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    delete prevStatesRef.current[sessionId];
   }, []);
 
   // Handle real-time activity updates via WebSocket
@@ -246,7 +281,10 @@ function DashboardPage() {
 
   // Connect to dashboard WebSocket for real-time updates
   useDashboardWebSocket({
-    onSync: handleSessionsSync,
+    onSessionsSync: handleSessionsSync,
+    onSessionCreated: handleSessionCreated,
+    onSessionUpdated: handleSessionUpdated,
+    onSessionDeleted: handleSessionDeleted,
     onWorkerActivity: handleWorkerActivityUpdate,
   });
 
@@ -255,22 +293,30 @@ function DashboardPage() {
     queryFn: fetchRepositories,
   });
 
+  // Fallback: fetch sessions via REST API for initial load before WebSocket connects
   const { data: sessionsData } = useQuery({
     queryKey: ['sessions'],
     queryFn: fetchSessions,
-    refetchInterval: 5000,
+    // No refetchInterval - WebSocket handles real-time updates
+    enabled: !wsInitialized, // Only fetch if WebSocket hasn't initialized yet
   });
 
+  // Use WebSocket sessions if initialized, otherwise fall back to REST API
+  const baseSessions = wsInitialized ? wsSessions : (sessionsData?.sessions ?? []);
+
   // Add activity state to sessions
-  const sessions = (sessionsData?.sessions ?? []).map(session => ({
+  const sessions = baseSessions.map(session => ({
     ...session,
     activityState: getSessionActivityState(session, workerActivityStates),
   }));
 
-  // Keep sessionsRef in sync for notification context
+  // sessionsRef is now updated in WebSocket handlers (handleSessionsSync, handleSessionCreated, etc.)
+  // For fallback case (before WebSocket connects), sync from REST API data
   useEffect(() => {
-    sessionsRef.current = sessionsData?.sessions ?? [];
-  }, [sessionsData]);
+    if (!wsInitialized && sessionsData?.sessions) {
+      sessionsRef.current = sessionsData.sessions;
+    }
+  }, [wsInitialized, sessionsData]);
 
   const registerMutation = useMutation({
     mutationFn: registerRepository,

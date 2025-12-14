@@ -62,8 +62,14 @@ export type WorkerServerMessage =
   | { type: 'history'; data: string }
   | { type: 'activity'; state: AgentActivityState };  // Agent workers only
 
+export interface WorkerActivityInfo {
+  sessionId: string;
+  workerId: string;
+  activityState: AgentActivityState;
+}
+
 export type DashboardServerMessage =
-  | { type: 'sessions-sync'; sessions: Array<{ id: string; workers: Array<{ id: string; activityState?: AgentActivityState }> }> }
+  | { type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }

@@ -482,6 +482,139 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setSessionLifecycleCallbacks', () => {
+    it('should call onSessionCreated when a session is created', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionCreated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionCreated });
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(onSessionCreated).toHaveBeenCalledTimes(1);
+      expect(onSessionCreated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+          type: 'quick',
+          locationPath: '/test/path',
+        })
+      );
+    });
+
+    it('should call onSessionDeleted when a session is deleted', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionDeleted = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionDeleted });
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      manager.deleteSession(session.id);
+
+      expect(onSessionDeleted).toHaveBeenCalledTimes(1);
+      expect(onSessionDeleted).toHaveBeenCalledWith(session.id);
+    });
+
+    it('should call onSessionUpdated when session metadata is updated', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      await manager.updateSessionMetadata(session.id, { title: 'New Title' });
+
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+          title: 'New Title',
+        })
+      );
+    });
+
+    it('should not call onSessionUpdated if session does not exist', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      await manager.updateSessionMetadata('non-existent', { title: 'New Title' });
+
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+    });
+
+    it('should not call onSessionDeleted if session does not exist', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionDeleted = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionDeleted });
+
+      manager.deleteSession('non-existent');
+
+      expect(onSessionDeleted).not.toHaveBeenCalled();
+    });
+
+    it('should support partial callbacks (only onSessionCreated)', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionCreated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionCreated });
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Should not throw when deleting (onSessionDeleted is not set)
+      expect(() => manager.deleteSession(session.id)).not.toThrow();
+      expect(onSessionCreated).toHaveBeenCalledTimes(1);
+    });
+
+    it('should support all callbacks together', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionCreated = mock(() => {});
+      const onSessionUpdated = mock(() => {});
+      const onSessionDeleted = mock(() => {});
+      manager.setSessionLifecycleCallbacks({
+        onSessionCreated,
+        onSessionUpdated,
+        onSessionDeleted,
+      });
+
+      // Create
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      expect(onSessionCreated).toHaveBeenCalledTimes(1);
+
+      // Update
+      await manager.updateSessionMetadata(session.id, { title: 'Updated' });
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+
+      // Delete
+      manager.deleteSession(session.id);
+      expect(onSessionDeleted).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('getWorkerOutputBuffer', () => {
     it('should return empty string for non-existent session', async () => {
       const manager = await getSessionManager();

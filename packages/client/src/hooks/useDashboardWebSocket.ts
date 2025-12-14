@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { DashboardServerMessage, AgentActivityState } from '@agent-console/shared';
-
-interface WorkerActivityInfo {
-  id: string;
-  activityState?: AgentActivityState;
-}
-
-interface SessionActivityInfo {
-  id: string;
-  workers: WorkerActivityInfo[];
-}
+import type { DashboardServerMessage, AgentActivityState, Session, WorkerActivityInfo } from '@agent-console/shared';
 
 interface UseDashboardWebSocketOptions {
-  onSync?: (sessions: SessionActivityInfo[]) => void;
+  /** Called when initial session sync is received */
+  onSessionsSync?: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void;
+  /** Called when a new session is created */
+  onSessionCreated?: (session: Session) => void;
+  /** Called when a session is updated */
+  onSessionUpdated?: (session: Session) => void;
+  /** Called when a session is deleted */
+  onSessionDeleted?: (sessionId: string) => void;
+  /** Called when worker activity state changes */
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   /** Custom reconnect delay calculation for testing. Returns delay in ms. */
   getReconnectDelay?: (retryCount: number) => number;
@@ -58,18 +56,37 @@ export function useDashboardWebSocket(
     wsRef.current = ws;
 
     ws.onopen = () => {
+      // Only handle events for the current WebSocket instance
+      // (handles React StrictMode double-mount scenario)
+      if (wsRef.current !== ws) return;
+
       setConnected(true);
       retryCountRef.current = 0; // Reset retry count on success
       console.log('Dashboard WebSocket connected');
     };
 
     ws.onmessage = (event) => {
+      // Only handle events for the current WebSocket instance
+      if (wsRef.current !== ws) return;
+
       try {
         const msg: DashboardServerMessage = JSON.parse(event.data);
         switch (msg.type) {
           case 'sessions-sync':
             console.log(`[WebSocket] sessions-sync received: ${msg.sessions.length} sessions`);
-            optionsRef.current.onSync?.(msg.sessions);
+            optionsRef.current.onSessionsSync?.(msg.sessions, msg.activityStates);
+            break;
+          case 'session-created':
+            console.log(`[WebSocket] session-created: ${msg.session.id}`);
+            optionsRef.current.onSessionCreated?.(msg.session);
+            break;
+          case 'session-updated':
+            console.log(`[WebSocket] session-updated: ${msg.session.id}`);
+            optionsRef.current.onSessionUpdated?.(msg.session);
+            break;
+          case 'session-deleted':
+            console.log(`[WebSocket] session-deleted: ${msg.sessionId}`);
+            optionsRef.current.onSessionDeleted?.(msg.sessionId);
             break;
           case 'worker-activity':
             optionsRef.current.onWorkerActivity?.(msg.sessionId, msg.workerId, msg.activityState);
@@ -81,6 +98,11 @@ export function useDashboardWebSocket(
     };
 
     ws.onclose = () => {
+      // Only handle events for the current WebSocket instance
+      // This prevents stale WebSocket instances (from StrictMode) from
+      // triggering reconnection or affecting state
+      if (wsRef.current !== ws) return;
+
       setConnected(false);
       console.log('Dashboard WebSocket disconnected');
 
@@ -98,6 +120,9 @@ export function useDashboardWebSocket(
     };
 
     ws.onerror = (error) => {
+      // Only handle events for the current WebSocket instance
+      if (wsRef.current !== ws) return;
+
       console.error('Dashboard WebSocket error:', error);
     };
   }, []);

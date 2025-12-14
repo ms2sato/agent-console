@@ -105,9 +105,16 @@ interface WorkerCallbacks {
   onActivityChange?: (state: AgentActivityState) => void;
 }
 
+export interface SessionLifecycleCallbacks {
+  onSessionCreated?: (session: Session) => void;
+  onSessionUpdated?: (session: Session) => void;
+  onSessionDeleted?: (sessionId: string) => void;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private globalActivityCallback?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
+  private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private ptyProvider: PtyProvider;
 
   constructor(ptyProvider: PtyProvider = bunPtyProvider) {
@@ -209,6 +216,13 @@ export class SessionManager {
    */
   setGlobalActivityCallback(callback: (sessionId: string, workerId: string, state: AgentActivityState) => void): void {
     this.globalActivityCallback = callback;
+  }
+
+  /**
+   * Set callbacks for session lifecycle events (for dashboard broadcast)
+   */
+  setSessionLifecycleCallbacks(callbacks: SessionLifecycleCallbacks): void {
+    this.sessionLifecycleCallbacks = callbacks;
   }
 
   /**
@@ -325,7 +339,10 @@ export class SessionManager {
 
     logger.info({ sessionId: id, type: internalSession.type }, 'Session created');
 
-    return this.toPublicSession(internalSession);
+    const publicSession = this.toPublicSession(internalSession);
+    this.sessionLifecycleCallbacks?.onSessionCreated?.(publicSession);
+
+    return publicSession;
   }
 
   getSession(id: string): Session | undefined {
@@ -358,6 +375,9 @@ export class SessionManager {
     this.sessions.delete(id);
     persistenceService.removeSession(id);
     logger.info({ sessionId: id }, 'Session deleted');
+
+    this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
+
     return true;
   }
 
@@ -868,6 +888,9 @@ export class SessionManager {
     }
 
     this.persistSession(session);
+
+    // Broadcast session update via WebSocket
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
 
     return {
       success: true,
