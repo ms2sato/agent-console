@@ -170,13 +170,14 @@ export class SessionManager {
   }
 
   /**
-   * Kill orphan processes from previous server run
+   * Kill orphan processes from previous server run and remove orphan sessions
    */
   private cleanupOrphanProcesses(): void {
     const persistedSessions = persistenceService.loadSessions();
     const currentServerPid = getServerPid();
     let killedCount = 0;
     let preservedCount = 0;
+    const orphanSessionIds: string[] = [];
 
     for (const session of persistedSessions) {
       if (!session.serverPid) {
@@ -190,6 +191,9 @@ export class SessionManager {
         continue;
       }
 
+      // This session's server is dead - mark for removal
+      orphanSessionIds.push(session.id);
+
       // Kill all workers in this session (only PTY workers have pid)
       for (const worker of session.workers) {
         if (worker.type === 'git-diff') continue; // Git diff workers have no process
@@ -201,7 +205,20 @@ export class SessionManager {
       }
     }
 
-    logger.info({ killedCount, preservedCount, serverPid: currentServerPid }, 'Orphan process cleanup completed');
+    // Remove orphan sessions from persistence
+    if (orphanSessionIds.length > 0) {
+      for (const sessionId of orphanSessionIds) {
+        persistenceService.removeSession(sessionId);
+        logger.info({ sessionId }, 'Removed orphan session from persistence');
+      }
+    }
+
+    logger.info({
+      killedProcesses: killedCount,
+      removedSessions: orphanSessionIds.length,
+      preservedSessions: preservedCount,
+      serverPid: currentServerPid,
+    }, 'Orphan cleanup completed');
   }
 
   // ========== Session Lifecycle ==========

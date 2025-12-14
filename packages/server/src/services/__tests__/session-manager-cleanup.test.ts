@@ -141,7 +141,7 @@ describe('SessionManager cleanup on initialization', () => {
     expect(isKilled(22222)).toBe(false);
   });
 
-  it('should kill sessions when parent server is dead', async () => {
+  it('should kill sessions when parent server is dead and remove from persistence', async () => {
     const orphanSession: PersistedSession = {
       id: 'orphan-session',
       type: 'quick',
@@ -171,6 +171,10 @@ describe('SessionManager cleanup on initialization', () => {
 
     // Orphan session should be killed
     expect(isKilled(44444)).toBe(true);
+
+    // Orphan session should be removed from persistence
+    const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+    expect(savedData.find((s: PersistedSession) => s.id === 'orphan-session')).toBeUndefined();
   });
 
   it('should handle mixed sessions correctly', async () => {
@@ -246,6 +250,12 @@ describe('SessionManager cleanup on initialization', () => {
     expect(isKilled(10003)).toBe(true);
     expect(isKilled(10001)).toBe(false);
     expect(isKilled(10002)).toBe(false);
+
+    // Only orphan session should be removed from persistence
+    const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+    expect(savedData.find((s: PersistedSession) => s.id === 'legacy-session')).toBeDefined();
+    expect(savedData.find((s: PersistedSession) => s.id === 'active-session')).toBeDefined();
+    expect(savedData.find((s: PersistedSession) => s.id === 'orphan-session')).toBeUndefined();
   });
 
   it('should handle empty sessions list', async () => {
