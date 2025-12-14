@@ -507,15 +507,14 @@ export class SessionManager {
     }
 
     // If initialPromptMode is 'arg', add the prompt as a command argument
+    // The prompt is passed as a separate array element to avoid shell injection
     if (initialPrompt && agent.initialPromptMode === 'arg') {
-      // Escape the prompt for shell and add as argument
-      const escapedPrompt = initialPrompt.replace(/'/g, "'\\''");
-      args.push(`'${escapedPrompt}'`);
+      args.push(initialPrompt);
     }
 
-    const shell = process.env.SHELL || '/bin/bash';
-    const fullCommand = [agent.command, ...args].join(' ');
-    const ptyProcess = this.ptyProvider.spawn(shell, ['-l', '-c', fullCommand], {
+    // Spawn the agent command directly without shell interpolation
+    // This prevents command injection vulnerabilities
+    const ptyProcess = this.ptyProvider.spawn(agent.command, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,

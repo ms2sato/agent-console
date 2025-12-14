@@ -89,6 +89,7 @@ logger.info(
 const server = Bun.serve({
   fetch: app.fetch,
   port: PORT,
+  hostname: serverConfig.HOST,
   websocket,
 });
 

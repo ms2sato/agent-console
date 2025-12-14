@@ -45,6 +45,15 @@ describe('server-config', () => {
       expect(serverConfig.PORT).toBe('8080');
       expect(serverConfig.HOST).toBe('0.0.0.0');
     });
+
+    it('should fallback to localhost when HOST is empty string', async () => {
+      // Empty string should not bind to 0.0.0.0 for security
+      process.env.HOST = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.HOST).toBe('localhost');
+    });
   });
 
   describe('SERVER_ONLY_ENV_VARS', () => {

@@ -2,6 +2,8 @@
 
 > **Note**: Currently only tested on macOS & Claude Code.
 
+> **Security Note**: This tool is designed for **local personal use only**. It provides terminal access to your system and should not be deployed as a shared server or exposed to untrusted networks. The server binds to `localhost` by default.
+
 A web application for managing multiple AI coding agent instances running in different git worktrees. Control all your agents through a unified browser interface instead of scattered terminal windows.
 
 Currently supports **[Claude Code](https://claude.ai/code)** as the default agent, with plans to support additional agents (Gemini CLI, Codex, etc.) in the future.
