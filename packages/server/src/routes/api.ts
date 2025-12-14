@@ -146,6 +146,38 @@ api.get('/sessions/:sessionId/workers', (c) => {
   return c.json({ workers: session.workers });
 });
 
+// Get branches for a session's repository
+api.get('/sessions/:sessionId/branches', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const session = sessionManager.getSession(sessionId);
+
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  const branches = await worktreeService.listBranches(session.locationPath);
+  return c.json(branches);
+});
+
+// Get commits created in this branch (since base commit)
+api.get('/sessions/:sessionId/commits', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const baseRef = c.req.query('base');
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  if (!baseRef) {
+    throw new ValidationError('base query parameter is required');
+  }
+
+  const { getBranchCommits } = await import('../lib/git.js');
+  const commits = await getBranchCommits(baseRef, session.locationPath);
+  return c.json({ commits });
+});
+
 // Create a worker in a session
 api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema), async (c) => {
   const sessionId = c.req.param('sessionId');

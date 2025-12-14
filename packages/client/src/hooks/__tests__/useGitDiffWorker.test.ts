@@ -83,6 +83,7 @@ describe('useGitDiffWorker', () => {
   const mockDiffData: GitDiffData = {
     summary: {
       baseCommit: 'abc123',
+      targetRef: 'working-dir',
       files: [
         {
           path: 'src/test.ts',
@@ -232,6 +233,54 @@ describe('useGitDiffWorker', () => {
 
     expect(ws?.send).toHaveBeenCalledWith(
       JSON.stringify({ type: 'set-base-commit', ref: 'main' })
+    );
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('should send set-target-commit message', async () => {
+    const { result } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
+
+    await act(async () => {
+      await waitForNextTick();
+    });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
+      result.current.setTargetCommit('HEAD');
+    });
+
+    expect(ws?.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'set-target-commit', ref: 'HEAD' })
+    );
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('should send set-target-commit message with working-dir', async () => {
+    const { result } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
+
+    await act(async () => {
+      await waitForNextTick();
+    });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
+      result.current.setTargetCommit('working-dir');
+    });
+
+    expect(ws?.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'set-target-commit', ref: 'working-dir' })
     );
     expect(result.current.loading).toBe(true);
   });

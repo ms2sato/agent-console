@@ -250,6 +250,34 @@ export async function fetchBranches(repositoryId: string): Promise<BranchesRespo
   return res.json();
 }
 
+export async function fetchSessionBranches(sessionId: string): Promise<BranchesResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/branches`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch session branches: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export interface CommitInfo {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface BranchCommitsResponse {
+  commits: CommitInfo[];
+}
+
+export async function fetchBranchCommits(sessionId: string, baseRef: string): Promise<BranchCommitsResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/commits?base=${encodeURIComponent(baseRef)}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch branch commits: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest

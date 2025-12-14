@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { GitDiffServerMessage, GitDiffClientMessage, GitDiffData } from '@agent-console/shared';
+import type { GitDiffServerMessage, GitDiffClientMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
 
 interface UseGitDiffWorkerOptions {
   sessionId: string;
@@ -14,6 +14,7 @@ interface UseGitDiffWorkerReturn {
   connected: boolean;
   refresh: () => void;
   setBaseCommit: (ref: string) => void;
+  setTargetCommit: (ref: GitDiffTarget) => void;
 }
 
 export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWorkerReturn {
@@ -112,6 +113,14 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
     }
   }, []);
 
+  const setTargetCommit = useCallback((ref: GitDiffTarget) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const msg: GitDiffClientMessage = { type: 'set-target-commit', ref };
+      wsRef.current.send(JSON.stringify(msg));
+      setLoading(true);
+    }
+  }, []);
+
   return {
     diffData,
     error,
@@ -119,5 +128,6 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
     connected,
     refresh,
     setBaseCommit,
+    setTargetCommit,
   };
 }

@@ -1,5 +1,5 @@
 import type { WSContext } from 'hono/ws';
-import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData } from '@agent-console/shared';
+import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
 import {
   getDiffData as getDiffDataImpl,
   resolveRef as resolveRefImpl,
@@ -15,7 +15,7 @@ const log = createLogger('git-diff-handler');
 // ============================================================
 
 export interface GitDiffHandlerDependencies {
-  getDiffData: (repoPath: string, baseCommit: string) => Promise<GitDiffData>;
+  getDiffData: (repoPath: string, baseCommit: string, targetRef?: GitDiffTarget) => Promise<GitDiffData>;
   resolveRef: (ref: string, repoPath: string) => Promise<string | null>;
   startWatching: (repoPath: string, onChange: () => void) => void;
   stopWatching: (repoPath: string) => void;
@@ -37,6 +37,7 @@ interface ConnectionState {
   ws: WSContext;
   locationPath: string;
   baseCommit: string;
+  targetRef: GitDiffTarget;
 }
 
 // Track active connections by workerId
@@ -55,10 +56,11 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
   async function sendDiffData(
     ws: WSContext,
     locationPath: string,
-    baseCommit: string
+    baseCommit: string,
+    targetRef: GitDiffTarget = 'working-dir'
   ): Promise<void> {
     try {
-      const diffData = await getDiffData(locationPath, baseCommit);
+      const diffData = await getDiffData(locationPath, baseCommit, targetRef);
       const msg: GitDiffServerMessage = {
         type: 'diff-data',
         data: diffData,
@@ -94,23 +96,25 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
   ): Promise<void> {
     log.info({ sessionId, workerId, locationPath }, 'Git diff WebSocket connected');
 
-    // Store connection state
+    // Store connection state (default target is working-dir)
     const connectionKey = workerId;
-    activeConnections.set(connectionKey, { ws, locationPath, baseCommit });
+    const targetRef: GitDiffTarget = 'working-dir';
+    activeConnections.set(connectionKey, { ws, locationPath, baseCommit, targetRef });
 
     // Start file watching - when files change, send updated diff data
+    // Note: File watching only makes sense for working-dir target
     startWatching(locationPath, () => {
       const state = activeConnections.get(connectionKey);
-      if (state) {
+      if (state && state.targetRef === 'working-dir') {
         log.debug({ locationPath }, 'File change detected, sending updated diff');
-        sendDiffData(state.ws, state.locationPath, state.baseCommit).catch((err) => {
+        sendDiffData(state.ws, state.locationPath, state.baseCommit, state.targetRef).catch((err) => {
           log.error({ err }, 'Failed to send diff data on file change');
         });
       }
     });
 
     // Send initial diff data
-    await sendDiffData(ws, locationPath, baseCommit);
+    await sendDiffData(ws, locationPath, baseCommit, targetRef);
   }
 
   /**
@@ -134,7 +138,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
   }
 
   /**
-   * Handle git-diff client messages (refresh, set-base-commit).
+   * Handle git-diff client messages (refresh, set-base-commit, set-target-commit).
    */
   async function handleMessage(
     ws: WSContext,
@@ -146,10 +150,13 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
   ): Promise<void> {
     try {
       const parsed: GitDiffClientMessage = JSON.parse(message);
+      const connectionKey = workerId;
+      const state = activeConnections.get(connectionKey);
+      const currentTargetRef = state?.targetRef ?? 'working-dir';
 
       switch (parsed.type) {
         case 'refresh':
-          await sendDiffData(ws, locationPath, currentBaseCommit);
+          await sendDiffData(ws, locationPath, currentBaseCommit, currentTargetRef);
           break;
 
         case 'set-base-commit': {
@@ -157,15 +164,36 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
           const resolved = await resolveRef(parsed.ref, locationPath);
           if (resolved) {
             // Update stored baseCommit
-            const connectionKey = workerId;
-            const state = activeConnections.get(connectionKey);
             if (state) {
               state.baseCommit = resolved;
             }
-            await sendDiffData(ws, locationPath, resolved);
+            await sendDiffData(ws, locationPath, resolved, currentTargetRef);
           } else {
             sendError(ws, `Invalid ref: ${parsed.ref}`);
           }
+          break;
+        }
+
+        case 'set-target-commit': {
+          // Handle 'working-dir' or resolve ref to commit hash
+          let targetRef: GitDiffTarget;
+          if (parsed.ref === 'working-dir') {
+            targetRef = 'working-dir';
+          } else {
+            const resolved = await resolveRef(parsed.ref, locationPath);
+            if (resolved) {
+              targetRef = resolved;
+            } else {
+              sendError(ws, `Invalid target ref: ${parsed.ref}`);
+              return;
+            }
+          }
+
+          // Update stored targetRef
+          if (state) {
+            state.targetRef = targetRef;
+          }
+          await sendDiffData(ws, locationPath, currentBaseCommit, targetRef);
           break;
         }
       }

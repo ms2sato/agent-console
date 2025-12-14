@@ -1,9 +1,12 @@
 import { useState, useCallback } from 'react';
+import type { GitDiffTarget } from '@agent-console/shared';
 import { useGitDiffWorker } from '../../hooks/useGitDiffWorker';
 import { RefreshIcon } from '../Icons';
 import { DiffViewer } from './DiffViewer';
 import { DiffFileList } from './DiffFileList';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
+import { BaseCommitSelector } from './BaseCommitSelector';
+import { TargetRefSelector } from './TargetRefSelector';
 
 interface GitDiffWorkerViewProps {
   sessionId: string;
@@ -11,7 +14,7 @@ interface GitDiffWorkerViewProps {
 }
 
 export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProps) {
-  const { diffData, error, loading, connected, refresh } = useGitDiffWorker({
+  const { diffData, error, loading, connected, refresh, setBaseCommit, setTargetCommit } = useGitDiffWorker({
     sessionId,
     workerId,
   });
@@ -38,12 +41,17 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
     return (
       <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
         <Header
+          sessionId={sessionId}
           baseCommit={null}
+          targetRef="working-dir"
           totalAdditions={0}
           totalDeletions={0}
           filesChanged={0}
           onRefresh={refresh}
+          onBaseCommitChange={setBaseCommit}
+          onTargetRefChange={setTargetCommit}
           loading={true}
+          currentBaseCommit={null}
         />
         <div className="flex items-center justify-center flex-1 text-gray-500">
           Loading diff data...
@@ -57,12 +65,17 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
     return (
       <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
         <Header
+          sessionId={sessionId}
           baseCommit={null}
+          targetRef="working-dir"
           totalAdditions={0}
           totalDeletions={0}
           filesChanged={0}
           onRefresh={refresh}
+          onBaseCommitChange={setBaseCommit}
+          onTargetRefChange={setTargetCommit}
           loading={false}
+          currentBaseCommit={null}
         />
         <div className="flex flex-col items-center justify-center flex-1 text-red-400">
           <p className="text-lg font-medium">Error Loading Diff</p>
@@ -83,12 +96,17 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
     return (
       <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
         <Header
+          sessionId={sessionId}
           baseCommit={null}
+          targetRef="working-dir"
           totalAdditions={0}
           totalDeletions={0}
           filesChanged={0}
           onRefresh={refresh}
+          onBaseCommitChange={setBaseCommit}
+          onTargetRefChange={setTargetCommit}
           loading={false}
+          currentBaseCommit={null}
         />
         <div className="flex items-center justify-center flex-1 text-gray-500">
           No diff data available
@@ -98,19 +116,24 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
   }
 
   const { summary, rawDiff } = diffData;
-  const { baseCommit, files, totalAdditions, totalDeletions } = summary;
+  const { baseCommit, targetRef, files, totalAdditions, totalDeletions } = summary;
 
   // Handle no changes state
   if (files.length === 0) {
     return (
       <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
         <Header
+          sessionId={sessionId}
           baseCommit={baseCommit}
+          targetRef={targetRef}
           totalAdditions={totalAdditions}
           totalDeletions={totalDeletions}
           filesChanged={files.length}
           onRefresh={refresh}
+          onBaseCommitChange={setBaseCommit}
+          onTargetRefChange={setTargetCommit}
           loading={false}
+          currentBaseCommit={baseCommit}
         />
         <div className="flex items-center justify-center flex-1 text-gray-500">
           No changes to display
@@ -123,12 +146,17 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
     <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
       {/* Header */}
       <Header
+        sessionId={sessionId}
         baseCommit={baseCommit}
+        targetRef={targetRef}
         totalAdditions={totalAdditions}
         totalDeletions={totalDeletions}
         filesChanged={files.length}
         onRefresh={refresh}
+        onBaseCommitChange={setBaseCommit}
+        onTargetRefChange={setTargetCommit}
         loading={loading}
+        currentBaseCommit={baseCommit}
       />
 
       {/* Split pane layout */}
@@ -183,33 +211,52 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
 }
 
 interface HeaderProps {
+  sessionId: string;
   baseCommit: string | null;
+  targetRef: GitDiffTarget;
   totalAdditions: number;
   totalDeletions: number;
   filesChanged: number;
   onRefresh: () => void;
+  onBaseCommitChange: (ref: string) => void;
+  onTargetRefChange: (ref: GitDiffTarget) => void;
   loading: boolean;
+  currentBaseCommit: string | null;
 }
 
 function Header({
+  sessionId,
   baseCommit,
+  targetRef,
   totalAdditions,
   totalDeletions,
   filesChanged,
   onRefresh,
+  onBaseCommitChange,
+  onTargetRefChange,
   loading,
+  currentBaseCommit,
 }: HeaderProps) {
-  // Format commit hash to short version (first 7 chars)
-  const shortCommit = baseCommit ? baseCommit.substring(0, 7) : 'HEAD';
-
   return (
     <div className="px-4 py-3 bg-slate-800 border-b border-gray-700 shrink-0">
       <div className="flex items-center justify-between">
         {/* Title and comparison info */}
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-medium text-gray-200">
-            Git Diff: <span className="text-blue-400">main...{shortCommit}</span>
-          </h2>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-400">Comparing:</span>
+          <BaseCommitSelector
+            sessionId={sessionId}
+            currentBaseCommit={baseCommit}
+            onBaseCommitChange={onBaseCommitChange}
+            disabled={loading}
+          />
+          <span className="text-gray-500">...</span>
+          <TargetRefSelector
+            sessionId={sessionId}
+            currentTargetRef={targetRef}
+            currentBaseCommit={currentBaseCommit}
+            onTargetRefChange={onTargetRefChange}
+            disabled={loading}
+          />
         </div>
 
         {/* Stats and refresh button */}

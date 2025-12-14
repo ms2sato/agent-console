@@ -365,3 +365,41 @@ export async function getOrgRepoFromPath(repoPath: string): Promise<string | nul
   }
   return parseOrgRepo(remoteUrl);
 }
+
+// ============================================================
+// Commit Log Operations
+// ============================================================
+
+export interface CommitInfo {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+/**
+ * Get commits between a base ref and HEAD (commits created in this branch).
+ * Uses `git log <baseRef>..HEAD` to get commits that are in HEAD but not in baseRef.
+ *
+ * @example
+ * const commits = await getBranchCommits('main', repoPath);
+ */
+export async function getBranchCommits(baseRef: string, cwd: string): Promise<CommitInfo[]> {
+  try {
+    // Format: hash|shortHash|message|author|date
+    const format = '%H|%h|%s|%an|%ai';
+    const output = await git(['log', `${baseRef}..HEAD`, `--format=${format}`], cwd);
+
+    if (!output) {
+      return [];
+    }
+
+    return output.split('\n').filter(Boolean).map((line) => {
+      const [hash, shortHash, message, author, date] = line.split('|');
+      return { hash, shortHash, message, author, date };
+    });
+  } catch {
+    return [];
+  }
+}

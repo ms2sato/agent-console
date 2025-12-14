@@ -8,7 +8,7 @@
  * - File watching for auto-updates (optional, via chokidar or similar)
  */
 
-import type { GitDiffData, GitDiffSummary, GitDiffFile, GitFileStatus, GitStageState } from '@agent-console/shared';
+import type { GitDiffData, GitDiffSummary, GitDiffFile, GitFileStatus, GitStageState, GitDiffTarget } from '@agent-console/shared';
 import {
   getDefaultBranch,
   getMergeBaseSafe,
@@ -291,13 +291,21 @@ function parseNumstat(numstatOutput: string): Map<string, { additions: number; d
  *
  * @param repoPath - Path to the git repository
  * @param baseCommit - Base commit hash for comparison
+ * @param targetRef - Target reference: 'working-dir' (default) or a commit hash
  * @returns GitDiffData containing summary and raw diff
  */
-export async function getDiffData(repoPath: string, baseCommit: string): Promise<GitDiffData> {
-  // Get raw diff (from baseCommit to working directory)
+export async function getDiffData(
+  repoPath: string,
+  baseCommit: string,
+  targetRef: GitDiffTarget = 'working-dir'
+): Promise<GitDiffData> {
+  const isWorkingDir = targetRef === 'working-dir';
+  const gitTargetRef = isWorkingDir ? undefined : targetRef;
+
+  // Get raw diff (from baseCommit to target)
   let rawDiff: string;
   try {
-    rawDiff = await getDiff(baseCommit, undefined, repoPath);
+    rawDiff = await getDiff(baseCommit, gitTargetRef, repoPath);
   } catch {
     rawDiff = '';
   }
@@ -305,24 +313,29 @@ export async function getDiffData(repoPath: string, baseCommit: string): Promise
   // Get numstat for statistics
   let numstatOutput: string;
   try {
-    numstatOutput = await getDiffNumstat(baseCommit, undefined, repoPath);
+    numstatOutput = await getDiffNumstat(baseCommit, gitTargetRef, repoPath);
   } catch {
     numstatOutput = '';
   }
 
-  // Get status to understand staged/unstaged
+  // Get status to understand staged/unstaged (only relevant when comparing to working-dir)
   let statusOutput: string;
-  try {
-    statusOutput = await getStatusPorcelain(repoPath);
-  } catch {
-    statusOutput = '';
-  }
-
-  // Get untracked files
   let untrackedFiles: string[];
-  try {
-    untrackedFiles = await getUntrackedFiles(repoPath);
-  } catch {
+  if (isWorkingDir) {
+    try {
+      statusOutput = await getStatusPorcelain(repoPath);
+    } catch {
+      statusOutput = '';
+    }
+
+    try {
+      untrackedFiles = await getUntrackedFiles(repoPath);
+    } catch {
+      untrackedFiles = [];
+    }
+  } else {
+    // When comparing commit to commit, status info is not applicable
+    statusOutput = '';
     untrackedFiles = [];
   }
 
@@ -352,7 +365,7 @@ export async function getDiffData(repoPath: string, baseCommit: string): Promise
     files.push({
       path,
       status,
-      stageState: determineStageState(path, statusMap, isInCommittedDiff),
+      stageState: isWorkingDir ? determineStageState(path, statusMap, isInCommittedDiff) : 'committed',
       oldPath,
       additions: stats.additions,
       deletions: stats.deletions,
@@ -363,52 +376,55 @@ export async function getDiffData(repoPath: string, baseCommit: string): Promise
     totalDeletions += stats.deletions;
   }
 
-  // Add staged files that aren't in committed diff
-  for (const [path, info] of statusMap) {
-    if (!fileStats.has(path) && info.staged) {
-      files.push({
-        path,
-        status: info.status,
-        stageState: 'staged',
-        oldPath: info.oldPath,
-        additions: 0,
-        deletions: 0,
-        isBinary: false,
-      });
-    }
-  }
-
-  // Add untracked files with their diff content
-  // Note: untracked files are in statusMap (from git status --porcelain with ?? status)
-  // but NOT in fileStats (from git diff --numstat), so we only check fileStats
-  const untrackedDiffs: string[] = [];
-  for (const path of untrackedFiles) {
-    if (!fileStats.has(path)) {
-      // Generate diff for this untracked file
-      const { diff, lineCount, isBinary } = await generateUntrackedFileDiff(path, repoPath);
-
-      files.push({
-        path,
-        status: 'untracked',
-        stageState: 'unstaged',
-        additions: lineCount,
-        deletions: 0,
-        isBinary,
-      });
-
-      // Update totals
-      totalAdditions += lineCount;
-
-      // Collect diff for appending to rawDiff
-      if (diff) {
-        untrackedDiffs.push(diff);
+  // When comparing to working directory, add staged files and untracked files
+  if (isWorkingDir) {
+    // Add staged files that aren't in committed diff
+    for (const [path, info] of statusMap) {
+      if (!fileStats.has(path) && info.staged) {
+        files.push({
+          path,
+          status: info.status,
+          stageState: 'staged',
+          oldPath: info.oldPath,
+          additions: 0,
+          deletions: 0,
+          isBinary: false,
+        });
       }
     }
-  }
 
-  // Append untracked file diffs to rawDiff
-  if (untrackedDiffs.length > 0) {
-    rawDiff = rawDiff + (rawDiff && !rawDiff.endsWith('\n') ? '\n' : '') + untrackedDiffs.join('');
+    // Add untracked files with their diff content
+    // Note: untracked files are in statusMap (from git status --porcelain with ?? status)
+    // but NOT in fileStats (from git diff --numstat), so we only check fileStats
+    const untrackedDiffs: string[] = [];
+    for (const path of untrackedFiles) {
+      if (!fileStats.has(path)) {
+        // Generate diff for this untracked file
+        const { diff, lineCount, isBinary } = await generateUntrackedFileDiff(path, repoPath);
+
+        files.push({
+          path,
+          status: 'untracked',
+          stageState: 'unstaged',
+          additions: lineCount,
+          deletions: 0,
+          isBinary,
+        });
+
+        // Update totals
+        totalAdditions += lineCount;
+
+        // Collect diff for appending to rawDiff
+        if (diff) {
+          untrackedDiffs.push(diff);
+        }
+      }
+    }
+
+    // Append untracked file diffs to rawDiff
+    if (untrackedDiffs.length > 0) {
+      rawDiff = rawDiff + (rawDiff && !rawDiff.endsWith('\n') ? '\n' : '') + untrackedDiffs.join('');
+    }
   }
 
   // Sort files by path
@@ -416,6 +432,7 @@ export async function getDiffData(repoPath: string, baseCommit: string): Promise
 
   const summary: GitDiffSummary = {
     baseCommit,
+    targetRef,
     files,
     totalAdditions,
     totalDeletions,
