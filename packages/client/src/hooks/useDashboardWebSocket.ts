@@ -20,10 +20,13 @@ interface UseDashboardWebSocketReturn {
   connected: boolean;
 }
 
-// Reconnection settings
-const INITIAL_RETRY_DELAY = 1000; // 1 second
-const MAX_RETRY_DELAY = 30000; // 30 seconds
-const JITTER_FACTOR = 0.3; // ±30% randomization
+/**
+ * Reconnection with exponential backoff and jitter.
+ * @see docs/websocket-reconnection.md for design rationale
+ */
+const INITIAL_RETRY_DELAY = 1000;
+const MAX_RETRY_DELAY = 30000;
+const JITTER_FACTOR = 0.3;
 
 /** Default reconnect delay with exponential backoff and jitter */
 function defaultGetReconnectDelay(retryCount: number): number {

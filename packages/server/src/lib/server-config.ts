@@ -18,7 +18,56 @@ export const serverConfig = {
   HOST: process.env.HOST || 'localhost',
   /** Log level (trace, debug, info, warn, error, fatal) */
   LOG_LEVEL: process.env.LOG_LEVEL,
+  /**
+   * Maximum size of output buffer per worker (in bytes).
+   * This buffer stores terminal output for reconnection history.
+   * Default: 100KB (100000 bytes)
+   */
+  WORKER_OUTPUT_BUFFER_SIZE: parseInt(process.env.WORKER_OUTPUT_BUFFER_SIZE || '100000', 10),
 } as const;
+
+/**
+ * Default patterns to ignore when watching for file changes.
+ * These are commonly excluded directories and files that generate
+ * frequent changes but are not relevant to git diff updates.
+ */
+const DEFAULT_FILE_WATCH_IGNORE_PATTERNS = [
+  '.git',
+  'node_modules',
+  '.DS_Store',
+  'dist',
+  'build',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '.log',
+  '.env.local',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
+
+/**
+ * Parse comma-separated ignore patterns from environment variable.
+ * If not set, returns the default patterns.
+ *
+ * Example: FILE_WATCH_IGNORE_PATTERNS=".git,node_modules,.cache,tmp"
+ */
+function parseFileWatchIgnorePatterns(): string[] {
+  const envValue = process.env.FILE_WATCH_IGNORE_PATTERNS;
+  if (!envValue) {
+    return DEFAULT_FILE_WATCH_IGNORE_PATTERNS;
+  }
+  return envValue.split(',').map(p => p.trim()).filter(p => p.length > 0);
+}
+
+/**
+ * Patterns to ignore when watching for file changes.
+ * Can be customized via FILE_WATCH_IGNORE_PATTERNS environment variable.
+ * Format: comma-separated list of patterns (e.g., ".git,node_modules,.cache")
+ */
+export const fileWatchIgnorePatterns = parseFileWatchIgnorePatterns();
 
 /**
  * List of environment variable names that are server-only.

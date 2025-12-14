@@ -22,6 +22,7 @@ import { readFile, stat } from 'fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { join } from 'path';
 import { createLogger } from '../lib/logger.js';
+import { fileWatchIgnorePatterns } from '../lib/server-config.js';
 
 const logger = createLogger('git-diff-service');
 
@@ -531,32 +532,12 @@ interface WatcherState {
 const watchers = new Map<string, WatcherState>();
 
 /**
- * Patterns to ignore when watching for file changes.
- * Simple string matching for performance.
- */
-const IGNORE_PATTERNS = [
-  '.git',
-  'node_modules',
-  '.DS_Store',
-  'dist',
-  'build',
-  '.next',
-  '.nuxt',
-  'coverage',
-  '.log',
-  '.env.local',
-  'bun.lockb',
-  'package-lock.json',
-  'yarn.lock',
-  'pnpm-lock.yaml',
-];
-
-/**
- * Check if a filename should be ignored.
+ * Check if a filename should be ignored based on configured patterns.
+ * Uses simple string matching for performance.
  */
 function shouldIgnore(filename: string | null): boolean {
   if (!filename) return true;
-  return IGNORE_PATTERNS.some(pattern => filename.includes(pattern));
+  return fileWatchIgnorePatterns.some(pattern => filename.includes(pattern));
 }
 
 /**
