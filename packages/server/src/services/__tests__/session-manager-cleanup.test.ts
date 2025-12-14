@@ -1,34 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
-
-// Track process states for mocking
-let killedPids: number[] = [];
-const alivePids = new Set<number>();
-
-// Mock process-utils module
-mock.module('../../lib/process-utils.js', () => ({
-  processKill: (pid: number) => {
-    killedPids.push(pid);
-    return true;
-  },
-  isProcessAlive: (pid: number) => alivePids.has(pid),
-}));
-
-// Helper to check if a PID was killed
-function isKilled(pid: number): boolean {
-  return killedPids.includes(pid);
-}
-
-// Helper to mark a PID as alive
-function markPidAlive(pid: number): void {
-  alivePids.add(pid);
-}
 
 // Import counter for cache busting
 let importCounter = 0;
@@ -44,9 +22,8 @@ describe('SessionManager cleanup on initialization', () => {
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    // Reset tracking
-    killedPids = [];
-    alivePids.clear();
+    // Reset process mock tracking
+    resetProcessMock();
 
     // Create fresh PTY factory
     ptyFactory = createMockPtyFactory();
@@ -97,14 +74,14 @@ describe('SessionManager cleanup on initialization', () => {
     persistAgents();
 
     // Mark the session process as alive
-    markPidAlive(11111);
+    mockProcess.markAlive(11111);
 
     // Create SessionManager - cleanup runs in constructor
     const SessionManager = await getSessionManager();
     new SessionManager(ptyFactory.provider);
 
     // Legacy session should NOT be killed
-    expect(isKilled(11111)).toBe(false);
+    expect(mockProcess.wasKilled(11111)).toBe(false);
   });
 
   it('should preserve sessions when parent server is still alive', async () => {
@@ -131,14 +108,14 @@ describe('SessionManager cleanup on initialization', () => {
     persistAgents();
 
     // Mark both session process and parent server as alive
-    markPidAlive(22222);
-    markPidAlive(33333);
+    mockProcess.markAlive(22222);
+    mockProcess.markAlive(33333);
 
     const SessionManager = await getSessionManager();
     new SessionManager(ptyFactory.provider);
 
     // Session should NOT be killed because parent server is alive
-    expect(isKilled(22222)).toBe(false);
+    expect(mockProcess.wasKilled(22222)).toBe(false);
   });
 
   it('should kill sessions when parent server is dead and remove from persistence', async () => {
@@ -163,14 +140,14 @@ describe('SessionManager cleanup on initialization', () => {
     persistAgents();
 
     // Mark session process as alive, but parent server as dead
-    markPidAlive(44444);
-    // Note: 55555 is NOT in alivePids, so it's dead
+    mockProcess.markAlive(44444);
+    // Note: 55555 is NOT marked alive, so it's dead
 
     const SessionManager = await getSessionManager();
     new SessionManager(ptyFactory.provider);
 
     // Orphan session should be killed
-    expect(isKilled(44444)).toBe(true);
+    expect(mockProcess.wasKilled(44444)).toBe(true);
 
     // Orphan session should be removed from persistence
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
@@ -237,19 +214,19 @@ describe('SessionManager cleanup on initialization', () => {
     persistAgents();
 
     // Set up process states
-    markPidAlive(10001); // Legacy session process
-    markPidAlive(10002); // Active session process
-    markPidAlive(10003); // Orphan session process
-    markPidAlive(20001); // Alive parent server
-    // 20002 is dead (not in alivePids)
+    mockProcess.markAlive(10001); // Legacy session process
+    mockProcess.markAlive(10002); // Active session process
+    mockProcess.markAlive(10003); // Orphan session process
+    mockProcess.markAlive(20001); // Alive parent server
+    // 20002 is dead (not marked alive)
 
     const SessionManager = await getSessionManager();
     new SessionManager(ptyFactory.provider);
 
     // Only orphan session should be killed
-    expect(isKilled(10003)).toBe(true);
-    expect(isKilled(10001)).toBe(false);
-    expect(isKilled(10002)).toBe(false);
+    expect(mockProcess.wasKilled(10003)).toBe(true);
+    expect(mockProcess.wasKilled(10001)).toBe(false);
+    expect(mockProcess.wasKilled(10002)).toBe(false);
 
     // Only orphan session should be removed from persistence
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
@@ -266,6 +243,6 @@ describe('SessionManager cleanup on initialization', () => {
     new SessionManager(ptyFactory.provider);
 
     // No processes should be killed
-    expect(killedPids.length).toBe(0);
+    expect(mockProcess.getKillCount()).toBe(0);
   });
 });

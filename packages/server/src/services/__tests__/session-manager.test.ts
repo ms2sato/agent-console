@@ -3,23 +3,10 @@ import * as fs from 'fs';
 import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
-
-// Mock process-utils to ensure isProcessAlive returns true for current process
-// This prevents test interference from other test files that mock this module
-mock.module('../../lib/process-utils.js', () => ({
-  processKill: (pid: number, signal?: NodeJS.Signals | number) => process.kill(pid, signal),
-  isProcessAlive: (pid: number) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-}));
 
 // Create mock PTY factory (will be reset in beforeEach)
 const ptyFactory = createMockPtyFactory(10000);
@@ -35,6 +22,11 @@ describe('SessionManager', () => {
       [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Reset process mock and mark current process as alive
+    // This ensures sessions created with serverPid=process.pid are not cleaned up
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
 
     // Reset PTY factory
     ptyFactory.reset();
