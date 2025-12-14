@@ -650,8 +650,11 @@ describe('SessionManager', () => {
       const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
       expect(savedDataBefore.length).toBe(1);
 
-      // Simulate server restart: create new manager that loads from persistence
-      // but doesn't have internal workers
+      // Simulate server restart: mark the previous server as dead
+      // so the new manager will inherit the session
+      mockProcess.markDead(process.pid);
+
+      // Create new manager that loads from persistence
       const manager2 = await getSessionManager();
 
       // Session exists but internal worker map is empty
@@ -691,7 +694,9 @@ describe('SessionManager', () => {
       });
       const terminalWorkerId = terminalWorker!.id;
 
-      // Simulate server restart
+      // Simulate server restart: mark the previous server as dead
+      mockProcess.markDead(process.pid);
+
       const manager2 = await getSessionManager();
 
       // PTY count before restore
@@ -724,7 +729,9 @@ describe('SessionManager', () => {
       });
       expect(gitDiffWorker).toBeDefined();
 
-      // Simulate server restart
+      // Simulate server restart: mark the previous server as dead
+      mockProcess.markDead(process.pid);
+
       const manager2 = await getSessionManager();
 
       // Restore should return null for git-diff worker
@@ -748,7 +755,9 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      // Simulate server restart
+      // Simulate server restart: mark the previous server as dead
+      mockProcess.markDead(process.pid);
+
       const manager2 = await getSessionManager();
 
       // Try to restore non-existent worker
@@ -771,7 +780,9 @@ describe('SessionManager', () => {
       const originalPid = savedDataBefore[0].workers.find((w: { id: string }) => w.id === workerId)?.pid;
       expect(originalPid).toBeDefined();
 
-      // Simulate server restart
+      // Simulate server restart: mark the previous server as dead
+      mockProcess.markDead(process.pid);
+
       const manager2 = await getSessionManager();
 
       // Restore worker
