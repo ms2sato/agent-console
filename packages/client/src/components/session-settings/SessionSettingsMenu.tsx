@@ -5,12 +5,11 @@ import {
   RefreshIcon,
   FolderIcon,
   CopyIcon,
-  CloseIcon,
   TrashIcon,
 } from '../Icons';
 import { openPath } from '../../lib/api';
 
-export type MenuAction = 'edit' | 'restart' | 'close' | 'delete-worktree';
+export type MenuAction = 'edit' | 'restart' | 'delete-worktree';
 
 export interface SessionSettingsMenuProps {
   worktreePath: string;
@@ -123,13 +122,6 @@ export function SessionSettingsMenu({
               {copySuccess ? 'Copied!' : 'Copy Path'}
             </button>
             <div className="border-t border-slate-700 my-1" />
-            <button
-              onClick={() => handleMenuAction('close')}
-              className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
-            >
-              <CloseIcon />
-              Close Session
-            </button>
             <button
               onClick={() => handleMenuAction('delete-worktree')}
               className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"

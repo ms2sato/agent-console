@@ -464,7 +464,6 @@ interface WorktreeRowProps {
 
 function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const queryClient = useQueryClient();
-  const [isStarting, setIsStarting] = useState(false);
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
@@ -486,24 +485,6 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       }
     },
   });
-
-  const handleStartSession = async () => {
-    setIsStarting(true);
-    try {
-      const { session: newSession } = await createSession({
-        type: 'worktree',
-        repositoryId,
-        worktreeId: worktree.branch,
-        locationPath: worktree.path,
-      });
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      window.open(`/sessions/${newSession.id}`, '_blank');
-    } catch (err) {
-      showError('Session Error', err instanceof Error ? err.message : 'Failed to start session');
-    } finally {
-      setIsStarting(false);
-    }
-  };
 
   const handleDeleteWorktree = () => {
     if (worktree.isMain) {
@@ -547,7 +528,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
       <div className="flex gap-2 shrink-0">
-        {session ? (
+        {session && (
           <Link
             to="/sessions/$sessionId"
             params={{ sessionId: session.id }}
@@ -555,14 +536,6 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           >
             Open
           </Link>
-        ) : (
-          <button
-            onClick={handleStartSession}
-            disabled={isStarting}
-            className="btn btn-primary text-xs"
-          >
-            {isStarting ? 'Starting...' : 'Start'}
-          </button>
         )}
         {!worktree.isMain && (
           <button

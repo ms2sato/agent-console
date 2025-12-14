@@ -3,7 +3,6 @@ import {
   SessionSettingsMenu,
   EditSessionDialog,
   RestartSessionDialog,
-  CloseSessionDialog,
   DeleteWorktreeDialog,
   type MenuAction,
 } from './session-settings';
@@ -64,12 +63,6 @@ export function SessionSettings({
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         onSessionRestart={onSessionRestart}
-      />
-
-      <CloseSessionDialog
-        open={activeDialog === 'close'}
-        onOpenChange={(open) => !open && closeDialog()}
-        sessionId={sessionId}
       />
 
       <DeleteWorktreeDialog

@@ -9,7 +9,7 @@ import type {
   GitDiffWorker,
   AgentActivityState,
   CreateSessionRequest,
-  CreateWorkerRequest,
+  CreateWorkerParams,
 } from '@agent-console/shared';
 import {
   persistenceService,
@@ -240,14 +240,19 @@ export class SessionManager {
 
     this.sessions.set(id, internalSession);
 
-    // Optionally create initial agent worker
-    if (request.agentId) {
-      this.createWorker(id, {
-        type: 'agent',
-        agentId: request.agentId,
-        name: 'Claude',
-      }, request.continueConversation ?? false, request.initialPrompt);
-    }
+    // Create initial agent worker (use default agent if not specified)
+    const effectiveAgentId = request.agentId ?? CLAUDE_CODE_AGENT_ID;
+    this.createWorker(id, {
+      type: 'agent',
+      agentId: effectiveAgentId,
+      name: 'Claude',
+    }, request.continueConversation ?? false, request.initialPrompt);
+
+    // Also create git-diff worker
+    this.createWorker(id, {
+      type: 'git-diff',
+      name: 'Diff',
+    });
 
     this.persistSession(internalSession);
 
@@ -295,7 +300,7 @@ export class SessionManager {
 
   async createWorker(
     sessionId: string,
-    request: CreateWorkerRequest,
+    request: CreateWorkerParams,
     continueConversation: boolean = false,
     initialPrompt?: string
   ): Promise<Worker | null> {

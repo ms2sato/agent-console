@@ -207,45 +207,6 @@ function TerminalPage() {
   useEffect(() => {
     if (state.type === 'active' && tabs.length === 0) {
       const workers = state.session.workers;
-
-      // If no workers exist, create agent and git-diff workers automatically
-      if (workers.length === 0) {
-        (async () => {
-          try {
-            // Create agent worker
-            const { worker: agentWorker } = await createWorker(sessionId, {
-              type: 'agent',
-              agentId: 'claude-code-builtin',
-              name: 'Claude',
-            });
-            const agentTab: Tab = {
-              id: agentWorker.id,
-              workerType: 'agent',
-              name: agentWorker.name,
-              wsUrl: buildWorkerWsUrl(sessionId, agentWorker.id),
-            };
-
-            // Create git-diff worker
-            const { worker: diffWorker } = await createWorker(sessionId, {
-              type: 'git-diff',
-              name: 'Diff',
-            });
-            const diffTab: Tab = {
-              id: diffWorker.id,
-              workerType: 'git-diff',
-              name: diffWorker.name,
-              wsUrl: buildWorkerWsUrl(sessionId, diffWorker.id),
-            };
-
-            setTabs([agentTab, diffTab]);
-            setActiveTabId(agentWorker.id);
-          } catch (error) {
-            console.error('Failed to create workers:', error);
-          }
-        })();
-        return;
-      }
-
       const newTabs = workersToTabs(sessionId, workers);
       setTabs(newTabs);
       // Set active tab to first agent worker if exists, otherwise first tab

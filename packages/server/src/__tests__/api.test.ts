@@ -498,8 +498,9 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(200);
 
         const body = (await res.json()) as { workers: Worker[] };
-        expect(body.workers.length).toBe(1);
-        expect(body.workers[0].type).toBe('agent');
+        expect(body.workers.length).toBe(2);
+        expect(body.workers.some(w => w.type === 'agent')).toBe(true);
+        expect(body.workers.some(w => w.type === 'git-diff')).toBe(true);
       });
 
       it('should return 404 for non-existent session', async () => {

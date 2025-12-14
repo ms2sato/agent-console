@@ -12,12 +12,14 @@ export {
 
 // Worker schemas
 export {
-  CreateAgentWorkerRequestSchema,
-  CreateTerminalWorkerRequestSchema,
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
-  type CreateAgentWorkerRequest,
-  type CreateTerminalWorkerRequest,
+  // Internal types for server-side worker creation
+  type CreateAgentWorkerParams,
+  type CreateTerminalWorkerParams,
+  type CreateGitDiffWorkerParams,
+  type CreateWorkerParams,
+  // API types
   type CreateWorkerRequest,
   type RestartWorkerRequest,
 } from './worker.js';

@@ -9,9 +9,12 @@ export type {
 } from '../schemas/session.js';
 
 export type {
-  CreateAgentWorkerRequest,
-  CreateTerminalWorkerRequest,
-  CreateGitDiffWorkerRequest,
+  // Internal types for server-side worker creation
+  CreateAgentWorkerParams,
+  CreateTerminalWorkerParams,
+  CreateGitDiffWorkerParams,
+  CreateWorkerParams,
+  // API types (client can only create terminal workers)
   CreateWorkerRequest,
   RestartWorkerRequest,
 } from '../schemas/worker.js';

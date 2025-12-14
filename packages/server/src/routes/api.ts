@@ -188,8 +188,8 @@ api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema)
     throw new NotFoundError('Session');
   }
 
-  // Extract continueConversation only for PTY-based workers (agent/terminal)
-  const continueConversation = body.type !== 'git-diff' && body.continueConversation === true;
+  // Extract continueConversation (terminal workers always support PTY)
+  const continueConversation = body.continueConversation === true;
 
   const worker = await sessionManager.createWorker(sessionId, body, continueConversation);
 

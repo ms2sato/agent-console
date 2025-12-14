@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import * as fs from 'fs';
-import type { CreateSessionRequest, CreateWorkerRequest, Worker } from '@agent-console/shared';
+import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
@@ -180,7 +180,7 @@ describe('SessionManager', () => {
 
       const session = manager.createSession(sessionRequest);
 
-      const workerRequest: CreateWorkerRequest = {
+      const workerRequest: CreateWorkerParams = {
         type: 'terminal',
         name: 'Shell',
       };
@@ -195,7 +195,7 @@ describe('SessionManager', () => {
     it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const workerRequest: CreateWorkerRequest = {
+      const workerRequest: CreateWorkerParams = {
         type: 'terminal',
         name: 'Shell',
       };
