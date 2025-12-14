@@ -1,6 +1,59 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { parsePatch } from 'diff';
+import { Highlight, themes, type Language } from 'prism-react-renderer';
 import type { GitDiffFile } from '@agent-console/shared';
+
+// Import additional language support (ruby, bash, css, scss, less, typescript, javascript, sql)
+import '../../lib/prism-languages';
+
+/**
+ * Get Prism language from file path extension
+ */
+function getLanguageFromPath(filePath: string): Language {
+  const extension = filePath.split('.').pop()?.toLowerCase() || '';
+  const languageMap: Record<string, Language> = {
+    ts: 'typescript',
+    tsx: 'tsx',
+    js: 'javascript',
+    jsx: 'jsx',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    css: 'css',
+    scss: 'scss',
+    sass: 'scss',
+    less: 'less',
+    json: 'json',
+    md: 'markdown',
+    mdx: 'markdown',
+    sh: 'bash',
+    bash: 'bash',
+    zsh: 'bash',
+    yml: 'yaml',
+    yaml: 'yaml',
+    py: 'python',
+    rs: 'rust',
+    go: 'go',
+    sql: 'sql',
+    rb: 'ruby',
+    ruby: 'ruby',
+    rake: 'ruby',
+    gemspec: 'ruby',
+    erb: 'markup',
+    rhtml: 'markup',
+    html: 'markup',
+    htm: 'markup',
+    xml: 'markup',
+    svg: 'markup',
+  };
+
+  // Handle special filenames
+  const fileName = filePath.split('/').pop()?.toLowerCase() || '';
+  if (fileName === 'dockerfile') return 'bash';
+  if (fileName === 'gemfile' || fileName === 'rakefile') return 'ruby';
+  if (fileName === '.gitignore' || fileName === '.env') return 'bash';
+
+  return languageMap[extension] || 'plain';
+}
 
 interface DiffViewerProps {
   rawDiff: string;
@@ -180,7 +233,7 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
                   Binary file
                 </div>
               ) : parsedFile && parsedFile.hunks.length > 0 ? (
-                <FileHunks hunks={parsedFile.hunks} />
+                <FileHunks hunks={parsedFile.hunks} filePath={file.path} />
               ) : (
                 <div className="flex items-center justify-center py-8 text-gray-500">
                   {file.status === 'untracked' ? 'New file (untracked)' : 'No diff available'}
@@ -219,9 +272,12 @@ function FileStatusBadge({ status }: FileStatusBadgeProps) {
 
 interface FileHunksProps {
   hunks: ReturnType<typeof parsePatch>[0]['hunks'];
+  filePath: string;
 }
 
-function FileHunks({ hunks }: FileHunksProps) {
+function FileHunks({ hunks, filePath }: FileHunksProps) {
+  const language = getLanguageFromPath(filePath);
+
   return (
     <div>
       {hunks.map((hunk, hunkIndex) => (
@@ -271,20 +327,20 @@ function FileHunks({ hunks }: FileHunksProps) {
 
               // Determine styling based on line type
               let bgColor = '';
-              let textColor = 'text-gray-300';
+              let prefixColor = 'text-gray-400';
               let prefix = '';
 
               if (lineType === '+') {
                 bgColor = 'bg-green-900/30';
-                textColor = 'text-green-300';
+                prefixColor = 'text-green-300';
                 prefix = '+';
               } else if (lineType === '-') {
                 bgColor = 'bg-red-900/30';
-                textColor = 'text-red-300';
+                prefixColor = 'text-red-300';
                 prefix = '-';
               } else {
                 bgColor = 'bg-slate-900';
-                textColor = 'text-gray-400';
+                prefixColor = 'text-gray-400';
                 prefix = ' ';
               }
 
@@ -303,10 +359,10 @@ function FileHunks({ hunks }: FileHunksProps) {
                     {newLineNum !== null ? newLineNum : ''}
                   </div>
 
-                  {/* Line content */}
-                  <div className={`flex-1 px-4 py-0.5 ${textColor} whitespace-pre overflow-x-auto`}>
-                    <span className="select-none">{prefix}</span>
-                    {content}
+                  {/* Line content with syntax highlighting */}
+                  <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
+                    <span className={`select-none mr-2 ${prefixColor}`}>{prefix}</span>
+                    <HighlightedLine code={content} language={language} />
                   </div>
                 </div>
               );
@@ -315,5 +371,28 @@ function FileHunks({ hunks }: FileHunksProps) {
         </div>
       ))}
     </div>
+  );
+}
+
+interface HighlightedLineProps {
+  code: string;
+  language: Language;
+}
+
+function HighlightedLine({ code, language }: HighlightedLineProps) {
+  if (!code) {
+    return null;
+  }
+
+  return (
+    <Highlight theme={themes.vsDark} code={code} language={language}>
+      {({ tokens, getTokenProps }) => (
+        <>
+          {tokens[0]?.map((token, key) => (
+            <span key={key} {...getTokenProps({ token })} />
+          ))}
+        </>
+      )}
+    </Highlight>
   );
 }
