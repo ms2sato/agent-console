@@ -68,3 +68,31 @@ export type DashboardServerMessage =
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
   | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState };
+
+// Session validation types
+export type SessionValidationIssueType =
+  | 'directory_not_found'
+  | 'not_git_repository'
+  | 'branch_not_found';
+
+export interface SessionValidationIssue {
+  type: SessionValidationIssueType;
+  message: string;
+}
+
+export interface SessionValidationResult {
+  sessionId: string;
+  session: {
+    type: 'worktree' | 'quick';
+    locationPath: string;
+    worktreeId?: string;
+    title?: string;
+  };
+  valid: boolean;
+  issues: SessionValidationIssue[];
+}
+
+export interface SessionsValidationResponse {
+  results: SessionValidationResult[];
+  hasIssues: boolean;
+}

@@ -1,4 +1,7 @@
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
+import { useQuery } from '@tanstack/react-query';
+import { validateSessions } from '../lib/api';
+import { WarningIcon } from '../components/Icons';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -41,10 +44,50 @@ function RootLayout() {
         >
           Agent Console
         </Link>
+        <ValidationWarningIndicator />
       </header>
       <main style={{ flex: 1, overflow: 'auto' }}>
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function ValidationWarningIndicator() {
+  const { data } = useQuery({
+    queryKey: ['session-validation'],
+    queryFn: validateSessions,
+    // Only check once on initial load, don't refetch automatically
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    retry: false,
+  });
+
+  if (!data?.hasIssues) {
+    return null;
+  }
+
+  const invalidCount = data.results.filter(r => !r.valid).length;
+
+  return (
+    <Link
+      to="/maintenance"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '4px 8px',
+        borderRadius: '4px',
+        backgroundColor: 'rgba(234, 179, 8, 0.2)',
+        color: '#eab308',
+        fontSize: '0.75rem',
+        textDecoration: 'none',
+      }}
+      title={`${invalidCount} invalid session${invalidCount > 1 ? 's' : ''} found`}
+    >
+      <WarningIcon className="w-3.5 h-3.5" />
+      <span>{invalidCount}</span>
+    </Link>
   );
 }
