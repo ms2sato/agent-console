@@ -138,28 +138,90 @@ describe('useDashboardWebSocket', () => {
   });
 
   describe('message handling', () => {
-    it('should call onSync for sessions-sync message', () => {
-      const onSync = mock(() => {});
-      renderHook(() => useDashboardWebSocket({ onSync }));
+    it('should call onSessionsSync for sessions-sync message', () => {
+      const onSessionsSync = mock(() => {});
+      renderHook(() => useDashboardWebSocket({ onSessionsSync }));
 
       const ws = MockWebSocket.getLastInstance();
+      const mockSessions = [
+        { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] },
+        { id: 'session-2', type: 'quick', locationPath: '/path/2', status: 'active', createdAt: '2024-01-01', workers: [] },
+      ];
+      const mockActivityStates = [
+        { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+      ];
+
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
           JSON.stringify({
             type: 'sessions-sync',
-            sessions: [
-              { id: 'session-1', activityState: 'active' },
-              { id: 'session-2', activityState: 'idle' },
-            ],
+            sessions: mockSessions,
+            activityStates: mockActivityStates,
           })
         );
       });
 
-      expect(onSync).toHaveBeenCalledWith([
-        { id: 'session-1', activityState: 'active' },
-        { id: 'session-2', activityState: 'idle' },
-      ]);
+      expect(onSessionsSync).toHaveBeenCalledWith(mockSessions, mockActivityStates);
+    });
+
+    it('should call onSessionCreated for session-created message', () => {
+      const onSessionCreated = mock(() => {});
+      renderHook(() => useDashboardWebSocket({ onSessionCreated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'session-created',
+            session: mockSession,
+          })
+        );
+      });
+
+      expect(onSessionCreated).toHaveBeenCalledWith(mockSession);
+    });
+
+    it('should call onSessionUpdated for session-updated message', () => {
+      const onSessionUpdated = mock(() => {});
+      renderHook(() => useDashboardWebSocket({ onSessionUpdated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [], title: 'Updated Title' };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'session-updated',
+            session: mockSession,
+          })
+        );
+      });
+
+      expect(onSessionUpdated).toHaveBeenCalledWith(mockSession);
+    });
+
+    it('should call onSessionDeleted for session-deleted message', () => {
+      const onSessionDeleted = mock(() => {});
+      renderHook(() => useDashboardWebSocket({ onSessionDeleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'session-deleted',
+            sessionId: 'session-1',
+          })
+        );
+      });
+
+      expect(onSessionDeleted).toHaveBeenCalledWith('session-1');
     });
 
     it('should call onWorkerActivity for worker-activity message', () => {
@@ -183,8 +245,8 @@ describe('useDashboardWebSocket', () => {
     });
 
     it('should handle invalid JSON gracefully', () => {
-      const onSync = mock(() => {});
-      renderHook(() => useDashboardWebSocket({ onSync }));
+      const onSessionsSync = mock(() => {});
+      renderHook(() => useDashboardWebSocket({ onSessionsSync }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -192,14 +254,14 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateMessage('not valid json');
       });
 
-      expect(onSync).not.toHaveBeenCalled();
+      expect(onSessionsSync).not.toHaveBeenCalled();
       expect(consoleErrorSpy).toHaveBeenCalled();
     });
 
     it('should handle unknown message types gracefully', () => {
-      const onSync = mock(() => {});
+      const onSessionsSync = mock(() => {});
       const onWorkerActivity = mock(() => {});
-      renderHook(() => useDashboardWebSocket({ onSync, onWorkerActivity }));
+      renderHook(() => useDashboardWebSocket({ onSessionsSync, onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -207,7 +269,7 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateMessage(JSON.stringify({ type: 'unknown-type', data: 'test' }));
       });
 
-      expect(onSync).not.toHaveBeenCalled();
+      expect(onSessionsSync).not.toHaveBeenCalled();
       expect(onWorkerActivity).not.toHaveBeenCalled();
     });
   });
@@ -391,12 +453,12 @@ describe('useDashboardWebSocket', () => {
 
   describe('options updates', () => {
     it('should use updated callback references', () => {
-      const onSync1 = mock(() => {});
-      const onSync2 = mock(() => {});
+      const onSessionsSync1 = mock(() => {});
+      const onSessionsSync2 = mock(() => {});
 
       const { rerender } = renderHook(
-        ({ onSync }) => useDashboardWebSocket({ onSync }),
-        { initialProps: { onSync: onSync1 } }
+        ({ onSessionsSync }) => useDashboardWebSocket({ onSessionsSync }),
+        { initialProps: { onSessionsSync: onSessionsSync1 } }
       );
 
       const ws = MockWebSocket.getLastInstance();
@@ -405,17 +467,17 @@ describe('useDashboardWebSocket', () => {
       });
 
       // Update callback
-      rerender({ onSync: onSync2 });
+      rerender({ onSessionsSync: onSessionsSync2 });
 
       // Send message
       act(() => {
         ws?.simulateMessage(
-          JSON.stringify({ type: 'sessions-sync', sessions: [] })
+          JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] })
         );
       });
 
-      expect(onSync1).not.toHaveBeenCalled();
-      expect(onSync2).toHaveBeenCalled();
+      expect(onSessionsSync1).not.toHaveBeenCalled();
+      expect(onSessionsSync2).toHaveBeenCalled();
     });
   });
 
@@ -429,6 +491,168 @@ describe('useDashboardWebSocket', () => {
         ws?.simulateError();
       });
 
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('stale WebSocket handling (reconnection scenario)', () => {
+    // These tests verify that after reconnection, events from the old WebSocket
+    // are ignored. This is the same mechanism that prevents duplicate events
+    // in React StrictMode (where the effect runs twice, creating two connections).
+
+    it('should ignore messages from previous WebSocket after reconnection', async () => {
+      const onSessionDeleted = mock(() => {});
+      renderHook(() =>
+        useDashboardWebSocket({ onSessionDeleted, getReconnectDelay: () => 0 })
+      );
+
+      // First WebSocket
+      const ws1 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws1?.simulateOpen();
+      });
+
+      // Close triggers reconnection, creating WS2
+      act(() => {
+        ws1?.simulateClose();
+      });
+
+      await act(async () => {
+        await waitForNextTick();
+      });
+
+      const ws2 = MockWebSocket.getLastInstance();
+      expect(ws1).not.toBe(ws2);
+      expect(MockWebSocket.getInstances().length).toBe(2);
+
+      act(() => {
+        ws2?.simulateOpen();
+      });
+
+      // Message from old WS1 should be ignored (wsRef.current is now WS2)
+      act(() => {
+        ws1?.simulateMessage(
+          JSON.stringify({ type: 'session-deleted', sessionId: 'stale-session' })
+        );
+      });
+      expect(onSessionDeleted).not.toHaveBeenCalled();
+
+      // Message from current WS2 should be processed
+      act(() => {
+        ws2?.simulateMessage(
+          JSON.stringify({ type: 'session-deleted', sessionId: 'current-session' })
+        );
+      });
+      expect(onSessionDeleted).toHaveBeenCalledTimes(1);
+      expect(onSessionDeleted).toHaveBeenCalledWith('current-session');
+    });
+
+    it('should ignore open event from previous WebSocket after reconnection', async () => {
+      const { result } = renderHook(() =>
+        useDashboardWebSocket({ getReconnectDelay: () => 0 })
+      );
+
+      const ws1 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws1?.simulateOpen();
+      });
+      expect(result.current.connected).toBe(true);
+
+      // Close triggers reconnection
+      act(() => {
+        ws1?.simulateClose();
+      });
+      expect(result.current.connected).toBe(false);
+
+      await act(async () => {
+        await waitForNextTick();
+      });
+
+      const ws2 = MockWebSocket.getLastInstance();
+      expect(ws1).not.toBe(ws2);
+
+      // If stale WS1 somehow fires open again, it should be ignored
+      act(() => {
+        ws1?.simulateOpen();
+      });
+      expect(result.current.connected).toBe(false);
+
+      // Current WS2 fires open - should update state
+      act(() => {
+        ws2?.simulateOpen();
+      });
+      expect(result.current.connected).toBe(true);
+    });
+
+    it('should ignore close event from previous WebSocket after reconnection', async () => {
+      renderHook(() =>
+        useDashboardWebSocket({ getReconnectDelay: () => 0 })
+      );
+
+      const ws1 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws1?.simulateOpen();
+        ws1?.simulateClose();
+      });
+
+      await act(async () => {
+        await waitForNextTick();
+      });
+
+      const ws2 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws2?.simulateOpen();
+      });
+
+      const wsCountBeforeStaleClose = MockWebSocket.getInstances().length;
+      expect(wsCountBeforeStaleClose).toBe(2);
+
+      // WS1 close event again (stale) - should NOT trigger another reconnection
+      act(() => {
+        ws1?.simulateClose();
+      });
+
+      await act(async () => {
+        await waitForNextTick();
+      });
+
+      // Should still be 2, no new connection from stale close
+      expect(MockWebSocket.getInstances().length).toBe(2);
+    });
+
+    it('should ignore error event from previous WebSocket after reconnection', async () => {
+      renderHook(() =>
+        useDashboardWebSocket({ getReconnectDelay: () => 0 })
+      );
+
+      const ws1 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws1?.simulateOpen();
+        ws1?.simulateClose();
+      });
+
+      await act(async () => {
+        await waitForNextTick();
+      });
+
+      const ws2 = MockWebSocket.getLastInstance();
+      act(() => {
+        ws2?.simulateOpen();
+      });
+
+      // Clear logs from setup
+      consoleErrorSpy.mockClear();
+
+      // Error from old WS1 should be ignored
+      act(() => {
+        ws1?.simulateError();
+      });
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+      // Error from current WS2 should log
+      act(() => {
+        ws2?.simulateError();
+      });
       expect(consoleErrorSpy).toHaveBeenCalled();
     });
   });

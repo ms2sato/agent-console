@@ -16,14 +16,8 @@ const logger = createLogger('websocket');
 // Track connected dashboard clients for broadcasting
 const dashboardClients = new Set<WSContext>();
 
-// Set up global activity callback to broadcast to all dashboard clients
-sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
-  const msg: DashboardServerMessage = {
-    type: 'worker-activity',
-    sessionId,
-    workerId,
-    activityState: state,
-  };
+// Helper to broadcast message to all dashboard clients
+function broadcastToDashboard(msg: DashboardServerMessage): void {
   const msgStr = JSON.stringify(msg);
   for (const client of dashboardClients) {
     try {
@@ -32,6 +26,32 @@ sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
       logger.warn({ err: e }, 'Failed to send to dashboard client');
     }
   }
+}
+
+// Set up global activity callback to broadcast to all dashboard clients
+sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
+  broadcastToDashboard({
+    type: 'worker-activity',
+    sessionId,
+    workerId,
+    activityState: state,
+  });
+});
+
+// Set up session lifecycle callbacks to broadcast to all dashboard clients
+sessionManager.setSessionLifecycleCallbacks({
+  onSessionCreated: (session) => {
+    logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
+    broadcastToDashboard({ type: 'session-created', session });
+  },
+  onSessionUpdated: (session) => {
+    logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
+    broadcastToDashboard({ type: 'session-updated', session });
+  },
+  onSessionDeleted: (sessionId) => {
+    logger.debug({ sessionId }, 'Broadcasting session-deleted');
+    broadcastToDashboard({ type: 'session-deleted', sessionId });
+  },
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -52,17 +72,28 @@ export function setupWebSocketRoutes(
 
           // Send current state of all sessions on connect
           const allSessions = sessionManager.getAllSessions();
+
+          // Collect activity states for all agent workers
+          const activityStates: { sessionId: string; workerId: string; activityState: import('@agent-console/shared').AgentActivityState }[] = [];
+          for (const session of allSessions) {
+            for (const worker of session.workers) {
+              if (worker.type === 'agent') {
+                const state = sessionManager.getWorkerActivityState(session.id, worker.id);
+                if (state) {
+                  activityStates.push({
+                    sessionId: session.id,
+                    workerId: worker.id,
+                    activityState: state,
+                  });
+                }
+              }
+            }
+          }
+
           const syncMsg: DashboardServerMessage = {
             type: 'sessions-sync',
-            sessions: allSessions.map(s => ({
-              id: s.id,
-              workers: s.workers
-                .filter(w => w.type === 'agent')
-                .map(w => ({
-                  id: w.id,
-                  activityState: sessionManager.getWorkerActivityState(s.id, w.id),
-                })),
-            })),
+            sessions: allSessions,
+            activityStates,
           };
           ws.send(JSON.stringify(syncMsg));
           logger.debug({ sessionCount: allSessions.length }, 'Sent sessions-sync');
