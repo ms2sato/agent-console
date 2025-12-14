@@ -509,6 +509,39 @@ describe('API Routes Integration', () => {
       });
     });
 
+    describe('GET /api/sessions/:sessionId/branches', () => {
+      it('should return branches for a session', async () => {
+        const app = await createApp();
+
+        // Create a session first
+        const createRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        const { session } = (await createRes.json()) as { session: Session };
+
+        // Get branches
+        const res = await app.request(`/api/sessions/${session.id}/branches`);
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { local: string[]; remote: string[]; defaultBranch: string | null };
+        expect(body.local).toEqual(['main', 'develop', 'feature-1']);
+        expect(body.remote).toEqual(['origin/main', 'origin/develop']);
+        expect(body.defaultBranch).toBe('main');
+      });
+
+      it('should return 404 for non-existent session', async () => {
+        const app = await createApp();
+        const res = await app.request('/api/sessions/non-existent/branches');
+        expect(res.status).toBe(404);
+      });
+    });
+
     describe('POST /api/sessions/:sessionId/workers', () => {
       it('should create a terminal worker', async () => {
         const app = await createApp();

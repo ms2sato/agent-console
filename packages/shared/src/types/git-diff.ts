@@ -47,9 +47,13 @@ export interface GitDiffLine {
   newLineNumber?: number;
 }
 
+/** Target reference for diff comparison */
+export type GitDiffTarget = 'working-dir' | string;  // 'working-dir' or commit hash
+
 /** Diff summary (sent via WebSocket) */
 export interface GitDiffSummary {
   baseCommit: string;        // Comparison base commit hash
+  targetRef: GitDiffTarget;  // Target: 'working-dir' or commit hash
   files: GitDiffFile[];
   totalAdditions: number;
   totalDeletions: number;
@@ -81,4 +85,5 @@ export type GitDiffServerMessage =
 /** Client → Server messages */
 export type GitDiffClientMessage =
   | { type: 'refresh' }
-  | { type: 'set-base-commit'; ref: string };
+  | { type: 'set-base-commit'; ref: string }
+  | { type: 'set-target-commit'; ref: GitDiffTarget };  // 'working-dir' or commit/branch ref

@@ -15,6 +15,7 @@ describe('GitDiffHandler', () => {
   const mockDiffData: GitDiffData = {
     summary: {
       baseCommit: 'abc123',
+      targetRef: 'working-dir',
       files: [],
       totalAdditions: 0,
       totalDeletions: 0,
@@ -83,7 +84,7 @@ describe('GitDiffHandler', () => {
         'specific-commit'
       );
 
-      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'specific-commit');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'specific-commit', 'working-dir');
     });
 
     it('should start file watching on connection', async () => {
@@ -145,6 +146,17 @@ describe('GitDiffHandler', () => {
   describe('handleMessage', () => {
     describe('refresh message', () => {
       it('should send updated diff data on refresh', async () => {
+        // First establish a connection to set up connection state
+        await handlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-1',
+          '/repo/path',
+          'current-base'
+        );
+        sentMessages = []; // Clear connection message
+        mockGetDiffData.mockClear();
+
         const message = JSON.stringify({ type: 'refresh' });
 
         await handlers.handleMessage(
@@ -156,7 +168,7 @@ describe('GitDiffHandler', () => {
           message
         );
 
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base', 'working-dir');
         expect(sentMessages.length).toBe(1);
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
@@ -166,6 +178,17 @@ describe('GitDiffHandler', () => {
 
     describe('set-base-commit message', () => {
       it('should resolve ref and send diff data for valid ref', async () => {
+        // First establish a connection to set up connection state
+        await handlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-1',
+          '/repo/path',
+          'old-base'
+        );
+        sentMessages = []; // Clear connection message
+        mockGetDiffData.mockClear();
+
         const message = JSON.stringify({ type: 'set-base-commit', ref: 'main' });
 
         await handlers.handleMessage(
@@ -178,7 +201,7 @@ describe('GitDiffHandler', () => {
         );
 
         expect(mockResolveRef).toHaveBeenCalledWith('main', '/repo/path');
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-data');
