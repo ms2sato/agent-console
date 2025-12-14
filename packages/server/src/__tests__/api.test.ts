@@ -10,6 +10,7 @@ import type {
   Worker,
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
+import { resetProcessMock } from './utils/mock-process-helper.js';
 import { MockPty } from './utils/mock-pty.js';
 import { mockGit } from './utils/mock-git-helper.js';
 
@@ -36,17 +37,7 @@ mock.module('../lib/pty-provider.js', () => ({
   },
 }));
 
-// Mock process-utils for process management
-const killedPids: number[] = [];
-const alivePids = new Set<number>();
-
-mock.module('../lib/process-utils.js', () => ({
-  processKill: (pid: number) => {
-    killedPids.push(pid);
-    return true;
-  },
-  isProcessAlive: (pid: number) => alivePids.has(pid),
-}));
+// Note: process-utils is mocked via mock-process-helper.js (imported above)
 
 // Mock open package to prevent actual file opening
 const mockOpen = mock(async () => {});
@@ -103,8 +94,7 @@ describe('API Routes Integration', () => {
     nextPtyPid = 10000;
 
     // Reset process tracking
-    killedPids.length = 0;
-    alivePids.clear();
+    resetProcessMock();
 
     // Reset git mocks
     mockGit.listWorktrees.mockReset();

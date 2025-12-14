@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -21,6 +22,11 @@ describe('SessionManager', () => {
       [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Reset process mock and mark current process as alive
+    // This ensures sessions created with serverPid=process.pid are not cleaned up
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
 
     // Reset PTY factory
     ptyFactory.reset();
