@@ -24,3 +24,14 @@ export interface ApiError {
   message: string;
 }
 
+/**
+ * Information about branch name generation fallback
+ * Returned when AI-based branch name generation fails and a fallback name is used
+ */
+export interface BranchNameFallback {
+  /** The fallback branch name that was used (e.g., "task-1702000000000") */
+  usedBranch: string;
+  /** The error message from the AI agent */
+  reason: string;
+}
+

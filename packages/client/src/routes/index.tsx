@@ -19,8 +19,17 @@ import { formatPath } from '../lib/path';
 import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+} from '../components/ui/alert-dialog';
 import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -422,6 +431,7 @@ interface RepositoryCardProps {
 function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
+  const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -445,6 +455,10 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       queryClient.invalidateQueries({ queryKey: ['worktrees', repository.id] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowCreateWorktree(false);
+      // Show fallback notification if branch name generation failed
+      if (data.branchNameFallback) {
+        setFallbackInfo(data.branchNameFallback);
+      }
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank');
       }
@@ -498,6 +512,11 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
           ))}
         </div>
       )}
+
+      <BranchNameFallbackDialog
+        fallbackInfo={fallbackInfo}
+        onClose={() => setFallbackInfo(null)}
+      />
     </div>
   );
 }
@@ -743,5 +762,49 @@ function SessionCard({ session }: SessionCardProps) {
         isLoading={deleteMutation.isPending}
       />
     </>
+  );
+}
+
+// =============================================================================
+// Branch Name Fallback Dialog
+// =============================================================================
+
+interface BranchNameFallbackDialogProps {
+  fallbackInfo: BranchNameFallback | null;
+  onClose: () => void;
+}
+
+function BranchNameFallbackDialog({ fallbackInfo, onClose }: BranchNameFallbackDialogProps) {
+  return (
+    <AlertDialog open={fallbackInfo !== null} onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Branch Name Generation Failed</AlertDialogTitle>
+          <AlertDialogDescription className="space-y-3">
+            <p>
+              AI-based branch name generation failed. A fallback branch name was used instead.
+            </p>
+            <div className="bg-slate-900 rounded p-3 text-sm">
+              <div className="text-gray-300">
+                <span className="text-gray-500">Branch: </span>
+                <code className="text-amber-400">{fallbackInfo?.usedBranch}</code>
+              </div>
+              <div className="mt-2 text-gray-300">
+                <span className="text-gray-500">Reason: </span>
+                <span className="text-red-400">{fallbackInfo?.reason}</span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">
+              You can rename the branch later from the session settings.
+            </p>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction onClick={onClose}>
+            OK
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
