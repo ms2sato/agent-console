@@ -88,6 +88,67 @@ bun install   # Installs only bun-pty (~few seconds)
 bun start     # Starts the server
 ```
 
+## Template Configuration
+
+When creating a new worktree, Agent Console can automatically copy template files into it. This is useful for setting up consistent configurations (e.g., `.claude/settings.local.json` for MCP servers) across all worktrees.
+
+### Template Locations
+
+Templates are searched in the following order (first found wins):
+
+1. **Repository-local**: `.git-wt/` directory in the repository root
+2. **Global**: `$AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/`
+
+The default `$AGENT_CONSOLE_HOME` is `~/.agent-console`.
+
+### Directory Structure
+
+Place files in the templates directory with the same structure you want in the worktree:
+
+```
+~/.agent-console/repositories/<owner>/<repo>/templates/
+├── .claude/
+│   └── settings.local.json    # → copied to <worktree>/.claude/settings.local.json
+├── .env.local                  # → copied to <worktree>/.env.local
+└── any/
+    └── nested/
+        └── file.txt           # → copied to <worktree>/any/nested/file.txt
+```
+
+### Placeholders
+
+Template files support variable substitution using `{{VARIABLE}}` syntax:
+
+| Placeholder | Description | Example |
+|-------------|-------------|---------|
+| `{{WORKTREE_NUM}}` | Worktree index number (0, 1, 2, ...) | `1` |
+| `{{BRANCH}}` | Branch name | `feature/add-login` |
+| `{{REPO}}` | Repository name (without owner) | `agent-console` |
+| `{{WORKTREE_PATH}}` | Full path to the worktree | `/Users/me/.agent-console/.../wt-001-abc` |
+
+### Arithmetic Expressions
+
+`{{WORKTREE_NUM}}` supports arithmetic operations:
+
+| Expression | Description | Example (WORKTREE_NUM=2) |
+|------------|-------------|--------------------------|
+| `{{WORKTREE_NUM + 3000}}` | Addition | `3002` |
+| `{{WORKTREE_NUM - 1}}` | Subtraction | `1` |
+| `{{WORKTREE_NUM * 10}}` | Multiplication | `20` |
+| `{{WORKTREE_NUM / 2}}` | Division (floor) | `1` |
+
+### Example: Environment Variables
+
+To configure different ports for each worktree's development server (`.env.local`):
+
+```bash
+# Worktree: {{BRANCH}}
+DEV_PORT={{WORKTREE_NUM + 3000}}
+API_PORT={{WORKTREE_NUM + 4000}}
+```
+
+With this template, worktree 0 uses DEV_PORT=3000, worktree 1 uses DEV_PORT=3001, and so on.
+
 ## Project Structure
 
 ```
