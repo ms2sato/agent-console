@@ -11,6 +11,7 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   SessionsValidationResponse,
+  BranchNameFallback,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -233,6 +234,8 @@ export interface BranchesResponse {
 export interface CreateWorktreeResponse {
   worktree: Worktree;
   session: Session | null;
+  /** Present when AI-based branch name generation failed and a fallback name was used */
+  branchNameFallback?: BranchNameFallback;
 }
 
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {

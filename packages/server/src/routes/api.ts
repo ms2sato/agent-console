@@ -14,6 +14,7 @@ import type {
   RestartWorkerRequest,
   CreateRepositoryRequest,
   SystemOpenRequest,
+  BranchNameFallback,
 } from '@agent-console/shared';
 import {
   CreateSessionRequestSchema,
@@ -379,6 +380,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   let branch: string;
   let baseBranch: string | undefined;
   let effectiveTitle: string | undefined = title;
+  let branchNameFallback: BranchNameFallback | undefined;
 
   // Get the agent for branch name generation (if prompt mode)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
@@ -398,6 +400,10 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
       if (suggestion.error || !suggestion.branch) {
         // Fallback: use timestamp-based branch name, empty title
         branch = `task-${Date.now()}`;
+        branchNameFallback = {
+          usedBranch: branch,
+          reason: suggestion.error || 'Failed to generate branch name',
+        };
       } else {
         branch = suggestion.branch;
         // Use generated title if user didn't provide one
@@ -439,7 +445,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
     });
   }
 
-  return c.json({ worktree, session }, 201);
+  return c.json({ worktree, session, branchNameFallback }, 201);
 });
 
 // Delete a worktree
