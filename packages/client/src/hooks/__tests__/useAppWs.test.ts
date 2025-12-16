@@ -1,10 +1,110 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { useAppWebSocket } from '../useAppWebSocket';
+import { useAppWsEvent, useAppWsState } from '../useAppWs';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 
-describe('useAppWebSocket', () => {
+describe('useAppWsState', () => {
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+
+    // Mock window.location
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+
+    // Suppress console output
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    // Reset singleton state
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  describe('state selection', () => {
+    it('should select connected state', () => {
+      // First connect via useAppWsEvent
+      renderHook(() => useAppWsEvent());
+
+      const { result } = renderHook(() => useAppWsState(s => s.connected));
+
+      expect(result.current).toBe(false);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      expect(result.current).toBe(true);
+    });
+
+    it('should select sessionsSynced state', () => {
+      renderHook(() => useAppWsEvent());
+
+      const { result } = renderHook(() => useAppWsState(s => s.sessionsSynced));
+
+      expect(result.current).toBe(false);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] })
+        );
+      });
+
+      expect(result.current).toBe(true);
+    });
+
+    it('should support multiple concurrent subscriptions with different selectors', () => {
+      renderHook(() => useAppWsEvent());
+
+      const { result: connectedResult } = renderHook(() => useAppWsState(s => s.connected));
+      const { result: syncedResult } = renderHook(() => useAppWsState(s => s.sessionsSynced));
+
+      expect(connectedResult.current).toBe(false);
+      expect(syncedResult.current).toBe(false);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // Only connected should change
+      expect(connectedResult.current).toBe(true);
+      expect(syncedResult.current).toBe(false);
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] })
+        );
+      });
+
+      // Now both should be true
+      expect(connectedResult.current).toBe(true);
+      expect(syncedResult.current).toBe(true);
+    });
+  });
+});
+
+describe('useAppWsEvent', () => {
   let consoleLogSpy: ReturnType<typeof spyOn>;
   let consoleErrorSpy: ReturnType<typeof spyOn>;
   let restoreWebSocket: () => void;
@@ -40,46 +140,18 @@ describe('useAppWebSocket', () => {
 
   describe('connection', () => {
     it('should connect on mount', () => {
-      renderHook(() => useAppWebSocket());
+      renderHook(() => useAppWsEvent());
 
       const ws = MockWebSocket.getLastInstance();
       expect(ws).toBeDefined();
       expect(ws?.url).toBe('ws://localhost:3000/ws/app');
-    });
-
-    it('should update connected state on open', () => {
-      const { result } = renderHook(() => useAppWebSocket());
-
-      expect(result.current.connected).toBe(false);
-
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-
-      expect(result.current.connected).toBe(true);
-    });
-
-    it('should update connected state on close', () => {
-      const { result } = renderHook(() => useAppWebSocket());
-
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-      expect(result.current.connected).toBe(true);
-
-      act(() => {
-        ws?.simulateClose();
-      });
-      expect(result.current.connected).toBe(false);
     });
   });
 
   describe('message handling', () => {
     it('should call onSessionsSync for sessions-sync message', () => {
       const onSessionsSync = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionsSync }));
+      renderHook(() => useAppWsEvent({ onSessionsSync }));
 
       const ws = MockWebSocket.getLastInstance();
       const mockSessions = [
@@ -106,7 +178,7 @@ describe('useAppWebSocket', () => {
 
     it('should call onSessionCreated for session-created message', () => {
       const onSessionCreated = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionCreated }));
+      renderHook(() => useAppWsEvent({ onSessionCreated }));
 
       const ws = MockWebSocket.getLastInstance();
       const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] };
@@ -126,7 +198,7 @@ describe('useAppWebSocket', () => {
 
     it('should call onSessionUpdated for session-updated message', () => {
       const onSessionUpdated = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionUpdated }));
+      renderHook(() => useAppWsEvent({ onSessionUpdated }));
 
       const ws = MockWebSocket.getLastInstance();
       const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [], title: 'Updated Title' };
@@ -146,7 +218,7 @@ describe('useAppWebSocket', () => {
 
     it('should call onSessionDeleted for session-deleted message', () => {
       const onSessionDeleted = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionDeleted }));
+      renderHook(() => useAppWsEvent({ onSessionDeleted }));
 
       const ws = MockWebSocket.getLastInstance();
 
@@ -165,7 +237,7 @@ describe('useAppWebSocket', () => {
 
     it('should call onWorkerActivity for worker-activity message', () => {
       const onWorkerActivity = mock(() => {});
-      renderHook(() => useAppWebSocket({ onWorkerActivity }));
+      renderHook(() => useAppWsEvent({ onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -185,7 +257,7 @@ describe('useAppWebSocket', () => {
 
     it('should handle invalid JSON gracefully', () => {
       const onSessionsSync = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionsSync }));
+      renderHook(() => useAppWsEvent({ onSessionsSync }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -200,7 +272,7 @@ describe('useAppWebSocket', () => {
     it('should handle unknown message types gracefully', () => {
       const onSessionsSync = mock(() => {});
       const onWorkerActivity = mock(() => {});
-      renderHook(() => useAppWebSocket({ onSessionsSync, onWorkerActivity }));
+      renderHook(() => useAppWsEvent({ onSessionsSync, onWorkerActivity }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -222,7 +294,7 @@ describe('useAppWebSocket', () => {
       const onSessionsSync2 = mock(() => {});
 
       const { rerender } = renderHook(
-        ({ onSessionsSync }) => useAppWebSocket({ onSessionsSync }),
+        ({ onSessionsSync }) => useAppWsEvent({ onSessionsSync }),
         { initialProps: { onSessionsSync: onSessionsSync1 } }
       );
 
@@ -248,7 +320,7 @@ describe('useAppWebSocket', () => {
 
   describe('error handling', () => {
     it('should handle WebSocket errors', () => {
-      renderHook(() => useAppWebSocket());
+      renderHook(() => useAppWsEvent());
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {

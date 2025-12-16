@@ -4,8 +4,8 @@ import {
   connect,
   disconnect,
   subscribe,
-  subscribeConnection,
-  isConnected,
+  subscribeState,
+  getState,
   _reset,
 } from '../app-websocket';
 
@@ -98,7 +98,7 @@ describe('app-websocket', () => {
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      expect(isConnected()).toBe(true);
+      expect(getState().connected).toBe(true);
     });
   });
 
@@ -137,27 +137,29 @@ describe('app-websocket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      expect(isConnected()).toBe(true);
+      expect(getState().connected).toBe(true);
 
       disconnect();
 
-      expect(isConnected()).toBe(false);
+      expect(getState().connected).toBe(false);
     });
   });
 
   describe('connection state', () => {
     it('should notify listeners on connection', () => {
       const listener = mock(() => {});
-      subscribeConnection(listener);
+      subscribeState(listener);
 
-      // Called immediately with current state (false)
-      expect(listener).toHaveBeenCalledWith(false);
+      // Initial state
+      expect(getState().connected).toBe(false);
 
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      expect(listener).toHaveBeenCalledWith(true);
+      // Listener should be called when state changes
+      expect(listener).toHaveBeenCalled();
+      expect(getState().connected).toBe(true);
     });
 
     it('should notify listeners on disconnection', () => {
@@ -167,17 +169,18 @@ describe('app-websocket', () => {
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      subscribeConnection(listener);
-      expect(listener).toHaveBeenCalledWith(true);
+      subscribeState(listener);
+      listener.mockClear();
 
       ws?.simulateClose(1006);
 
-      expect(listener).toHaveBeenCalledWith(false);
+      expect(listener).toHaveBeenCalled();
+      expect(getState().connected).toBe(false);
     });
 
-    it('should unsubscribe connection listener', () => {
+    it('should unsubscribe state listener', () => {
       const listener = mock(() => {});
-      const unsubscribe = subscribeConnection(listener);
+      const unsubscribe = subscribeState(listener);
 
       unsubscribe();
       listener.mockClear();
@@ -390,7 +393,7 @@ describe('app-websocket', () => {
 
       connect();
 
-      expect(isConnected()).toBe(false);
+      expect(getState().connected).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalled();
     });
   });
