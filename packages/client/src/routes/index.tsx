@@ -13,7 +13,7 @@ import {
   deleteWorktree,
   openPath,
 } from '../lib/api';
-import { useAppWebSocket } from '../hooks/useAppWebSocket';
+import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
 import { formatPath } from '../lib/path';
 import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -202,6 +202,13 @@ function DashboardPage() {
       return next;
     });
     delete prevStatesRef.current[sessionId];
+    // Clean up notification tracking refs to prevent memory leak
+    Object.keys(activeStartTimeRef.current).forEach(key => {
+      if (key.startsWith(`${sessionId}:`)) {
+        delete activeStartTimeRef.current[key];
+      }
+    });
+    delete lastNotificationTimeRef.current[sessionId];
   }, []);
 
   // Handle real-time activity updates via WebSocket
@@ -293,13 +300,14 @@ function DashboardPage() {
   }, []);
 
   // Connect to app WebSocket for real-time updates
-  const { hasReceivedSync } = useAppWebSocket({
+  useAppWsEvent({
     onSessionsSync: handleSessionsSync,
     onSessionCreated: handleSessionCreated,
     onSessionUpdated: handleSessionUpdated,
     onSessionDeleted: handleSessionDeleted,
     onWorkerActivity: handleWorkerActivityUpdate,
   });
+  const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
   const { data: reposData } = useQuery({
     queryKey: ['repositories'],
@@ -334,7 +342,7 @@ function DashboardPage() {
   };
 
   // Show loading state until first WebSocket sync
-  if (!hasReceivedSync) {
+  if (!sessionsSynced) {
     return (
       <div className="py-6 px-6">
         <div className="flex items-center justify-between mb-5">

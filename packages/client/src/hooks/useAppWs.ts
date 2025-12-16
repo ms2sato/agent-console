@@ -1,8 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo } from '@agent-console/shared';
-import { connect, subscribe, subscribeConnection } from '../lib/app-websocket';
+import { connect, subscribe, subscribeState, getState, type AppWebSocketState } from '../lib/app-websocket';
 
-interface UseAppWebSocketOptions {
+/**
+ * Hook for subscribing to app WebSocket state with a selector.
+ * Only re-renders when the selected value changes (using Object.is comparison).
+ *
+ * Note: For best performance, pass a stable selector (using useCallback) or
+ * ensure the selector returns primitive values. Object/array selectors will
+ * cause re-renders on every state change unless memoized.
+ *
+ * @example
+ * const connected = useAppWsState(s => s.connected);
+ * const sessionsSynced = useAppWsState(s => s.sessionsSynced);
+ */
+export function useAppWsState<T>(selector: (state: AppWebSocketState) => T): T {
+  return useSyncExternalStore(subscribeState, () => selector(getState()));
+}
+
+interface UseAppWsEventOptions {
   /** Called when initial session sync is received */
   onSessionsSync?: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void;
   /** Called when a new session is created */
@@ -15,21 +31,12 @@ interface UseAppWebSocketOptions {
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
 }
 
-interface UseAppWebSocketReturn {
-  connected: boolean;
-  /** Whether initial session sync has been received */
-  hasReceivedSync: boolean;
-}
-
 /**
- * React hook for app WebSocket integration.
- * Uses the singleton WebSocket module internally.
+ * Hook for subscribing to app WebSocket events.
+ * Connects to WebSocket and registers event callbacks.
+ * Use useAppWsState for reading connection state.
  */
-export function useAppWebSocket(
-  options: UseAppWebSocketOptions = {}
-): UseAppWebSocketReturn {
-  const [connected, setConnected] = useState(false);
-  const [hasReceivedSync, setHasReceivedSync] = useState(false);
+export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -37,12 +44,11 @@ export function useAppWebSocket(
     // Connect to WebSocket (idempotent - safe to call multiple times)
     connect();
 
-    // Subscribe to messages
+    // Subscribe to messages for callback notifications
     const unsubscribeMessage = subscribe((msg: AppServerMessage) => {
       switch (msg.type) {
         case 'sessions-sync':
           console.log(`[WebSocket] sessions-sync received: ${msg.sessions.length} sessions`);
-          setHasReceivedSync(true);
           optionsRef.current.onSessionsSync?.(msg.sessions, msg.activityStates);
           break;
         case 'session-created':
@@ -63,15 +69,9 @@ export function useAppWebSocket(
       }
     });
 
-    // Subscribe to connection state
-    const unsubscribeConnection = subscribeConnection(setConnected);
-
     return () => {
       unsubscribeMessage();
-      unsubscribeConnection();
       // Note: We don't disconnect here because the singleton should persist
     };
   }, []);
-
-  return { connected, hasReceivedSync };
 }

@@ -6,18 +6,27 @@
  */
 import { APP_MESSAGE_TYPES, type AppServerMessage } from '@agent-console/shared';
 
+// Store state type
+export interface AppWebSocketState {
+  connected: boolean;
+  sessionsSynced: boolean;
+}
+
 // Connection state
 let ws: WebSocket | null = null;
-let connected = false;
+let state: AppWebSocketState = {
+  connected: false,
+  sessionsSynced: false,
+};
 let retryCount = 0;
 let retryTimeout: ReturnType<typeof setTimeout> | null = null;
 
 // Listeners
 type MessageListener = (msg: AppServerMessage) => void;
-type ConnectionListener = (connected: boolean) => void;
+type StateListener = () => void;
 
 const messageListeners = new Set<MessageListener>();
-const connectionListeners = new Set<ConnectionListener>();
+const stateListeners = new Set<StateListener>();
 
 // Reconnection settings
 const INITIAL_RETRY_DELAY = 1000;
@@ -52,9 +61,19 @@ function getReconnectDelay(count: number): number {
   return Math.round(baseDelay + jitter);
 }
 
-function setConnected(value: boolean) {
-  connected = value;
-  connectionListeners.forEach(fn => fn(value));
+function hasStateChanged(prev: AppWebSocketState, next: AppWebSocketState): boolean {
+  return (Object.keys(next) as Array<keyof AppWebSocketState>).some(
+    key => prev[key] !== next[key]
+  );
+}
+
+function setState(partial: Partial<AppWebSocketState>) {
+  const prevState = state;
+  state = { ...state, ...partial };
+  // Only notify if state actually changed
+  if (hasStateChanged(prevState, state)) {
+    stateListeners.forEach(fn => fn());
+  }
 }
 
 function handleMessage(event: MessageEvent) {
@@ -63,6 +82,10 @@ function handleMessage(event: MessageEvent) {
     if (!isValidMessage(parsed)) {
       console.error('[WebSocket] Invalid message type:', parsed);
       return;
+    }
+    // Track initial sync reception
+    if (parsed.type === 'sessions-sync') {
+      setState({ sessionsSynced: true });
     }
     messageListeners.forEach(fn => fn(parsed));
   } catch (e) {
@@ -116,14 +139,14 @@ export function connect(): void {
 
     ws.onopen = () => {
       retryCount = 0;
-      setConnected(true);
+      setState({ connected: true });
       console.log('[WebSocket] Connected');
     };
 
     ws.onmessage = handleMessage;
 
     ws.onclose = (event: CloseEvent) => {
-      setConnected(false);
+      setState({ connected: false });
       console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
       // Don't reconnect for clean closures or policy violations
@@ -141,7 +164,7 @@ export function connect(): void {
   } catch (error) {
     console.error('[WebSocket] Failed to create connection:', error);
     ws = null;
-    setConnected(false);
+    setState({ connected: false });
     scheduleReconnect();
   }
 }
@@ -159,7 +182,7 @@ export function disconnect(): void {
     ws.close(1000); // Normal closure
   }
   ws = null;
-  setConnected(false);
+  setState({ connected: false });
 }
 
 /**
@@ -172,21 +195,19 @@ export function subscribe(listener: MessageListener): () => void {
 }
 
 /**
- * Subscribe to connection state changes.
+ * Subscribe to state changes (for useSyncExternalStore).
  * @returns Unsubscribe function
  */
-export function subscribeConnection(listener: ConnectionListener): () => void {
-  connectionListeners.add(listener);
-  // Immediately notify of current state
-  listener(connected);
-  return () => connectionListeners.delete(listener);
+export function subscribeState(listener: StateListener): () => void {
+  stateListeners.add(listener);
+  return () => stateListeners.delete(listener);
 }
 
 /**
- * Get current connection state.
+ * Get current state snapshot (for useSyncExternalStore).
  */
-export function isConnected(): boolean {
-  return connected;
+export function getState(): AppWebSocketState {
+  return state;
 }
 
 /**
@@ -196,6 +217,7 @@ export function isConnected(): boolean {
 export function _reset(): void {
   disconnect();
   retryCount = 0;
+  state = { connected: false, sessionsSynced: false };
   messageListeners.clear();
-  connectionListeners.clear();
+  stateListeners.clear();
 }
