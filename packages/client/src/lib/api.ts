@@ -28,20 +28,8 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   return res.json();
 }
 
-export interface SessionsResponse {
-  sessions: Session[];
-}
-
 export interface CreateSessionResponse {
   session: Session;
-}
-
-export async function fetchSessions(): Promise<SessionsResponse> {
-  const res = await fetch(`${API_BASE}/sessions`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch sessions: ${res.statusText}`);
-  }
-  return res.json();
 }
 
 export async function createSession(

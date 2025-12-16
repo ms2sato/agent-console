@@ -1,7 +1,6 @@
 import { describe, it, expect as bunExpect, mock, beforeEach, afterAll } from 'bun:test';
 import {
   fetchConfig,
-  fetchSessions,
   createSession,
   getSession,
   deleteSession,
@@ -63,18 +62,6 @@ describe('API Client', () => {
       );
 
       await expect(fetchConfig()).rejects.toThrow('Failed to fetch config');
-    });
-  });
-
-  describe('fetchSessions', () => {
-    it('should fetch sessions successfully', async () => {
-      const mockSessions = { sessions: [{ id: '1' }, { id: '2' }] };
-      mockFetch.mockResolvedValue(createMockResponse(mockSessions));
-
-      const result = await fetchSessions();
-
-      expect(fetch).toHaveBeenCalledWith('/api/sessions');
-      expect(result).toEqual(mockSessions);
     });
   });
 

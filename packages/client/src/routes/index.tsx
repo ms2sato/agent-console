@@ -2,7 +2,6 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  fetchSessions,
   fetchRepositories,
   fetchWorktrees,
   fetchBranches,
@@ -14,7 +13,7 @@ import {
   deleteWorktree,
   openPath,
 } from '../lib/api';
-import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket';
+import { useAppWebSocket } from '../hooks/useAppWebSocket';
 import { formatPath } from '../lib/path';
 import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -126,10 +125,8 @@ function DashboardPage() {
   const [showAddRepo, setShowAddRepo] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
-  // Sessions from WebSocket (source of truth after initial sync)
+  // Sessions from WebSocket (source of truth)
   const [wsSessions, setWsSessions] = useState<Session[]>([]);
-  // Track if we've received initial sync from WebSocket
-  const [wsInitialized, setWsInitialized] = useState(false);
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
@@ -157,22 +154,26 @@ function DashboardPage() {
 
     // Update sessions list
     setWsSessions(sessions);
-    setWsInitialized(true);
     sessionsRef.current = sessions;
 
-    // Initialize activity states
+    // Build the full state first to avoid race condition
+    const newActivityStates: Record<string, Record<string, AgentActivityState>> = {};
+    const newPrevStates: Record<string, Record<string, AgentActivityState>> = {};
+
     for (const { sessionId, workerId, activityState } of activityStates) {
       const key = `${sessionId}:${workerId}`;
       console.log(`[Sync] ${key}: ${activityState}`);
-      if (!prevStatesRef.current[sessionId]) {
-        prevStatesRef.current[sessionId] = {};
+      if (!newActivityStates[sessionId]) {
+        newActivityStates[sessionId] = {};
+        newPrevStates[sessionId] = {};
       }
-      prevStatesRef.current[sessionId][workerId] = activityState;
-      setWorkerActivityStates(prev => ({
-        ...prev,
-        [sessionId]: { ...(prev[sessionId] ?? {}), [workerId]: activityState },
-      }));
+      newActivityStates[sessionId][workerId] = activityState;
+      newPrevStates[sessionId][workerId] = activityState;
     }
+
+    // Update state atomically
+    setWorkerActivityStates(newActivityStates);
+    prevStatesRef.current = newPrevStates;
   }, []);
 
   // Handle new session created
@@ -263,9 +264,12 @@ function DashboardPage() {
 
       // Get session info for notification body
       const session = sessionsRef.current.find(s => s.id === sessionId);
-      const locationPath = session?.locationPath || '';
+      if (!session) {
+        console.log('[Notification] Skipped: session no longer exists');
+        return;
+      }
       // Extract project name from path
-      const pathParts = locationPath.split('/').filter(Boolean);
+      const pathParts = session.locationPath.split('/').filter(Boolean);
       const projectName = pathParts[pathParts.length - 1] || 'Unknown';
 
       if (state === 'idle') {
@@ -288,8 +292,8 @@ function DashboardPage() {
     }
   }, []);
 
-  // Connect to dashboard WebSocket for real-time updates
-  useDashboardWebSocket({
+  // Connect to app WebSocket for real-time updates
+  const { hasReceivedSync } = useAppWebSocket({
     onSessionsSync: handleSessionsSync,
     onSessionCreated: handleSessionCreated,
     onSessionUpdated: handleSessionUpdated,
@@ -302,30 +306,11 @@ function DashboardPage() {
     queryFn: fetchRepositories,
   });
 
-  // Fallback: fetch sessions via REST API for initial load before WebSocket connects
-  const { data: sessionsData } = useQuery({
-    queryKey: ['sessions'],
-    queryFn: fetchSessions,
-    // No refetchInterval - WebSocket handles real-time updates
-    enabled: !wsInitialized, // Only fetch if WebSocket hasn't initialized yet
-  });
-
-  // Use WebSocket sessions if initialized, otherwise fall back to REST API
-  const baseSessions = wsInitialized ? wsSessions : (sessionsData?.sessions ?? []);
-
   // Add activity state to sessions
-  const sessions = baseSessions.map(session => ({
+  const sessions = wsSessions.map(session => ({
     ...session,
     activityState: getSessionActivityState(session, workerActivityStates),
   }));
-
-  // sessionsRef is now updated in WebSocket handlers (handleSessionsSync, handleSessionCreated, etc.)
-  // For fallback case (before WebSocket connects), sync from REST API data
-  useEffect(() => {
-    if (!wsInitialized && sessionsData?.sessions) {
-      sessionsRef.current = sessionsData.sessions;
-    }
-  }, [wsInitialized, sessionsData]);
 
   const registerMutation = useMutation({
     mutationFn: registerRepository,
@@ -347,6 +332,20 @@ function DashboardPage() {
   const handleAddRepo = async (data: CreateRepositoryRequest) => {
     await registerMutation.mutateAsync(data.path);
   };
+
+  // Show loading state until first WebSocket sync
+  if (!hasReceivedSync) {
+    return (
+      <div className="py-6 px-6">
+        <div className="flex items-center justify-between mb-5">
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+        </div>
+        <div className="flex items-center justify-center py-20">
+          <div className="text-gray-400">Loading sessions...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="py-6 px-6">

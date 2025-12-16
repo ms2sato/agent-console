@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type {
   WorkerServerMessage,
   AgentActivityState,
-  DashboardServerMessage,
+  AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
@@ -13,24 +13,43 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('websocket');
 
-// Track connected dashboard clients for broadcasting
-const dashboardClients = new Set<WSContext>();
+// Track connected app clients for broadcasting
+const appClients = new Set<WSContext>();
 
-// Helper to broadcast message to all dashboard clients
-function broadcastToDashboard(msg: DashboardServerMessage): void {
+// Helper to broadcast message to all app clients
+function broadcastToApp(msg: AppServerMessage): void {
   const msgStr = JSON.stringify(msg);
-  for (const client of dashboardClients) {
+  const deadClients: WSContext[] = [];
+
+  for (const client of appClients) {
+    // Skip clients that are not in OPEN state (readyState === 1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const readyState = (client as any).readyState;
+    if (typeof readyState === 'number' && readyState !== 1) {
+      deadClients.push(client);
+      continue;
+    }
+
     try {
       client.send(msgStr);
     } catch (e) {
-      logger.warn({ err: e }, 'Failed to send to dashboard client');
+      logger.warn({ err: e }, 'Failed to send to app client, removing');
+      deadClients.push(client);
     }
+  }
+
+  // Clean up dead clients
+  if (deadClients.length > 0) {
+    for (const client of deadClients) {
+      appClients.delete(client);
+    }
+    logger.debug({ removed: deadClients.length, remaining: appClients.size }, 'Cleaned up dead app clients');
   }
 }
 
-// Set up global activity callback to broadcast to all dashboard clients
+// Set up global activity callback to broadcast to all app clients
 sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
-  broadcastToDashboard({
+  broadcastToApp({
     type: 'worker-activity',
     sessionId,
     workerId,
@@ -38,19 +57,19 @@ sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
   });
 });
 
-// Set up session lifecycle callbacks to broadcast to all dashboard clients
+// Set up session lifecycle callbacks to broadcast to all app clients
 sessionManager.setSessionLifecycleCallbacks({
   onSessionCreated: (session) => {
     logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
-    broadcastToDashboard({ type: 'session-created', session });
+    broadcastToApp({ type: 'session-created', session });
   },
   onSessionUpdated: (session) => {
     logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
-    broadcastToDashboard({ type: 'session-updated', session });
+    broadcastToApp({ type: 'session-updated', session });
   },
   onSessionDeleted: (sessionId) => {
     logger.debug({ sessionId }, 'Broadcasting session-deleted');
-    broadcastToDashboard({ type: 'session-deleted', sessionId });
+    broadcastToApp({ type: 'session-deleted', sessionId });
   },
 });
 
@@ -61,16 +80,17 @@ export function setupWebSocketRoutes(
   app: Hono,
   upgradeWebSocket: UpgradeWebSocketFn
 ) {
-  // Dashboard WebSocket endpoint for real-time updates
+  // App WebSocket endpoint for real-time state synchronization
   app.get(
-    '/ws/dashboard',
+    '/ws/app',
     upgradeWebSocket(() => {
       return {
         onOpen(_event: unknown, ws: WSContext) {
-          dashboardClients.add(ws);
-          logger.info({ clientCount: dashboardClients.size }, 'Dashboard WebSocket connected');
+          logger.info('App WebSocket connected, sending initial sync');
 
           // Send current state of all sessions on connect
+          // IMPORTANT: Send sync BEFORE adding to appClients to prevent race condition
+          // where a session-created broadcast arrives before sessions-sync
           const allSessions = sessionManager.getAllSessions();
 
           // Collect activity states for all agent workers
@@ -90,17 +110,22 @@ export function setupWebSocketRoutes(
             }
           }
 
-          const syncMsg: DashboardServerMessage = {
+          const syncMsg: AppServerMessage = {
             type: 'sessions-sync',
             sessions: allSessions,
             activityStates,
           };
           ws.send(JSON.stringify(syncMsg));
           logger.debug({ sessionCount: allSessions.length }, 'Sent sessions-sync');
+
+          // Add to broadcast list AFTER sending sync to ensure correct message ordering
+          appClients.add(ws);
+          logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
         },
         onClose(_event: unknown, ws: WSContext) {
-          dashboardClients.delete(ws);
-          logger.info({ clientCount: dashboardClients.size }, 'Dashboard WebSocket disconnected');
+          // Remove from broadcast list to prevent memory leak
+          appClients.delete(ws);
+          logger.info({ clientCount: appClients.size }, 'App WebSocket disconnected');
         },
       };
     })

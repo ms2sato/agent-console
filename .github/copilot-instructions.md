@@ -87,8 +87,8 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 ```
 
 **WebSocket endpoints:**
-- `/ws/dashboard` - Broadcasts session/worker lifecycle events
-- `/ws/sessions/:sessionId/workers/:workerId` - Individual worker I/O
+- `/ws/app` - Broadcasts session/worker lifecycle events (app-wide state sync)
+- `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
 
 ## Key Technical Details
 

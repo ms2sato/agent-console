@@ -5,6 +5,9 @@ import { writeFileSync as defaultWriteFileSync, mkdirSync as defaultMkdirSync } 
 import { join } from 'node:path';
 import { tmpdir as defaultTmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('worker-handler');
 
 /**
  * Dependencies for worker handler (enables dependency injection for testing)
@@ -80,7 +83,7 @@ export function createWorkerMessageHandler(deps: Partial<WorkerHandlerDependenci
           const buffer = Buffer.from(parsed.data, 'base64');
           writeFileSync(filePath, buffer);
 
-          console.log(`Image saved: ${filePath}`);
+          logger.debug({ filePath }, 'Image saved');
 
           // Send file path to PTY stdin (Claude Code will read the image)
           sessionManager.writeWorkerInput(sessionId, workerId, filePath);
@@ -88,7 +91,7 @@ export function createWorkerMessageHandler(deps: Partial<WorkerHandlerDependenci
         }
       }
     } catch (e) {
-      console.error('Invalid worker message:', e);
+      logger.warn({ err: e, sessionId, workerId }, 'Invalid worker message');
     }
   };
 }

@@ -18,7 +18,7 @@
 ## Coding Style & Naming Conventions
 - TypeScript everywhere; `tsconfig.base.json` enforces strict mode and no unuseds.
 - Indent with 2 spaces; prefer named exports from module entry points.
-- React components/hooks use PascalCase filenames (`SessionSettings.tsx`, `useDashboardWebSocket.ts`); tests mirror sources with `.test.ts`/`.test.tsx` in `__tests__` or alongside modules.
+- React components/hooks use PascalCase filenames (`SessionSettings.tsx`, `useAppWebSocket.ts`); tests mirror sources with `.test.ts`/`.test.tsx` in `__tests__` or alongside modules.
 - Shared schemas/types live in `packages/shared/src`; keep API contracts there to avoid duplication.
 
 ## Testing Guidelines
