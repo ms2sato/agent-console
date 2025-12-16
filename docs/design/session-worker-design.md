@@ -285,12 +285,12 @@ type PersistedSession = PersistedWorktreeSession | PersistedQuickSession;
 - `GET /ws/terminal/:sessionId` - Connect to Claude session
 - `GET /ws/terminal-new` - Create new Claude session
 - `GET /ws/shell` - Create new plain shell (destroyed on disconnect)
-- `GET /ws/dashboard` - Dashboard updates
+- `GET /ws/app` - App state sync
 
 ### Proposed
 
 - `GET /ws/session/:sessionId/worker/:workerId` - Connect to specific worker
-- `GET /ws/dashboard` - Dashboard updates (unchanged)
+- `GET /ws/app` - App state sync (renamed from /ws/dashboard)
 
 ### WebSocket Messages
 

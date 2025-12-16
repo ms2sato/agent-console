@@ -49,12 +49,6 @@ api.get('/config', (c) => {
   return c.json({ homeDir: homedir() });
 });
 
-// Get all sessions
-api.get('/sessions', (c) => {
-  const sessions = sessionManager.getAllSessions();
-  return c.json({ sessions });
-});
-
 // Validate all sessions
 api.get('/sessions/validate', async (c) => {
   const response = await sessionValidationService.validateAllSessions();

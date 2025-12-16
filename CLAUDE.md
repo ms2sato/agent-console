@@ -152,8 +152,8 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 - **Backend** manages PTY processes that persist across browser reconnections (tmux-like)
 - **Frontend** is React with TanStack Router, using xterm.js for terminal rendering
 - **WebSocket** endpoints:
-  - `/ws/dashboard` - Broadcasts session/worker lifecycle events
-  - `/ws/sessions/:sessionId/workers/:workerId` - Individual worker I/O
+  - `/ws/app` - Broadcasts session/worker lifecycle events (app-wide state sync)
+  - `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
 
 ### Client-Server Responsibility
 
@@ -186,7 +186,7 @@ Server → Client:
 - `{ type: 'history', data: string }` - Buffered output on reconnect
 - `{ type: 'activity', state: AgentActivityState }` - Agent activity state change (agent workers only)
 
-### Dashboard Connection (`/ws/dashboard`)
+### App Connection (`/ws/app`)
 
 Server → Client:
 - `{ type: 'sessions-sync', sessions: [...] }` - Full session list sync

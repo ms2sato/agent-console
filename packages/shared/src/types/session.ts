@@ -68,7 +68,22 @@ export interface WorkerActivityInfo {
   activityState: AgentActivityState;
 }
 
-export type DashboardServerMessage =
+/**
+ * Valid message types for AppServerMessage.
+ * Single source of truth for both type definitions and runtime validation.
+ * Use object keys for easy `in` operator validation.
+ */
+export const APP_MESSAGE_TYPES = {
+  'sessions-sync': 1,
+  'session-created': 2,
+  'session-updated': 3,
+  'session-deleted': 4,
+  'worker-activity': 5,
+} as const;
+
+export type AppServerMessageType = keyof typeof APP_MESSAGE_TYPES;
+
+export type AppServerMessage =
   | { type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }

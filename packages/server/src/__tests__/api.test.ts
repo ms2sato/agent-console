@@ -176,18 +176,6 @@ describe('API Routes Integration', () => {
   // ==========================================================================
 
   describe('Sessions API', () => {
-    describe('GET /api/sessions', () => {
-      it('should return empty sessions array initially', async () => {
-        const app = await createApp();
-        const res = await app.request('/api/sessions');
-        expect(res.status).toBe(200);
-
-        const body = (await res.json()) as { sessions: Session[] };
-        expect(body.sessions).toBeInstanceOf(Array);
-        expect(body.sessions.length).toBe(0);
-      });
-    });
-
     describe('POST /api/sessions', () => {
       it('should create a new quick session', async () => {
         const app = await createApp();
