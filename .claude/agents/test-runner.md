@@ -3,6 +3,7 @@ name: test-runner
 description: Execute tests and analyze failures. Use when running tests, investigating test failures, or verifying that code changes pass tests.
 tools: Read, Grep, Glob, Bash
 model: haiku
+skills: development-workflow-standards
 ---
 
 You are a test execution specialist. Your responsibility is to run tests and analyze results.
