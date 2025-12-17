@@ -46,6 +46,14 @@ For each issue found:
 ### Recommendations
 Prioritized list of suggested improvements.
 
+## React-Specific Checks
+
+When reviewing React code, pay special attention to:
+
+1. **Suspense Usage** - Prefer Suspense for async operations and loading states over manual isLoading flags
+2. **useEffect Discipline** - Challenge every useEffect: could it be a derived value, event handler, or useMemo instead?
+3. **Icon Components** - SVG icons should be in `Icons.tsx`, not inline in View components
+
 ## Constraints
 
 - Do NOT modify any code files

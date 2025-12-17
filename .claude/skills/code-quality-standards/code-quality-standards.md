@@ -123,6 +123,24 @@ This document defines the evaluation criteria for code design and quality review
 - Are secrets handled securely (not in code, not logged)?
 - Is authentication/authorization checked at proper boundaries?
 
+## 9. React Best Practices
+
+### Suspense Usage
+- Is Suspense used for async data fetching and code splitting?
+- Are loading states handled declaratively with Suspense boundaries?
+- Is ErrorBoundary paired with Suspense for error handling?
+
+### useEffect Discipline
+- Is useEffect avoided when derived state or event handlers suffice?
+- Are effects truly for synchronization with external systems?
+- Could the logic be moved to event handlers, useMemo, or server components?
+- Are unnecessary re-subscriptions avoided?
+
+### Component Organization
+- Are SVG icons extracted to a dedicated Icons.tsx component?
+- Are View components kept clean of implementation details?
+- Is presentational logic separated from business logic?
+
 ## Evaluation Output Format
 
 For each aspect reviewed, provide:
