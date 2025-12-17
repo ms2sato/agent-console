@@ -27,10 +27,18 @@ User-defined subagents (in `~/.claude/agents/`):
 - **Web research:** Use `web-research-specialist` subagent for technical documentation lookup
 
 Project-defined subagents (in `.claude/agents/`):
+- **Frontend implementation:** Use `frontend-specialist` subagent for React components, hooks, routes, and client-side logic
+- **Backend implementation:** Use `backend-specialist` subagent for API endpoints, WebSocket handlers, services, and server-side logic
 - **Test execution:** Use `test-runner` subagent for running tests and analyzing failures
 - **Test quality review:** Use `test-reviewer` subagent for evaluating test adequacy and coverage
 - **Code quality review:** Use `code-quality-reviewer` subagent for evaluating design, maintainability, and identifying potential issues
 - **UX architecture review:** Use `ux-architecture-reviewer` subagent for verifying state consistency and edge case handling in client-server interactions
+
+Project-defined skills (in `.claude/skills/`):
+- **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Development process rules (testing, branching, commits)
+- **Code quality standards:** `.claude/skills/code-quality-standards/` - Evaluation criteria for code reviews
+- **Frontend standards:** `.claude/skills/frontend-standards/` - React patterns and frontend best practices
+- **Backend standards:** `.claude/skills/backend-standards/` - Hono/Bun patterns and backend best practices
 
 **Propose missing subagents or skills.** When you identify a recurring task pattern that would benefit from a specialized subagent or skill but none exists, propose it to the user with a ready-to-use definition file.
 
@@ -215,7 +223,7 @@ Before completing any code changes, always verify the following:
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors.
 3. **Review test quality:** When tests are added or modified, use `test-reviewer` to evaluate adequacy and coverage.
 4. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
-5. **Code quality review (before push):** For significant changes (new features, architectural changes, security-related code), use `code-quality-reviewer` to evaluate design and identify potential issues. Refer to `.claude/skills/code-quality-standards/code-quality-standards.md` for evaluation criteria.
+5. **Code quality review (before push):** For significant changes (new features, architectural changes, security-related code), use `code-quality-reviewer` to evaluate design and identify potential issues.
 6. **UX architecture review (state sync features):** When implementing features involving persistence, state synchronization, or WebSocket/REST API changes, use `ux-architecture-reviewer` to verify state consistency and edge case handling.
 
 **Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
