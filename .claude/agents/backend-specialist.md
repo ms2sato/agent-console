@@ -51,6 +51,20 @@ Invoke with specific implementation tasks:
 - **PersistenceService** - State persistence
 - **ActivityDetector** - Agent activity state detection
 
+## When Existing Patterns Are Questionable
+
+If you encounter existing patterns that seem problematic:
+
+1. **Do not silently follow or deviate** - Both choices have consequences
+2. **Report to primary agent** - Describe the pattern, the issue, and your recommendation
+3. **Propose options**:
+   - Follow as-is (maintain consistency, accept the trade-off)
+   - Deviate with justification (improve quality, accept inconsistency)
+   - Refactor existing code (fix the root cause, higher effort)
+4. **Wait for decision** - Do not proceed with significant deviations without approval
+
+When in doubt, ask. A brief clarification saves more time than rework.
+
 ## Constraints
 
 - Follow the patterns in backend-standards

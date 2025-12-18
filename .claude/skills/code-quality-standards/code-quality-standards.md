@@ -4,10 +4,20 @@ This document defines the evaluation criteria for code design and quality review
 
 ## 1. Robustness to Change
 
+### Single Responsibility Principle
+- Does each module/class have only one reason to change?
+- Are unrelated concerns separated into different modules?
+- Would a change in one domain require changes in unrelated code?
+
 ### Open-Closed Principle
 - Can new features be added without modifying existing code?
 - Are extension points clearly defined?
 - Is behavior parameterized rather than hardcoded?
+
+### Change Localization
+- Is a single feature change contained within a small area of code?
+- Are there signs of Shotgun Surgery (one change requires many small edits across files)?
+- Would adding a new variant require touching multiple unrelated files?
 
 ### Dependency Management
 - Are dependencies injected rather than instantiated internally?
@@ -48,6 +58,39 @@ This document defines the evaluation criteria for code design and quality review
 - Are abbreviations avoided unless universally known?
 - Is naming consistent across the codebase?
 
+### Magic Numbers and Literals
+- Are numeric literals given meaningful names via constants?
+- Are string literals that represent domain concepts extracted to constants?
+- Is it clear what each value represents without looking up context?
+- Exception: 0, 1, -1, empty string, and other universally understood values are acceptable
+
+**Preferred pattern: `as const` arrays with helper functions**
+
+```typescript
+// Define constants with literal types preserved
+const NO_RECONNECT_CLOSE_CODES = [
+  WS_CLOSE_CODE.NORMAL_CLOSURE,
+  WS_CLOSE_CODE.GOING_AWAY,
+  WS_CLOSE_CODE.POLICY_VIOLATION,
+] as const;
+
+/**
+ * Determine if reconnection should be attempted for the given close code.
+ * Add new codes to NO_RECONNECT_CLOSE_CODES to automatically update this logic.
+ */
+function isReconnectCode(code: number): boolean {
+  // Cast array to readonly number[] to allow includes() with external close codes.
+  // The literal types in NO_RECONNECT_CLOSE_CODES are preserved for type safety elsewhere.
+  return !(NO_RECONNECT_CLOSE_CODES as readonly number[]).includes(code);
+}
+```
+
+Key principles:
+- Use `as const` to preserve literal types for type safety
+- When array methods like `includes()` are needed, wrap in a domain-specific helper function
+- Document why type casting is necessary in a comment
+- The helper function name should reflect business logic, not the technical operation
+
 ### Function Design
 - Does each function do one thing well?
 - Are functions short enough to understand at a glance?
@@ -81,6 +124,13 @@ This document defines the evaluation criteria for code design and quality review
 - Are similar problems solved similarly?
 - Are established project patterns followed or intentionally improved?
 - Is the style consistent with the codebase?
+
+### Existing Pattern Evaluation
+- Is the existing pattern being followed actually appropriate for this use case?
+- Does the pattern solve the problem well, or was it copied without understanding?
+- Are there signs the pattern is outdated or misapplied?
+- Would a different approach be more suitable than following the existing pattern?
+- If deviating from an existing pattern, is the reason justified and documented?
 
 ### API Design
 - Are function signatures consistent across the module?

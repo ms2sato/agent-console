@@ -51,6 +51,24 @@ When reviewing React code, pay special attention to:
 2. **useEffect Discipline** - Challenge every useEffect: could it be a derived value, event handler, or useMemo instead?
 3. **Icon Components** - SVG icons should be in `Icons.tsx`, not inline in View components
 
+## When Existing Patterns Are Questionable
+
+If you identify issues with existing patterns in the codebase:
+
+1. **Report explicitly** - Do not silently accept problematic patterns as "the way things are done"
+2. **Present trade-offs** - Describe the issue, its impact, and alternative approaches
+3. **Distinguish scope** - Clarify whether the issue is in the code being reviewed or in existing patterns it follows
+4. **Recommend migration path** - If deviation is recommended, identify affected areas and suggest incremental steps
+
+Example format:
+```
+### Existing Pattern Concern
+- **Pattern**: [Description of the existing pattern]
+- **Issue**: [Why it's problematic]
+- **Scope**: [How widespread is this pattern]
+- **Recommendation**: [Follow as-is / Deviate with justification / Propose refactoring]
+```
+
 ## Constraints
 
 - Do NOT modify any code files

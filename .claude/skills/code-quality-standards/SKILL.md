@@ -9,11 +9,11 @@ Refer to [code-quality-standards.md](code-quality-standards.md) for detailed eva
 
 ## Evaluation Aspects
 
-1. **Robustness to Change** - Open-closed principle, dependency management, encapsulation
+1. **Robustness to Change** - SRP, open-closed principle, change localization, dependency management, encapsulation
 2. **Bug Resistance** - Type safety, null safety, error handling, input validation
-3. **Readability** - Naming, function design, code organization
+3. **Readability** - Naming, magic number detection, function design, code organization
 4. **Simplicity** - YAGNI, avoid accidental complexity, minimize cognitive load
-5. **Consistency** - Patterns, API design
+5. **Consistency** - Patterns, existing pattern evaluation, API design
 6. **Testability** - Isolation, observability
 7. **Performance Awareness** - Algorithmic efficiency, resource management
 8. **Security Mindset** - OWASP top 10, least privilege

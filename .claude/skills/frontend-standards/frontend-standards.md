@@ -12,17 +12,61 @@ This document defines frontend-specific knowledge and patterns for the agent-con
 - **xterm.js** - Terminal emulator
 - **Valibot** - Schema validation
 
-## Directory Structure
+## Directory Structure and Naming
 
 ```
 packages/client/src/
-├── components/     # React components
-├── hooks/          # Custom React hooks
+├── components/     # React components (domain-organized)
+│   ├── sessions/   # Session-related components and hooks
+│   ├── workers/    # Worker-related components and hooks
+│   └── ui/         # Shared UI components
+├── hooks/          # Shared/generic hooks only
 ├── lib/            # Utilities and API clients
 ├── routes/         # TanStack Router file-based routes
 ├── schemas/        # Valibot validation schemas
 └── test/           # Test utilities and setup
 ```
+
+### Directory Organization Strategy
+
+**Components use domain-based organization:**
+- Group related components into domain directories (`sessions/`, `workers/`, `agents/`)
+- Shared UI components go in `ui/`
+- Standalone components can remain flat
+
+**Hooks use hybrid approach:**
+
+| Hook Type | Location | Example |
+|-----------|----------|---------|
+| Domain-specific | Inside domain directory | `components/sessions/useSessionState.ts` |
+| Multi-domain | `hooks/` | `hooks/useTerminalWebSocket.ts` |
+| Generic utility | `hooks/` | `hooks/useMounted.ts` |
+
+Decision criteria:
+1. **Used by single domain only** → Put in that domain directory
+2. **Used by 2+ domains** → Put in `hooks/`
+3. **Domain-agnostic utility** → Put in `hooks/`
+
+### File Naming Conventions
+
+| Type | Convention | Example |
+|------|------------|---------|
+| React component | PascalCase | `SessionList.tsx`, `WorkerTabs.tsx` |
+| Custom hook | camelCase + `use` prefix | `useTerminal.ts`, `useAppConnection.ts` |
+| Utility/helper | kebab-case | `api-client.ts`, `format-date.ts` |
+| Type definition | kebab-case | `types.ts`, `session-types.ts` |
+| Schema | kebab-case | `session-schema.ts` |
+| Test | original + `.test` | `SessionList.test.tsx`, `useTerminal.test.ts` |
+
+### Directory Naming
+
+- Use **kebab-case** for all directories
+- Domain directories use plural nouns: `sessions/`, `workers/`, `agents/`
+
+### Export Conventions
+
+- Component file name = component name: `SessionList.tsx` exports `SessionList`
+- For component directories, use `index.ts` to re-export the main component
 
 ## React Patterns (Critical)
 
