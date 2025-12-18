@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ActivityDetector } from '../activity-detector.js';
 import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
+import { travel } from '../../test/time-travel.js';
 
 // Claude Code asking patterns (same as in agent-manager.ts)
 const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
@@ -16,18 +17,13 @@ const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
   ],
 };
 
-// Short timeouts for testing (real timers with short waits)
+// Short timeouts for testing
 const TEST_TIMEOUTS = {
   rateWindowMs: 50,
   noOutputIdleMs: 50,
   userTypingTimeoutMs: 100,
   debounceMs: 20,
 };
-
-// Helper to wait for a given number of milliseconds
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 describe('ActivityDetector', () => {
   let detector: ActivityDetector;
@@ -63,123 +59,147 @@ describe('ActivityDetector', () => {
       expect(stateChanges).toContain('active');
     });
 
-    it('should transition from active to idle after no output', async () => {
-      // First become active
-      for (let i = 0; i < 25; i++) {
-        detector.processOutput('output');
-      }
-      expect(detector.getState()).toBe('active');
+    it('should transition from active to idle after no output', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // First become active
+        for (let i = 0; i < 25; i++) {
+          detector.processOutput('output');
+        }
+        expect(detector.getState()).toBe('active');
 
-      // Wait for idle timeout
-      await wait(TEST_TIMEOUTS.noOutputIdleMs + 150);
+        // Advance time past idle timeout
+        c.tick(TEST_TIMEOUTS.noOutputIdleMs + 150);
 
-      expect(detector.getState()).toBe('idle');
-      expect(stateChanges).toContain('idle');
+        expect(detector.getState()).toBe('idle');
+        expect(stateChanges).toContain('idle');
+      });
     });
 
-    it('should detect asking state from permission prompt pattern', async () => {
-      // Simulate permission prompt output
-      detector.processOutput('Do you want to create this file?');
+    it('should detect asking state from permission prompt pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // Simulate permission prompt output
+        detector.processOutput('Do you want to create this file?');
 
-      // Wait for debounce
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        // Advance time past debounce
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from Enter/Tab/Esc menu pattern', async () => {
-      detector.processOutput('Enter to select, Tab to navigate, Esc to cancel');
+    it('should detect asking state from Enter/Tab/Esc menu pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('Enter to select, Tab to navigate, Esc to cancel');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from Yes/No selection pattern', async () => {
-      detector.processOutput('[y] Yes  [n] No');
+    it('should detect asking state from Yes/No selection pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('[y] Yes  [n] No');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from Always allow pattern', async () => {
-      detector.processOutput('Allow once  [a] Always allow');
+    it('should detect asking state from Always allow pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('Allow once  [a] Always allow');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from Allow X? pattern', async () => {
-      detector.processOutput('Allow reading file.txt?');
+    it('should detect asking state from Allow X? pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('Allow reading file.txt?');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from A/B selection pattern', async () => {
-      detector.processOutput('[A] Option A  [B] Option B');
+    it('should detect asking state from A/B selection pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('[A] Option A  [B] Option B');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from numbered selection pattern', async () => {
-      detector.processOutput('[1] First choice  [2] Second choice');
+    it('should detect asking state from numbered selection pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('[1] First choice  [2] Second choice');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should detect asking state from box bottom with prompt pattern', async () => {
-      detector.processOutput('╰─────────────────────────────────╯ > ');
+    it('should detect asking state from box bottom with prompt pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('╰─────────────────────────────────╯ > ');
 
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
-      expect(detector.getState()).toBe('asking');
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should keep asking state until user responds (suppressRateDetection)', async () => {
-      // First enter asking state
-      detector.processOutput('Do you want to proceed?');
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
-      expect(detector.getState()).toBe('asking');
+    it('should keep asking state until user responds (suppressRateDetection)', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // First enter asking state
+        detector.processOutput('Do you want to proceed?');
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+        expect(detector.getState()).toBe('asking');
 
-      // Generate high output - should NOT transition to active due to suppressRateDetection
-      for (let i = 0; i < 25; i++) {
-        detector.processOutput('working...');
-      }
+        // Generate high output - should NOT transition to active due to suppressRateDetection
+        for (let i = 0; i < 25; i++) {
+          detector.processOutput('working...');
+        }
 
-      // Should stay in asking state until user explicitly responds
-      expect(detector.getState()).toBe('asking');
+        // Should stay in asking state until user explicitly responds
+        expect(detector.getState()).toBe('asking');
+      });
     });
 
-    it('should transition from asking to idle when user responds', async () => {
-      // First enter asking state
-      detector.processOutput('Do you want to proceed?');
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
-      expect(detector.getState()).toBe('asking');
+    it('should transition from asking to idle when user responds', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // First enter asking state
+        detector.processOutput('Do you want to proceed?');
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+        expect(detector.getState()).toBe('asking');
 
-      // User responds (e.g., pressing Enter)
-      detector.clearUserTyping(false);
+        // User responds (e.g., pressing Enter)
+        detector.clearUserTyping(false);
 
-      expect(detector.getState()).toBe('idle');
+        expect(detector.getState()).toBe('idle');
+      });
     });
 
-    it('should transition from asking to idle when user cancels with ESC', async () => {
-      // First enter asking state
-      detector.processOutput('Do you want to proceed?');
-      await wait(TEST_TIMEOUTS.debounceMs + 50);
-      expect(detector.getState()).toBe('asking');
+    it('should transition from asking to idle when user cancels with ESC', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // First enter asking state
+        detector.processOutput('Do you want to proceed?');
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+        expect(detector.getState()).toBe('asking');
 
-      // User cancels (pressing ESC)
-      detector.clearUserTyping(true);
+        // User cancels (pressing ESC)
+        detector.clearUserTyping(true);
 
-      expect(detector.getState()).toBe('idle');
+        expect(detector.getState()).toBe('idle');
+      });
     });
 
     it('should not change state if not in asking state when clearUserTyping is called with isCancel', () => {
@@ -237,19 +257,21 @@ describe('ActivityDetector', () => {
       expect(detector.getState()).toBe('idle');
     });
 
-    it('should timeout user typing after configured timeout', async () => {
-      detector.setUserTyping();
+    it('should timeout user typing after configured timeout', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.setUserTyping();
 
-      // Advance time past typing timeout
-      await wait(TEST_TIMEOUTS.userTypingTimeoutMs + 50);
+        // Advance time past typing timeout
+        c.tick(TEST_TIMEOUTS.userTypingTimeoutMs + 50);
 
-      // Generate high output now
-      for (let i = 0; i < 25; i++) {
-        detector.processOutput('output');
-      }
+        // Generate high output now
+        for (let i = 0; i < 25; i++) {
+          detector.processOutput('output');
+        }
 
-      // Should become active since typing timed out
-      expect(detector.getState()).toBe('active');
+        // Should become active since typing timed out
+        expect(detector.getState()).toBe('active');
+      });
     });
   });
 
@@ -285,12 +307,12 @@ describe('ActivityDetector', () => {
   });
 
   describe('getTimeSinceLastOutput', () => {
-    it('should return time since last output', async () => {
-      detector.processOutput('test');
-
-      await wait(100);
-
-      expect(detector.getTimeSinceLastOutput()).toBeGreaterThanOrEqual(100);
+    it('should return time since last output', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('test');
+        c.tick(100);
+        expect(detector.getTimeSinceLastOutput()).toBe(100);
+      });
     });
   });
 });
