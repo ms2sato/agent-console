@@ -1,13 +1,23 @@
 // Agent schemas
 export {
-  InitialPromptModeSchema,
+  // Base schema for client form reuse
+  AgentFieldsBaseSchema,
+  // Server schemas
   AgentActivityPatternsSchema,
+  AgentCapabilitiesSchema,
+  AgentDefinitionSchema,
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
+  // Validation utilities
+  isValidRegex,
+  isSafeRegex,
+  isPromptQuoted,
+  hasMalformedPlaceholder,
+  // Types
   type CreateAgentRequest,
   type UpdateAgentRequest,
   type AgentActivityPatterns,
-  type InitialPromptMode,
+  type AgentCapabilities,
 } from './agent.js';
 
 // Worker schemas

@@ -1,8 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
-import type {
-  AgentDefinition,
-  CreateAgentRequest,
-  UpdateAgentRequest,
+import {
+  type AgentDefinition,
+  type CreateAgentRequest,
+  type UpdateAgentRequest,
+  computeCapabilities,
 } from '@agent-console/shared';
 import { persistenceService } from './persistence-service.js';
 import { claudeCodeAgent, CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
@@ -13,11 +14,25 @@ const logger = createLogger('agent-manager');
 // Re-export for backward compatibility
 export { CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
 
+export interface AgentLifecycleCallbacks {
+  onAgentCreated: (agent: AgentDefinition) => void;
+  onAgentUpdated: (agent: AgentDefinition) => void;
+  onAgentDeleted: (agentId: string) => void;
+}
+
 export class AgentManager {
   private agents: Map<string, AgentDefinition> = new Map();
+  private lifecycleCallbacks: AgentLifecycleCallbacks | null = null;
 
   constructor() {
     this.initialize();
+  }
+
+  /**
+   * Set callbacks for agent lifecycle events (for WebSocket broadcasting)
+   */
+  setLifecycleCallbacks(callbacks: AgentLifecycleCallbacks): void {
+    this.lifecycleCallbacks = callbacks;
   }
 
   /**
@@ -68,22 +83,31 @@ export class AgentManager {
     const id = uuidv4();
     const now = new Date().toISOString();
 
-    const agent: AgentDefinition = {
+    const agentBase = {
       id,
       name: request.name,
-      command: request.command,
+      commandTemplate: request.commandTemplate,
+      continueTemplate: request.continueTemplate,
+      headlessTemplate: request.headlessTemplate,
       description: request.description,
-      icon: request.icon,
       isBuiltIn: false,
       registeredAt: now,
       activityPatterns: request.activityPatterns,
-      continueArgs: request.continueArgs,
+    };
+
+    const agent: AgentDefinition = {
+      ...agentBase,
+      capabilities: computeCapabilities(agentBase),
     };
 
     this.agents.set(id, agent);
     this.persistAgents();
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent registered');
+
+    // Notify lifecycle callbacks
+    this.lifecycleCallbacks?.onAgentCreated(agent);
+
     return agent;
   }
 
@@ -102,20 +126,43 @@ export class AgentManager {
       return null;
     }
 
-    const updated: AgentDefinition = {
+    const agentBase = {
       ...existing,
       name: request.name ?? existing.name,
-      command: request.command ?? existing.command,
+      commandTemplate: request.commandTemplate ?? existing.commandTemplate,
+      // Allow clearing optional templates by setting to null
+      continueTemplate:
+        request.continueTemplate === null
+          ? undefined
+          : (request.continueTemplate ?? existing.continueTemplate),
+      headlessTemplate:
+        request.headlessTemplate === null
+          ? undefined
+          : (request.headlessTemplate ?? existing.headlessTemplate),
       description: request.description ?? existing.description,
-      icon: request.icon ?? existing.icon,
-      activityPatterns: request.activityPatterns ?? existing.activityPatterns,
-      continueArgs: request.continueArgs ?? existing.continueArgs,
+      // Allow clearing activityPatterns by setting to null (PATCH semantics: null = clear, undefined = no change)
+      activityPatterns:
+        request.activityPatterns === null
+          ? undefined
+          : (request.activityPatterns ?? existing.activityPatterns),
+    };
+
+    // Remove the capabilities from agentBase before recomputing
+    const { capabilities: _, ...agentBaseWithoutCapabilities } = agentBase;
+
+    const updated: AgentDefinition = {
+      ...agentBaseWithoutCapabilities,
+      capabilities: computeCapabilities(agentBaseWithoutCapabilities),
     };
 
     this.agents.set(id, updated);
     this.persistAgents();
 
     logger.info({ agentId: id, agentName: updated.name }, 'Agent updated');
+
+    // Notify lifecycle callbacks
+    this.lifecycleCallbacks?.onAgentUpdated(updated);
+
     return updated;
   }
 
@@ -138,6 +185,10 @@ export class AgentManager {
     this.persistAgents();
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent unregistered');
+
+    // Notify lifecycle callbacks
+    this.lifecycleCallbacks?.onAgentDeleted(id);
+
     return true;
   }
 
@@ -157,7 +208,6 @@ export class AgentManager {
 
     persistenceService.saveAgents(customAgents);
   }
-
 }
 
 // Singleton instance

@@ -50,9 +50,14 @@ describe('AgentManager', () => {
         {
           id: 'custom-agent',
           name: 'Custom Agent',
-          command: 'custom-cmd',
+          commandTemplate: 'custom-cmd {{prompt}}',
           isBuiltIn: false,
           registeredAt: '2024-01-01T00:00:00.000Z',
+          capabilities: {
+            supportsContinue: false,
+            supportsHeadlessMode: false,
+            supportsActivityDetection: false,
+          },
         },
       ]);
 
@@ -116,13 +121,13 @@ describe('AgentManager', () => {
 
       const agent = manager.registerAgent({
         name: 'My Agent',
-        command: 'my-agent-cmd',
+        commandTemplate: 'my-agent-cmd {{prompt}}',
         description: 'Test agent',
       });
 
       expect(agent.id).toBeDefined();
       expect(agent.name).toBe('My Agent');
-      expect(agent.command).toBe('my-agent-cmd');
+      expect(agent.commandTemplate).toBe('my-agent-cmd {{prompt}}');
       expect(agent.isBuiltIn).toBe(false);
       expect(agent.registeredAt).toBeDefined();
 
@@ -140,26 +145,42 @@ describe('AgentManager', () => {
 
       const agent = manager.registerAgent({
         name: 'Agent with Patterns',
-        command: 'cmd',
+        commandTemplate: 'cmd {{prompt}}',
         activityPatterns: {
           askingPatterns: ['pattern1', 'pattern2'],
         },
       });
 
       expect(agent.activityPatterns?.askingPatterns).toContain('pattern1');
+      expect(agent.capabilities.supportsActivityDetection).toBe(true);
     });
 
-    it('should register agent with continue args', async () => {
+    it('should register agent with continue template', async () => {
       const { AgentManager } = await getAgentManager();
       const manager = new AgentManager();
 
       const agent = manager.registerAgent({
         name: 'Agent with Continue',
-        command: 'cmd',
-        continueArgs: ['--resume'],
+        commandTemplate: 'cmd {{prompt}}',
+        continueTemplate: 'cmd --resume',
       });
 
-      expect(agent.continueArgs).toEqual(['--resume']);
+      expect(agent.continueTemplate).toBe('cmd --resume');
+      expect(agent.capabilities.supportsContinue).toBe(true);
+    });
+
+    it('should register agent with headless template', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      const agent = manager.registerAgent({
+        name: 'Agent with Headless',
+        commandTemplate: 'cmd {{prompt}}',
+        headlessTemplate: 'cmd -p {{prompt}}',
+      });
+
+      expect(agent.headlessTemplate).toBe('cmd -p {{prompt}}');
+      expect(agent.capabilities.supportsHeadlessMode).toBe(true);
     });
 
     it('should handle agent name with special characters', async () => {
@@ -168,7 +189,7 @@ describe('AgentManager', () => {
 
       const agent = manager.registerAgent({
         name: 'Agent 日本語 🤖',
-        command: 'my-cmd',
+        commandTemplate: 'my-cmd {{prompt}}',
       });
 
       expect(agent.name).toBe('Agent 日本語 🤖');
@@ -181,11 +202,37 @@ describe('AgentManager', () => {
 
       const agent = manager.registerAgent({
         name: 'Agent',
-        command: 'cmd',
+        commandTemplate: 'cmd {{prompt}}',
         description: '',
       });
 
       expect(agent.description).toBe('');
+    });
+
+    it('should compute capabilities correctly', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      // Agent with no optional templates
+      const basicAgent = manager.registerAgent({
+        name: 'Basic Agent',
+        commandTemplate: 'cmd {{prompt}}',
+      });
+      expect(basicAgent.capabilities.supportsContinue).toBe(false);
+      expect(basicAgent.capabilities.supportsHeadlessMode).toBe(false);
+      expect(basicAgent.capabilities.supportsActivityDetection).toBe(false);
+
+      // Agent with all features
+      const fullAgent = manager.registerAgent({
+        name: 'Full Agent',
+        commandTemplate: 'cmd {{prompt}}',
+        continueTemplate: 'cmd --continue',
+        headlessTemplate: 'cmd -p {{prompt}}',
+        activityPatterns: { askingPatterns: ['pattern'] },
+      });
+      expect(fullAgent.capabilities.supportsContinue).toBe(true);
+      expect(fullAgent.capabilities.supportsHeadlessMode).toBe(true);
+      expect(fullAgent.capabilities.supportsActivityDetection).toBe(true);
     });
   });
 
@@ -197,18 +244,18 @@ describe('AgentManager', () => {
       // First register a custom agent
       const created = manager.registerAgent({
         name: 'Original Name',
-        command: 'original-cmd',
+        commandTemplate: 'original-cmd {{prompt}}',
       });
 
       // Then update it
       const updated = manager.updateAgent(created.id, {
         name: 'Updated Name',
-        command: 'updated-cmd',
+        commandTemplate: 'updated-cmd {{prompt}}',
       });
 
       expect(updated).not.toBeNull();
       expect(updated?.name).toBe('Updated Name');
-      expect(updated?.command).toBe('updated-cmd');
+      expect(updated?.commandTemplate).toBe('updated-cmd {{prompt}}');
 
       // Should persist the update
       const retrieved = manager.getAgent(created.id);
@@ -244,7 +291,7 @@ describe('AgentManager', () => {
 
       const created = manager.registerAgent({
         name: 'Original',
-        command: 'cmd',
+        commandTemplate: 'cmd {{prompt}}',
         description: 'Original description',
       });
 
@@ -254,8 +301,99 @@ describe('AgentManager', () => {
       });
 
       expect(updated?.name).toBe('New Name');
-      expect(updated?.command).toBe('cmd'); // Unchanged
+      expect(updated?.commandTemplate).toBe('cmd {{prompt}}'); // Unchanged
       expect(updated?.description).toBe('Original description'); // Unchanged
+    });
+
+    it('should update capabilities when templates change', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      const created = manager.registerAgent({
+        name: 'Agent',
+        commandTemplate: 'cmd {{prompt}}',
+      });
+
+      expect(created.capabilities.supportsContinue).toBe(false);
+
+      // Add continue template
+      const updated = manager.updateAgent(created.id, {
+        continueTemplate: 'cmd --continue',
+      });
+
+      expect(updated?.capabilities.supportsContinue).toBe(true);
+    });
+
+    it('should clear optional templates when set to null', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      const created = manager.registerAgent({
+        name: 'Agent',
+        commandTemplate: 'cmd {{prompt}}',
+        continueTemplate: 'cmd --continue',
+        headlessTemplate: 'cmd -p {{prompt}}',
+      });
+
+      expect(created.capabilities.supportsContinue).toBe(true);
+      expect(created.capabilities.supportsHeadlessMode).toBe(true);
+
+      // Clear templates by setting to null
+      const updated = manager.updateAgent(created.id, {
+        continueTemplate: null,
+        headlessTemplate: null,
+      });
+
+      expect(updated?.continueTemplate).toBeUndefined();
+      expect(updated?.headlessTemplate).toBeUndefined();
+      expect(updated?.capabilities.supportsContinue).toBe(false);
+      expect(updated?.capabilities.supportsHeadlessMode).toBe(false);
+    });
+
+    it('should clear activityPatterns when set to null', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      const created = manager.registerAgent({
+        name: 'Agent with Patterns',
+        commandTemplate: 'cmd {{prompt}}',
+        activityPatterns: {
+          askingPatterns: ['pattern1', 'pattern2'],
+        },
+      });
+
+      expect(created.activityPatterns?.askingPatterns).toEqual(['pattern1', 'pattern2']);
+      expect(created.capabilities.supportsActivityDetection).toBe(true);
+
+      // Clear activityPatterns by setting to null
+      const updated = manager.updateAgent(created.id, {
+        activityPatterns: null,
+      });
+
+      expect(updated?.activityPatterns).toBeUndefined();
+      expect(updated?.capabilities.supportsActivityDetection).toBe(false);
+    });
+
+    it('should preserve activityPatterns when not specified in update (undefined)', async () => {
+      const { AgentManager } = await getAgentManager();
+      const manager = new AgentManager();
+
+      const created = manager.registerAgent({
+        name: 'Agent with Patterns',
+        commandTemplate: 'cmd {{prompt}}',
+        activityPatterns: {
+          askingPatterns: ['pattern1'],
+        },
+      });
+
+      // Update only name, activityPatterns not specified (undefined)
+      const updated = manager.updateAgent(created.id, {
+        name: 'Renamed Agent',
+      });
+
+      // activityPatterns should be preserved
+      expect(updated?.activityPatterns?.askingPatterns).toEqual(['pattern1']);
+      expect(updated?.capabilities.supportsActivityDetection).toBe(true);
     });
   });
 
@@ -266,7 +404,7 @@ describe('AgentManager', () => {
 
       const created = manager.registerAgent({
         name: 'To Delete',
-        command: 'cmd',
+        commandTemplate: 'cmd {{prompt}}',
       });
 
       const result = manager.unregisterAgent(created.id);

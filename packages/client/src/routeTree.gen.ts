@@ -11,7 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as MaintenanceRouteImport } from './routes/maintenance'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
+import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents/$agentId/index'
+import { Route as AgentsAgentIdEditRouteImport } from './routes/agents/$agentId/edit'
 
 const MaintenanceRoute = MaintenanceRouteImport.update({
   id: '/maintenance',
@@ -23,9 +26,24 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentsIndexRoute = AgentsIndexRouteImport.update({
+  id: '/agents/',
+  path: '/agents/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   id: '/sessions/$sessionId',
   path: '/sessions/$sessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsAgentIdIndexRoute = AgentsAgentIdIndexRouteImport.update({
+  id: '/agents/$agentId/',
+  path: '/agents/$agentId/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsAgentIdEditRoute = AgentsAgentIdEditRouteImport.update({
+  id: '/agents/$agentId/edit',
+  path: '/agents/$agentId/edit',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -33,30 +51,61 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/agents': typeof AgentsIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
+  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/agents': typeof AgentsIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
+  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/agents/': typeof AgentsIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
+  '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/maintenance' | '/sessions/$sessionId'
+  fullPaths:
+    | '/'
+    | '/maintenance'
+    | '/sessions/$sessionId'
+    | '/agents'
+    | '/agents/$agentId/edit'
+    | '/agents/$agentId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/maintenance' | '/sessions/$sessionId'
-  id: '__root__' | '/' | '/maintenance' | '/sessions/$sessionId'
+  to:
+    | '/'
+    | '/maintenance'
+    | '/sessions/$sessionId'
+    | '/agents'
+    | '/agents/$agentId/edit'
+    | '/agents/$agentId'
+  id:
+    | '__root__'
+    | '/'
+    | '/maintenance'
+    | '/sessions/$sessionId'
+    | '/agents/'
+    | '/agents/$agentId/edit'
+    | '/agents/$agentId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   MaintenanceRoute: typeof MaintenanceRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
+  AgentsIndexRoute: typeof AgentsIndexRoute
+  AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
+  AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -75,11 +124,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agents/': {
+      id: '/agents/'
+      path: '/agents'
+      fullPath: '/agents'
+      preLoaderRoute: typeof AgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions/$sessionId': {
       id: '/sessions/$sessionId'
       path: '/sessions/$sessionId'
       fullPath: '/sessions/$sessionId'
       preLoaderRoute: typeof SessionsSessionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/$agentId/': {
+      id: '/agents/$agentId/'
+      path: '/agents/$agentId'
+      fullPath: '/agents/$agentId'
+      preLoaderRoute: typeof AgentsAgentIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/$agentId/edit': {
+      id: '/agents/$agentId/edit'
+      path: '/agents/$agentId/edit'
+      fullPath: '/agents/$agentId/edit'
+      preLoaderRoute: typeof AgentsAgentIdEditRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -89,6 +159,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   MaintenanceRoute: MaintenanceRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
+  AgentsIndexRoute: AgentsIndexRoute,
+  AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
+  AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

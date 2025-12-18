@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, type AppWebSocketState } from '../lib/app-websocket';
 
 /**
@@ -29,6 +29,14 @@ interface UseAppWsEventOptions {
   onSessionDeleted?: (sessionId: string) => void;
   /** Called when worker activity state changes */
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
+  /** Called when initial agent sync is received */
+  onAgentsSync?: (agents: AgentDefinition[]) => void;
+  /** Called when a new agent is created */
+  onAgentCreated?: (agent: AgentDefinition) => void;
+  /** Called when an agent is updated */
+  onAgentUpdated?: (agent: AgentDefinition) => void;
+  /** Called when an agent is deleted */
+  onAgentDeleted?: (agentId: string) => void;
 }
 
 /**
@@ -65,6 +73,22 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           break;
         case 'worker-activity':
           optionsRef.current.onWorkerActivity?.(msg.sessionId, msg.workerId, msg.activityState);
+          break;
+        case 'agents-sync':
+          console.log(`[WebSocket] agents-sync received: ${msg.agents.length} agents`);
+          optionsRef.current.onAgentsSync?.(msg.agents);
+          break;
+        case 'agent-created':
+          console.log(`[WebSocket] agent-created: ${msg.agent.id}`);
+          optionsRef.current.onAgentCreated?.(msg.agent);
+          break;
+        case 'agent-updated':
+          console.log(`[WebSocket] agent-updated: ${msg.agent.id}`);
+          optionsRef.current.onAgentUpdated?.(msg.agent);
+          break;
+        case 'agent-deleted':
+          console.log(`[WebSocket] agent-deleted: ${msg.agentId}`);
+          optionsRef.current.onAgentDeleted?.(msg.agentId);
           break;
       }
     });

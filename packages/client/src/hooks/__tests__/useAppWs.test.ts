@@ -73,6 +73,24 @@ describe('useAppWsState', () => {
       expect(result.current).toBe(true);
     });
 
+    it('should select agentsSynced state', () => {
+      renderHook(() => useAppWsEvent());
+
+      const { result } = renderHook(() => useAppWsState(s => s.agentsSynced));
+
+      expect(result.current).toBe(false);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'agents-sync', agents: [] })
+        );
+      });
+
+      expect(result.current).toBe(true);
+    });
+
     it('should support multiple concurrent subscriptions with different selectors', () => {
       renderHook(() => useAppWsEvent());
 
@@ -282,6 +300,105 @@ describe('useAppWsEvent', () => {
 
       expect(onSessionsSync).not.toHaveBeenCalled();
       expect(onWorkerActivity).not.toHaveBeenCalled();
+    });
+
+    it('should call onAgentsSync for agents-sync message', () => {
+      const onAgentsSync = mock(() => {});
+      renderHook(() => useAppWsEvent({ onAgentsSync }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Test Agent',
+          commandTemplate: 'test {{prompt}}',
+          isBuiltIn: false,
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
+      ];
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'agents-sync',
+            agents: mockAgents,
+          })
+        );
+      });
+
+      expect(onAgentsSync).toHaveBeenCalledWith(mockAgents);
+    });
+
+    it('should call onAgentCreated for agent-created message', () => {
+      const onAgentCreated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onAgentCreated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'New Agent',
+        commandTemplate: 'newagent {{prompt}}',
+        isBuiltIn: false,
+        capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+      };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'agent-created',
+            agent: mockAgent,
+          })
+        );
+      });
+
+      expect(onAgentCreated).toHaveBeenCalledWith(mockAgent);
+    });
+
+    it('should call onAgentUpdated for agent-updated message', () => {
+      const onAgentUpdated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onAgentUpdated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Updated Agent',
+        commandTemplate: 'updated {{prompt}}',
+        isBuiltIn: false,
+        capabilities: { supportsContinue: true, supportsHeadlessMode: false, supportsActivityDetection: false },
+      };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'agent-updated',
+            agent: mockAgent,
+          })
+        );
+      });
+
+      expect(onAgentUpdated).toHaveBeenCalledWith(mockAgent);
+    });
+
+    it('should call onAgentDeleted for agent-deleted message', () => {
+      const onAgentDeleted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onAgentDeleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'agent-deleted',
+            agentId: 'agent-1',
+          })
+        );
+      });
+
+      expect(onAgentDeleted).toHaveBeenCalledWith('agent-1');
     });
   });
 

@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
+import { AgentDefinitionSchema } from '@agent-console/shared';
 import { getConfigDir } from '../lib/config.js';
 
 // Config directory paths (lazy-evaluated to support env override)
@@ -186,7 +188,20 @@ export class PersistenceService {
   }
 
   loadAgents(): AgentDefinition[] {
-    return safeRead<AgentDefinition[]>(getAgentsFile(), []);
+    const raw = safeRead<unknown[]>(getAgentsFile(), []);
+    const validAgents: AgentDefinition[] = [];
+
+    for (const item of raw) {
+      const result = v.safeParse(AgentDefinitionSchema, item);
+      if (result.success) {
+        validAgents.push(result.output as AgentDefinition);
+      } else {
+        const agentId = (item as { id?: string })?.id ?? 'unknown';
+        console.warn(`Skipping invalid persisted agent (id: ${agentId}):`, v.flatten(result.issues));
+      }
+    }
+
+    return validAgents;
   }
 
   saveAgents(agents: AgentDefinition[]): void {

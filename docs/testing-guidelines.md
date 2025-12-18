@@ -161,6 +161,155 @@ describe('Integration: SessionManager', () => {
 });
 ```
 
+### Client-Server Boundary Testing (Server Bridge Pattern)
+
+Tests that the client sends correct data AND the server accepts it correctly. This catches boundary mismatches like `null` vs `undefined` that unit tests miss.
+
+#### Motivation
+
+Consider this bug:
+```typescript
+// Client sends undefined (omitted in JSON)
+activityPatterns: askingPatterns ? { askingPatterns } : undefined
+
+// JSON.stringify({ activityPatterns: undefined }) → "{}"
+// Server receives nothing, keeps old value instead of clearing
+```
+
+Unit tests on client or server alone cannot catch this. We need to test the **boundary** where JSON flows between them.
+
+#### Architecture
+
+```
+┌─────────────┐          ┌─────────────┐
+│   Client    │  JSON    │   Server    │
+│  (Form/UI)  │ ──────▶  │  (Hono)     │
+└─────────────┘          └─────────────┘
+       │                        │
+       └──── Direct Bridge ─────┘
+            (Skip HTTP layer)
+```
+
+- **Client side**: Form handling, data transformation, JSON serialization
+- **Server side**: Request parsing, validation, business logic
+- **Skipped**: HTTP transport (reliable, not worth testing)
+
+#### Implementation Pattern
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { createApp } from '@agent-console/server/test-utils';
+
+describe('Client-Server Boundary: Agent Edit', () => {
+  let app: Awaited<ReturnType<typeof createApp>>;
+  let originalFetch: typeof fetch;
+  let capturedRequests: Array<{ url: string; method: string; body: any }>;
+
+  beforeEach(async () => {
+    app = await createApp();
+    capturedRequests = [];
+    originalFetch = globalThis.fetch;
+
+    // Bridge: capture request AND forward to server
+    globalThis.fetch = async (url, options) => {
+      const body = options?.body ? JSON.parse(options.body as string) : undefined;
+      capturedRequests.push({
+        url: url as string,
+        method: options?.method || 'GET',
+        body,
+      });
+
+      // Forward to actual server handler
+      return app.request(url as string, {
+        method: options?.method,
+        headers: options?.headers,
+        body: options?.body,
+      });
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('should send null to clear activityPatterns', async () => {
+    // 1. Create agent with activityPatterns via server
+    const createRes = await app.request('/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Test Agent',
+        commandTemplate: 'cmd {{prompt}}',
+        activityPatterns: { askingPatterns: ['pattern1'] },
+      }),
+    });
+    const { agent: created } = await createRes.json();
+
+    // 2. Render form and clear askingPatterns field
+    // render(<EditAgentForm agentId={created.id} ... />);
+    // await userEvent.clear(askingPatternsInput);
+    // await userEvent.click(submitButton);
+
+    // 3. Verify client sent null (not undefined/omitted)
+    const lastRequest = capturedRequests.at(-1);
+    expect(lastRequest?.body.activityPatterns).toBeNull();
+    expect('activityPatterns' in lastRequest?.body).toBe(true);
+
+    // 4. Verify server processed correctly
+    const verifyRes = await app.request(`/api/agents/${created.id}`);
+    const { agent } = await verifyRes.json();
+    expect(agent.activityPatterns).toBeUndefined();
+  });
+});
+```
+
+#### Benefits
+
+| Aspect | Benefit |
+|--------|---------|
+| **Speed** | Fast (no HTTP overhead, no browser) |
+| **Reliability** | Stable (no network flakiness) |
+| **Coverage** | Tests JSON serialization + schema validation |
+| **Catches** | `null` vs `undefined`, missing fields, type mismatches |
+
+#### When to Use
+
+Use this pattern for:
+- Form submissions that modify server state
+- PATCH/PUT endpoints where `null` means "clear"
+- Any client-server contract that involves complex data transformation
+
+#### Reusable Helper (Optional)
+
+```typescript
+// packages/client/src/test/server-bridge.ts
+export async function createServerBridge() {
+  const { createApp } = await import('@agent-console/server/test-utils');
+  const app = await createApp();
+  const capturedRequests: Array<{ url: string; method: string; body: any }> = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    const body = options?.body ? JSON.parse(options.body as string) : undefined;
+    capturedRequests.push({ url: url as string, method: options?.method || 'GET', body });
+    return app.request(url as string, {
+      method: options?.method,
+      headers: options?.headers,
+      body: options?.body,
+    });
+  };
+
+  return {
+    app,
+    capturedRequests,
+    getLastRequest: () => capturedRequests.at(-1),
+    cleanup: () => { globalThis.fetch = originalFetch; },
+  };
+}
+```
+
 ## Form Component Testing
 
 Forms using React Hook Form + Valibot require component-level tests. Schema unit tests alone are insufficient because they cannot catch integration issues between the form library and validation.

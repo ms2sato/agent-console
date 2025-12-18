@@ -26,6 +26,7 @@ import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
+import { expandTemplate } from '../lib/template.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
@@ -384,6 +385,25 @@ export class SessionManager {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
   }
 
+  /**
+   * Get all sessions that have agent workers using the specified agent ID.
+   * Used to check if an agent can be safely deleted.
+   */
+  getSessionsUsingAgent(agentId: string): Session[] {
+    const matchingSessions: Session[] = [];
+
+    for (const session of this.sessions.values()) {
+      const hasAgentWorker = Array.from(session.workers.values()).some(
+        (worker) => worker.type === 'agent' && worker.agentId === agentId
+      );
+      if (hasAgentWorker) {
+        matchingSessions.push(this.toPublicSession(session));
+      }
+    }
+
+    return matchingSessions;
+  }
+
   async createWorker(
     sessionId: string,
     request: CreateWorkerParams,
@@ -500,25 +520,33 @@ export class SessionManager {
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
-    const args: string[] = [];
-    if (continueConversation && agent.continueArgs) {
-      args.push(...agent.continueArgs);
-    }
+    // Select the appropriate template based on whether we're continuing a conversation
+    const template = continueConversation && agent.continueTemplate
+      ? agent.continueTemplate
+      : agent.commandTemplate;
 
-    // If initialPromptMode is 'arg', add the prompt as a command argument
-    // The prompt is passed as a separate array element to avoid shell injection
-    if (initialPrompt && agent.initialPromptMode === 'arg') {
-      args.push(initialPrompt);
-    }
+    // Expand the template with prompt and cwd
+    // For continue mode without initial prompt, we don't need to pass prompt
+    const { command, env: templateEnv } = expandTemplate({
+      template,
+      prompt: initialPrompt,
+      cwd: locationPath,
+    });
 
-    // Spawn the agent command directly without shell interpolation
-    // This prevents command injection vulnerabilities
-    const ptyProcess = this.ptyProvider.spawn(agent.command, args, {
+    // Merge template environment variables with child process environment
+    const processEnv = {
+      ...getChildProcessEnv(),
+      ...templateEnv,
+    };
+
+    // Spawn via shell to execute the expanded template command
+    // The prompt is safely passed via environment variable to prevent injection
+    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', command], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
       cwd: locationPath,
-      env: getChildProcessEnv(),
+      env: processEnv,
     });
 
     // Declare worker first - the callback closure captures the variable reference,
@@ -551,15 +579,6 @@ export class SessionManager {
     };
 
     this.setupWorkerEventHandlers(worker, sessionId);
-
-    // Send initial prompt via stdin if mode is 'stdin' (arg mode is handled in command construction above)
-    if (initialPrompt && agent.initialPromptMode === 'stdin') {
-      const delay = agent.initialPromptDelayMs ?? 1000;
-      setTimeout(() => {
-        worker.pty.write(initialPrompt + '\r');
-        logger.debug({ workerId: worker.id }, 'Initial prompt sent to worker');
-      }, delay);
-    }
 
     return worker;
   }

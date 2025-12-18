@@ -1,11 +1,12 @@
 /**
  * Session metadata suggestion service
  *
- * Uses the specified agent in non-interactive mode to suggest branch names
+ * Uses the specified agent in headless mode to suggest branch names
  * and titles based on user's initial prompt and existing branch examples.
  */
 import type { AgentDefinition } from '@agent-console/shared';
 import { listAllBranches } from '../lib/git.js';
+import { expandTemplate, TemplateExpansionError } from '../lib/template.js';
 
 interface SessionMetadataSuggestionRequest {
   prompt: string;
@@ -99,10 +100,10 @@ export async function suggestSessionMetadata(
 ): Promise<SessionMetadataSuggestionResponse> {
   const { prompt, repositoryPath, agent, existingBranches } = request;
 
-  // Check if agent supports print mode
-  if (!agent.printModeArgs || agent.printModeArgs.length === 0) {
+  // Check if agent supports headless mode
+  if (!agent.capabilities.supportsHeadlessMode) {
     return {
-      error: `Agent "${agent.name}" does not support non-interactive mode (printModeArgs not configured)`,
+      error: `Agent "${agent.name}" does not support headless mode (headlessTemplate not configured)`,
     };
   }
 
@@ -112,16 +113,22 @@ export async function suggestSessionMetadata(
   const suggestionPrompt = buildMetadataSuggestionPrompt(prompt, branches);
 
   try {
-    // Build command args: [agent.command, ...printModeArgs, prompt]
-    // Using Bun.spawn with args array avoids shell injection
-    const args = [...agent.printModeArgs, suggestionPrompt];
+    // Expand the headless template with the suggestion prompt
+    const { command, env: templateEnv } = expandTemplate({
+      template: agent.headlessTemplate!,
+      prompt: suggestionPrompt,
+      cwd: repositoryPath,
+    });
 
-    const proc = Bun.spawn([agent.command, ...args], {
+    // Spawn via shell with the expanded command
+    // The prompt is safely passed via environment variable to prevent injection
+    const proc = Bun.spawn(['sh', '-c', command], {
       cwd: repositoryPath,
       stdout: 'pipe',
       stderr: 'pipe',
       env: {
         ...process.env,
+        ...templateEnv,
         // Ensure we don't inherit any interactive settings
         TERM: 'dumb',
       },
@@ -183,6 +190,11 @@ export async function suggestSessionMetadata(
       };
     }
   } catch (error) {
+    if (error instanceof TemplateExpansionError) {
+      return {
+        error: `Template expansion failed: ${error.message}`,
+      };
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     return {
       error: `Failed to suggest branch name: ${message}`,

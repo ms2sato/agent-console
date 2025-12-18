@@ -96,6 +96,14 @@ export function cleanupTestConfigDir(): void {
 }
 
 /**
+ * Gets the current test config directory path.
+ * @returns The AGENT_CONSOLE_HOME path set by setupTestConfigDir
+ */
+export function getTestConfigDir(): string {
+  return process.env.AGENT_CONSOLE_HOME || '/test/config';
+}
+
+/**
  * Creates a mock git repository structure.
  *
  * @param repoPath - Path for the repository
