@@ -2,10 +2,9 @@ import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
-import { registerAgent, unregisterAgent } from '../../lib/api';
+import { unregisterAgent } from '../../lib/api';
 import { useAgents } from '../../components/AgentSelector';
-import { AgentForm, parseAskingPatterns, type AgentFormData } from '../../components/agents';
-import { CapabilityIndicator } from '../../components/agents';
+import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { Spinner } from '../../components/ui/Spinner';
@@ -220,51 +219,3 @@ function AgentCard({ agent, onDelete, isDeleting }: AgentCardProps) {
   );
 }
 
-interface AddAgentFormProps {
-  onSuccess: () => void;
-  onCancel: () => void;
-}
-
-function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
-  const queryClient = useQueryClient();
-  const [error, setError] = useState<string | null>(null);
-
-  const registerMutation = useMutation({
-    mutationFn: registerAgent,
-    onSuccess: (response) => {
-      // Optimistic cache update (don't rely solely on WebSocket in case of disconnection)
-      const newAgent = response.agent;
-      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
-        if (!old) return { agents: [newAgent] };
-        return { agents: [...old.agents, newAgent] };
-      });
-      onSuccess();
-    },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to register agent');
-    },
-  });
-
-  const handleSubmit = (data: AgentFormData) => {
-    setError(null);
-    const askingPatterns = parseAskingPatterns(data.askingPatternsInput);
-    registerMutation.mutate({
-      name: data.name,
-      commandTemplate: data.commandTemplate,
-      continueTemplate: data.continueTemplate || undefined,
-      headlessTemplate: data.headlessTemplate || undefined,
-      description: data.description || undefined,
-      activityPatterns: askingPatterns ? { askingPatterns } : undefined,
-    });
-  };
-
-  return (
-    <AgentForm
-      mode="create"
-      onSubmit={handleSubmit}
-      onCancel={onCancel}
-      isPending={registerMutation.isPending}
-      error={error}
-    />
-  );
-}
