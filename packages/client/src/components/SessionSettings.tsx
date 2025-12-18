@@ -5,7 +5,7 @@ import {
   RestartSessionDialog,
   DeleteWorktreeDialog,
   type MenuAction,
-} from './session-settings';
+} from './sessions';
 
 interface SessionSettingsProps {
   sessionId: string;

@@ -26,7 +26,9 @@ import {
   AlertDialogFooter,
   AlertDialogAction,
 } from '../components/ui/alert-dialog';
-import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
+import { AddRepositoryForm } from '../components/repositories';
+import { CreateWorktreeForm } from '../components/worktrees';
+import { QuickSessionForm } from '../components/sessions';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition } from '@agent-console/shared';
 
 // Request notification permission on load

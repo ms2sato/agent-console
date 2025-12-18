@@ -1,3 +1,6 @@
+export { QuickSessionForm } from './QuickSessionForm';
+export type { QuickSessionFormProps } from './QuickSessionForm';
+
 export { EditSessionDialog } from './EditSessionDialog';
 export type { EditSessionDialogProps } from './EditSessionDialog';
 
