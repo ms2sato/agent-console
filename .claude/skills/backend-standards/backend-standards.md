@@ -10,7 +10,7 @@ This document defines backend-specific knowledge and patterns for the agent-cons
 - **Pino** - Structured logging
 - **Valibot** - Schema validation (shared with frontend)
 
-## Directory Structure
+## Directory Structure and Naming
 
 ```
 packages/server/src/
@@ -18,9 +18,50 @@ packages/server/src/
 ├── lib/            # Utilities (logger, config, error handler)
 ├── middleware/     # Hono middleware
 ├── routes/         # API route handlers
-├── services/       # Business logic (session manager, workers, etc.)
+├── services/       # Business logic (flat by default, domain dirs when needed)
+│   ├── agents/     # Domain directory (multiple related files)
+│   └── *.ts        # Flat service files
 └── websocket/      # WebSocket handlers
 ```
+
+### Directory Organization Strategy
+
+**Services use flat-first approach:**
+- Keep services as flat files by default
+- Create domain directory when a service needs multiple related files
+
+| Situation | Organization | Example |
+|-----------|--------------|---------|
+| Single service file | Flat | `services/session-manager.ts` |
+| Service + helpers/types | Domain directory | `services/agents/` |
+| Service grows large | Split into domain directory | - |
+
+Decision criteria:
+1. **Single file sufficient** → Keep flat
+2. **2+ closely related files** → Create domain directory
+3. **Splitting for readability** → Create domain directory
+
+### File Naming Conventions
+
+| Type | Convention | Example |
+|------|------------|---------|
+| General | kebab-case | `session-manager.ts` |
+| Service | kebab-case | `persistence-service.ts` |
+| Middleware | kebab-case | `error-handler.ts` |
+| Route handler | kebab-case (plural) | `sessions.ts`, `workers.ts` |
+| Utility | kebab-case | `config.ts`, `logger.ts` |
+| Test | original + `.test` | `session-manager.test.ts` |
+
+### Directory Naming
+
+- Use **kebab-case** for all directories
+- Exception: `__tests__/` follows Node.js convention with underscores
+
+### Export Conventions
+
+- File name reflects the primary export: `session-manager.ts` exports `SessionManager`
+- Use named exports for multiple related items
+- Avoid default exports except for route handlers
 
 ## Core Concepts
 
