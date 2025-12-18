@@ -25,18 +25,28 @@ let spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = []
 const mockAgent: AgentDefinition = {
   id: 'test-agent',
   name: 'Test Agent',
-  command: 'test-cli',
+  commandTemplate: 'test-cli {{prompt}}',
+  headlessTemplate: 'test-cli -p --format text {{prompt}}',
   isBuiltIn: false,
   registeredAt: new Date().toISOString(),
-  printModeArgs: ['-p', '--format', 'text'],
+  capabilities: {
+    supportsContinue: false,
+    supportsHeadlessMode: true,
+    supportsActivityDetection: false,
+  },
 };
 
-const mockAgentWithoutPrintMode: AgentDefinition = {
-  id: 'no-print-agent',
-  name: 'No Print Agent',
-  command: 'no-print-cli',
+const mockAgentWithoutHeadless: AgentDefinition = {
+  id: 'no-headless-agent',
+  name: 'No Headless Agent',
+  commandTemplate: 'no-headless-cli {{prompt}}',
   isBuiltIn: false,
   registeredAt: new Date().toISOString(),
+  capabilities: {
+    supportsContinue: false,
+    supportsHeadlessMode: false,
+    supportsActivityDetection: false,
+  },
 };
 
 let importCounter = 0;
@@ -143,25 +153,25 @@ describe('session-metadata-suggester', () => {
       expect(result.title).toBe('Add dark mode toggle');
       expect(result.error).toBeUndefined();
 
-      // Verify spawn was called correctly
+      // Verify spawn was called with shell command
       expect(spawnCalls.length).toBe(1);
-      expect(spawnCalls[0].args[0]).toBe('test-cli');
-      expect(spawnCalls[0].args).toContain('-p');
-      expect(spawnCalls[0].args).toContain('--format');
-      expect(spawnCalls[0].args).toContain('text');
+      expect(spawnCalls[0].args[0]).toBe('sh');
+      expect(spawnCalls[0].args[1]).toBe('-c');
+      // The command should be expanded from headlessTemplate
+      expect(spawnCalls[0].args[2]).toContain('test-cli -p --format text');
     });
 
-    it('should return error if agent does not support print mode', async () => {
+    it('should return error if agent does not support headless mode', async () => {
       const { suggestSessionMetadata } = await getModule();
 
       const result = await suggestSessionMetadata({
         prompt: 'Some task',
         repositoryPath: '/repo',
-        agent: mockAgentWithoutPrintMode,
+        agent: mockAgentWithoutHeadless,
       });
 
       expect(result.branch).toBeUndefined();
-      expect(result.error).toContain('does not support non-interactive mode');
+      expect(result.error).toContain('does not support headless mode');
     });
 
     it('should sanitize branch names with invalid characters', async () => {
@@ -319,6 +329,24 @@ describe('session-metadata-suggester', () => {
       expect(result.title).toBe('Some title');
     });
 
+    it('should pass prompt via environment variable', async () => {
+      setMockSpawnResult('{"branch": "feat/new-feature", "title": "New feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      await suggestSessionMetadata({
+        prompt: 'Add new feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+      });
+
+      // Verify env contains the prompt
+      expect(spawnCalls.length).toBe(1);
+      const options = spawnCalls[0].options as { env?: Record<string, string> };
+      expect(options.env).toBeDefined();
+      expect(options.env!.__AGENT_PROMPT__).toContain('Add new feature');
+    });
+
     it('should include existing branches in prompt to avoid duplicates', async () => {
       mockGit.listAllBranches.mockImplementation(() =>
         Promise.resolve(['main', 'feat/existing-feature', 'fix/old-bug'])
@@ -333,13 +361,14 @@ describe('session-metadata-suggester', () => {
         agent: mockAgent,
       });
 
-      // Verify the prompt includes instruction to avoid existing branches
+      // Verify the env prompt includes instruction to avoid existing branches
       expect(spawnCalls.length).toBe(1);
-      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
-      expect(promptArg).toContain('Do NOT use any of these existing branch names');
-      expect(promptArg).toContain('main');
-      expect(promptArg).toContain('feat/existing-feature');
-      expect(promptArg).toContain('fix/old-bug');
+      const options = spawnCalls[0].options as { env?: Record<string, string> };
+      const prompt = options.env!.__AGENT_PROMPT__;
+      expect(prompt).toContain('Do NOT use any of these existing branch names');
+      expect(prompt).toContain('main');
+      expect(prompt).toContain('feat/existing-feature');
+      expect(prompt).toContain('fix/old-bug');
     });
 
     it('should include provided existingBranches in prompt to avoid duplicates', async () => {
@@ -354,12 +383,13 @@ describe('session-metadata-suggester', () => {
         existingBranches: ['feat/conflicting-name', 'fix/another-branch'],
       });
 
-      // Verify the prompt includes instruction to avoid provided branches
+      // Verify the env prompt includes instruction to avoid provided branches
       expect(spawnCalls.length).toBe(1);
-      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
-      expect(promptArg).toContain('Do NOT use any of these existing branch names');
-      expect(promptArg).toContain('feat/conflicting-name');
-      expect(promptArg).toContain('fix/another-branch');
+      const options = spawnCalls[0].options as { env?: Record<string, string> };
+      const prompt = options.env!.__AGENT_PROMPT__;
+      expect(prompt).toContain('Do NOT use any of these existing branch names');
+      expect(prompt).toContain('feat/conflicting-name');
+      expect(prompt).toContain('fix/another-branch');
     });
 
     it('should not include duplicate avoidance instruction when no branches exist', async () => {
@@ -374,10 +404,11 @@ describe('session-metadata-suggester', () => {
         agent: mockAgent,
       });
 
-      // Verify the prompt does NOT include duplicate avoidance instruction
+      // Verify the env prompt does NOT include duplicate avoidance instruction
       expect(spawnCalls.length).toBe(1);
-      const promptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1];
-      expect(promptArg).not.toContain('Do NOT use any of these existing branch names');
+      const options = spawnCalls[0].options as { env?: Record<string, string> };
+      const prompt = options.env!.__AGENT_PROMPT__;
+      expect(prompt).not.toContain('Do NOT use any of these existing branch names');
     });
   });
 });

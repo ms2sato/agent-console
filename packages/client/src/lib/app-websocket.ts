@@ -10,6 +10,7 @@ import { APP_MESSAGE_TYPES, type AppServerMessage } from '@agent-console/shared'
 export interface AppWebSocketState {
   connected: boolean;
   sessionsSynced: boolean;
+  agentsSynced: boolean;
 }
 
 // Connection state
@@ -17,6 +18,7 @@ let ws: WebSocket | null = null;
 let state: AppWebSocketState = {
   connected: false,
   sessionsSynced: false,
+  agentsSynced: false,
 };
 let retryCount = 0;
 let retryTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -86,6 +88,9 @@ function handleMessage(event: MessageEvent) {
     // Track initial sync reception
     if (parsed.type === 'sessions-sync') {
       setState({ sessionsSynced: true });
+    }
+    if (parsed.type === 'agents-sync') {
+      setState({ agentsSynced: true });
     }
     messageListeners.forEach(fn => fn(parsed));
   } catch (e) {
@@ -217,7 +222,7 @@ export function getState(): AppWebSocketState {
 export function _reset(): void {
   disconnect();
   retryCount = 0;
-  state = { connected: false, sessionsSynced: false };
+  state = { connected: false, sessionsSynced: false, agentsSynced: false };
   messageListeners.clear();
   stateListeners.clear();
 }

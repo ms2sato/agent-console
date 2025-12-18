@@ -15,7 +15,6 @@ import {
 } from '../lib/api';
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
 import { formatPath } from '../lib/path';
-import { AgentManagement } from '../components/AgentManagement';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import {
@@ -28,7 +27,7 @@ import {
   AlertDialogAction,
 } from '../components/ui/alert-dialog';
 import { AddRepositoryForm, CreateWorktreeForm, QuickSessionForm } from '../components/forms';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -211,6 +210,45 @@ function DashboardPage() {
     delete lastNotificationTimeRef.current[sessionId];
   }, []);
 
+  // Handle initial agent sync from WebSocket
+  const handleAgentsSync = useCallback((agents: AgentDefinition[]) => {
+    console.log(`[Sync] Initializing ${agents.length} agents from WebSocket`);
+    queryClient.setQueryData(['agents'], { agents });
+  }, [queryClient]);
+
+  // Handle new agent created
+  const handleAgentCreated = useCallback((agent: AgentDefinition) => {
+    console.log(`[Agent] Created: ${agent.id}`);
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      if (!old) return { agents: [agent] };
+      return { agents: [...old.agents, agent] };
+    });
+  }, [queryClient]);
+
+  // Handle agent updated
+  const handleAgentUpdated = useCallback((agent: AgentDefinition) => {
+    console.log(`[Agent] Updated: ${agent.id}`);
+    // Update list cache
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      if (!old) return { agents: [agent] };
+      return { agents: old.agents.map(a => a.id === agent.id ? agent : a) };
+    });
+    // Update individual agent cache for detail/edit pages
+    queryClient.setQueryData(['agent', agent.id], { agent });
+  }, [queryClient]);
+
+  // Handle agent deleted
+  const handleAgentDeleted = useCallback((agentId: string) => {
+    console.log(`[Agent] Deleted: ${agentId}`);
+    // Update list cache
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      if (!old) return old;
+      return { agents: old.agents.filter(a => a.id !== agentId) };
+    });
+    // Invalidate individual agent cache to trigger refetch (will 404)
+    queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+  }, [queryClient]);
+
   // Handle real-time activity updates via WebSocket
   // Note: ActivityDetector handles debouncing and sticky state transitions server-side
   const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -306,6 +344,10 @@ function DashboardPage() {
     onSessionUpdated: handleSessionUpdated,
     onSessionDeleted: handleSessionDeleted,
     onWorkerActivity: handleWorkerActivityUpdate,
+    onAgentsSync: handleAgentsSync,
+    onAgentCreated: handleAgentCreated,
+    onAgentUpdated: handleAgentUpdated,
+    onAgentDeleted: handleAgentDeleted,
   });
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
@@ -356,16 +398,17 @@ function DashboardPage() {
   }
 
   return (
-    <div className="py-6 px-6">
-      <div className="flex items-center justify-between mb-5">
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <button
-          onClick={() => setShowAddRepo(true)}
-          className="btn btn-primary text-sm"
-        >
-          + Add Repository
-        </button>
-      </div>
+    <>
+      <div className="py-6 px-6">
+        <div className="flex items-center justify-between mb-5">
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <button
+            onClick={() => setShowAddRepo(true)}
+            className="btn btn-primary text-sm"
+          >
+            + Add Repository
+          </button>
+        </div>
 
       {showAddRepo && (
         <AddRepositoryForm
@@ -401,12 +444,6 @@ function DashboardPage() {
       {/* Quick Sessions (sessions without a registered repository) */}
       <QuickSessionsSection sessions={sessions.filter((s) => s.type === 'quick')} />
 
-      {/* Settings Section */}
-      <div className="mt-8">
-        <h2 className="text-lg font-medium text-gray-400 mb-4">Settings</h2>
-        <AgentManagement />
-      </div>
-
       {/* Unregister Repository Confirmation */}
       <ConfirmDialog
         open={repoToUnregister !== null}
@@ -421,7 +458,8 @@ function DashboardPage() {
           }
         }}
       />
-    </div>
+      </div>
+    </>
   );
 }
 

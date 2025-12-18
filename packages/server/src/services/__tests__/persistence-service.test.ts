@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
+import * as path from 'path';
+import type { AgentDefinition } from '@agent-console/shared';
 import type { PersistedSession } from '../persistence-service.js';
-import { setupTestConfigDir, cleanupTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
+import { setupTestConfigDir, cleanupTestConfigDir, getTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
 
 describe('PersistenceService', () => {
   const TEST_CONFIG_DIR = '/test/config';
@@ -242,6 +244,177 @@ describe('PersistenceService', () => {
       // Check for temp files
       const files = fs.readdirSync(TEST_CONFIG_DIR);
       expect(files).not.toContain('repositories.json.tmp');
+    });
+  });
+
+  describe('agents', () => {
+    const createValidAgent = (overrides: Partial<AgentDefinition> = {}): AgentDefinition => ({
+      id: 'test-agent-1',
+      name: 'Test Agent',
+      commandTemplate: 'test {{prompt}}',
+      isBuiltIn: false,
+      registeredAt: '2024-01-01T00:00:00.000Z',
+      capabilities: {
+        supportsContinue: false,
+        supportsHeadlessMode: false,
+        supportsActivityDetection: false,
+      },
+      ...overrides,
+    });
+
+    it('should return empty array when no agents file exists', async () => {
+      const service = await getPersistenceService();
+
+      const agents = service.loadAgents();
+      expect(agents).toEqual([]);
+    });
+
+    it('should save and load valid agents', async () => {
+      const service = await getPersistenceService();
+
+      const testAgents = [createValidAgent()];
+
+      service.saveAgents(testAgents);
+      const loaded = service.loadAgents();
+
+      expect(loaded).toEqual(testAgents);
+    });
+
+    it('should load agents with optional fields', async () => {
+      const service = await getPersistenceService();
+
+      const testAgents = [
+        createValidAgent({
+          description: 'Test description',
+          continueTemplate: 'test --continue',
+          headlessTemplate: 'test --headless {{prompt}}',
+          activityPatterns: {
+            askingPatterns: ['Do you want.*\\?'],
+          },
+          capabilities: {
+            supportsContinue: true,
+            supportsHeadlessMode: true,
+            supportsActivityDetection: true,
+          },
+        }),
+      ];
+
+      service.saveAgents(testAgents);
+      const loaded = service.loadAgents();
+
+      expect(loaded).toEqual(testAgents);
+    });
+
+    it('should skip agents with missing required fields', async () => {
+      const service = await getPersistenceService();
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Write raw JSON with invalid agents directly to file
+      const agentsFile = path.join(getTestConfigDir(), 'agents.json');
+      const invalidAgents = [
+        { id: 'valid', name: 'Valid', commandTemplate: 'test {{prompt}}', isBuiltIn: false, registeredAt: '2024-01-01', capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false } },
+        { name: 'Missing ID', commandTemplate: 'test {{prompt}}' }, // Missing id
+        { id: 'missing-name', commandTemplate: 'test {{prompt}}' }, // Missing name
+        { id: 'missing-template', name: 'Missing Template' }, // Missing commandTemplate
+      ];
+      fs.writeFileSync(agentsFile, JSON.stringify(invalidAgents));
+
+      const loaded = service.loadAgents();
+
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].id).toBe('valid');
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('should skip agents with invalid askingPatterns regex', async () => {
+      const service = await getPersistenceService();
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Write raw JSON with invalid regex directly to file
+      const agentsFile = path.join(getTestConfigDir(), 'agents.json');
+      const agentsWithInvalidRegex = [
+        {
+          id: 'valid-agent',
+          name: 'Valid Agent',
+          commandTemplate: 'test {{prompt}}',
+          isBuiltIn: false,
+          registeredAt: '2024-01-01',
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
+        {
+          id: 'invalid-regex-agent',
+          name: 'Invalid Regex Agent',
+          commandTemplate: 'test {{prompt}}',
+          isBuiltIn: false,
+          registeredAt: '2024-01-01',
+          activityPatterns: {
+            askingPatterns: ['[invalid regex'],
+          },
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: true },
+        },
+      ];
+      fs.writeFileSync(agentsFile, JSON.stringify(agentsWithInvalidRegex));
+
+      const loaded = service.loadAgents();
+
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].id).toBe('valid-agent');
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('should get agent by id', async () => {
+      const service = await getPersistenceService();
+
+      const testAgents = [
+        createValidAgent({ id: 'agent-1', name: 'Agent 1' }),
+        createValidAgent({ id: 'agent-2', name: 'Agent 2' }),
+      ];
+
+      service.saveAgents(testAgents);
+
+      const agent = service.getAgent('agent-1');
+      expect(agent?.name).toBe('Agent 1');
+    });
+
+    it('should return undefined for non-existent agent', async () => {
+      const service = await getPersistenceService();
+
+      const agent = service.getAgent('non-existent');
+      expect(agent).toBeUndefined();
+    });
+
+    it('should remove custom agent', async () => {
+      const service = await getPersistenceService();
+
+      const testAgents = [
+        createValidAgent({ id: 'agent-1', name: 'Agent 1' }),
+        createValidAgent({ id: 'agent-2', name: 'Agent 2' }),
+      ];
+
+      service.saveAgents(testAgents);
+      const removed = service.removeAgent('agent-1');
+
+      expect(removed).toBe(true);
+      const loaded = service.loadAgents();
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].id).toBe('agent-2');
+    });
+
+    it('should not remove built-in agent', async () => {
+      const service = await getPersistenceService();
+
+      const testAgents = [createValidAgent({ id: 'built-in-1', name: 'Built-in', isBuiltIn: true })];
+
+      service.saveAgents(testAgents);
+      const removed = service.removeAgent('built-in-1');
+
+      expect(removed).toBe(false);
+      const loaded = service.loadAgents();
+      expect(loaded.length).toBe(1);
     });
   });
 });

@@ -2,6 +2,8 @@ import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-rout
 import { useQuery } from '@tanstack/react-query';
 import { validateSessions } from '../lib/api';
 import { WarningIcon } from '../components/Icons';
+import { ConnectionBanner } from '../components/ui/ConnectionBanner';
+import { useAppWsState } from '../hooks/useAppWs';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -9,6 +11,7 @@ export const Route = createRootRoute({
 
 function RootLayout() {
   const location = useLocation();
+  const connected = useAppWsState((s) => s.connected);
   const isSessionPage = location.pathname.startsWith('/sessions/');
 
   // Session pages have their own header with tabs
@@ -44,12 +47,35 @@ function RootLayout() {
         >
           Agent Console
         </Link>
+        <AgentsNavLink />
         <ValidationWarningIndicator />
       </header>
+      <ConnectionBanner connected={connected} />
       <main style={{ flex: 1, overflow: 'auto' }}>
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function AgentsNavLink() {
+  const location = useLocation();
+  const isActive = location.pathname.startsWith('/agents');
+
+  return (
+    <Link
+      to="/agents"
+      style={{
+        color: isActive ? '#fff' : '#94a3b8',
+        textDecoration: 'none',
+        fontSize: '0.875rem',
+        padding: '4px 8px',
+        borderRadius: '4px',
+        backgroundColor: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
+      }}
+    >
+      Agents
+    </Link>
   );
 }
 

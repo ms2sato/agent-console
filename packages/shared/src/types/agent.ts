@@ -1,10 +1,10 @@
 // Import types for local use
-import type { AgentActivityPatterns, InitialPromptMode } from '../schemas/agent.js';
+import type { AgentActivityPatterns, AgentCapabilities } from '../schemas/agent.js';
 
 // Re-export schema-derived types
 export type {
   AgentActivityPatterns,
-  InitialPromptMode,
+  AgentCapabilities,
   CreateAgentRequest,
   UpdateAgentRequest,
 } from '../schemas/agent.js';
@@ -15,25 +15,84 @@ export type {
 export interface AgentDefinition {
   id: string;
   name: string;
-  command: string;
   description?: string;
-  icon?: string;
   isBuiltIn: boolean;
   registeredAt: string;
+
+  // === Templates ===
+
+  /**
+   * Command template for starting a new session with initial prompt.
+   * REQUIRED.
+   *
+   * Placeholders:
+   *   {{prompt}} - Insert the initial prompt (passed via environment variable)
+   *   {{cwd}} - Insert the working directory path
+   *
+   * Examples:
+   *   "claude {{prompt}}"
+   *   "aider --yes -m {{prompt}}"
+   */
+  commandTemplate: string;
+
+  /**
+   * Command template for continuing an existing conversation.
+   * OPTIONAL. If not set, "Continue" button is disabled for this agent.
+   *
+   * Placeholders:
+   *   {{cwd}} - Insert the working directory path (if needed)
+   *
+   * Examples:
+   *   "claude -c"
+   *   "aider --yes --restore-chat-history"
+   */
+  continueTemplate?: string;
+
+  /**
+   * Command template for headless (non-interactive) execution.
+   * Used for metadata generation (branch name, title suggestion).
+   * OPTIONAL. If not set, automatic metadata generation is skipped.
+   *
+   * Placeholders:
+   *   {{prompt}} - Insert the prompt (passed via environment variable)
+   *   {{cwd}} - Insert the working directory path (if needed)
+   *
+   * Examples:
+   *   "claude -p --output-format text {{prompt}}"
+   *   "aider --yes -m {{prompt}} --exit"
+   */
+  headlessTemplate?: string;
+
+  // === Activity Detection (Optional) ===
+
+  /**
+   * Patterns to detect when agent is waiting for user input.
+   * OPTIONAL. If not set, agent state is limited to idle/working only.
+   */
   activityPatterns?: AgentActivityPatterns;
-  /** Arguments to append when continuing conversation (e.g., ['-c'] for Claude Code) */
-  continueArgs?: string[];
-  /** How to pass the initial prompt to the agent (default: 'stdin') */
-  initialPromptMode?: InitialPromptMode;
+
+  // === Computed (read-only, set by server) ===
+
   /**
-   * Delay in milliseconds before sending the initial prompt via stdin.
-   * This gives the agent time to initialize. Default: 1000ms
+   * Capability flags computed from templates.
+   * Clients use these to enable/disable UI features.
    */
-  initialPromptDelayMs?: number;
-  /**
-   * Arguments for non-interactive "print" mode (e.g., ['-p', '--output-format', 'text'] for Claude Code).
-   * The prompt will be appended as the last argument.
-   * If not set, the agent does not support non-interactive mode.
-   */
-  printModeArgs?: string[];
+  capabilities: AgentCapabilities;
+}
+
+/**
+ * Compute capability flags from agent templates
+ */
+export function computeCapabilities(
+  agent: Omit<AgentDefinition, 'capabilities'>
+): AgentCapabilities {
+  return {
+    // Template must be non-empty string after trim
+    supportsContinue: Boolean(agent.continueTemplate?.trim()),
+    supportsHeadlessMode: Boolean(agent.headlessTemplate?.trim()),
+    // Must have at least one non-empty pattern
+    supportsActivityDetection: Boolean(
+      agent.activityPatterns?.askingPatterns?.some((p) => p.trim().length > 0)
+    ),
+  };
 }

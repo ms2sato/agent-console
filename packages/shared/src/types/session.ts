@@ -1,4 +1,5 @@
 import type { Worker, AgentActivityState } from './worker.js';
+import type { AgentDefinition } from './agent.js';
 
 // Re-export schema-derived types
 export type {
@@ -79,6 +80,10 @@ export const APP_MESSAGE_TYPES = {
   'session-updated': 3,
   'session-deleted': 4,
   'worker-activity': 5,
+  'agents-sync': 6,
+  'agent-created': 7,
+  'agent-updated': 8,
+  'agent-deleted': 9,
 } as const;
 
 export type AppServerMessageType = keyof typeof APP_MESSAGE_TYPES;
@@ -88,7 +93,11 @@ export type AppServerMessage =
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
-  | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState };
+  | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState }
+  | { type: 'agents-sync'; agents: AgentDefinition[] }
+  | { type: 'agent-created'; agent: AgentDefinition }
+  | { type: 'agent-updated'; agent: AgentDefinition }
+  | { type: 'agent-deleted'; agentId: string };
 
 // Session validation types
 export type SessionValidationIssueType =

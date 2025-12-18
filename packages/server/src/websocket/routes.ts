@@ -7,6 +7,7 @@ import type {
 } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
+import { agentManager } from '../services/agent-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
@@ -73,6 +74,22 @@ sessionManager.setSessionLifecycleCallbacks({
   },
 });
 
+// Set up agent lifecycle callbacks to broadcast to all app clients
+agentManager.setLifecycleCallbacks({
+  onAgentCreated: (agent) => {
+    logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
+    broadcastToApp({ type: 'agent-created', agent });
+  },
+  onAgentUpdated: (agent) => {
+    logger.debug({ agentId: agent.id }, 'Broadcasting agent-updated');
+    broadcastToApp({ type: 'agent-updated', agent });
+  },
+  onAgentDeleted: (agentId) => {
+    logger.debug({ agentId }, 'Broadcasting agent-deleted');
+    broadcastToApp({ type: 'agent-deleted', agentId });
+  },
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
@@ -110,13 +127,22 @@ export function setupWebSocketRoutes(
             }
           }
 
-          const syncMsg: AppServerMessage = {
+          const sessionsSyncMsg: AppServerMessage = {
             type: 'sessions-sync',
             sessions: allSessions,
             activityStates,
           };
-          ws.send(JSON.stringify(syncMsg));
+          ws.send(JSON.stringify(sessionsSyncMsg));
           logger.debug({ sessionCount: allSessions.length }, 'Sent sessions-sync');
+
+          // Send current state of all agents
+          const allAgents = agentManager.getAllAgents();
+          const agentsSyncMsg: AppServerMessage = {
+            type: 'agents-sync',
+            agents: allAgents,
+          };
+          ws.send(JSON.stringify(agentsSyncMsg));
+          logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
 
           // Add to broadcast list AFTER sending sync to ensure correct message ordering
           appClients.add(ws);

@@ -1,17 +1,7 @@
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
-import { screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import { SessionSettings } from '../SessionSettings';
-
-// Save original fetch and set up mock
-const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
-
-// Restore original fetch after all tests
-afterAll(() => {
-  globalThis.fetch = originalFetch;
-});
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -35,6 +25,9 @@ function createErrorResponse(errorMessage: string, status = 400) {
 }
 
 describe('SessionSettings', () => {
+  let originalFetch: typeof fetch;
+  let mockFetch: ReturnType<typeof mock<() => Promise<Response>>>;
+
   const defaultProps = {
     sessionId: 'test-session-id',
     repositoryId: 'test-repo-id',
@@ -45,9 +38,18 @@ describe('SessionSettings', () => {
   };
 
   beforeEach(() => {
-    mockFetch.mockReset();
+    // Save and replace fetch before each test
+    originalFetch = globalThis.fetch;
+    mockFetch = mock(() => Promise.resolve(new Response()));
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
     defaultProps.onBranchChange.mockClear();
     defaultProps.onSessionRestart.mockClear();
+  });
+
+  afterEach(() => {
+    // Restore fetch and cleanup DOM after each test
+    globalThis.fetch = originalFetch;
+    cleanup();
   });
 
   /**

@@ -969,13 +969,13 @@ describe('API Routes Integration', () => {
         const res = await app.request('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'My Agent', command: 'my-agent' }),
+          body: JSON.stringify({ name: 'My Agent', commandTemplate: 'my-agent {{prompt}}' }),
         });
         expect(res.status).toBe(201);
 
         const body = (await res.json()) as { agent: AgentDefinition };
         expect(body.agent.name).toBe('My Agent');
-        expect(body.agent.command).toBe('my-agent');
+        expect(body.agent.commandTemplate).toBe('my-agent {{prompt}}');
         expect(body.agent.isBuiltIn).toBe(false);
       });
 
@@ -985,18 +985,75 @@ describe('API Routes Integration', () => {
         const res = await app.request('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'my-agent' }),
+          body: JSON.stringify({ commandTemplate: 'my-agent {{prompt}}' }),
         });
         expect(res.status).toBe(400);
       });
 
-      it('should return 400 when command is missing', async () => {
+      it('should return 400 when commandTemplate is missing', async () => {
         const app = await createApp();
 
         const res = await app.request('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: 'My Agent' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should accept valid askingPatterns', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Test Agent',
+            commandTemplate: 'test {{prompt}}',
+            activityPatterns: {
+              askingPatterns: ['Do you want.*\\?', '\\[y\\].*\\[n\\]'],
+            },
+          }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { agent: AgentDefinition };
+        expect(body.agent.activityPatterns?.askingPatterns).toEqual([
+          'Do you want.*\\?',
+          '\\[y\\].*\\[n\\]',
+        ]);
+      });
+
+      it('should return 400 when askingPatterns contains invalid regex', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Test Agent',
+            commandTemplate: 'test {{prompt}}',
+            activityPatterns: {
+              askingPatterns: ['[invalid regex'],
+            },
+          }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when any askingPattern is invalid', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Test Agent',
+            commandTemplate: 'test {{prompt}}',
+            activityPatterns: {
+              askingPatterns: ['valid.*', '(unclosed', 'also-valid'],
+            },
+          }),
         });
         expect(res.status).toBe(400);
       });
@@ -1010,7 +1067,7 @@ describe('API Routes Integration', () => {
         const createRes = await app.request('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'My Agent', command: 'my-agent' }),
+          body: JSON.stringify({ name: 'My Agent', commandTemplate: 'my-agent {{prompt}}' }),
         });
         const { agent: created } = (await createRes.json()) as { agent: AgentDefinition };
 
@@ -1036,6 +1093,60 @@ describe('API Routes Integration', () => {
         });
         expect(res.status).toBe(404);
       });
+
+      it('should accept valid askingPatterns on update', async () => {
+        const app = await createApp();
+
+        // Create a custom agent first
+        const createRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'My Agent', commandTemplate: 'my-agent {{prompt}}' }),
+        });
+        const { agent: created } = (await createRes.json()) as { agent: AgentDefinition };
+
+        // Update with valid askingPatterns
+        const res = await app.request(`/api/agents/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activityPatterns: {
+              askingPatterns: ['Do you want.*\\?', '\\[y\\].*\\[n\\]'],
+            },
+          }),
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { agent: AgentDefinition };
+        expect(body.agent.activityPatterns?.askingPatterns).toEqual([
+          'Do you want.*\\?',
+          '\\[y\\].*\\[n\\]',
+        ]);
+      });
+
+      it('should return 400 when askingPatterns contains invalid regex on update', async () => {
+        const app = await createApp();
+
+        // Create a custom agent first
+        const createRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'My Agent', commandTemplate: 'my-agent {{prompt}}' }),
+        });
+        const { agent: created } = (await createRes.json()) as { agent: AgentDefinition };
+
+        // Update with invalid askingPatterns
+        const res = await app.request(`/api/agents/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activityPatterns: {
+              askingPatterns: ['[invalid regex'],
+            },
+          }),
+        });
+        expect(res.status).toBe(400);
+      });
     });
 
     describe('DELETE /api/agents/:id', () => {
@@ -1046,7 +1157,7 @@ describe('API Routes Integration', () => {
         const createRes = await app.request('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'My Agent', command: 'my-agent' }),
+          body: JSON.stringify({ name: 'My Agent', commandTemplate: 'my-agent {{prompt}}' }),
         });
         const { agent: created } = (await createRes.json()) as { agent: AgentDefinition };
 
@@ -1074,6 +1185,37 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(400);
       });
 
+      it('should return 400 for built-in agent even when it is in use by sessions', async () => {
+        const app = await createApp();
+
+        // Get agents to find built-in one
+        const listRes = await app.request('/api/agents');
+        const { agents } = (await listRes.json()) as { agents: AgentDefinition[] };
+        const builtInAgent = agents.find((a) => a.isBuiltIn)!;
+
+        // Create a session using the built-in agent
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: builtInAgent.id,
+          }),
+        });
+        expect(sessionRes.status).toBe(201);
+
+        // Try to delete the built-in agent - should return 400, not 409
+        // Built-in check should happen before in-use check
+        const res = await app.request(`/api/agents/${builtInAgent.id}`, {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Built-in');
+      });
+
       it('should return 404 for non-existent agent', async () => {
         const app = await createApp();
 
@@ -1081,6 +1223,360 @@ describe('API Routes Integration', () => {
           method: 'DELETE',
         });
         expect(res.status).toBe(404);
+      });
+
+      it('should return 409 when agent is in use by active session', async () => {
+        const app = await createApp();
+
+        // Create a custom agent first
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'My Custom Agent', commandTemplate: 'custom-agent {{prompt}}' }),
+        });
+        const { agent: customAgent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create a session using this custom agent
+        const createSessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: customAgent.id,
+          }),
+        });
+        expect(createSessionRes.status).toBe(201);
+
+        // Try to delete the agent while session is active
+        const deleteRes = await app.request(`/api/agents/${customAgent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        expect(body.error).toContain('in use');
+      });
+
+      it('should return 409 with correct count when multiple sessions use the agent', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Shared Agent', commandTemplate: 'shared-agent {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create two sessions using this agent
+        const session1Res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: agent.id,
+            title: 'First Session',
+          }),
+        });
+        expect(session1Res.status).toBe(201);
+
+        const session2Res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: agent.id,
+            title: 'Second Session',
+          }),
+        });
+        expect(session2Res.status).toBe(201);
+
+        // Try to delete the agent
+        const deleteRes = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        expect(body.error).toContain('2 session(s)');
+        expect(body.error).toContain('First Session');
+        expect(body.error).toContain('Second Session');
+      });
+
+      it('should use session ID in error when session has no title', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Test Agent', commandTemplate: 'test-agent {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create a session WITHOUT title
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: agent.id,
+            // No title
+          }),
+        });
+        const { session } = (await sessionRes.json()) as { session: Session };
+
+        // Try to delete the agent
+        const deleteRes = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        // Should contain session ID since no title was provided
+        expect(body.error).toContain(session.id);
+      });
+
+      it('should not modify agent when delete is rejected with 409', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Protected Agent',
+            commandTemplate: 'protected {{prompt}}',
+            description: 'Should remain unchanged',
+          }),
+        });
+        const { agent: originalAgent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create a session using this agent
+        await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: originalAgent.id,
+          }),
+        });
+
+        // Try to delete - should fail
+        const deleteRes = await app.request(`/api/agents/${originalAgent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        // Verify agent still exists and is unchanged
+        const getRes = await app.request(`/api/agents/${originalAgent.id}`);
+        expect(getRes.status).toBe(200);
+
+        const { agent } = (await getRes.json()) as { agent: AgentDefinition };
+        expect(agent.name).toBe(originalAgent.name);
+        expect(agent.commandTemplate).toBe(originalAgent.commandTemplate);
+        expect(agent.description).toBe(originalAgent.description);
+      });
+
+      it('should allow deleting agent after all sessions are deleted', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Deletable Agent', commandTemplate: 'deletable {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create a session using this agent
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: agent.id,
+          }),
+        });
+        const { session } = (await sessionRes.json()) as { session: Session };
+
+        // Try to delete - should fail
+        const deleteRes1 = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes1.status).toBe(409);
+
+        // Delete the session
+        const deleteSessionRes = await app.request(`/api/sessions/${session.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteSessionRes.status).toBe(200);
+
+        // Now deleting the agent should succeed
+        const deleteRes2 = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes2.status).toBe(200);
+
+        const body = (await deleteRes2.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+
+        // Verify agent is gone
+        const getRes = await app.request(`/api/agents/${agent.id}`);
+        expect(getRes.status).toBe(404);
+      });
+
+      it('should return 409 when agent is used only by inactive sessions', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Inactive Test Agent', commandTemplate: 'inactive-test {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Directly write an inactive session to persistence (not in memory)
+        const inactiveSession = {
+          id: 'inactive-session-1',
+          type: 'quick',
+          locationPath: '/test/path',
+          serverPid: 99999,
+          createdAt: new Date().toISOString(),
+          title: 'Inactive Session',
+          workers: [{
+            id: 'worker-1',
+            type: 'agent',
+            name: 'Agent',
+            agentId: agent.id,
+            pid: 88888,
+            createdAt: new Date().toISOString(),
+          }],
+        };
+        fs.writeFileSync(
+          `${TEST_CONFIG_DIR}/sessions.json`,
+          JSON.stringify([inactiveSession])
+        );
+
+        // Try to delete the agent - should fail because of inactive session in persistence
+        const deleteRes = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        expect(body.error).toContain('1 session(s)');
+        expect(body.error).toContain('(inactive)');
+        expect(body.error).toContain('Inactive Session');
+      });
+
+      it('should return 409 with correct breakdown for mixed active/inactive sessions', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Mixed Test Agent', commandTemplate: 'mixed-test {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create an active session via API
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: agent.id,
+            title: 'Active Session',
+          }),
+        });
+        expect(sessionRes.status).toBe(201);
+
+        // Read the current persistence (which includes the active session)
+        const currentSessions = JSON.parse(
+          fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8')
+        );
+
+        // Add an inactive session to persistence (different ID, not in memory)
+        const inactiveSession = {
+          id: 'inactive-session-2',
+          type: 'quick',
+          locationPath: '/test/path',
+          serverPid: 99999,
+          createdAt: new Date().toISOString(),
+          title: 'Inactive Session',
+          workers: [{
+            id: 'worker-2',
+            type: 'agent',
+            name: 'Agent',
+            agentId: agent.id,
+            pid: 88888,
+            createdAt: new Date().toISOString(),
+          }],
+        };
+        fs.writeFileSync(
+          `${TEST_CONFIG_DIR}/sessions.json`,
+          JSON.stringify([...currentSessions, inactiveSession])
+        );
+
+        // Try to delete the agent - should show both active and inactive
+        const deleteRes = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        expect(body.error).toContain('2 session(s)');
+        expect(body.error).toContain('1 active');
+        expect(body.error).toContain('1 inactive');
+        expect(body.error).toContain('Active Session');
+        expect(body.error).toContain('Inactive Session');
+      });
+
+      it('should return 409 when agent is in use by worktree session', async () => {
+        const app = await createApp();
+
+        // Create a custom agent
+        const createAgentRes = await app.request('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Worktree Agent', commandTemplate: 'worktree-agent {{prompt}}' }),
+        });
+        const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
+
+        // Create a worktree session using this agent
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'worktree',
+            locationPath: TEST_REPO_PATH,
+            repositoryId: 'test-repo',
+            worktreeId: 'main',
+            agentId: agent.id,
+            title: 'Worktree Session',
+          }),
+        });
+        expect(sessionRes.status).toBe(201);
+
+        // Try to delete the agent while worktree session is active
+        const deleteRes = await app.request(`/api/agents/${agent.id}`, {
+          method: 'DELETE',
+        });
+        expect(deleteRes.status).toBe(409);
+
+        const body = (await deleteRes.json()) as { error: string };
+        expect(body.error).toContain('in use');
+        expect(body.error).toContain('Worktree Session');
       });
     });
   });

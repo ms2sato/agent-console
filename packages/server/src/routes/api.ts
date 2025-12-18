@@ -34,7 +34,7 @@ import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { sessionValidationService } from '../services/session-validation-service.js';
 import { persistenceService } from '../services/persistence-service.js';
-import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 
 const api = new Hono();
@@ -524,15 +524,8 @@ api.get('/agents/:id', (c) => {
 // Register a new agent
 api.post('/agents', validateBody(CreateAgentRequestSchema), async (c) => {
   const body = getValidatedBody<CreateAgentRequest>(c);
-  const { name, command, description, icon, activityPatterns } = body;
 
-  const agent = agentManager.registerAgent({
-    name,
-    command,
-    description,
-    icon,
-    activityPatterns,
-  });
+  const agent = agentManager.registerAgent(body);
 
   return c.json({ agent }, 201);
 });
@@ -566,10 +559,38 @@ api.delete('/agents/:id', (c) => {
     throw new ValidationError('Built-in agents cannot be deleted');
   }
 
+  // Check if agent is in use by any active sessions
+  const activeSessions = sessionManager.getSessionsUsingAgent(agentId);
+  const activeSessionIds = new Set(activeSessions.map(s => s.id));
+
+  // Also check persisted (inactive) sessions
+  const persistedSessions = persistenceService.loadSessions();
+  const inactiveSessions = persistedSessions.filter(ps =>
+    !activeSessionIds.has(ps.id) &&
+    ps.workers.some(w => w.type === 'agent' && w.agentId === agentId)
+  );
+
+  const totalCount = activeSessions.length + inactiveSessions.length;
+  if (totalCount > 0) {
+    const activeNames = activeSessions.map(s => s.title || s.id);
+    const inactiveNames = inactiveSessions.map(s => s.title || s.id);
+    const allNames = [...activeNames, ...inactiveNames].join(', ');
+
+    const details = activeSessions.length > 0 && inactiveSessions.length > 0
+      ? ` (${activeSessions.length} active, ${inactiveSessions.length} inactive)`
+      : activeSessions.length > 0 ? ' (active)' : ' (inactive)';
+
+    throw new ConflictError(
+      `Agent is in use by ${totalCount} session(s)${details}: ${allNames}`
+    );
+  }
+
   const success = agentManager.unregisterAgent(agentId);
 
   if (!success) {
-    throw new ValidationError('Failed to delete agent');
+    // Agent was likely deleted between the check and unregister (race condition)
+    // Return 404 for idempotent behavior
+    throw new NotFoundError('Agent');
   }
 
   return c.json({ success: true });

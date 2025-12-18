@@ -430,16 +430,26 @@ describe('API Client', () => {
     it('should register agent successfully', async () => {
       const { registerAgent } = await import('../api');
       const mockAgent = {
-        agent: { id: 'new-agent', name: 'New Agent', command: 'new-cmd', isBuiltIn: false },
+        agent: {
+          id: 'new-agent',
+          name: 'New Agent',
+          commandTemplate: 'new-cmd {{prompt}}',
+          isBuiltIn: false,
+          capabilities: {
+            supportsContinue: false,
+            supportsHeadlessMode: false,
+            supportsActivityDetection: false,
+          },
+        },
       };
       mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
-      const result = await registerAgent({ name: 'New Agent', command: 'new-cmd' });
+      const result = await registerAgent({ name: 'New Agent', commandTemplate: 'new-cmd {{prompt}}' });
 
       expect(fetch).toHaveBeenCalledWith('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'New Agent', command: 'new-cmd' }),
+        body: JSON.stringify({ name: 'New Agent', commandTemplate: 'new-cmd {{prompt}}' }),
       });
       expect(result).toEqual(mockAgent);
     });
@@ -450,11 +460,11 @@ describe('API Client', () => {
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: mock(() => Promise.resolve({ error: 'Invalid command' })),
+        json: mock(() => Promise.resolve({ error: 'Invalid commandTemplate' })),
       } as unknown as Response);
 
-      await expect(registerAgent({ name: 'Test', command: '' })).rejects.toThrow(
-        'Invalid command'
+      await expect(registerAgent({ name: 'Test', commandTemplate: '' })).rejects.toThrow(
+        'Invalid commandTemplate'
       );
     });
   });
