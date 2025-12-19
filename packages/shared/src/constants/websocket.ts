@@ -11,6 +11,8 @@ export const WS_CLOSE_CODE = {
   ABNORMAL_CLOSURE: 1006,
   /** Policy violation */
   POLICY_VIOLATION: 1008,
+  /** Internal error; server encountered unexpected condition */
+  INTERNAL_ERROR: 1011,
 } as const;
 
 export type WsCloseCode = (typeof WS_CLOSE_CODE)[keyof typeof WS_CLOSE_CODE];

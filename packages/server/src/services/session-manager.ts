@@ -48,12 +48,20 @@ interface InternalWorkerBase {
   createdAt: string;
 }
 
+// Callback set for a single WebSocket connection
+interface ConnectionCallbacks {
+  onData: (data: string) => void;
+  onExit: (exitCode: number, signal: string | null) => void;
+  onActivityChange?: (state: AgentActivityState) => void;
+}
+
 // Base for PTY-based workers (agent, terminal)
+// Uses Map to support multiple concurrent WebSocket connections (e.g., multiple browser tabs)
 interface InternalPtyWorkerBase extends InternalWorkerBase {
   pty: PtyInstance;
   outputBuffer: string;
-  onData: (data: string) => void;
-  onExit: (exitCode: number, signal: string | null) => void;
+  // Map of connection ID to callbacks - supports multiple simultaneous connections
+  connectionCallbacks: Map<string, ConnectionCallbacks>;
 }
 
 interface InternalAgentWorker extends InternalPtyWorkerBase {
@@ -61,7 +69,6 @@ interface InternalAgentWorker extends InternalPtyWorkerBase {
   agentId: string;
   activityState: AgentActivityState;
   activityDetector: ActivityDetector;
-  onActivityChange?: (state: AgentActivityState) => void;
 }
 
 interface InternalTerminalWorker extends InternalPtyWorkerBase {
@@ -600,7 +607,11 @@ export class SessionManager {
     const activityDetector = new ActivityDetector({
       onStateChange: (state) => {
         worker.activityState = state;
-        worker.onActivityChange?.(state);
+        // Snapshot callbacks before iteration to avoid concurrent modification issues
+        const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+        for (const callbacks of callbacksSnapshot) {
+          callbacks.onActivityChange?.(state);
+        }
         this.globalActivityCallback?.(sessionId, id, state);
       },
       activityPatterns: agent.activityPatterns,
@@ -617,8 +628,7 @@ export class SessionManager {
       outputBuffer: '',
       activityState: 'unknown',
       activityDetector,
-      onData: () => {},
-      onExit: () => {},
+      connectionCallbacks: new Map(),
     };
 
     this.setupWorkerEventHandlers(worker, sessionId);
@@ -650,8 +660,7 @@ export class SessionManager {
       createdAt,
       pty: ptyProcess,
       outputBuffer: '',
-      onData: () => {},
-      onExit: () => {},
+      connectionCallbacks: new Map(),
     };
 
     this.setupWorkerEventHandlers(worker, null);
@@ -707,7 +716,11 @@ export class SessionManager {
         worker.activityDetector.processOutput(data);
       }
 
-      worker.onData(data);
+      // Snapshot callbacks before iteration to avoid concurrent modification issues
+      const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+      for (const callbacks of callbacksSnapshot) {
+        callbacks.onData(data);
+      }
     });
 
     worker.pty.onExit(({ exitCode, signal }) => {
@@ -718,36 +731,42 @@ export class SessionManager {
         worker.activityDetector.dispose();
       }
 
-      worker.onExit(exitCode, signalStr);
+      // Snapshot callbacks before iteration to avoid concurrent modification issues
+      const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+      for (const callbacks of callbacksSnapshot) {
+        callbacks.onExit(exitCode, signalStr);
+      }
     });
   }
 
-  attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): boolean {
+  /**
+   * Attach callbacks for a WebSocket connection to a worker.
+   * Supports multiple concurrent connections (e.g., multiple browser tabs).
+   * @returns Connection ID for later detachment, or null if worker not found
+   */
+  attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): string | null {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || worker.type === 'git-diff') return null;
 
-    worker.onData = callbacks.onData;
-    worker.onExit = callbacks.onExit;
+    const connectionId = crypto.randomUUID();
+    worker.connectionCallbacks.set(connectionId, {
+      onData: callbacks.onData,
+      onExit: callbacks.onExit,
+      onActivityChange: callbacks.onActivityChange,
+    });
 
-    if (worker.type === 'agent' && callbacks.onActivityChange) {
-      worker.onActivityChange = callbacks.onActivityChange;
-    }
-
-    return true;
+    return connectionId;
   }
 
-  detachWorkerCallbacks(sessionId: string, workerId: string): boolean {
+  /**
+   * Detach callbacks for a specific WebSocket connection.
+   * @param connectionId The connection ID returned by attachWorkerCallbacks
+   */
+  detachWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return false;
 
-    worker.onData = () => {};
-    worker.onExit = () => {};
-
-    if (worker.type === 'agent') {
-      worker.onActivityChange = undefined;
-    }
-
-    return true;
+    return worker.connectionCallbacks.delete(connectionId);
   }
 
   writeWorkerInput(sessionId: string, workerId: string, data: string): boolean {

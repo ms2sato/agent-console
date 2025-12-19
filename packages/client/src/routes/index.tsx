@@ -14,6 +14,7 @@ import {
   openPath,
 } from '../lib/api';
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
+import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-websocket.js';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
@@ -210,6 +211,8 @@ function DashboardPage() {
       }
     });
     delete lastNotificationTimeRef.current[sessionId];
+    // Disconnect all worker WebSockets for this session
+    disconnectWorkerWebSockets(sessionId);
   }, []);
 
   // Handle initial agent sync from WebSocket

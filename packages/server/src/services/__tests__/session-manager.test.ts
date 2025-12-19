@@ -374,7 +374,7 @@ describe('SessionManager', () => {
   });
 
   describe('attachWorkerCallbacks / detachWorkerCallbacks', () => {
-    it('should update callbacks on attach', async () => {
+    it('should update callbacks on attach and return connection ID', async () => {
       const manager = await getSessionManager();
 
       const session = manager.createSession({
@@ -386,19 +386,21 @@ describe('SessionManager', () => {
 
       const newOnData = mock(() => {});
       const newOnExit = mock(() => {});
-      const result = manager.attachWorkerCallbacks(session.id, workerId, {
+      const connectionId = manager.attachWorkerCallbacks(session.id, workerId, {
         onData: newOnData,
         onExit: newOnExit,
       });
 
-      expect(result).toBe(true);
+      // Returns a connection ID (UUID string)
+      expect(connectionId).not.toBeNull();
+      expect(typeof connectionId).toBe('string');
 
       // Verify new callbacks are used
       ptyFactory.instances[0].simulateData('new data');
       expect(newOnData).toHaveBeenCalledWith('new data');
     });
 
-    it('should detach callbacks', async () => {
+    it('should detach callbacks by connection ID', async () => {
       const manager = await getSessionManager();
 
       const onData = mock(() => {});
@@ -409,12 +411,13 @@ describe('SessionManager', () => {
       });
       const workerId = session.workers[0].id;
 
-      manager.attachWorkerCallbacks(session.id, workerId, {
+      const connectionId = manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
         onExit: mock(() => {}),
       });
 
-      manager.detachWorkerCallbacks(session.id, workerId);
+      expect(connectionId).not.toBeNull();
+      manager.detachWorkerCallbacks(session.id, workerId, connectionId!);
 
       // Data should not trigger original callback after detach
       onData.mockClear();
@@ -424,14 +427,57 @@ describe('SessionManager', () => {
       expect(onData).not.toHaveBeenCalled();
     });
 
-    it('should return false for non-existent session', async () => {
+    it('should support multiple concurrent connections', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      const onData1 = mock(() => {});
+      const onData2 = mock(() => {});
+
+      const connId1 = manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: onData1,
+        onExit: mock(() => {}),
+      });
+
+      const connId2 = manager.attachWorkerCallbacks(session.id, workerId, {
+        onData: onData2,
+        onExit: mock(() => {}),
+      });
+
+      // Both connections should have unique IDs
+      expect(connId1).not.toBeNull();
+      expect(connId2).not.toBeNull();
+      expect(connId1).not.toBe(connId2);
+
+      // Data should trigger both callbacks
+      ptyFactory.instances[0].simulateData('shared data');
+      expect(onData1).toHaveBeenCalledWith('shared data');
+      expect(onData2).toHaveBeenCalledWith('shared data');
+
+      // Detaching one should not affect the other
+      manager.detachWorkerCallbacks(session.id, workerId, connId1!);
+      onData1.mockClear();
+      onData2.mockClear();
+
+      ptyFactory.instances[0].simulateData('after detach 1');
+      expect(onData1).not.toHaveBeenCalled();
+      expect(onData2).toHaveBeenCalledWith('after detach 1');
+    });
+
+    it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
 
       expect(manager.attachWorkerCallbacks('non-existent', 'worker-1', {
         onData: mock(() => {}),
         onExit: mock(() => {}),
-      })).toBe(false);
-      expect(manager.detachWorkerCallbacks('non-existent', 'worker-1')).toBe(false);
+      })).toBeNull();
+      expect(manager.detachWorkerCallbacks('non-existent', 'worker-1', 'fake-conn-id')).toBe(false);
     });
   });
 

@@ -5,7 +5,7 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
-import { WS_READY_STATE } from '@agent-console/shared';
+import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { agentManager } from '../services/agent-manager.js';
@@ -171,6 +171,8 @@ export function setupWebSocketRoutes(
 
       // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
       let currentGitDiffBaseCommit: string | null = null;
+      // Track connection ID for this WebSocket (used to detach callbacks on close)
+      let connectionId: string | null = null;
 
       // Helper function to set up PTY worker handlers after async restore
       function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
@@ -211,7 +213,8 @@ export function setupWebSocketRoutes(
         };
 
         // Attach callbacks to receive real-time output
-        sessionManager.attachWorkerCallbacks(sessionId, workerId, {
+        // Returns a connection ID for later detachment (supports multiple tabs)
+        connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
           onData: (data) => {
             safeSend({ type: 'output', data });
           },
@@ -248,7 +251,7 @@ export function setupWebSocketRoutes(
               signal: null,
             };
             ws.send(JSON.stringify(errorMsg));
-            ws.close();
+            ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Session not found');
             return;
           }
 
@@ -260,7 +263,7 @@ export function setupWebSocketRoutes(
               signal: null,
             };
             ws.send(JSON.stringify(errorMsg));
-            ws.close();
+            ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Worker not found');
             return;
           }
 
@@ -278,7 +281,7 @@ export function setupWebSocketRoutes(
               // Send error to client and close WebSocket on critical connection errors
               try {
                 ws.send(JSON.stringify({ type: 'diff-error', error: 'Connection failed' }));
-                ws.close();
+                ws.close(WS_CLOSE_CODE.INTERNAL_ERROR, 'Git diff connection failed');
               } catch {
                 // Ignore send/close errors (connection may already be closed)
               }
@@ -298,7 +301,7 @@ export function setupWebSocketRoutes(
                 signal: null,
               };
               ws.send(JSON.stringify(errorMsg));
-              ws.close();
+              ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Worker restore failed');
               return;
             }
 
@@ -311,7 +314,7 @@ export function setupWebSocketRoutes(
               signal: null,
             };
             ws.send(JSON.stringify(errorMsg));
-            ws.close();
+            ws.close(WS_CLOSE_CODE.INTERNAL_ERROR, 'Worker restore error');
           });
         },
         onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
@@ -351,7 +354,7 @@ export function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {
-          logger.info({ sessionId, workerId }, 'Worker WebSocket disconnected');
+          logger.info({ sessionId, workerId, connectionId }, 'Worker WebSocket disconnected');
 
           // Check if this was a git-diff worker
           const session = sessionManager.getSession(sessionId);
@@ -362,13 +365,14 @@ export function setupWebSocketRoutes(
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff disconnection');
             });
-          } else {
-            // Detach callbacks but keep worker alive (only for PTY workers)
-            sessionManager.detachWorkerCallbacks(sessionId, workerId);
+          } else if (connectionId) {
+            // Detach this connection's callbacks but keep worker alive (only for PTY workers)
+            // Other connections (browser tabs) will continue receiving output
+            sessionManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
           }
         },
         onError(event: Event) {
-          logger.error({ sessionId, workerId, event }, 'Worker WebSocket error');
+          logger.error({ sessionId, workerId, connectionId, event }, 'Worker WebSocket error');
 
           // Clean up resources on error to prevent leaks
           const session = sessionManager.getSession(sessionId);
@@ -379,9 +383,9 @@ export function setupWebSocketRoutes(
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error cleaning up git-diff on WebSocket error');
             });
-          } else if (worker) {
-            // Detach callbacks for PTY workers (agent/terminal)
-            sessionManager.detachWorkerCallbacks(sessionId, workerId);
+          } else if (worker && connectionId) {
+            // Detach this connection's callbacks for PTY workers (agent/terminal)
+            sessionManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
           }
         },
       };
