@@ -112,7 +112,7 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
     throw new ValidationError(validation.error || 'Invalid path');
   }
 
-  const session = sessionManager.createSession(body);
+  const session = await sessionManager.createSession(body);
 
   return c.json({ session }, 201);
 });
@@ -429,7 +429,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
-    session = sessionManager.createSession({
+    session = await sessionManager.createSession({
       type: 'worktree',
       repositoryId: repoId,
       worktreeId: worktree.branch,

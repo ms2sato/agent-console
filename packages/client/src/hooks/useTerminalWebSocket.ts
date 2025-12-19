@@ -1,5 +1,5 @@
-import { useEffect, useCallback, useSyncExternalStore, useRef } from 'react';
-import type { AgentActivityState } from '@agent-console/shared';
+import { useEffect, useCallback, useSyncExternalStore, useRef, useState } from 'react';
+import type { AgentActivityState, WorkerErrorCode } from '@agent-console/shared';
 import * as workerWs from '../lib/worker-websocket.js';
 
 interface UseTerminalWebSocketOptions {
@@ -10,11 +10,17 @@ interface UseTerminalWebSocketOptions {
   onActivity?: (state: AgentActivityState) => void;
 }
 
+export interface WorkerError {
+  message: string;
+  code?: WorkerErrorCode;
+}
+
 interface UseTerminalWebSocketReturn {
   sendInput: (data: string) => void;
   sendResize: (cols: number, rows: number) => void;
   sendImage: (data: string, mimeType: string) => void;
   connected: boolean;
+  error: WorkerError | null;
 }
 
 export function useTerminalWebSocket(
@@ -23,6 +29,14 @@ export function useTerminalWebSocket(
   options: UseTerminalWebSocketOptions
 ): UseTerminalWebSocketReturn {
   const { onOutput, onHistory, onExit, onConnectionChange, onActivity } = options;
+
+  // Error state for worker activation failures
+  const [error, setError] = useState<WorkerError | null>(null);
+
+  // Error handler callback
+  const handleError = useCallback((message: string, code?: string) => {
+    setError({ message, code: code as WorkerErrorCode | undefined });
+  }, []);
 
   // Subscribe to connection state using useSyncExternalStore
   const state = useSyncExternalStore(
@@ -43,6 +57,8 @@ export function useTerminalWebSocket(
     const prev = prevRef.current;
     if (prev && (prev.sessionId !== sessionId || prev.workerId !== workerId)) {
       workerWs.disconnect(prev.sessionId, prev.workerId);
+      // Clear error when switching workers
+      setError(null);
     }
     prevRef.current = { sessionId, workerId };
 
@@ -52,6 +68,7 @@ export function useTerminalWebSocket(
       onHistory,
       onExit,
       onActivity,
+      onError: handleError,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, workerId]);
@@ -64,8 +81,9 @@ export function useTerminalWebSocket(
       onHistory,
       onExit,
       onActivity,
+      onError: handleError,
     });
-  }, [sessionId, workerId, onOutput, onHistory, onExit, onActivity]);
+  }, [sessionId, workerId, onOutput, onHistory, onExit, onActivity, handleError]);
 
   // Notify connection changes
   useEffect(() => {
@@ -84,5 +102,5 @@ export function useTerminalWebSocket(
     workerWs.sendImage(sessionId, workerId, data, mimeType);
   }, [sessionId, workerId]);
 
-  return { sendInput, sendResize, sendImage, connected: state.connected };
+  return { sendInput, sendResize, sendImage, connected: state.connected, error };
 }

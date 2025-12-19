@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type {
   WorkerServerMessage,
+  WorkerErrorCode,
   AgentActivityState,
   AppServerMessage,
   GitDiffWorker,
@@ -242,29 +243,40 @@ export function setupWebSocketRoutes(
         });
       }
 
+      /**
+       * Send error message to client before closing connection.
+       * Error message includes a user-friendly message and optional error code.
+       */
+      function sendErrorAndClose(
+        ws: WSContext,
+        message: string,
+        code: WorkerErrorCode,
+        closeCode: number = WS_CLOSE_CODE.NORMAL_CLOSURE
+      ): void {
+        try {
+          // Send error message first so client knows what went wrong
+          const errorMsg: WorkerServerMessage = { type: 'error', message, code };
+          ws.send(JSON.stringify(errorMsg));
+          // Then send exit message for proper cleanup
+          const exitMsg: WorkerServerMessage = { type: 'exit', exitCode: 1, signal: null };
+          ws.send(JSON.stringify(exitMsg));
+          ws.close(closeCode, message);
+        } catch {
+          // Ignore send/close errors (connection may already be closed)
+        }
+      }
+
       return {
         onOpen(_event: unknown, ws: WSContext) {
           const session = sessionManager.getSession(sessionId);
           if (!session) {
-            const errorMsg: WorkerServerMessage = {
-              type: 'exit',
-              exitCode: 1,
-              signal: null,
-            };
-            ws.send(JSON.stringify(errorMsg));
-            ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Session not found');
+            sendErrorAndClose(ws, 'Session not found', 'WORKER_NOT_FOUND');
             return;
           }
 
           const worker = session.workers.find(w => w.id === workerId);
           if (!worker) {
-            const errorMsg: WorkerServerMessage = {
-              type: 'exit',
-              exitCode: 1,
-              signal: null,
-            };
-            ws.send(JSON.stringify(errorMsg));
-            ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Worker not found');
+            sendErrorAndClose(ws, 'Worker not found', 'WORKER_NOT_FOUND');
             return;
           }
 
@@ -296,26 +308,15 @@ export function setupWebSocketRoutes(
           sessionManager.restoreWorker(sessionId, workerId).then((restoredWorker) => {
             if (!restoredWorker) {
               logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
-              const errorMsg: WorkerServerMessage = {
-                type: 'exit',
-                exitCode: 1,
-                signal: null,
-              };
-              ws.send(JSON.stringify(errorMsg));
-              ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Worker restore failed');
+              // restoreWorker returns null for: path not found, worker not found, or git-diff workers
+              sendErrorAndClose(ws, 'Worker activation failed. Session path may no longer exist.', 'PATH_NOT_FOUND');
               return;
             }
 
-            setupPtyWorkerHandlers(ws, worker.type);
+            setupPtyWorkerHandlers(ws, restoredWorker.type);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
-            const errorMsg: WorkerServerMessage = {
-              type: 'exit',
-              exitCode: 1,
-              signal: null,
-            };
-            ws.send(JSON.stringify(errorMsg));
-            ws.close(WS_CLOSE_CODE.INTERNAL_ERROR, 'Worker restore error');
+            sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);
           });
         },
         onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {

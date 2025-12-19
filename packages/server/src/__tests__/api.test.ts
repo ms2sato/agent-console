@@ -194,10 +194,12 @@ describe('API Routes Integration', () => {
         expect(body.session).toBeDefined();
         expect(body.session.type).toBe('quick');
         expect(body.session.locationPath).toBe('/test/path');
-        expect(body.session.workers.length).toBe(1);
-        expect(body.session.workers[0].type).toBe('agent');
+        // createSession creates both agent and git-diff workers
+        expect(body.session.workers.length).toBe(2);
+        expect(body.session.workers.some((w: Worker) => w.type === 'agent')).toBe(true);
+        expect(body.session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
 
-        // Verify PTY was spawned
+        // Verify PTY was spawned (only agent worker has PTY)
         expect(mockPtyInstances.length).toBe(1);
       });
 
