@@ -11,7 +11,6 @@ const result = await Bun.build({
   target: 'bun',
   format: 'esm',
   sourcemap: 'external',
-  external: ['bun-pty'], // Native module
 });
 
 if (!result.success) {
@@ -34,11 +33,9 @@ const distPackageJson = {
     start: 'bun index.js',
   },
   engines: {
-    bun: '>=1.3.0',
+    bun: '>=1.3.5', // Bun.Terminal requires 1.3.5+
   },
-  dependencies: {
-    'bun-pty': '^0.4.2',
-  },
+  dependencies: {},
 };
 
 mkdirSync(distDir, { recursive: true });

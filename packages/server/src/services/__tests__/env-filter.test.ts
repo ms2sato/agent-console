@@ -15,18 +15,18 @@ describe('env-filter', () => {
   });
 
   describe('getChildProcessEnv', () => {
-    it('should set NODE_ENV to empty string to override bun-pty inheritance', () => {
+    it('should set NODE_ENV to empty string to override Bun.Terminal inheritance', () => {
       process.env.NODE_ENV = 'production';
       process.env.HOME = '/home/test';
 
       const childEnv = getChildProcessEnv();
 
-      // bun-pty merges env with parent, so we set to empty string to override
+      // Bun.Terminal merges env with parent, so we set to empty string to override
       expect(childEnv.NODE_ENV).toBe('');
       expect(childEnv.HOME).toBe('/home/test');
     });
 
-    it('should set PORT to empty string to override bun-pty inheritance', () => {
+    it('should set PORT to empty string to override Bun.Terminal inheritance', () => {
       process.env.PORT = '3000';
       process.env.PATH = '/usr/bin';
 
@@ -36,7 +36,7 @@ describe('env-filter', () => {
       expect(childEnv.PATH).toBe('/usr/bin');
     });
 
-    it('should set HOST to empty string to override bun-pty inheritance', () => {
+    it('should set HOST to empty string to override Bun.Terminal inheritance', () => {
       process.env.HOST = '0.0.0.0';
       process.env.USER = 'testuser';
 

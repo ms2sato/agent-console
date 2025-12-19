@@ -25,8 +25,7 @@ const TEST_CONFIG_DIR = '/test/config';
 const mockPtyInstances: MockPty[] = [];
 let nextPtyPid = 10000;
 
-// Mock pty-provider module (mocking the provider itself instead of bun-pty)
-// This is more reliable since bun-pty uses dynamic require() which may not be caught by mock.module
+// Mock pty-provider module to avoid spawning real PTY processes in tests
 mock.module('../lib/pty-provider.js', () => ({
   bunPtyProvider: {
     spawn: () => {

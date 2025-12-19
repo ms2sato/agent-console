@@ -2,14 +2,16 @@ import { mock } from 'bun:test';
 import type { PtyProvider } from '../../lib/pty-provider.js';
 
 /**
- * Mock PTY class for testing bun-pty dependent code.
+ * Mock PTY class for testing PTY-dependent code.
  * Simulates PTY behavior without spawning actual processes.
- * @see https://github.com/puffyCid/bun-pty
+ * Implements the PtyInstance interface from pty-provider.
  */
 export class MockPty {
   pid: number;
-  private dataCallbacks: ((data: string) => void)[] = [];
-  private exitCallbacks: ((event: { exitCode: number; signal?: number }) => void)[] = [];
+  // Note: Single callback that gets replaced, matching PtyInstance interface contract
+  // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
+  private dataCallback: ((data: string) => void) | null = null;
+  private exitCallback: ((event: { exitCode: number; signal?: number }) => void) | null = null;
   killed = false;
   writtenData: string[] = [];
   currentCols = 120;
@@ -19,14 +21,12 @@ export class MockPty {
     this.pid = pid;
   }
 
-  onData(callback: (data: string) => void) {
-    this.dataCallbacks.push(callback);
-    return { dispose: () => {} };
+  onData(callback: (data: string) => void): void {
+    this.dataCallback = callback;
   }
 
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void) {
-    this.exitCallbacks.push(callback);
-    return { dispose: () => {} };
+  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void {
+    this.exitCallback = callback;
   }
 
   write(data: string) {
@@ -44,20 +44,20 @@ export class MockPty {
 
   // Test helpers - simulate PTY events
   simulateData(data: string) {
-    for (const cb of this.dataCallbacks) {
-      cb(data);
+    if (this.dataCallback) {
+      this.dataCallback(data);
     }
   }
 
   simulateExit(exitCode: number, signal?: number) {
-    for (const cb of this.exitCallbacks) {
-      cb({ exitCode, signal });
+    if (this.exitCallback) {
+      this.exitCallback({ exitCode, signal });
     }
   }
 }
 
 /**
- * Creates a mock factory for bun-pty that tracks all created instances.
+ * Creates a mock factory for PTY providers that tracks all created instances.
  * Usage:
  *   const ptyFactory = createMockPtyFactory();
  *   const manager = new SessionManager(ptyFactory.provider);
