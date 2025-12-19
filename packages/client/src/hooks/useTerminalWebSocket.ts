@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useCallback, useSyncExternalStore, useRef } from 'react';
 import type { AgentActivityState } from '@agent-console/shared';
 import * as workerWs from '../lib/worker-websocket.js';
 
@@ -30,9 +30,22 @@ export function useTerminalWebSocket(
     () => workerWs.getState(sessionId, workerId)
   );
 
-  // Connect on mount, disconnect on unmount
-  // Only sessionId and workerId should trigger reconnection
+  // Track previous sessionId/workerId for cleanup on change
+  const prevRef = useRef<{ sessionId: string; workerId: string } | null>(null);
+
+  // Connect on mount, disconnect old connection when sessionId/workerId changes
+  // Note: We don't disconnect on cleanup (return function) because the singleton
+  // should persist (same pattern as useAppWsEvent). This prevents duplicate output
+  // in React StrictMode where mount→unmount→mount would cause two connections.
+  // Instead, we disconnect the OLD connection in the effect body when deps change.
   useEffect(() => {
+    // If sessionId or workerId changed, disconnect the old connection
+    const prev = prevRef.current;
+    if (prev && (prev.sessionId !== sessionId || prev.workerId !== workerId)) {
+      workerWs.disconnect(prev.sessionId, prev.workerId);
+    }
+    prevRef.current = { sessionId, workerId };
+
     workerWs.connect(sessionId, workerId, {
       type: 'terminal',
       onOutput,
@@ -40,10 +53,6 @@ export function useTerminalWebSocket(
       onExit,
       onActivity,
     });
-
-    return () => {
-      workerWs.disconnect(sessionId, workerId);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, workerId]);
 

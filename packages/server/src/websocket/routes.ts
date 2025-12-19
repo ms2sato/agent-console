@@ -212,21 +212,8 @@ export function setupWebSocketRoutes(
           }
         };
 
-        // Attach callbacks to receive real-time output
-        // Returns a connection ID for later detachment (supports multiple tabs)
-        connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
-          onData: (data) => {
-            safeSend({ type: 'output', data });
-          },
-          onExit: (exitCode, signal) => {
-            safeSend({ type: 'exit', exitCode, signal });
-          },
-          onActivityChange: (state: AgentActivityState) => {
-            safeSend({ type: 'activity', state });
-          },
-        });
-
-        // Send buffered output (history) on reconnection
+        // Send buffered output (history) BEFORE registering callbacks
+        // This prevents duplicate output when PTY emits new data immediately after callback registration
         const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
         if (history) {
           safeSend({ type: 'history', data: history });
@@ -239,6 +226,20 @@ export function setupWebSocketRoutes(
             safeSend({ type: 'activity', state: activityState });
           }
         }
+
+        // Attach callbacks to receive real-time output AFTER sending history
+        // Returns a connection ID for later detachment (supports multiple tabs)
+        connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
+          onData: (data) => {
+            safeSend({ type: 'output', data });
+          },
+          onExit: (exitCode, signal) => {
+            safeSend({ type: 'exit', exitCode, signal });
+          },
+          onActivityChange: (state: AgentActivityState) => {
+            safeSend({ type: 'activity', state });
+          },
+        });
       }
 
       return {
