@@ -1,5 +1,10 @@
 /// <reference path="../types/bun-terminal.d.ts" />
 
+import { createLogger } from './logger.js';
+import { BunTerminalAdapter } from './bun-terminal-adapter.js';
+
+const logger = createLogger('pty-provider');
+
 /**
  * PTY spawn options for terminal processes
  */
@@ -19,11 +24,15 @@ export interface PtySpawnOptions {
 export interface PtyInstance {
   /** Process ID of the spawned terminal process */
   readonly pid: number;
-  /** Register a callback to receive terminal output data */
+  /**
+   * Register a callback to receive terminal output data.
+   * Note: Only one callback is supported. Subsequent calls will replace the previous callback.
+   */
   onData(callback: (data: string) => void): void;
   /**
    * Register a callback to be notified when the process exits.
    * Note: signal is only available when process is terminated by a signal.
+   * Note: Only one callback is supported. Subsequent calls will replace the previous callback.
    */
   onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
   /** Write input data to the terminal */
@@ -40,77 +49,6 @@ export interface PtyInstance {
  */
 export interface PtyProvider {
   spawn(command: string, args: string[], options: PtySpawnOptions): PtyInstance;
-}
-
-/**
- * Adapter class that wraps Bun.Subprocess with terminal support
- * to provide the PtyInstance interface.
- *
- * This adapter:
- * - Stores callbacks registered via onData() and onExit()
- * - Converts Uint8Array data from Bun.Terminal to string for onData callback
- * - Maps kill() to terminal.close()
- * - Exposes pid from the subprocess
- */
-class BunTerminalAdapter implements PtyInstance {
-  readonly pid: number;
-  private terminal: BunTerminal;
-  private dataCallback: ((data: string) => void) | null = null;
-  private exitCallback: ((event: { exitCode: number; signal?: number }) => void) | null = null;
-
-  constructor(pid: number, terminal: BunTerminal) {
-    this.pid = pid;
-    this.terminal = terminal;
-  }
-
-  /**
-   * Handle data from the terminal (called from spawn options).
-   * Converts Uint8Array to string and forwards to registered callback.
-   * @internal
-   */
-  _handleData(data: Uint8Array): void {
-    if (this.dataCallback) {
-      const text = new TextDecoder().decode(data);
-      this.dataCallback(text);
-    }
-  }
-
-  /**
-   * Handle process exit (called from spawn onExit).
-   * @internal
-   */
-  _handleExit(exitCode: number | null, signal: number | null): void {
-    if (this.exitCallback) {
-      // When process is killed by signal, exitCode may be null.
-      // Use 128 + signal as conventional exit code (similar to shell behavior).
-      // If both are null, use -1 to indicate unknown exit status.
-      const effectiveExitCode = exitCode ?? (signal !== null ? 128 + signal : -1);
-      this.exitCallback({
-        exitCode: effectiveExitCode,
-        signal: signal ?? undefined,
-      });
-    }
-  }
-
-  onData(callback: (data: string) => void): void {
-    this.dataCallback = callback;
-  }
-
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void {
-    this.exitCallback = callback;
-  }
-
-  write(data: string): void {
-    this.terminal.write(data);
-  }
-
-  resize(cols: number, rows: number): void {
-    this.terminal.resize(cols, rows);
-  }
-
-  kill(): void {
-    this.terminal.close();
-  }
 }
 
 /**
@@ -165,7 +103,15 @@ export const bunPtyProvider: PtyProvider = {
           adapter._handleData(data);
         },
       },
-      onExit(_proc: BunSubprocessWithTerminal, exitCode: number | null, signal: number | null) {
+      onExit(
+        _proc: BunSubprocessWithTerminal,
+        exitCode: number | null,
+        signal: number | null,
+        error: Error | undefined
+      ) {
+        if (error) {
+          logger.error({ error, exitCode, signal }, 'PTY process exited with error');
+        }
         adapter._handleExit(exitCode, signal);
       },
     });
