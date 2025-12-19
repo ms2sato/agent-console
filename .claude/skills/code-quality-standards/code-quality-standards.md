@@ -149,6 +149,32 @@ Key principles:
 - Are internal states accessible for testing when needed?
 - Are edge cases distinguishable?
 
+### Test-Only Exports
+When exporting internal functions or types solely for testing purposes, use `@internal` JSDoc tag with explanation:
+
+```typescript
+/**
+ * Validate that a parsed message has a valid type.
+ * @internal Exported for testing
+ */
+export function isValidClientMessage(msg: unknown): msg is AppClientMessage {
+  // ...
+}
+
+/**
+ * @internal Exported for testing
+ */
+export interface SomeDependencies {
+  // ...
+}
+```
+
+Key principles:
+- Use `@internal Exported for testing` to clearly mark test-only exports
+- Prefer extracting testable logic over exposing private state
+- If a function needs to be exported for testing, consider if it should be a separate module
+- Production code should only import non-internal exports
+
 ## 7. Performance Awareness
 
 ### Algorithmic Efficiency

@@ -73,8 +73,10 @@ export interface WorkerActivityInfo {
  * Valid message types for AppServerMessage.
  * Single source of truth for both type definitions and runtime validation.
  * Use object keys for easy `in` operator validation.
+ *
+ * @see docs/design/websocket-protocol.md for protocol specification and design decisions
  */
-export const APP_MESSAGE_TYPES = {
+export const APP_SERVER_MESSAGE_TYPES = {
   'sessions-sync': 1,
   'session-created': 2,
   'session-updated': 3,
@@ -86,7 +88,10 @@ export const APP_MESSAGE_TYPES = {
   'agent-deleted': 9,
 } as const;
 
-export type AppServerMessageType = keyof typeof APP_MESSAGE_TYPES;
+/** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
+export const APP_MESSAGE_TYPES = APP_SERVER_MESSAGE_TYPES;
+
+export type AppServerMessageType = keyof typeof APP_SERVER_MESSAGE_TYPES;
 
 export type AppServerMessage =
   | { type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }
@@ -98,6 +103,23 @@ export type AppServerMessage =
   | { type: 'agent-created'; agent: AgentDefinition }
   | { type: 'agent-updated'; agent: AgentDefinition }
   | { type: 'agent-deleted'; agentId: string };
+
+/**
+ * Valid message types for AppClientMessage.
+ * Single source of truth for both type definitions and runtime validation.
+ *
+ * - request-sync: Request fresh session data when Dashboard remounts
+ *   while WebSocket is already connected (navigation case)
+ *
+ * @see docs/design/websocket-protocol.md for protocol specification and design decisions
+ */
+export const APP_CLIENT_MESSAGE_TYPES = {
+  'request-sync': 1,
+} as const;
+
+export type AppClientMessageType = keyof typeof APP_CLIENT_MESSAGE_TYPES;
+
+export type AppClientMessage = { type: 'request-sync' };
 
 // Session validation types
 export type SessionValidationIssueType =

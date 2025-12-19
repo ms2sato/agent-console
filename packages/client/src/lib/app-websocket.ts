@@ -4,7 +4,7 @@
  *
  * @see docs/websocket-reconnection.md for design rationale
  */
-import { APP_MESSAGE_TYPES, type AppServerMessage } from '@agent-console/shared';
+import { APP_SERVER_MESSAGE_TYPES, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
 
 // Store state type
 export interface AppWebSocketState {
@@ -22,6 +22,8 @@ let state: AppWebSocketState = {
 };
 let retryCount = 0;
 let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+// Track if a sync request is pending to prevent duplicate requests during rapid navigation
+let syncPending = false;
 
 // Listeners
 type MessageListener = (msg: AppServerMessage) => void;
@@ -37,10 +39,21 @@ const JITTER_FACTOR = 0.3;
 const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
 
 // Close codes that should not trigger reconnection
-// 1000: Normal closure
-// 1001: Going away (browser navigating away)
-// 1008: Policy violation
-const NO_RECONNECT_CLOSE_CODES = [1000, 1001, 1008];
+const NO_RECONNECT_CLOSE_CODES = [
+  WS_CLOSE_CODE.NORMAL_CLOSURE,
+  WS_CLOSE_CODE.GOING_AWAY,
+  WS_CLOSE_CODE.POLICY_VIOLATION,
+] as const;
+
+/**
+ * Determine if reconnection should be attempted for the given close code.
+ * Add new codes to NO_RECONNECT_CLOSE_CODES to automatically update this logic.
+ */
+function isReconnectCode(code: number): boolean {
+  // Cast array to readonly number[] to allow includes() with external close codes.
+  // The literal types in NO_RECONNECT_CLOSE_CODES are preserved for type safety elsewhere.
+  return !(NO_RECONNECT_CLOSE_CODES as readonly number[]).includes(code);
+}
 
 /**
  * Validate that a parsed message has a valid type.
@@ -51,7 +64,7 @@ function isValidMessage(msg: unknown): msg is AppServerMessage {
     return false;
   }
   const { type } = msg as { type?: unknown };
-  return typeof type === 'string' && type in APP_MESSAGE_TYPES;
+  return typeof type === 'string' && type in APP_SERVER_MESSAGE_TYPES;
 }
 
 function getReconnectDelay(count: number): number {
@@ -85,8 +98,9 @@ function handleMessage(event: MessageEvent) {
       console.error('[WebSocket] Invalid message type:', parsed);
       return;
     }
-    // Track initial sync reception
+    // Track initial sync reception and clear pending state
     if (parsed.type === 'sessions-sync') {
+      syncPending = false;
       setState({ sessionsSynced: true });
     }
     if (parsed.type === 'agents-sync') {
@@ -151,11 +165,13 @@ export function connect(): void {
     ws.onmessage = handleMessage;
 
     ws.onclose = (event: CloseEvent) => {
-      setState({ connected: false });
+      // Reset all sync states on disconnect to ensure fresh sync on reconnection.
+      // This prevents Dashboard from being stuck in stale state after reconnect.
+      syncPending = false;
+      setState({ connected: false, sessionsSynced: false, agentsSynced: false });
       console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
-      // Don't reconnect for clean closures or policy violations
-      if (NO_RECONNECT_CLOSE_CODES.includes(event.code)) {
+      if (!isReconnectCode(event.code)) {
         console.log('[WebSocket] Normal closure, not reconnecting');
         return;
       }
@@ -184,10 +200,46 @@ export function disconnect(): void {
     retryTimeout = null;
   }
   if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
-    ws.close(1000); // Normal closure
+    ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
   }
   ws = null;
   setState({ connected: false });
+}
+
+/**
+ * Send a message to the app WebSocket.
+ * @returns true if the message was sent, false if the WebSocket is not connected
+ */
+function send(msg: AppClientMessage): boolean {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Request a full session sync from the server.
+ * Use this when the Dashboard mounts and the WebSocket is already connected.
+ * Resets sessionsSynced to false to show loading state until sync is received.
+ *
+ * Skips if a sync request is already pending to prevent duplicate requests
+ * during rapid navigation (Dashboard → Away → Dashboard).
+ *
+ * @returns true if the request was sent, false if not connected or already pending
+ */
+export function requestSync(): boolean {
+  if (syncPending) {
+    console.log('[WebSocket] Sync already pending, skipping request');
+    return false;
+  }
+
+  const sent = send({ type: 'request-sync' });
+  if (sent) {
+    syncPending = true;
+    setState({ sessionsSynced: false });
+  }
+  return sent;
 }
 
 /**
@@ -222,6 +274,7 @@ export function getState(): AppWebSocketState {
 export function _reset(): void {
   disconnect();
   retryCount = 0;
+  syncPending = false;
   state = { connected: false, sessionsSynced: false, agentsSynced: false };
   messageListeners.clear();
   stateListeners.clear();

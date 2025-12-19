@@ -5,12 +5,14 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
+import { WS_READY_STATE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
 import { agentManager } from '../services/agent-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
+import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 
 const logger = createLogger('websocket');
 
@@ -23,10 +25,10 @@ function broadcastToApp(msg: AppServerMessage): void {
   const deadClients: WSContext[] = [];
 
   for (const client of appClients) {
-    // Skip clients that are not in OPEN state (readyState === 1)
+    // Skip clients that are not in OPEN state
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const readyState = (client as any).readyState;
-    if (typeof readyState === 'number' && readyState !== 1) {
+    if (typeof readyState === 'number' && readyState !== WS_READY_STATE.OPEN) {
       deadClients.push(client);
       continue;
     }
@@ -90,6 +92,20 @@ agentManager.setLifecycleCallbacks({
   },
 });
 
+// Create app message handler with dependencies
+const handleAppMessage = createAppMessageHandler({
+  getAllSessions: () => sessionManager.getAllSessions(),
+  getWorkerActivityState: (sessionId, workerId) => sessionManager.getWorkerActivityState(sessionId, workerId),
+  logger,
+});
+
+// Create dependency object for sendSessionsSync
+const appDeps = {
+  getAllSessions: () => sessionManager.getAllSessions(),
+  getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
+  logger,
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
@@ -108,32 +124,7 @@ export function setupWebSocketRoutes(
           // Send current state of all sessions on connect
           // IMPORTANT: Send sync BEFORE adding to appClients to prevent race condition
           // where a session-created broadcast arrives before sessions-sync
-          const allSessions = sessionManager.getAllSessions();
-
-          // Collect activity states for all agent workers
-          const activityStates: { sessionId: string; workerId: string; activityState: import('@agent-console/shared').AgentActivityState }[] = [];
-          for (const session of allSessions) {
-            for (const worker of session.workers) {
-              if (worker.type === 'agent') {
-                const state = sessionManager.getWorkerActivityState(session.id, worker.id);
-                if (state) {
-                  activityStates.push({
-                    sessionId: session.id,
-                    workerId: worker.id,
-                    activityState: state,
-                  });
-                }
-              }
-            }
-          }
-
-          const sessionsSyncMsg: AppServerMessage = {
-            type: 'sessions-sync',
-            sessions: allSessions,
-            activityStates,
-          };
-          ws.send(JSON.stringify(sessionsSyncMsg));
-          logger.debug({ sessionCount: allSessions.length }, 'Sent sessions-sync');
+          sendSessionsSync(ws, appDeps);
 
           // Send current state of all agents
           const allAgents = agentManager.getAllAgents();
@@ -147,6 +138,9 @@ export function setupWebSocketRoutes(
           // Add to broadcast list AFTER sending sync to ensure correct message ordering
           appClients.add(ws);
           logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
+        },
+        onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
+          handleAppMessage(ws, event.data);
         },
         onClose(_event: unknown, ws: WSContext) {
           // Remove from broadcast list to prevent memory leak

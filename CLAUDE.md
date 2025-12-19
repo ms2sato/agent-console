@@ -181,27 +181,10 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 
 ## WebSocket Message Protocol
 
-### Worker Connection (`/ws/sessions/:sessionId/workers/:workerId`)
+See [docs/design/websocket-protocol.md](docs/design/websocket-protocol.md) for detailed protocol specification.
 
-Client → Server:
-- `{ type: 'input', data: string }` - Terminal input
-- `{ type: 'resize', cols: number, rows: number }` - Terminal resize
-- `{ type: 'image', data: string, mimeType: string }` - Image data (base64)
-
-Server → Client:
-- `{ type: 'output', data: string }` - PTY output
-- `{ type: 'exit', exitCode: number, signal: string | null }` - Process exit
-- `{ type: 'history', data: string }` - Buffered output on reconnect
-- `{ type: 'activity', state: AgentActivityState }` - Agent activity state change (agent workers only)
-
-### App Connection (`/ws/app`)
-
-Server → Client:
-- `{ type: 'sessions-sync', sessions: [...] }` - Full session list sync
-- `{ type: 'session-created', session: Session }` - New session created
-- `{ type: 'session-updated', session: Session }` - Session updated
-- `{ type: 'session-deleted', sessionId: string }` - Session deleted
-- `{ type: 'worker-activity', sessionId, workerId, activityState }` - Worker activity state change
+- `/ws/app` - App-wide state synchronization (sessions, worker activity)
+- `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
 
 ## Key Dependencies
 
