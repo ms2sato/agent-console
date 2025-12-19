@@ -827,11 +827,11 @@ export class SessionManager {
     existingWorker.pty.kill();
     existingWorker.activityDetector.dispose();
 
-    // Create new worker with same ID
+    // Create new worker with same ID, preserving original createdAt for tab order
     const newWorker = this.initializeAgentWorker({
       id: workerId,
       name: existingWorker.name,
-      createdAt: new Date().toISOString(),
+      createdAt: existingWorker.createdAt,
       sessionId,
       locationPath: session.locationPath,
       agentId: existingWorker.agentId,

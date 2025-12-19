@@ -978,6 +978,122 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('restartAgentWorker', () => {
+    it('should restart agent worker with same ID', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const originalWorkerId = session.workers[0].id;
+
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const restarted = manager.restartAgentWorker(session.id, originalWorkerId, false);
+
+      expect(restarted).not.toBeNull();
+      expect(restarted?.id).toBe(originalWorkerId);
+      expect(restarted?.type).toBe('agent');
+      // New PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      // Old PTY should be killed
+      expect(ptyFactory.instances[0].killed).toBe(true);
+    });
+
+    it('should preserve createdAt for tab order', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const originalWorkerId = session.workers[0].id;
+      const originalCreatedAt = session.workers[0].createdAt;
+
+      // Wait a bit to ensure time passes
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const restarted = manager.restartAgentWorker(session.id, originalWorkerId, false);
+
+      expect(restarted).not.toBeNull();
+      // createdAt should be preserved (not updated to current time)
+      expect(restarted?.createdAt).toBe(originalCreatedAt);
+    });
+
+    it('should preserve worker order after restart in multi-worker session', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorkerId = session.workers[0].id;
+
+      // Add a terminal worker
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      expect(terminalWorker).not.toBeNull();
+
+      // Get worker order before restart
+      const sessionBefore = manager.getSession(session.id)!;
+      const workerOrderBefore = sessionBefore.workers.map((w: Worker) => w.id);
+      expect(workerOrderBefore[0]).toBe(agentWorkerId);
+      expect(workerOrderBefore[1]).toBe(terminalWorker!.id);
+
+      // Restart agent worker
+      manager.restartAgentWorker(session.id, agentWorkerId, false);
+
+      // Worker order should be preserved (sorted by createdAt)
+      const sessionAfter = manager.getSession(session.id)!;
+      const workerOrderAfter = sessionAfter.workers.map((w: Worker) => w.id);
+      expect(workerOrderAfter).toEqual(workerOrderBefore);
+    });
+
+    it('should return null for non-existent session', async () => {
+      const manager = await getSessionManager();
+
+      const result = manager.restartAgentWorker('non-existent', 'worker-1', false);
+      expect(result).toBeNull();
+    });
+
+    it('should return null for non-existent worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = manager.restartAgentWorker(session.id, 'non-existent', false);
+      expect(result).toBeNull();
+    });
+
+    it('should return null for non-agent worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+
+      const result = manager.restartAgentWorker(session.id, terminalWorker!.id, false);
+      expect(result).toBeNull();
+    });
+  });
+
   describe('error recovery', () => {
     it('should propagate callback errors (caller is responsible for error handling)', async () => {
       const manager = await getSessionManager();
