@@ -63,6 +63,26 @@ When reviewing backend code, pay special attention to:
 4. **Callback Registration** - Are callbacks properly detached when resources are destroyed? (memory leak prevention)
 5. **Output Buffering** - Is rapid PTY output buffered before WebSocket send to reduce message frequency?
 
+## TypeScript Safety Checks
+
+1. **Exhaustive Type Handling** - When handling discriminated unions (e.g., `type: 'agent' | 'terminal' | 'git-diff'`):
+   - All cases must be explicitly handled with `if/else if` or `switch`
+   - **Never use bare `else` for the last case** - always use `else if` with explicit type check
+   - Add exhaustive check: `const _exhaustive: never = value;` to catch future type additions at compile time
+   - **Red flag**: `else { ... }` handling a union type = implicit fallback that hides bugs
+
+2. **Null Safety** - Check that nullable types (`T | null`) are properly guarded before use
+
+## File Size and Responsibility Checks
+
+1. **File Size Warning** - Flag files that exceed reasonable limits:
+   - \> 500 lines: Consider splitting into modules
+   - Look for natural boundaries (e.g., related functions/types that could be extracted)
+
+2. **Responsibility Clustering** - Check if function/method names suggest multiple concerns:
+   - Prefixes like `initializeWorker*`, `activateWorker*` vs `createSession*` = extraction candidate
+   - A class/file doing two distinct things violates Single Responsibility Principle
+
 ## When Existing Patterns Are Questionable
 
 If you identify issues with existing patterns in the codebase:
