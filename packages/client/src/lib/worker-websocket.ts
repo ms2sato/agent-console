@@ -106,6 +106,7 @@ export interface TerminalWorkerCallbacks {
   onHistory: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivity?: (state: AgentActivityState) => void;
+  onError?: (message: string, code?: string) => void;
 }
 
 // Callbacks for git-diff workers
@@ -247,6 +248,9 @@ function handleTerminalMessage(_key: string, msg: WorkerServerMessage, callbacks
       break;
     case 'activity':
       callbacks.onActivity?.(msg.state);
+      break;
+    case 'error':
+      callbacks.onError?.(msg.message, msg.code);
       break;
   }
 }

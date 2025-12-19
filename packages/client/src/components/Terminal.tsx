@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
+import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import type { AgentActivityState } from '@agent-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
@@ -22,6 +22,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
+  const [workerError, setWorkerError] = useState<WorkerError | null>(null);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -52,13 +53,18 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onActivityChange?.(state);
   }, [onActivityChange]);
 
-  const { sendInput, sendResize, sendImage, connected } = useTerminalWebSocket(sessionId, workerId, {
+  const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(sessionId, workerId, {
     onOutput: handleOutput,
     onHistory: handleHistory,
     onExit: handleExit,
     onConnectionChange: handleConnectionChange,
     onActivity: handleActivity,
   });
+
+  // Sync error from hook to local state
+  useEffect(() => {
+    setWorkerError(error);
+  }, [error]);
 
   // Initialize xterm.js
   useEffect(() => {
@@ -181,9 +187,23 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [connected, sendResize]);
 
   const statusColor =
+    workerError ? 'bg-red-500' :
     status === 'connected' ? 'bg-green-500' :
     status === 'connecting' ? 'bg-yellow-500' :
     status === 'exited' ? 'bg-red-500' : 'bg-gray-500';
+
+  const getStatusText = () => {
+    if (workerError) {
+      return 'Error';
+    }
+    if (status === 'connecting') return 'Connecting...';
+    if (status === 'connected') return 'Connected';
+    if (status === 'disconnected') return 'Disconnected';
+    if (status === 'exited') {
+      return `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
+    }
+    return '';
+  };
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -191,14 +211,21 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3 shrink-0">
           <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
           <span className="text-gray-500 text-sm">
-            {status === 'connecting' && 'Connecting...'}
-            {status === 'connected' && 'Connected'}
-            {status === 'disconnected' && 'Disconnected'}
-            {status === 'exited' && `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`}
+            {getStatusText()}
           </span>
         </div>
       )}
-      <div ref={containerRef} className="flex-1 min-h-0 bg-slate-800 p-2 overflow-hidden" />
+      <div className="flex-1 min-h-0 relative overflow-hidden">
+        <div ref={containerRef} className="absolute inset-0 bg-slate-800 p-2" />
+        {workerError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90">
+            <div className="bg-red-900/80 border border-red-700 rounded-lg p-6 max-w-md text-center">
+              <div className="text-red-400 text-lg font-medium mb-2">Worker Error</div>
+              <div className="text-gray-200">{workerError.message}</div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -28,12 +28,12 @@ interface PersistedWorkerBase {
 export interface PersistedAgentWorker extends PersistedWorkerBase {
   type: 'agent';
   agentId: string;
-  pid: number;  // PTY process ID
+  pid: number | null;  // PTY process ID (null when not yet activated after server restart)
 }
 
 export interface PersistedTerminalWorker extends PersistedWorkerBase {
   type: 'terminal';
-  pid: number;  // PTY process ID
+  pid: number | null;  // PTY process ID (null when not yet activated after server restart)
 }
 
 export interface PersistedGitDiffWorker extends PersistedWorkerBase {

@@ -45,6 +45,14 @@ describe('SessionManager', () => {
     return new module.SessionManager(ptyFactory.provider, mockPathExists);
   }
 
+  // Helper to simulate server restart
+  // Marks current process as dead and creates a new SessionManager instance
+  // that loads sessions from persistence (mimicking server restart behavior)
+  async function simulateServerRestart() {
+    mockProcess.markDead(process.pid);
+    return getSessionManager();
+  }
+
   describe('createSession', () => {
     it('should create a new worktree session with correct properties', async () => {
       const manager = await getSessionManager();
@@ -57,7 +65,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(request);
+      const session = await manager.createSession(request);
 
       expect(session.id).toBeDefined();
       expect(session.type).toBe('worktree');
@@ -67,8 +75,10 @@ describe('SessionManager', () => {
         expect(session.worktreeId).toBe('main');
       }
       expect(session.status).toBe('active');
-      expect(session.workers.length).toBe(1);
-      expect(session.workers[0].type).toBe('agent');
+      // createSession creates both agent and git-diff workers
+      expect(session.workers.length).toBe(2);
+      expect(session.workers.some((w: Worker) => w.type === 'agent')).toBe(true);
+      expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
 
     it('should create a new quick session with correct properties', async () => {
@@ -80,13 +90,14 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(request);
+      const session = await manager.createSession(request);
 
       expect(session.id).toBeDefined();
       expect(session.type).toBe('quick');
       expect(session.locationPath).toBe('/test/path');
       expect(session.status).toBe('active');
-      expect(session.workers.length).toBe(1);
+      // createSession creates both agent and git-diff workers
+      expect(session.workers.length).toBe(2);
     });
 
     it('should persist session to storage', async () => {
@@ -98,7 +109,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      manager.createSession(request);
+      await manager.createSession(request);
 
       // Check persisted data
       const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
@@ -117,7 +128,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(request);
+      const session = await manager.createSession(request);
       const workerId = session.workers[0].id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
@@ -141,7 +152,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(request);
+      const session = await manager.createSession(request);
       const workerId = session.workers[0].id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData: mock(() => {}),
@@ -164,7 +175,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(request);
+      const session = await manager.createSession(request);
       const workerId = session.workers[0].id;
 
       // Simulate PTY output
@@ -187,7 +198,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(sessionRequest);
+      const session = await manager.createSession(sessionRequest);
 
       const workerRequest: CreateWorkerParams = {
         type: 'terminal',
@@ -224,7 +235,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(sessionRequest);
+      const session = await manager.createSession(sessionRequest);
       const workerId = session.workers[0].id;
 
       const result = manager.deleteWorker(session.id, workerId);
@@ -243,7 +254,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const session = manager.createSession(sessionRequest);
+      const session = await manager.createSession(sessionRequest);
       const result = manager.deleteWorker(session.id, 'non-existent');
       expect(result).toBe(false);
     });
@@ -259,7 +270,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       };
 
-      const created = manager.createSession(request);
+      const created = await manager.createSession(request);
       const retrieved = manager.getSession(created.id);
 
       expect(retrieved).toBeDefined();
@@ -285,8 +296,8 @@ describe('SessionManager', () => {
     it('should return all sessions', async () => {
       const manager = await getSessionManager();
 
-      manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
-      manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
+      await manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
+      await manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
 
       const sessions = manager.getAllSessions();
       expect(sessions.length).toBe(2);
@@ -297,7 +308,7 @@ describe('SessionManager', () => {
     it('should write input to PTY', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -322,7 +333,7 @@ describe('SessionManager', () => {
     it('should resize PTY', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -348,7 +359,7 @@ describe('SessionManager', () => {
     it('should delete session and remove from storage', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -377,7 +388,7 @@ describe('SessionManager', () => {
     it('should update callbacks on attach and return connection ID', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -404,7 +415,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const onData = mock(() => {});
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -430,7 +441,7 @@ describe('SessionManager', () => {
     it('should support multiple concurrent connections', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -485,7 +496,7 @@ describe('SessionManager', () => {
     it('should return activity state', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -513,7 +524,7 @@ describe('SessionManager', () => {
       const globalCallback = mock(() => {});
       manager.setGlobalActivityCallback(globalCallback);
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -538,7 +549,7 @@ describe('SessionManager', () => {
       const onSessionCreated = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionCreated });
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -560,7 +571,7 @@ describe('SessionManager', () => {
       const onSessionDeleted = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionDeleted });
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -578,7 +589,7 @@ describe('SessionManager', () => {
       const onSessionUpdated = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionUpdated });
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -623,7 +634,7 @@ describe('SessionManager', () => {
       const onSessionCreated = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionCreated });
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -647,7 +658,7 @@ describe('SessionManager', () => {
       });
 
       // Create
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -675,7 +686,7 @@ describe('SessionManager', () => {
     it('should truncate buffer when exceeding max size', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -697,7 +708,7 @@ describe('SessionManager', () => {
     it('should handle empty input string', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -713,7 +724,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const onData = mock(() => {});
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -737,7 +748,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const onData = mock(() => {});
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -760,7 +771,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const onData = mock(() => {});
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -784,7 +795,7 @@ describe('SessionManager', () => {
     it('should handle session creation with path containing spaces', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/path/with spaces/project',
         agentId: 'claude-code',
@@ -798,7 +809,7 @@ describe('SessionManager', () => {
     it('should return existing internal worker if it exists', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -821,7 +832,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       // Create session and get persisted data
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -865,7 +876,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       // Create session with terminal worker
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -898,7 +909,7 @@ describe('SessionManager', () => {
     it('should return null for git-diff worker (does not need PTY restoration)', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -931,7 +942,7 @@ describe('SessionManager', () => {
     it('should return null if worker not found in persisted metadata', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -950,7 +961,7 @@ describe('SessionManager', () => {
     it('should update persistence with new PID after restoration', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -976,13 +987,255 @@ describe('SessionManager', () => {
       expect(newPid).toBeDefined();
       expect(newPid).not.toBe(originalPid); // PID should be different
     });
+
+    it('should return all workers from getSession even when only some are restored', async () => {
+      const manager = await getSessionManager();
+
+      // Create session with agent worker
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorkerId = session.workers.find((w: Worker) => w.type === 'agent')!.id;
+
+      // Add terminal worker
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      const terminalWorkerId = terminalWorker!.id;
+
+      // Get actual worker count before restart
+      const sessionBefore = manager.getSession(session.id);
+      const workerCountBefore = sessionBefore!.workers.length;
+      expect(workerCountBefore).toBeGreaterThanOrEqual(2); // At least agent + terminal
+
+      // Simulate server restart
+      const manager2 = await simulateServerRestart();
+
+      // Before any restoration, getSession should return all workers from persistence
+      const sessionAfterRestart = manager2.getSession(session.id);
+      expect(sessionAfterRestart?.workers.length).toBe(workerCountBefore);
+
+      // Restore only ONE worker (agent)
+      await manager2.restoreWorker(session.id, agentWorkerId);
+
+      // getSession should STILL return all workers (not just the restored one)
+      const sessionAfterPartialRestore = manager2.getSession(session.id);
+      expect(sessionAfterPartialRestore?.workers.length).toBe(workerCountBefore);
+
+      // Verify both agent and terminal workers are present
+      const workerIds = sessionAfterPartialRestore?.workers.map((w: Worker) => w.id);
+      expect(workerIds).toContain(agentWorkerId);
+      expect(workerIds).toContain(terminalWorkerId);
+    });
+  });
+
+  describe('restoreWorker - double-activation prevention (idempotency)', () => {
+    it('should not create duplicate PTY when restoreWorker called on active worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // PTY count after initial creation
+      const ptyCountAfterCreate = ptyFactory.instances.length;
+
+      // Call restoreWorker on an already-active worker (PTY exists)
+      const restored = await manager.restoreWorker(session.id, workerId);
+
+      // Should return the worker successfully
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(workerId);
+
+      // No new PTY should be created (idempotent behavior)
+      expect(ptyFactory.instances.length).toBe(ptyCountAfterCreate);
+    });
+
+    it('should not increase PTY count when restoreWorker called multiple times', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // PTY count after initial creation
+      const ptyCountAfterCreate = ptyFactory.instances.length;
+
+      // Call restoreWorker multiple times (simulating concurrent WebSocket connections)
+      await Promise.all([
+        manager.restoreWorker(session.id, workerId),
+        manager.restoreWorker(session.id, workerId),
+        manager.restoreWorker(session.id, workerId),
+      ]);
+
+      // No new PTYs should be created (all calls should be idempotent)
+      expect(ptyFactory.instances.length).toBe(ptyCountAfterCreate);
+    });
+
+    it('should not throw errors for concurrent restoreWorker calls on same worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // Concurrent calls should not throw (idempotent behavior prevents resource leaks)
+      await expect(Promise.all([
+        manager.restoreWorker(session.id, workerId),
+        manager.restoreWorker(session.id, workerId),
+        manager.restoreWorker(session.id, workerId),
+      ])).resolves.toBeDefined();
+    });
+
+    it('should be idempotent for terminal workers as well', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      expect(terminalWorker).not.toBeNull();
+
+      // PTY count after terminal worker creation
+      const ptyCountAfterCreate = ptyFactory.instances.length;
+
+      // Call restoreWorker on an already-active terminal worker
+      const restored = await manager.restoreWorker(session.id, terminalWorker!.id);
+
+      // Should return the worker successfully
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(terminalWorker!.id);
+
+      // No new PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountAfterCreate);
+    });
+  });
+
+  describe('restoreWorker - path validation', () => {
+    // Helper to get SessionManager with custom pathExists mock
+    async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return new module.SessionManager(ptyFactory.provider, pathExistsFn);
+    }
+
+    it('should return null when session path no longer exists', async () => {
+      // First, create a session with a manager that says path exists
+      const managerForCreate = await getSessionManager();
+
+      const session = await managerForCreate.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // Simulate server restart and path no longer exists
+      mockProcess.markDead(process.pid);
+
+      // Create a new manager where path validation will fail
+      const mockPathNotExists = async (_path: string): Promise<boolean> => false;
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotExists);
+
+      // PTY count before restore attempt
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore should return null because path no longer exists
+      const restored = await managerAfterRestart.restoreWorker(session.id, workerId);
+
+      expect(restored).toBeNull();
+
+      // No new PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+    });
+
+    it('should not create PTY when path validation fails for terminal worker', async () => {
+      // First, create a session with terminal worker
+      const managerForCreate = await getSessionManager();
+
+      const session = await managerForCreate.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminalWorker = await managerForCreate.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      const terminalWorkerId = terminalWorker!.id;
+
+      // Simulate server restart and path no longer exists
+      mockProcess.markDead(process.pid);
+
+      const mockPathNotExists = async (_path: string): Promise<boolean> => false;
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotExists);
+
+      // PTY count before restore attempt
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore should return null because path no longer exists
+      const restored = await managerAfterRestart.restoreWorker(session.id, terminalWorkerId);
+
+      expect(restored).toBeNull();
+
+      // No new PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+    });
+
+    it('should successfully restore worker when path still exists', async () => {
+      // Create a session
+      const managerForCreate = await getSessionManager();
+
+      const session = await managerForCreate.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+
+      // Simulate server restart but path still exists
+      mockProcess.markDead(process.pid);
+
+      // Create a new manager where path validation succeeds
+      const mockPathStillExists = async (_path: string): Promise<boolean> => true;
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathStillExists);
+
+      // PTY count before restore
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Restore should succeed
+      const restored = await managerAfterRestart.restoreWorker(session.id, workerId);
+
+      expect(restored).not.toBeNull();
+      expect(restored?.id).toBe(workerId);
+
+      // New PTY should be created (since internal worker had no PTY after restart)
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+    });
   });
 
   describe('restartAgentWorker', () => {
     it('should restart agent worker with same ID', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1005,7 +1258,7 @@ describe('SessionManager', () => {
     it('should preserve createdAt for tab order', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1026,12 +1279,13 @@ describe('SessionManager', () => {
     it('should preserve worker order after restart in multi-worker session', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const agentWorkerId = session.workers[0].id;
+      // createSession creates both agent and git-diff workers
+      const agentWorkerId = session.workers.find((w: Worker) => w.type === 'agent')!.id;
 
       // Add a terminal worker
       const terminalWorker = await manager.createWorker(session.id, {
@@ -1040,11 +1294,13 @@ describe('SessionManager', () => {
       });
       expect(terminalWorker).not.toBeNull();
 
-      // Get worker order before restart
+      // Get worker order before restart (sorted by createdAt)
       const sessionBefore = manager.getSession(session.id)!;
       const workerOrderBefore = sessionBefore.workers.map((w: Worker) => w.id);
-      expect(workerOrderBefore[0]).toBe(agentWorkerId);
-      expect(workerOrderBefore[1]).toBe(terminalWorker!.id);
+      // Session should have 3 workers: agent, git-diff, terminal
+      expect(workerOrderBefore.length).toBe(3);
+      expect(workerOrderBefore).toContain(agentWorkerId);
+      expect(workerOrderBefore).toContain(terminalWorker!.id);
 
       // Restart agent worker
       manager.restartAgentWorker(session.id, agentWorkerId, false);
@@ -1065,7 +1321,7 @@ describe('SessionManager', () => {
     it('should return null for non-existent worker', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1078,7 +1334,7 @@ describe('SessionManager', () => {
     it('should return null for non-agent worker', async () => {
       const manager = await getSessionManager();
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1102,7 +1358,7 @@ describe('SessionManager', () => {
         throw new Error('Callback error');
       });
 
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1124,7 +1380,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const onExit = mock(() => {});
-      const session = manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
@@ -1145,8 +1401,8 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       // Create two sessions
-      manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
-      const session2 = manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
+      await manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
+      const session2 = await manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
       const workerId2 = session2.workers[0].id;
 
       // First session crashes (signal 11 = SIGSEGV)
