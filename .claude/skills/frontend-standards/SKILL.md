@@ -5,8 +5,6 @@ description: React patterns and frontend best practices for this project. Use wh
 
 # Frontend Standards
 
-Refer to [frontend-standards.md](frontend-standards.md) for detailed patterns.
-
 ## Key Principles
 
 - **Avoid useEffect** - Use TanStack Query, useSyncExternalStore, or event handlers instead
@@ -17,3 +15,8 @@ Refer to [frontend-standards.md](frontend-standards.md) for detailed patterns.
 ## Tech Stack
 
 - React 18, TanStack Router, TanStack Query, Tailwind CSS, xterm.js, Valibot
+
+## Detailed Documentation
+
+- [react-patterns.md](react-patterns.md) - React patterns (useEffect alternatives, Suspense, state management)
+- [frontend-standards.md](frontend-standards.md) - Directory structure, TanStack Router/Query, xterm.js, styling
