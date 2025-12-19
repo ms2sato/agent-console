@@ -10,7 +10,7 @@ const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
  * Filter environment variables for child PTY processes.
  * Removes server-specific variables that could interfere with child behavior.
  *
- * Note: bun-pty merges the provided env with parent process env instead of replacing it.
+ * Note: Bun.Terminal merges the provided env with parent process env instead of replacing it.
  * To work around this, we explicitly set blocked variables to empty strings to override
  * the inherited values from the parent process.
  */
@@ -23,13 +23,13 @@ export function getChildProcessEnv(): Record<string, string> {
     }
   }
 
-  // Explicitly set blocked env vars to empty string to override bun-pty's
+  // Explicitly set blocked env vars to empty string to override Bun.Terminal's
   // parent environment inheritance behavior
   for (const key of BLOCKED_ENV_VARS) {
     env[key] = '';
   }
 
-  // Ensure color support for PTY processes (required for bun-pty)
+  // Ensure color support for PTY processes
   env['TERM'] = 'xterm-256color';
   env['COLORTERM'] = 'truecolor';
   env['FORCE_COLOR'] = '1';

@@ -2,9 +2,9 @@ import { mock } from 'bun:test';
 import type { PtyProvider } from '../../lib/pty-provider.js';
 
 /**
- * Mock PTY class for testing bun-pty dependent code.
+ * Mock PTY class for testing PTY-dependent code.
  * Simulates PTY behavior without spawning actual processes.
- * @see https://github.com/puffyCid/bun-pty
+ * Implements the PtyInstance interface from pty-provider.
  */
 export class MockPty {
   pid: number;
@@ -57,7 +57,7 @@ export class MockPty {
 }
 
 /**
- * Creates a mock factory for bun-pty that tracks all created instances.
+ * Creates a mock factory for PTY providers that tracks all created instances.
  * Usage:
  *   const ptyFactory = createMockPtyFactory();
  *   const manager = new SessionManager(ptyFactory.provider);
