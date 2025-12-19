@@ -1,76 +1,20 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useTerminalWebSocket } from '../useTerminalWebSocket';
-
-// Mock WebSocket
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-
-  url: string;
-  readyState: number = MockWebSocket.CONNECTING;
-  onopen: ((event: Event) => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  onclose: ((event: CloseEvent) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-
-  private static instances: MockWebSocket[] = [];
-
-  constructor(url: string) {
-    this.url = url;
-    MockWebSocket.instances.push(this);
-  }
-
-  send = mock(() => {});
-  close = mock(() => {
-    this.readyState = MockWebSocket.CLOSED;
-  });
-
-  // Test helpers
-  simulateOpen() {
-    this.readyState = MockWebSocket.OPEN;
-    this.onopen?.(new Event('open'));
-  }
-
-  simulateMessage(data: string) {
-    this.onmessage?.(new MessageEvent('message', { data }));
-  }
-
-  simulateClose() {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.(new CloseEvent('close'));
-  }
-
-  simulateError() {
-    this.onerror?.(new Event('error'));
-  }
-
-  static getLastInstance(): MockWebSocket | undefined {
-    return MockWebSocket.instances[MockWebSocket.instances.length - 1];
-  }
-
-  static clearInstances() {
-    MockWebSocket.instances = [];
-  }
-}
-
-// Setup global WebSocket mock
-const originalWebSocket = globalThis.WebSocket;
-
-// Helper to wait for next tick
-const waitForNextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
+import { _reset } from '../../lib/worker-websocket';
 
 describe('useTerminalWebSocket', () => {
+  let restoreWebSocket: () => void;
+
   beforeEach(() => {
-    MockWebSocket.clearInstances();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).WebSocket = MockWebSocket;
+    restoreWebSocket = installMockWebSocket();
+    _reset();
   });
 
   afterEach(() => {
-    globalThis.WebSocket = originalWebSocket;
+    _reset();
+    restoreWebSocket();
   });
 
   const createDefaultOptions = () => ({
@@ -81,140 +25,136 @@ describe('useTerminalWebSocket', () => {
     onActivity: mock(() => {}),
   });
 
-  it('should connect to WebSocket and update connected state', async () => {
+  it('should connect on mount and disconnect on unmount', async () => {
     const options = createDefaultOptions();
-    const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+    const { unmount } = renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
     );
-
-    // Initial state
-    expect(result.current.connected).toBe(false);
-
-    // Wait for connection attempt
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     expect(ws).toBeDefined();
+    expect(ws?.url).toContain('session-1');
+    expect(ws?.url).toContain('worker-1');
 
-    // Simulate connection open
+    unmount();
+
+    expect(ws?.close).toHaveBeenCalled();
+  });
+
+  it('should update connected state when WebSocket opens', async () => {
+    const options = createDefaultOptions();
+    const { result } = renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
+
+    expect(result.current.connected).toBe(false);
+
+    const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
     });
 
     expect(result.current.connected).toBe(true);
-    expect(options.onConnectionChange).toHaveBeenCalledWith(true);
   });
 
-  it('should handle output messages', async () => {
+  it('should call onConnectionChange when connection state changes', async () => {
     const options = createDefaultOptions();
     renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+      useTerminalWebSocket('session-1', 'worker-1', options)
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
+
     act(() => {
       ws?.simulateOpen();
     });
 
-    // Simulate output message
+    expect(options.onConnectionChange).toHaveBeenCalledWith(true);
+
     act(() => {
-      ws?.simulateMessage(JSON.stringify({ type: 'output', data: 'Hello World' }));
+      ws?.simulateClose();
     });
 
-    expect(options.onOutput).toHaveBeenCalledWith('Hello World');
+    expect(options.onConnectionChange).toHaveBeenCalledWith(false);
   });
 
-  it('should handle history messages', async () => {
+  it('should call onOutput when receiving output message', async () => {
     const options = createDefaultOptions();
-    renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
-
-    await act(async () => {
-      await waitForNextTick();
-    });
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'Previous output' }));
     });
 
-    expect(options.onHistory).toHaveBeenCalledWith('Previous output');
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'output', data: 'hello' }));
+    });
+
+    expect(options.onOutput).toHaveBeenCalledWith('hello');
   });
 
-  it('should handle exit messages', async () => {
+  it('should call onHistory when receiving history message', async () => {
     const options = createDefaultOptions();
-    renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
-
-    await act(async () => {
-      await waitForNextTick();
-    });
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
+    });
+
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data' }));
+    });
+
+    expect(options.onHistory).toHaveBeenCalledWith('history data');
+  });
+
+  it('should call onExit when receiving exit message', async () => {
+    const options = createDefaultOptions();
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
       ws?.simulateMessage(JSON.stringify({ type: 'exit', exitCode: 0, signal: null }));
     });
 
     expect(options.onExit).toHaveBeenCalledWith(0, null);
   });
 
-  it('should handle activity messages', async () => {
+  it('should call onActivity when receiving activity message', async () => {
     const options = createDefaultOptions();
-    renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
-
-    await act(async () => {
-      await waitForNextTick();
-    });
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
+    });
+
+    act(() => {
       ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
     });
 
     expect(options.onActivity).toHaveBeenCalledWith('active');
   });
 
-  it('should handle connection close', async () => {
+  it('should send input messages via WebSocket', async () => {
     const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+      useTerminalWebSocket('session-1', 'worker-1', options)
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
-
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-    });
-
-    expect(result.current.connected).toBe(true);
-
-    act(() => {
-      ws?.simulateClose();
-    });
-
-    expect(result.current.connected).toBe(false);
-    expect(options.onConnectionChange).toHaveBeenCalledWith(false);
-  });
-
-  it('should send input messages', async () => {
-    const options = createDefaultOptions();
-    const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
-    );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -228,15 +168,11 @@ describe('useTerminalWebSocket', () => {
     expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'hello' }));
   });
 
-  it('should send resize messages', async () => {
+  it('should send resize messages via WebSocket', async () => {
     const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+      useTerminalWebSocket('session-1', 'worker-1', options)
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -247,20 +183,14 @@ describe('useTerminalWebSocket', () => {
       result.current.sendResize(80, 24);
     });
 
-    expect(ws?.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'resize', cols: 80, rows: 24 })
-    );
+    expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
   });
 
-  it('should send image messages', async () => {
+  it('should send image messages via WebSocket', async () => {
     const options = createDefaultOptions();
     const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+      useTerminalWebSocket('session-1', 'worker-1', options)
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -271,101 +201,102 @@ describe('useTerminalWebSocket', () => {
       result.current.sendImage('base64data', 'image/png');
     });
 
-    expect(ws?.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'image', data: 'base64data', mimeType: 'image/png' })
-    );
+    expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'image', data: 'base64data', mimeType: 'image/png' }));
   });
 
-  it('should not send when WebSocket is not open', async () => {
+  it('should reconnect when sessionId or workerId changes', async () => {
     const options = createDefaultOptions();
-    const { result } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
+    const { rerender } = renderHook(
+      ({ sessionId, workerId }) => useTerminalWebSocket(sessionId, workerId, options),
+      { initialProps: { sessionId: 'session-1', workerId: 'worker-1' } }
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
+    const firstWs = MockWebSocket.getLastInstance();
+    expect(firstWs?.url).toContain('session-1');
+    expect(firstWs?.url).toContain('worker-1');
+
+    // Change workerId
+    rerender({ sessionId: 'session-1', workerId: 'worker-2' });
+
+    // Should disconnect old and connect new
+    expect(firstWs?.close).toHaveBeenCalled();
+
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).not.toBe(firstWs);
+    expect(secondWs?.url).toContain('worker-2');
+  });
+
+  it('should not send messages when not connected', async () => {
+    const options = createDefaultOptions();
+    const { result } = renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
 
     const ws = MockWebSocket.getLastInstance();
     // Don't open the connection
 
     act(() => {
-      result.current.sendInput('test');
+      result.current.sendInput('hello');
     });
 
     expect(ws?.send).not.toHaveBeenCalled();
   });
 
-  it('should handle invalid JSON gracefully', async () => {
+  it('should ignore invalid message types', async () => {
     const consoleSpy = mock(() => {});
     const originalError = console.error;
     console.error = consoleSpy;
 
     const options = createDefaultOptions();
-
-    renderHook(() => useTerminalWebSocket('ws://localhost/ws/terminal/123', options));
-
-    await act(async () => {
-      await waitForNextTick();
-    });
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
-      ws?.simulateMessage('not valid json');
     });
 
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'unknown-type', data: 'test' }));
+    });
+
+    // Should log error but not call any callbacks
     expect(consoleSpy).toHaveBeenCalled();
     expect(options.onOutput).not.toHaveBeenCalled();
+    expect(options.onHistory).not.toHaveBeenCalled();
+    expect(options.onExit).not.toHaveBeenCalled();
 
     console.error = originalError;
   });
 
-  it('should close WebSocket on unmount', async () => {
-    const options = createDefaultOptions();
-    const { unmount } = renderHook(() =>
-      useTerminalWebSocket('ws://localhost/ws/terminal/123', options)
-    );
+  it('should update callbacks without reconnecting', async () => {
+    const options1 = createDefaultOptions();
+    const options2 = createDefaultOptions();
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-    });
-
-    unmount();
-
-    expect(ws?.close).toHaveBeenCalled();
-  });
-
-  it('should reconnect when URL changes', async () => {
-    const options = createDefaultOptions();
     const { rerender } = renderHook(
-      ({ url }) => useTerminalWebSocket(url, options),
-      { initialProps: { url: 'ws://localhost/ws/terminal/123' } }
+      ({ options }) => useTerminalWebSocket('session-1', 'worker-1', options),
+      { initialProps: { options: options1 } }
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const firstWs = MockWebSocket.getLastInstance();
     act(() => {
       firstWs?.simulateOpen();
     });
 
-    // Change URL
-    rerender({ url: 'ws://localhost/ws/terminal/456' });
+    // Change callbacks
+    rerender({ options: options2 });
 
-    await act(async () => {
-      await waitForNextTick();
+    // Should NOT create a new WebSocket
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).toBe(firstWs);
+
+    // New callback should be called
+    act(() => {
+      firstWs?.simulateMessage(JSON.stringify({ type: 'output', data: 'test' }));
     });
 
-    const secondWs = MockWebSocket.getLastInstance();
-    expect(secondWs).not.toBe(firstWs);
-    expect(secondWs?.url).toBe('ws://localhost/ws/terminal/456');
+    expect(options1.onOutput).not.toHaveBeenCalled();
+    expect(options2.onOutput).toHaveBeenCalledWith('test');
   });
 });

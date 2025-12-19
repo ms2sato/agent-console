@@ -1,5 +1,6 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
-import type { GitDiffServerMessage, GitDiffClientMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
+import { useEffect, useCallback, useSyncExternalStore } from 'react';
+import type { GitDiffData, GitDiffTarget } from '@agent-console/shared';
+import * as workerWs from '../lib/worker-websocket.js';
 
 interface UseGitDiffWorkerOptions {
   sessionId: string;
@@ -19,113 +20,46 @@ interface UseGitDiffWorkerReturn {
 
 export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWorkerReturn {
   const { sessionId, workerId, onConnectionChange } = options;
-  const wsRef = useRef<WebSocket | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [diffData, setDiffData] = useState<GitDiffData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const onConnectionChangeRef = useRef(onConnectionChange);
-  onConnectionChangeRef.current = onConnectionChange;
 
-  // Construct WebSocket URL
-  const wsUrl = `ws://${window.location.host}/ws/session/${sessionId}/worker/${workerId}`;
+  // Subscribe to connection state using useSyncExternalStore
+  const state = useSyncExternalStore(
+    (callback) => workerWs.subscribeState(sessionId, workerId, callback),
+    () => workerWs.getState(sessionId, workerId)
+  );
 
+  // Connect on mount, disconnect on unmount
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let cancelled = false;
-
-    // Small delay to handle React Strict Mode's double-mount behavior
-    // This ensures the first mount/unmount cycle completes before connecting
-    const timeoutId = setTimeout(() => {
-      if (cancelled) return;
-
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (cancelled) {
-          ws?.close();
-          return;
-        }
-        setConnected(true);
-        setLoading(true);
-        onConnectionChangeRef.current?.(true);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg: GitDiffServerMessage = JSON.parse(event.data);
-          switch (msg.type) {
-            case 'diff-data':
-              setDiffData(msg.data);
-              setError(null);
-              setLoading(false);
-              break;
-            case 'diff-error':
-              setError(msg.error);
-              setDiffData(null);
-              setLoading(false);
-              break;
-          }
-        } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
-          setError('Failed to parse server message');
-          setLoading(false);
-        }
-      };
-
-      ws.onclose = () => {
-        if (!cancelled) {
-          setConnected(false);
-          onConnectionChangeRef.current?.(false);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setError('WebSocket connection error');
-        setLoading(false);
-      };
-    }, 0);
+    workerWs.connect(sessionId, workerId, {
+      type: 'git-diff',
+    });
 
     return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-      if (ws) {
-        ws.close();
-      }
+      workerWs.disconnect(sessionId, workerId);
     };
-  }, [wsUrl]);
+  }, [sessionId, workerId]);
+
+  // Notify connection changes
+  useEffect(() => {
+    onConnectionChange?.(state.connected);
+  }, [state.connected, onConnectionChange]);
 
   const refresh = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: GitDiffClientMessage = { type: 'refresh' };
-      wsRef.current.send(JSON.stringify(msg));
-      setLoading(true);
-    }
-  }, []);
+    workerWs.refreshDiff(sessionId, workerId);
+  }, [sessionId, workerId]);
 
   const setBaseCommit = useCallback((ref: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: GitDiffClientMessage = { type: 'set-base-commit', ref };
-      wsRef.current.send(JSON.stringify(msg));
-      setLoading(true);
-    }
-  }, []);
+    workerWs.setBaseCommit(sessionId, workerId, ref);
+  }, [sessionId, workerId]);
 
   const setTargetCommit = useCallback((ref: GitDiffTarget) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: GitDiffClientMessage = { type: 'set-target-commit', ref };
-      wsRef.current.send(JSON.stringify(msg));
-      setLoading(true);
-    }
-  }, []);
+    workerWs.setTargetCommit(sessionId, workerId, ref);
+  }, [sessionId, workerId]);
 
   return {
-    diffData,
-    error,
-    loading,
-    connected,
+    diffData: state.diffData ?? null,
+    error: state.diffError ?? null,
+    loading: state.diffLoading ?? false,
+    connected: state.connected,
     refresh,
     setBaseCommit,
     setTargetCommit,

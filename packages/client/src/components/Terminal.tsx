@@ -8,14 +8,15 @@ import type { AgentActivityState } from '@agent-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
-interface TerminalProps {
-  wsUrl: string;
+export interface TerminalProps {
+  sessionId: string;
+  workerId: string;
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ wsUrl, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -48,7 +49,7 @@ export function Terminal({ wsUrl, onStatusChange, onActivityChange, hideStatusBa
     onActivityChange?.(state);
   }, [onActivityChange]);
 
-  const { sendInput, sendResize, sendImage, connected } = useTerminalWebSocket(wsUrl, {
+  const { sendInput, sendResize, sendImage, connected } = useTerminalWebSocket(sessionId, workerId, {
     onOutput: handleOutput,
     onHistory: handleHistory,
     onExit: handleExit,

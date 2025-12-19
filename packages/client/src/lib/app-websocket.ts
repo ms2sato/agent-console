@@ -5,6 +5,7 @@
  * @see docs/websocket-reconnection.md for design rationale
  */
 import { APP_SERVER_MESSAGE_TYPES, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
+import { getAppWsUrl } from './websocket-url.js';
 
 // Store state type
 export interface AppWebSocketState {
@@ -149,12 +150,8 @@ export function connect(): void {
     ws = null;
   }
 
-  // Use wss:// for HTTPS, ws:// for HTTP
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/app`;
-
   try {
-    ws = new WebSocket(wsUrl);
+    ws = new WebSocket(getAppWsUrl());
 
     ws.onopen = () => {
       retryCount = 0;

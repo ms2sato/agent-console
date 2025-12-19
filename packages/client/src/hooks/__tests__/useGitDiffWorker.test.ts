@@ -1,127 +1,71 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useGitDiffWorker } from '../useGitDiffWorker';
+import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
+import { _reset } from '../../lib/worker-websocket';
 import type { GitDiffData } from '@agent-console/shared';
 
-// Mock WebSocket
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-
-  url: string;
-  readyState: number = MockWebSocket.CONNECTING;
-  onopen: ((event: Event) => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  onclose: ((event: CloseEvent) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-
-  private static instances: MockWebSocket[] = [];
-
-  constructor(url: string) {
-    this.url = url;
-    MockWebSocket.instances.push(this);
-  }
-
-  send = mock(() => {});
-  close = mock(() => {
-    this.readyState = MockWebSocket.CLOSED;
-  });
-
-  // Test helpers
-  simulateOpen() {
-    this.readyState = MockWebSocket.OPEN;
-    this.onopen?.(new Event('open'));
-  }
-
-  simulateMessage(data: string) {
-    this.onmessage?.(new MessageEvent('message', { data }));
-  }
-
-  simulateClose() {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.(new CloseEvent('close'));
-  }
-
-  simulateError() {
-    this.onerror?.(new Event('error'));
-  }
-
-  static getLastInstance(): MockWebSocket | undefined {
-    return MockWebSocket.instances[MockWebSocket.instances.length - 1];
-  }
-
-  static clearInstances() {
-    MockWebSocket.instances = [];
-  }
-}
-
-// Setup global WebSocket mock
-const originalWebSocket = globalThis.WebSocket;
-
-// Helper to wait for next tick
-const waitForNextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const mockDiffData: GitDiffData = {
+  summary: {
+    baseCommit: 'abc123',
+    targetRef: 'working-dir',
+    files: [
+      {
+        path: 'src/test.ts',
+        status: 'modified',
+        stageState: 'unstaged',
+        additions: 5,
+        deletions: 2,
+        isBinary: false,
+      },
+    ],
+    totalAdditions: 5,
+    totalDeletions: 2,
+    updatedAt: '2025-12-13T00:00:00Z',
+  },
+  rawDiff: 'diff --git a/src/test.ts b/src/test.ts...',
+};
 
 describe('useGitDiffWorker', () => {
-  beforeEach(() => {
-    MockWebSocket.clearInstances();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).WebSocket = MockWebSocket;
+  let restoreWebSocket: () => void;
 
-    // Mock window.location.host
-    Object.defineProperty(window, 'location', {
-      value: { host: 'localhost:3000' },
-      writable: true,
-    });
+  beforeEach(() => {
+    restoreWebSocket = installMockWebSocket();
+    _reset();
   });
 
   afterEach(() => {
-    globalThis.WebSocket = originalWebSocket;
+    _reset();
+    restoreWebSocket();
   });
 
-  const mockDiffData: GitDiffData = {
-    summary: {
-      baseCommit: 'abc123',
-      targetRef: 'working-dir',
-      files: [
-        {
-          path: 'src/test.ts',
-          status: 'modified',
-          stageState: 'unstaged',
-          additions: 5,
-          deletions: 2,
-          isBinary: false,
-        },
-      ],
-      totalAdditions: 5,
-      totalDeletions: 2,
-      updatedAt: '2025-12-13T00:00:00Z',
-    },
-    rawDiff: 'diff --git a/src/test.ts b/src/test.ts...',
-  };
+  it('should connect on mount and disconnect on unmount', async () => {
+    const { unmount } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
 
-  it('should connect to WebSocket with correct URL', async () => {
+    const ws = MockWebSocket.getLastInstance();
+    expect(ws).toBeDefined();
+    expect(ws?.url).toContain('session1');
+    expect(ws?.url).toContain('worker1');
+
+    unmount();
+
+    expect(ws?.close).toHaveBeenCalled();
+  });
+
+  it('should return initial state correctly', async () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    // Initial state
     expect(result.current.connected).toBe(false);
     expect(result.current.loading).toBe(true);
     expect(result.current.diffData).toBe(null);
     expect(result.current.error).toBe(null);
-
-    await act(async () => {
-      await waitForNextTick();
-    });
-
-    const ws = MockWebSocket.getLastInstance();
-    expect(ws).toBeDefined();
-    expect(ws?.url).toBe('ws://localhost:3000/ws/session/session1/worker/worker1');
   });
 
-  it('should update connected state on connection', async () => {
+  it('should update connected state when WebSocket opens', async () => {
     const onConnectionChange = mock(() => {});
     const { result } = renderHook(() =>
       useGitDiffWorker({
@@ -131,12 +75,9 @@ describe('useGitDiffWorker', () => {
       })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
+    expect(result.current.connected).toBe(false);
 
     const ws = MockWebSocket.getLastInstance();
-
     act(() => {
       ws?.simulateOpen();
     });
@@ -149,10 +90,6 @@ describe('useGitDiffWorker', () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -173,10 +110,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -196,10 +129,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -217,10 +146,6 @@ describe('useGitDiffWorker', () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -242,10 +167,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -266,10 +187,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -289,10 +206,6 @@ describe('useGitDiffWorker', () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     // Don't open the connection
@@ -315,10 +228,6 @@ describe('useGitDiffWorker', () => {
       })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -339,10 +248,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -362,10 +267,6 @@ describe('useGitDiffWorker', () => {
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
 
-    await act(async () => {
-      await waitForNextTick();
-    });
-
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -379,23 +280,26 @@ describe('useGitDiffWorker', () => {
     console.error = originalError;
   });
 
-  it('should close WebSocket on unmount', async () => {
-    const { unmount } = renderHook(() =>
+  it('should handle invalid message type gracefully', async () => {
+    const consoleSpy = mock(() => {});
+    const originalError = console.error;
+    console.error = consoleSpy;
+
+    const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'unknown-type', data: {} }));
     });
 
-    unmount();
+    expect(consoleSpy).toHaveBeenCalled();
+    expect(result.current.error).toBe('Invalid server message');
+    expect(result.current.loading).toBe(false);
 
-    expect(ws?.close).toHaveBeenCalled();
+    console.error = originalError;
   });
 
   it('should reconnect when sessionId or workerId changes', async () => {
@@ -403,10 +307,6 @@ describe('useGitDiffWorker', () => {
       ({ sessionId, workerId }) => useGitDiffWorker({ sessionId, workerId }),
       { initialProps: { sessionId: 'session1', workerId: 'worker1' } }
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const firstWs = MockWebSocket.getLastInstance();
     act(() => {
@@ -416,23 +316,17 @@ describe('useGitDiffWorker', () => {
     // Change workerId
     rerender({ sessionId: 'session1', workerId: 'worker2' });
 
-    await act(async () => {
-      await waitForNextTick();
-    });
+    expect(firstWs?.close).toHaveBeenCalled();
 
     const secondWs = MockWebSocket.getLastInstance();
     expect(secondWs).not.toBe(firstWs);
-    expect(secondWs?.url).toBe('ws://localhost:3000/ws/session/session1/worker/worker2');
+    expect(secondWs?.url).toContain('worker2');
   });
 
   it('should clear error when receiving new diff data', async () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
@@ -459,10 +353,6 @@ describe('useGitDiffWorker', () => {
     const { result } = renderHook(() =>
       useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
     );
-
-    await act(async () => {
-      await waitForNextTick();
-    });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
