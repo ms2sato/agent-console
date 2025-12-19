@@ -33,6 +33,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   const handleHistory = useCallback((data: string) => {
+    // Clear terminal before writing history to prevent duplicate output
+    // (e.g., when reconnecting or React StrictMode causes double connection)
+    terminalRef.current?.clear();
     terminalRef.current?.write(data);
   }, []);
 

@@ -25,7 +25,9 @@ describe('useTerminalWebSocket', () => {
     onActivity: mock(() => {}),
   });
 
-  it('should connect on mount and disconnect on unmount', async () => {
+  it('should connect on mount and keep connection on unmount (singleton pattern)', async () => {
+    // Note: We don't disconnect on unmount to prevent duplicate output in React StrictMode.
+    // This follows the same pattern as useAppWsEvent.
     const options = createDefaultOptions();
     const { unmount } = renderHook(() =>
       useTerminalWebSocket('session-1', 'worker-1', options)
@@ -38,7 +40,8 @@ describe('useTerminalWebSocket', () => {
 
     unmount();
 
-    expect(ws?.close).toHaveBeenCalled();
+    // Connection should persist (singleton pattern) - close is NOT called on unmount
+    expect(ws?.close).not.toHaveBeenCalled();
   });
 
   it('should update connected state when WebSocket opens', async () => {

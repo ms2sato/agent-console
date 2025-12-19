@@ -120,6 +120,13 @@ type WorkerCallbacks = TerminalWorkerCallbacks | GitDiffWorkerCallbacks;
 // Connection storage
 const connections = new Map<string, WorkerConnection>();
 
+// Pending listeners for connections that don't exist yet
+// These are registered when useSyncExternalStore subscribes before connect() is called
+const pendingListeners = new Map<string, Set<() => void>>();
+
+// Default state for disconnected workers (cached to avoid infinite loop in useSyncExternalStore)
+const DEFAULT_DISCONNECTED_STATE: WorkerConnectionState = Object.freeze({ connected: false });
+
 /**
  * Generate a unique key for a worker connection.
  */
@@ -384,6 +391,17 @@ export function connect(
   };
   connections.set(key, conn);
 
+  // Transfer pending listeners to the new connection
+  const pending = pendingListeners.get(key);
+  if (pending) {
+    for (const listener of pending) {
+      conn.stateListeners.add(listener);
+    }
+    pendingListeners.delete(key);
+    // Notify listeners that state is now available (triggers re-render)
+    conn.stateListeners.forEach(fn => fn());
+  }
+
   setupWebSocketHandlers(key, ws, callbacks);
 
   return true;
@@ -485,6 +503,7 @@ export function setTargetCommit(sessionId: string, workerId: string, ref: GitDif
 
 /**
  * Subscribe to state changes for a specific worker (for useSyncExternalStore).
+ * Supports subscribing before connection exists (pending listeners).
  * @returns Unsubscribe function
  */
 export function subscribeState(sessionId: string, workerId: string, listener: () => void): () => void {
@@ -496,8 +515,24 @@ export function subscribeState(sessionId: string, workerId: string, listener: ()
     return () => conn.stateListeners.delete(listener);
   }
 
-  // If no connection yet, return no-op unsubscribe
-  return () => {};
+  // No connection yet - store as pending listener
+  // These will be transferred to the connection when it's created
+  let pending = pendingListeners.get(key);
+  if (!pending) {
+    pending = new Set();
+    pendingListeners.set(key, pending);
+  }
+  pending.add(listener);
+
+  return () => {
+    const p = pendingListeners.get(key);
+    if (p) {
+      p.delete(listener);
+      if (p.size === 0) {
+        pendingListeners.delete(key);
+      }
+    }
+  };
 }
 
 /**
@@ -511,8 +546,9 @@ export function getState(sessionId: string, workerId: string): WorkerConnectionS
     return conn.state;
   }
 
-  // Return default disconnected state
-  return { connected: false };
+  // Return cached default state to avoid infinite loop in useSyncExternalStore
+  // (getSnapshot must return the same reference when state hasn't changed)
+  return DEFAULT_DISCONNECTED_STATE;
 }
 
 /**
