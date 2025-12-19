@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useAppWsEvent, useAppWsState } from '../useAppWs';
-import { _reset as resetWebSocket } from '../../lib/app-websocket';
+import { _reset as resetWebSocket, connect } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 
 describe('useAppWsState', () => {
@@ -157,12 +157,40 @@ describe('useAppWsEvent', () => {
   });
 
   describe('connection', () => {
-    it('should connect on mount', () => {
+    it('should connect on mount when not connected', () => {
       renderHook(() => useAppWsEvent());
 
       const ws = MockWebSocket.getLastInstance();
       expect(ws).toBeDefined();
       expect(ws?.url).toBe('ws://localhost:3000/ws/app');
+    });
+
+    it('should send request-sync on mount when already connected (navigation case)', () => {
+      // Simulate: User was on Dashboard, navigated away, WebSocket stayed connected
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // Clear send mock to isolate the request-sync call
+      ws?.send.mockClear();
+
+      // Now mount the hook (simulating returning to Dashboard)
+      renderHook(() => useAppWsEvent());
+
+      // Should send request-sync instead of creating new connection
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-sync' }));
+      // Should not create a new WebSocket
+      expect(MockWebSocket.getInstances().length).toBe(1);
+    });
+
+    it('should not send request-sync when connecting for the first time', () => {
+      renderHook(() => useAppWsEvent());
+
+      const ws = MockWebSocket.getLastInstance();
+      // Before connection opens, send should not be called
+      expect(ws?.send).not.toHaveBeenCalled();
     });
   });
 

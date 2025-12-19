@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import {
   connect,
@@ -6,6 +7,7 @@ import {
   subscribe,
   subscribeState,
   getState,
+  requestSync,
   _reset,
 } from '../app-websocket';
 
@@ -86,7 +88,7 @@ describe('app-websocket', () => {
     it('should abandon CLOSING socket and create new one', () => {
       connect();
       const ws1 = MockWebSocket.getLastInstance();
-      ws1!.readyState = MockWebSocket.CLOSING;
+      ws1!.simulateClosing();
 
       connect();
 
@@ -103,20 +105,20 @@ describe('app-websocket', () => {
   });
 
   describe('disconnect', () => {
-    it('should close WebSocket with code 1000', () => {
+    it('should close WebSocket with code NORMAL_CLOSURE', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
       disconnect();
 
-      expect(ws?.close).toHaveBeenCalledWith(1000);
+      expect(ws?.close).toHaveBeenCalledWith(WS_CLOSE_CODE.NORMAL_CLOSURE);
     });
 
     it('should not call close on already CLOSED socket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
-      ws!.readyState = MockWebSocket.CLOSED;
+      ws!.simulateClose();
 
       disconnect();
 
@@ -126,7 +128,7 @@ describe('app-websocket', () => {
     it('should not call close on CLOSING socket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
-      ws!.readyState = MockWebSocket.CLOSING;
+      ws!.simulateClosing();
 
       disconnect();
 
@@ -172,7 +174,7 @@ describe('app-websocket', () => {
       subscribeState(listener);
       listener.mockClear();
 
-      ws?.simulateClose(1006);
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
 
       expect(listener).toHaveBeenCalled();
       expect(getState().connected).toBe(false);
@@ -315,39 +317,39 @@ describe('app-websocket', () => {
       );
     }
 
-    it('should not reconnect on code 1000 (Normal closure)', () => {
+    it('should not reconnect on NORMAL_CLOSURE', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1000);
+      ws?.simulateClose(WS_CLOSE_CODE.NORMAL_CLOSURE);
 
       // Verify "not reconnecting" message was logged
       expect(wasLoggedWith(consoleLogSpy, 'not reconnecting')).toBe(true);
     });
 
-    it('should not reconnect on code 1001 (Going away)', () => {
+    it('should not reconnect on GOING_AWAY', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1001);
+      ws?.simulateClose(WS_CLOSE_CODE.GOING_AWAY);
 
       expect(wasLoggedWith(consoleLogSpy, 'not reconnecting')).toBe(true);
     });
 
-    it('should not reconnect on code 1008 (Policy violation)', () => {
+    it('should not reconnect on POLICY_VIOLATION', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1008);
+      ws?.simulateClose(WS_CLOSE_CODE.POLICY_VIOLATION);
 
       expect(wasLoggedWith(consoleLogSpy, 'not reconnecting')).toBe(true);
     });
 
-    it('should schedule reconnection on code 1006 (Abnormal closure)', () => {
+    it('should schedule reconnection on ABNORMAL_CLOSURE', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1006);
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
 
       // Should log reconnection attempt, not "not reconnecting"
       expect(wasLoggedWith(consoleLogSpy, 'Reconnecting in')).toBe(true);
@@ -359,7 +361,7 @@ describe('app-websocket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1006); // Abnormal closure
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
 
       // Verify reconnection was scheduled
       const wasLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
@@ -374,7 +376,7 @@ describe('app-websocket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateClose(1006);
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
 
       // Disconnect should clear the scheduled reconnection
       disconnect();
@@ -406,6 +408,228 @@ describe('app-websocket', () => {
       ws?.simulateError();
 
       expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('send (via requestSync)', () => {
+    it('should send message when connected', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      const result = requestSync();
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-sync' }));
+    });
+
+    it('should return false when not connected', () => {
+      const result = requestSync();
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false when WebSocket is connecting', () => {
+      connect();
+      // WebSocket is in CONNECTING state by default
+
+      const result = requestSync();
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false when WebSocket is closing', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws!.simulateClosing();
+
+      const result = requestSync();
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('requestSync', () => {
+    it('should send request-sync message', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      const result = requestSync();
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-sync' }));
+    });
+
+    it('should reset sessionsSynced to false when sent', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // First, simulate receiving sessions-sync to set sessionsSynced to true
+      ws?.simulateMessage(JSON.stringify({
+        type: 'sessions-sync',
+        sessions: [],
+        activityStates: [],
+      }));
+      expect(getState().sessionsSynced).toBe(true);
+
+      // Now request sync - should reset to false
+      requestSync();
+
+      expect(getState().sessionsSynced).toBe(false);
+    });
+
+    it('should not send request-sync when not connected', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({
+        type: 'sessions-sync',
+        sessions: [],
+        activityStates: [],
+      }));
+      expect(getState().sessionsSynced).toBe(true);
+
+      // Disconnect - this resets sessionsSynced to false (CRITICAL fix)
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+      expect(getState().connected).toBe(false);
+      expect(getState().sessionsSynced).toBe(false);  // Reset on disconnect
+
+      // Try to request sync while disconnected
+      const result = requestSync();
+
+      // Should not send (not connected)
+      expect(result).toBe(false);
+      // sessionsSynced remains false (was reset on disconnect, not changed by failed send)
+      expect(getState().sessionsSynced).toBe(false);
+    });
+
+    it('should return false when not connected', () => {
+      const result = requestSync();
+
+      expect(result).toBe(false);
+    });
+
+    it('should skip duplicate request-sync calls when pending', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // First call should succeed
+      const result1 = requestSync();
+      expect(result1).toBe(true);
+      expect(ws?.send).toHaveBeenCalledTimes(1);
+
+      // Second call should be skipped (pending)
+      const result2 = requestSync();
+      expect(result2).toBe(false);
+      expect(ws?.send).toHaveBeenCalledTimes(1);
+
+      // Third call should also be skipped
+      const result3 = requestSync();
+      expect(result3).toBe(false);
+      expect(ws?.send).toHaveBeenCalledTimes(1);
+
+      // Verify log message
+      const wasLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Sync already pending'))
+      );
+      expect(wasLogged).toBe(true);
+    });
+
+    it('should allow new request-sync after receiving sessions-sync', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // First request
+      requestSync();
+      expect(ws?.send).toHaveBeenCalledTimes(1);
+
+      // Receive response - clears pending state
+      ws?.simulateMessage(JSON.stringify({
+        type: 'sessions-sync',
+        sessions: [],
+        activityStates: [],
+      }));
+
+      // Second request should now succeed
+      const result = requestSync();
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledTimes(2);
+    });
+
+    it('should allow new request-sync after disconnect clears pending state', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // First request
+      requestSync();
+      expect(ws?.send).toHaveBeenCalledTimes(1);
+
+      // Disconnect clears pending state
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      // Reconnect
+      connect();
+      const ws2 = MockWebSocket.getLastInstance();
+      ws2?.simulateOpen();
+
+      // Should be able to request sync again
+      const result = requestSync();
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('disconnect state reset', () => {
+    it('should reset sessionsSynced and agentsSynced on disconnect', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Receive sync messages to set synced states to true
+      ws?.simulateMessage(JSON.stringify({
+        type: 'sessions-sync',
+        sessions: [],
+        activityStates: [],
+      }));
+      ws?.simulateMessage(JSON.stringify({
+        type: 'agents-sync',
+        agents: [],
+      }));
+
+      expect(getState().connected).toBe(true);
+      expect(getState().sessionsSynced).toBe(true);
+      expect(getState().agentsSynced).toBe(true);
+
+      // Disconnect
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      // All sync states should be reset
+      expect(getState().connected).toBe(false);
+      expect(getState().sessionsSynced).toBe(false);
+      expect(getState().agentsSynced).toBe(false);
+    });
+
+    it('should reset sync states on normal closure too', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      ws?.simulateMessage(JSON.stringify({
+        type: 'sessions-sync',
+        sessions: [],
+        activityStates: [],
+      }));
+      expect(getState().sessionsSynced).toBe(true);
+
+      ws?.simulateClose(WS_CLOSE_CODE.NORMAL_CLOSURE);
+
+      expect(getState().sessionsSynced).toBe(false);
+      expect(getState().agentsSynced).toBe(false);
     });
   });
 });

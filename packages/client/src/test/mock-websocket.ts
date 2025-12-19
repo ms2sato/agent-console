@@ -1,4 +1,5 @@
 import { mock } from 'bun:test';
+import { WS_CLOSE_CODE } from '@agent-console/shared';
 
 /**
  * Mock WebSocket for testing.
@@ -39,14 +40,27 @@ export class MockWebSocket {
     this.onmessage?.(new MessageEvent('message', { data }));
   }
 
-  simulateClose(code: number = 1006, reason: string = '') {
+  /**
+   * Simulate WebSocket entering CLOSING state.
+   * Use this to test behavior when socket is in the process of closing.
+   */
+  simulateClosing() {
+    this.readyState = MockWebSocket.CLOSING;
+  }
+
+  /**
+   * Simulate WebSocket close event.
+   * @param code Close code (default: ABNORMAL_CLOSURE)
+   * @param reason Close reason string
+   */
+  simulateClose(code: number = WS_CLOSE_CODE.ABNORMAL_CLOSURE, reason: string = '') {
     this.readyState = MockWebSocket.CLOSED;
     // Create a mock CloseEvent since happy-dom may not support code property
     const event = {
       type: 'close',
       code,
       reason,
-      wasClean: code === 1000,
+      wasClean: code === WS_CLOSE_CODE.NORMAL_CLOSURE,
     } as CloseEvent;
     this.onclose?.(event);
   }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition } from '@agent-console/shared';
-import { connect, subscribe, subscribeState, getState, type AppWebSocketState } from '../lib/app-websocket';
+import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 
 /**
  * Hook for subscribing to app WebSocket state with a selector.
@@ -43,14 +43,24 @@ interface UseAppWsEventOptions {
  * Hook for subscribing to app WebSocket events.
  * Connects to WebSocket and registers event callbacks.
  * Use useAppWsState for reading connection state.
+ *
+ * When the component mounts and the WebSocket is already connected,
+ * it requests a fresh sync from the server to ensure state is up-to-date.
+ * This handles the case where the user navigates away and returns to the Dashboard.
  */
 export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
   useEffect(() => {
-    // Connect to WebSocket (idempotent - safe to call multiple times)
-    connect();
+    // If already connected, request a fresh sync (handles navigation case)
+    // Otherwise, connect() will trigger initial sync via onOpen
+    if (getState().connected) {
+      requestSync();
+    } else {
+      // Connect to WebSocket (idempotent - safe to call multiple times)
+      connect();
+    }
 
     // Subscribe to messages for callback notifications
     const unsubscribeMessage = subscribe((msg: AppServerMessage) => {
