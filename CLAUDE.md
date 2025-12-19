@@ -14,25 +14,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Subagent and Skill Usage Policy
 
-**Primary agent as coordinator.** The primary agent (first launched) should focus on understanding user requirements, planning the overall approach, and coordinating work. Delegate actual implementation tasks to specialized subagents and skills.
+**Primary agent as coordinator.** The primary agent (first launched) MUST NOT write code directly. Instead:
+1. Understand user requirements
+2. Plan the approach
+3. Delegate implementation to specialist subagents
+4. Evaluate results and coordinate next steps
 
-**Delegate actual work to subagents.** Use subagents proactively for:
+**MUST delegate code changes to specialists:**
 
-Built-in subagents:
-- **Code exploration and search:** Use `Explore` subagent for codebase navigation and understanding
-- **Implementation planning:** Use `Plan` subagent for designing complex changes
-- **Code modifications:** Use `general-purpose` subagent for implementing features and fixes
+| File Location | Subagent to Use |
+|---------------|-----------------|
+| `packages/client/**` | `frontend-specialist` |
+| `packages/server/**` | `backend-specialist` |
+| `packages/shared/**` | Choose based on primary consumer |
+| Multiple packages | Launch both specialists in parallel |
 
-User-defined subagents (in `~/.claude/agents/`):
-- **Web research:** Use `web-research-specialist` subagent for technical documentation lookup
+**Other subagents:**
 
-Project-defined subagents (in `.claude/agents/`):
-- **Frontend implementation:** Use `frontend-specialist` subagent for React components, hooks, routes, and client-side logic
-- **Backend implementation:** Use `backend-specialist` subagent for API endpoints, WebSocket handlers, services, and server-side logic
-- **Test execution:** Use `test-runner` subagent for running tests and analyzing failures
-- **Test quality review:** Use `test-reviewer` subagent for evaluating test adequacy and coverage
-- **Code quality review:** Use `code-quality-reviewer` subagent for evaluating design, maintainability, and identifying potential issues
-- **UX architecture review:** Use `ux-architecture-reviewer` subagent for verifying state consistency and edge case handling in client-server interactions
+Built-in:
+- `Explore` - Codebase navigation and understanding
+- `Plan` - Designing complex changes
+
+Project-defined (`.claude/agents/`):
+- `test-runner` - Running tests and analyzing failures
+- `test-reviewer` - Evaluating test adequacy (use after tests are modified)
+- `code-quality-reviewer` - Evaluating design and maintainability
+- `ux-architecture-reviewer` - Verifying state consistency in client-server interactions
 
 Project-defined skills (in `.claude/skills/`):
 - **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Development process rules (testing, branching, commits)
@@ -40,31 +47,11 @@ Project-defined skills (in `.claude/skills/`):
 - **Frontend standards:** `.claude/skills/frontend-standards/` - React patterns and frontend best practices
 - **Backend standards:** `.claude/skills/backend-standards/` - Hono/Bun patterns and backend best practices
 
-**Propose missing subagents or skills.** When you identify a recurring task pattern that would benefit from a specialized subagent or skill but none exists, propose it to the user with a ready-to-use definition file.
+**Parallel execution.** When changes span multiple packages, launch specialists in parallel:
+- Frontend and backend changes → `frontend-specialist` + `backend-specialist` simultaneously
+- After implementation → `test-runner` for verification
 
-Subagent definition format (user chooses where to save):
-- `.claude/agents/<name>.md` - Project-specific (this repository only)
-- `~/.claude/agents/<name>.md` - User-wide (available in all projects)
-```markdown
----
-name: test-runner
-description: Execute tests for specific packages and analyze failures. Use when running tests or investigating test failures.
-tools: Read, Grep, Glob, Bash
-model: haiku
----
-
-Run tests for the specified package. Analyze any failures and suggest fixes.
-Report test coverage changes if applicable.
-Focus on identifying root causes rather than just reporting errors.
-```
-
-Alternatively, use the `/agents` command to create subagents interactively.
-
-Skills can be defined for complex workflows requiring multiple files, templates, or resources (user chooses where to save):
-- `.claude/skills/` - Project-specific
-- `~/.claude/skills/` - User-wide
-
-**Parallel execution.** When multiple independent tasks exist, launch subagents in parallel to maximize efficiency.
+**Propose missing subagents or skills.** When you identify a recurring task pattern that would benefit from a specialized subagent or skill but none exists, propose it to the user. Use `/agents` command to create interactively.
 
 ## Language Policy
 
@@ -204,9 +191,21 @@ Before completing any code changes, always verify the following:
 
 1. **Run tests:** Execute `bun run test` and ensure all tests pass.
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors.
-3. **Review test quality:** When tests are added or modified, use `test-reviewer` to evaluate adequacy and coverage.
-4. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
-5. **Code quality review (before push):** For significant changes (new features, architectural changes, security-related code), use `code-quality-reviewer` to evaluate design and identify potential issues.
-6. **UX architecture review (state sync features):** When implementing features involving persistence, state synchronization, or WebSocket/REST API changes, use `ux-architecture-reviewer` to verify state consistency and edge case handling.
+3. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
 
 **Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
+
+### Reviewer Usage
+
+Use reviewers to evaluate code before finalizing changes. Run applicable reviewers in parallel for efficiency.
+
+| Reviewer | When to Use |
+|----------|-------------|
+| `test-reviewer` | **Always** when tests are added or modified (code changes require test changes) |
+| `code-quality-reviewer` | New features, refactoring, or architectural decisions |
+| `ux-architecture-reviewer` | State synchronization, WebSocket, persistence, or session/worker lifecycle changes |
+
+Each reviewer focuses on a specific aspect:
+- **test-reviewer**: Test validity, coverage, methodology, anti-patterns
+- **code-quality-reviewer**: Design, maintainability, patterns (React and Backend)
+- **ux-architecture-reviewer**: UI accurately represents system state, edge case handling

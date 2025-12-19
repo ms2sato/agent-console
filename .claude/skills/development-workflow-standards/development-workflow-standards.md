@@ -4,13 +4,12 @@ This document defines the development process rules that all implementation work
 
 ## Working Principles
 
-**Purpose over speed.** Do not rush to finish quickly at the expense of losing sight of the original purpose. Code that fails to achieve its purpose wastes more time than code written correctly from the start.
+See [CLAUDE.md](/CLAUDE.md#working-principles) for the canonical definition. Summary:
 
-**Do not blindly follow existing patterns.** Existing code is not automatically correct. Evaluate whether patterns in the codebase are appropriate before adopting them.
-
-**Think before you act.** When facing a problem, first consider the correct approach rather than immediately implementing the easiest solution.
-
-**Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
+- **Purpose over speed** - Don't rush; code that fails its purpose wastes more time
+- **Don't blindly follow patterns** - Evaluate existing code before adopting
+- **Think before acting** - Consider the correct approach first
+- **Speak up about issues** - Mention problems even outside task scope
 
 ## Branching Strategy (GitHub-Flow)
 
@@ -31,6 +30,21 @@ The `main` branch is always kept GREEN (all tests and type checks pass).
 1. Write a failing test that reproduces the bug
 2. Implement the fix
 3. Verify the test passes
+
+Example:
+```typescript
+// 1. Write failing test that reproduces the bug
+it('should handle session with no workers without crashing', () => {
+  const session = createSession({ workers: [] });
+  // Bug: getActiveWorker() throws when workers array is empty
+  expect(() => session.getActiveWorker()).not.toThrow();
+  expect(session.getActiveWorker()).toBeNull();
+});
+
+// 2. Run test - it fails (confirms bug exists)
+// 3. Implement fix in production code
+// 4. Run test - it passes (confirms bug is fixed)
+```
 
 ## Verification Checklist
 

@@ -61,6 +61,46 @@ When reviewing, consider these questions:
 
 This reviewer does NOT evaluate code quality or test coverage. It focuses solely on whether the user experience correctly represents system state.
 
+## Out of Scope
+
+This reviewer does NOT evaluate:
+- Code style or naming conventions
+- Test coverage or test quality
+- Performance optimizations
+- Security vulnerabilities
+
+Focus exclusively on: "Does the UI accurately represent system state?"
+
+## Project-Specific Patterns to Review
+
+### WebSocket Architecture
+
+This project uses dual WebSocket connections:
+
+1. **App WebSocket (`/ws/app`)**
+   - Singleton connection for app-wide state sync
+   - Broadcasts session/worker lifecycle events
+   - Check: Are all lifecycle changes (create, delete, activity) broadcasted?
+   - Check: Does client correctly update UI on these events?
+
+2. **Worker WebSocket (`/ws/session/:id/worker/:id`)**
+   - Per-worker connections for terminal I/O
+   - Tied to specific session/worker lifecycle
+   - Check: Is reconnection handling implemented?
+   - Check: Is history buffer replayed on reconnection?
+
+### Persistence Layer
+
+- **Session state persistence**: Does persisted state match runtime state?
+- **Orphan process cleanup**: Are orphan processes (PTY still running but session deleted) detected and cleaned?
+- **Recovery on restart**: After server restart, does restored state accurately reflect actual resources?
+
+### Activity Detection
+
+- **Agent activity states**: idle, active, asking
+- Check: Does UI correctly reflect agent's actual state?
+- Check: Are activity pattern mismatches handled gracefully?
+
 ## Review Process
 
 1. **Identify State Boundaries** - Map where state is stored (server, client, persistence)
