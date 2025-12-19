@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { access } from 'fs/promises';
 import type {
   Session,
   WorktreeSession,
@@ -111,14 +112,31 @@ export interface SessionLifecycleCallbacks {
   onSessionDeleted?: (sessionId: string) => void;
 }
 
+/**
+ * Default path existence checker using fs.access
+ */
+async function defaultPathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private globalActivityCallback?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private ptyProvider: PtyProvider;
+  private pathExists: (path: string) => Promise<boolean>;
 
-  constructor(ptyProvider: PtyProvider = bunPtyProvider) {
+  constructor(
+    ptyProvider: PtyProvider = bunPtyProvider,
+    pathExists: (path: string) => Promise<boolean> = defaultPathExists
+  ) {
     this.ptyProvider = ptyProvider;
+    this.pathExists = pathExists;
     // First load sessions into memory, then cleanup orphans from OTHER dead servers
     // Order matters: initializeSessions must run before cleanupOrphanProcesses
     // to avoid deleting sessions that should be inherited by this server
@@ -154,9 +172,22 @@ export class SessionManager {
       // Kill any orphan worker processes first
       for (const worker of session.workers) {
         if (worker.type !== 'git-diff' && isProcessAlive(worker.pid)) {
-          processKill(worker.pid, 'SIGTERM');
-          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-          killedWorkerCount++;
+          try {
+            processKill(worker.pid, 'SIGTERM');
+            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
+            killedWorkerCount++;
+          } catch (error) {
+            logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
+            // Try SIGKILL as fallback for stubborn processes
+            try {
+              processKill(worker.pid, 'SIGKILL');
+              logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
+              killedWorkerCount++;
+            } catch {
+              // Process may have exited between checks, log but continue
+              logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
+            }
+          }
         }
       }
 
@@ -262,9 +293,21 @@ export class SessionManager {
       for (const worker of session.workers) {
         if (worker.type === 'git-diff') continue; // Git diff workers have no process
         if (isProcessAlive(worker.pid)) {
-          processKill(worker.pid, 'SIGTERM');
-          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-          killedCount++;
+          try {
+            processKill(worker.pid, 'SIGTERM');
+            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
+            killedCount++;
+          } catch (error) {
+            logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
+            // Try SIGKILL as fallback
+            try {
+              processKill(worker.pid, 'SIGKILL');
+              logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
+              killedCount++;
+            } catch {
+              logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
+            }
+          }
         }
       }
     }
@@ -792,13 +835,20 @@ export class SessionManager {
    * Returns the existing internal worker if it exists, or creates a new one from persisted data.
    * Returns null if the worker cannot be restored (session not found, worker not in persistence, etc.)
    */
-  restoreWorker(sessionId: string, workerId: string): InternalWorker | null {
+  async restoreWorker(sessionId: string, workerId: string): Promise<InternalWorker | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
     // If internal worker already exists, return it (normal browser reload case)
     const existingWorker = session.workers.get(workerId);
     if (existingWorker) return existingWorker;
+
+    // SECURITY: Verify session's locationPath still exists before restoring
+    const pathExistsResult = await this.pathExists(session.locationPath);
+    if (!pathExistsResult) {
+      logger.warn({ sessionId, workerId, locationPath: session.locationPath }, 'Cannot restore worker: session path no longer exists');
+      return null;
+    }
 
     // Get persisted worker metadata
     const metadata = persistenceService.getSessionMetadata(sessionId);
@@ -811,13 +861,20 @@ export class SessionManager {
     let worker: InternalWorker;
 
     if (persistedWorker.type === 'agent') {
+      // SECURITY: Verify agentId is still valid before restoring
+      const agent = agentManager.getAgent(persistedWorker.agentId);
+      if (!agent) {
+        logger.warn({ sessionId, workerId, agentId: persistedWorker.agentId }, 'Cannot restore agent worker: agentId no longer valid, falling back to default');
+        // Fall back to default agent instead of failing completely
+      }
+
       worker = this.initializeAgentWorker({
         id: workerId,
         name: persistedWorker.name,
         createdAt: persistedWorker.createdAt,
         sessionId,
         locationPath: session.locationPath,
-        agentId: persistedWorker.agentId,
+        agentId: agent ? persistedWorker.agentId : CLAUDE_CODE_AGENT_ID,
         continueConversation: true, // Continue existing session
       });
     } else {

@@ -18,14 +18,15 @@ describe('expandTemplate', () => {
       expect(result.env.__AGENT_PROMPT__).toBe('Hello World');
     });
 
-    it('should expand {{cwd}} placeholder with actual path', () => {
+    it('should expand {{cwd}} placeholder with shell-escaped path', () => {
       const result = expandTemplate({
         template: 'cd {{cwd}} && run {{prompt}}',
         prompt: 'test',
         cwd: '/path/to/repo',
       });
 
-      expect(result.command).toBe('cd /path/to/repo && run "$__AGENT_PROMPT__"');
+      // cwd is shell-escaped (single-quoted) for safety
+      expect(result.command).toBe("cd '/path/to/repo' && run \"$__AGENT_PROMPT__\"");
       expect(result.env.__AGENT_PROMPT__).toBe('test');
     });
 
@@ -36,7 +37,8 @@ describe('expandTemplate', () => {
         cwd: '/workspace',
       });
 
-      expect(result.command).toBe('cd /workspace && test-cli "$__AGENT_PROMPT__"');
+      // cwd is shell-escaped (single-quoted) for safety
+      expect(result.command).toBe("cd '/workspace' && test-cli \"$__AGENT_PROMPT__\"");
       expect(result.env.__AGENT_PROMPT__).toBe('my task');
     });
 
@@ -58,7 +60,8 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('cd /repo && ls /repo && run "$__AGENT_PROMPT__"');
+      // Each cwd is shell-escaped (single-quoted) for safety
+      expect(result.command).toBe("cd '/repo' && ls '/repo' && run \"$__AGENT_PROMPT__\"");
       expect(result.env.__AGENT_PROMPT__).toBe('test');
     });
   });
@@ -80,7 +83,8 @@ describe('expandTemplate', () => {
         cwd: '/path/to/repo',
       });
 
-      expect(result.command).toBe('cd /path/to/repo && test-cli --continue');
+      // cwd is shell-escaped (single-quoted) for safety
+      expect(result.command).toBe("cd '/path/to/repo' && test-cli --continue");
       expect(result.env).toEqual({});
     });
   });
@@ -185,7 +189,8 @@ describe('expandTemplate', () => {
         cwd: '/path/with spaces/repo',
       });
 
-      expect(result.command).toBe('cd /path/with spaces/repo && run "$__AGENT_PROMPT__"');
+      // Paths with spaces are safely handled by single-quoting
+      expect(result.command).toBe("cd '/path/with spaces/repo' && run \"$__AGENT_PROMPT__\"");
       expect(result.env.__AGENT_PROMPT__).toBe('test');
     });
 
@@ -196,7 +201,8 @@ describe('expandTemplate', () => {
         cwd: "/path/with'quote/repo",
       });
 
-      expect(result.command).toBe("cd /path/with'quote/repo && run \"$__AGENT_PROMPT__\"");
+      // Single quotes in paths are escaped using the '\'' technique
+      expect(result.command).toBe("cd '/path/with'\\''quote/repo' && run \"$__AGENT_PROMPT__\"");
       expect(result.env.__AGENT_PROMPT__).toBe('test');
     });
   });

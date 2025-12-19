@@ -19,6 +19,18 @@ const logger = createLogger('websocket');
 // Track connected app clients for broadcasting
 const appClients = new Set<WSContext>();
 
+/**
+ * Safely get the WebSocket ready state from a WSContext.
+ * Returns undefined if readyState is not accessible (instead of using unsafe 'any' cast).
+ */
+function getWebSocketReadyState(client: WSContext): number | undefined {
+  // Type-safe check for readyState property
+  if ('readyState' in client && typeof (client as { readyState?: unknown }).readyState === 'number') {
+    return (client as { readyState: number }).readyState;
+  }
+  return undefined;
+}
+
 // Helper to broadcast message to all app clients
 function broadcastToApp(msg: AppServerMessage): void {
   const msgStr = JSON.stringify(msg);
@@ -26,8 +38,7 @@ function broadcastToApp(msg: AppServerMessage): void {
 
   for (const client of appClients) {
     // Skip clients that are not in OPEN state
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const readyState = (client as any).readyState;
+    const readyState = getWebSocketReadyState(client);
     if (typeof readyState === 'number' && readyState !== WS_READY_STATE.OPEN) {
       deadClients.push(client);
       continue;
@@ -161,6 +172,72 @@ export function setupWebSocketRoutes(
       // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
       let currentGitDiffBaseCommit: string | null = null;
 
+      // Helper function to set up PTY worker handlers after async restore
+      function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
+        logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
+
+        // Helper to safely send WebSocket messages with buffering
+        let outputBuffer = '';
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        const FLUSH_INTERVAL = 50; // ms
+
+        const flushBuffer = () => {
+          if (outputBuffer.length > 0) {
+            try {
+              ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
+            } catch (error) {
+              logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
+            }
+            outputBuffer = '';
+          }
+          flushTimer = null;
+        };
+
+        const safeSend = (msg: WorkerServerMessage) => {
+          if (msg.type === 'output') {
+            // Buffer output messages
+            outputBuffer += msg.data;
+            if (!flushTimer) {
+              flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL);
+            }
+          } else {
+            // Send other messages immediately
+            try {
+              ws.send(JSON.stringify(msg));
+            } catch (error) {
+              logger.warn({ workerId, err: error }, 'Error sending message to worker');
+            }
+          }
+        };
+
+        // Attach callbacks to receive real-time output
+        sessionManager.attachWorkerCallbacks(sessionId, workerId, {
+          onData: (data) => {
+            safeSend({ type: 'output', data });
+          },
+          onExit: (exitCode, signal) => {
+            safeSend({ type: 'exit', exitCode, signal });
+          },
+          onActivityChange: (state: AgentActivityState) => {
+            safeSend({ type: 'activity', state });
+          },
+        });
+
+        // Send buffered output (history) on reconnection
+        const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+        if (history) {
+          safeSend({ type: 'history', data: history });
+        }
+
+        // Send current activity state on connection (for agent workers)
+        if (workerType === 'agent') {
+          const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
+          if (activityState && activityState !== 'unknown') {
+            safeSend({ type: 'activity', state: activityState });
+          }
+        }
+      }
+
       return {
         onOpen(_event: unknown, ws: WSContext) {
           const session = sessionManager.getSession(sessionId);
@@ -198,15 +275,36 @@ export function setupWebSocketRoutes(
               currentGitDiffBaseCommit
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff connection');
+              // Send error to client and close WebSocket on critical connection errors
+              try {
+                ws.send(JSON.stringify({ type: 'diff-error', error: 'Connection failed' }));
+                ws.close();
+              } catch {
+                // Ignore send/close errors (connection may already be closed)
+              }
             });
             return;
           }
 
           // PTY-based worker handling (agent/terminal)
           // Restore worker if it doesn't exist internally (e.g., after server restart)
-          const restoredWorker = sessionManager.restoreWorker(sessionId, workerId);
-          if (!restoredWorker) {
-            logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
+          // Note: restoreWorker is async, so we handle it with .then()/.catch()
+          sessionManager.restoreWorker(sessionId, workerId).then((restoredWorker) => {
+            if (!restoredWorker) {
+              logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
+              const errorMsg: WorkerServerMessage = {
+                type: 'exit',
+                exitCode: 1,
+                signal: null,
+              };
+              ws.send(JSON.stringify(errorMsg));
+              ws.close();
+              return;
+            }
+
+            setupPtyWorkerHandlers(ws, worker.type);
+          }).catch((err) => {
+            logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             const errorMsg: WorkerServerMessage = {
               type: 'exit',
               exitCode: 1,
@@ -214,71 +312,7 @@ export function setupWebSocketRoutes(
             };
             ws.send(JSON.stringify(errorMsg));
             ws.close();
-            return;
-          }
-
-          logger.info({ sessionId, workerId, workerType: worker.type }, 'Worker WebSocket connected');
-
-          // Helper to safely send WebSocket messages with buffering
-          let outputBuffer = '';
-          let flushTimer: ReturnType<typeof setTimeout> | null = null;
-          const FLUSH_INTERVAL = 50; // ms
-
-          const flushBuffer = () => {
-            if (outputBuffer.length > 0) {
-              try {
-                ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
-              } catch (error) {
-                logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
-              }
-              outputBuffer = '';
-            }
-            flushTimer = null;
-          };
-
-          const safeSend = (msg: WorkerServerMessage) => {
-            if (msg.type === 'output') {
-              // Buffer output messages
-              outputBuffer += msg.data;
-              if (!flushTimer) {
-                flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL);
-              }
-            } else {
-              // Send other messages immediately
-              try {
-                ws.send(JSON.stringify(msg));
-              } catch (error) {
-                logger.warn({ workerId, err: error }, 'Error sending message to worker');
-              }
-            }
-          };
-
-          // Attach callbacks to receive real-time output
-          sessionManager.attachWorkerCallbacks(sessionId, workerId, {
-            onData: (data) => {
-              safeSend({ type: 'output', data });
-            },
-            onExit: (exitCode, signal) => {
-              safeSend({ type: 'exit', exitCode, signal });
-            },
-            onActivityChange: (state: AgentActivityState) => {
-              safeSend({ type: 'activity', state });
-            },
           });
-
-          // Send buffered output (history) on reconnection
-          const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-          if (history) {
-            safeSend({ type: 'history', data: history });
-          }
-
-          // Send current activity state on connection (for agent workers)
-          if (worker.type === 'agent') {
-            const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
-            if (activityState && activityState !== 'unknown') {
-              safeSend({ type: 'activity', state: activityState });
-            }
-          }
         },
         onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
           const data = typeof event.data === 'string'
@@ -303,6 +337,12 @@ export function setupWebSocketRoutes(
               data
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff message');
+              // Send error to client (but don't close connection for message errors)
+              try {
+                ws.send(JSON.stringify({ type: 'diff-error', error: 'Failed to process message' }));
+              } catch {
+                // Ignore send errors (connection may be closed)
+              }
             });
             return;
           }
@@ -329,6 +369,20 @@ export function setupWebSocketRoutes(
         },
         onError(event: Event) {
           logger.error({ sessionId, workerId, event }, 'Worker WebSocket error');
+
+          // Clean up resources on error to prevent leaks
+          const session = sessionManager.getSession(sessionId);
+          const worker = session?.workers.find(w => w.id === workerId);
+
+          if (worker?.type === 'git-diff') {
+            // Stop file watching for git-diff workers on error
+            handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error cleaning up git-diff on WebSocket error');
+            });
+          } else if (worker) {
+            // Detach callbacks for PTY workers (agent/terminal)
+            sessionManager.detachWorkerCallbacks(sessionId, workerId);
+          }
         },
       };
     })

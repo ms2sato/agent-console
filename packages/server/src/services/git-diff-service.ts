@@ -451,6 +451,26 @@ export async function getDiffData(
 }
 
 /**
+ * Validate that a file path is safe and doesn't escape the repository directory.
+ * Prevents path traversal attacks via malicious filePath parameter.
+ */
+function isValidFilePath(filePath: string): boolean {
+  // Reject absolute paths
+  if (filePath.startsWith('/') || filePath.startsWith('\\')) {
+    return false;
+  }
+  // Reject paths containing .. (path traversal)
+  if (filePath.includes('..')) {
+    return false;
+  }
+  // Reject paths with null bytes (security concern)
+  if (filePath.includes('\0')) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Get diff for a specific file.
  *
  * @param repoPath - Path to the git repository
@@ -463,6 +483,12 @@ export async function getFileDiff(
   baseCommit: string,
   filePath: string
 ): Promise<string> {
+  // SECURITY: Validate filePath to prevent path traversal attacks
+  if (!isValidFilePath(filePath)) {
+    logger.warn({ filePath }, 'Invalid file path in getFileDiff');
+    return '';
+  }
+
   try {
     // Get diff for specific file
     const rawDiff = await getDiff(baseCommit, undefined, repoPath);

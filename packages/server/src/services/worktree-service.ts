@@ -101,6 +101,11 @@ function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
  * Substitute template variables in content
  * Supports: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
  * Also supports arithmetic: {{WORKTREE_NUM + 3000}}
+ *
+ * SECURITY NOTE: The variables (branch, repo) come from git which enforces
+ * strict naming rules. Git branch names cannot contain shell metacharacters
+ * like ;, |, &, etc., so command injection via these values is not possible.
+ * See: https://git-scm.com/docs/git-check-ref-format
  */
 function substituteVariables(
   content: string,

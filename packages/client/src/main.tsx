@@ -59,9 +59,18 @@ function showLoadingIndicator() {
   `;
 }
 
+// Escape HTML special characters to prevent XSS
+function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // Show connection error with retry button
 function showConnectionError(error: unknown) {
-  const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+  const rawErrorMessage = error instanceof Error ? error.message : 'Unknown error';
+  // SECURITY: Escape HTML to prevent XSS from error messages
+  const errorMessage = escapeHtml(rawErrorMessage);
   rootElement.innerHTML = `
     <div style="
       position: fixed;

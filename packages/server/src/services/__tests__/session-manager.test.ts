@@ -36,10 +36,13 @@ describe('SessionManager', () => {
     cleanupMemfs();
   });
 
+  // Mock pathExists that always returns true (test paths don't exist on real filesystem)
+  const mockPathExists = async (_path: string): Promise<boolean> => true;
+
   // Helper to get fresh module instance with DI
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
-    return new module.SessionManager(ptyFactory.provider);
+    return new module.SessionManager(ptyFactory.provider, mockPathExists);
   }
 
   describe('createSession', () => {
@@ -760,7 +763,7 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore should return existing worker without creating new PTY
-      const restored = manager.restoreWorker(session.id, workerId);
+      const restored = await manager.restoreWorker(session.id, workerId);
 
       expect(restored).not.toBeNull();
       expect(restored?.id).toBe(workerId);
@@ -798,7 +801,7 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore worker
-      const restored = manager2.restoreWorker(session.id, workerId);
+      const restored = await manager2.restoreWorker(session.id, workerId);
 
       expect(restored).not.toBeNull();
       expect(restored?.id).toBe(workerId);
@@ -836,7 +839,7 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore terminal worker
-      const restored = manager2.restoreWorker(session.id, terminalWorkerId);
+      const restored = await manager2.restoreWorker(session.id, terminalWorkerId);
 
       expect(restored).not.toBeNull();
       expect(restored?.id).toBe(terminalWorkerId);
@@ -868,14 +871,14 @@ describe('SessionManager', () => {
       const manager2 = await getSessionManager();
 
       // Restore should return null for git-diff worker
-      const restored = manager2.restoreWorker(session.id, gitDiffWorker!.id);
+      const restored = await manager2.restoreWorker(session.id, gitDiffWorker!.id);
       expect(restored).toBeNull();
     });
 
     it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const restored = manager.restoreWorker('non-existent', 'worker-1');
+      const restored = await manager.restoreWorker('non-existent', 'worker-1');
       expect(restored).toBeNull();
     });
 
@@ -894,7 +897,7 @@ describe('SessionManager', () => {
       const manager2 = await getSessionManager();
 
       // Try to restore non-existent worker
-      const restored = manager2.restoreWorker(session.id, 'non-existent-worker');
+      const restored = await manager2.restoreWorker(session.id, 'non-existent-worker');
       expect(restored).toBeNull();
     });
 
@@ -919,7 +922,7 @@ describe('SessionManager', () => {
       const manager2 = await getSessionManager();
 
       // Restore worker
-      manager2.restoreWorker(session.id, workerId);
+      await manager2.restoreWorker(session.id, workerId);
 
       // Check that PID was updated in persistence
       const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));

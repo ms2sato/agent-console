@@ -907,13 +907,15 @@ describe('API Routes Integration', () => {
         const { repo } = await registerTestRepo(app);
 
         // Request with a path that doesn't belong to this repository's worktrees
+        // (path is outside the managed repositories directory)
         const res = await app.request(`/api/repositories/${repo.id}/worktrees/%2Fother%2Fpath`, {
           method: 'DELETE',
         });
         expect(res.status).toBe(400);
 
         const body = (await res.json()) as { error: string };
-        expect(body.error).toContain('Invalid worktree path');
+        // Path validation catches this as "outside managed directory" before checking if it's a worktree
+        expect(body.error).toContain('outside managed directory');
       });
     });
   });

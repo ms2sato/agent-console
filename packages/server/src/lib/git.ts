@@ -7,6 +7,9 @@
  * - Non-blocking I/O
  */
 
+/** Default timeout for git operations (30 seconds) */
+const DEFAULT_GIT_TIMEOUT_MS = 30000;
+
 export class GitError extends Error {
   constructor(
     message: string,
@@ -19,37 +22,77 @@ export class GitError extends Error {
 }
 
 /**
- * Execute a git command asynchronously.
+ * Create a timeout promise that rejects after the specified time.
+ * Also returns a cleanup function to prevent timer leaks.
+ */
+function createTimeoutPromise(timeoutMs: number, command: string): { promise: Promise<never>; cleanup: () => void } {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const promise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new GitError(`git ${command} timed out after ${timeoutMs}ms`, -1, 'Timeout'));
+    }, timeoutMs);
+  });
+
+  const cleanup = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  return { promise, cleanup };
+}
+
+/**
+ * Execute a git command asynchronously with timeout protection.
  *
  * @param args - Git command arguments (without 'git' prefix)
  * @param cwd - Working directory for the command
+ * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
  * @returns The stdout output trimmed
- * @throws GitError if the command fails
+ * @throws GitError if the command fails or times out
  *
  * @example
  * const branch = await git(['branch', '--show-current'], repoPath);
  * const remoteUrl = await git(['remote', 'get-url', 'origin'], repoPath);
  */
-export async function git(args: string[], cwd: string): Promise<string> {
+export async function git(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
   const proc = Bun.spawn(['git', ...args], {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
   });
 
-  const exitCode = await proc.exited;
+  const { promise: timeoutPromise, cleanup: cleanupTimeout } = createTimeoutPromise(timeoutMs, args[0] || 'unknown');
 
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    throw new GitError(
-      `git ${args[0]} failed: ${stderr.trim() || `exit code ${exitCode}`}`,
-      exitCode,
-      stderr
-    );
+  try {
+    // Race between process exit and timeout
+    const exitCode = await Promise.race([proc.exited, timeoutPromise]);
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new GitError(
+        `git ${args[0]} failed: ${stderr.trim() || `exit code ${exitCode}`}`,
+        exitCode,
+        stderr
+      );
+    }
+
+    const stdout = await new Response(proc.stdout).text();
+    return stdout.trim();
+  } catch (error) {
+    // If timeout occurred, kill the process
+    if (error instanceof GitError && error.stderr === 'Timeout') {
+      try {
+        proc.kill();
+      } catch {
+        // Ignore kill errors (process may have already exited)
+      }
+    }
+    throw error;
+  } finally {
+    cleanupTimeout();
   }
-
-  const stdout = await new Response(proc.stdout).text();
-  return stdout.trim();
 }
 
 /**

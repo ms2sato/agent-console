@@ -123,7 +123,7 @@ describe('Worker Handler', () => {
       }
     });
 
-    it('should fallback to png for unknown mime type', () => {
+    it('should reject unknown mime type for security', () => {
       const message = JSON.stringify({
         type: 'image',
         data: 'dGVzdA==',
@@ -131,8 +131,9 @@ describe('Worker Handler', () => {
       });
       handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
-      const writtenPath = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0][2];
-      expect(writtenPath).toContain('.png');
+      // Unknown mime types should be rejected (no file written, no input sent)
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
     });
   });
 });
