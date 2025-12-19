@@ -13,14 +13,74 @@ See [CLAUDE.md](/CLAUDE.md#working-principles) for the canonical definition. Sum
 
 ## Branching Strategy (GitHub-Flow)
 
-Follow GitHub-Flow:
+Follow GitHub-Flow. The `main` branch is always kept GREEN (all tests and type checks pass).
 
-1. Fetch the latest `origin/main` and create a feature branch from it
-2. Make changes with descriptive commits
-3. Open pull requests for review
-4. Merge after approval
+### Starting Work (Branch Creation)
 
-The `main` branch is always kept GREEN (all tests and type checks pass).
+Before creating a feature branch, **always fetch and sync with the latest main**:
+
+```bash
+# 1. Fetch the latest changes from remote
+git fetch origin
+
+# 2. Create a new branch from the latest origin/main
+git checkout -b feature/your-feature origin/main
+```
+
+**Important:** Never branch from a stale local main. Always use `origin/main` after fetching.
+
+### During Development
+
+1. Make changes with descriptive commits
+2. Run verification checklist before considering work complete
+
+### Before Completing Work (Conflict Assessment)
+
+Before opening a pull request, **always check for conflicts with the latest main**:
+
+```bash
+# 1. Fetch latest changes
+git fetch origin
+
+# 2. Check diff with latest main
+git diff origin/main...HEAD --stat
+
+# 3. Check for potential conflicts
+git merge-tree $(git merge-base origin/main HEAD) origin/main HEAD
+```
+
+**Conflict Assessment Criteria:**
+
+| Conflict Level | Criteria | Action |
+|----------------|----------|--------|
+| **None/Minor** | No conflicts, or simple conflicts in 1-2 files (e.g., import additions) | Proceed with merge/rebase |
+| **Moderate** | Conflicts in 3-5 files, but changes are isolated | Attempt rebase, resolve carefully |
+| **Severe** | Conflicts in core files you modified, or structural changes to same components | **Propose re-implementation** |
+
+**When to propose re-implementation:**
+
+- The main branch has significant changes to files you heavily modified
+- The architectural approach in main has diverged from your implementation
+- Resolving conflicts would require understanding and integrating unfamiliar changes
+- The merge resolution effort approaches or exceeds the original implementation effort
+
+**Re-implementation proposal format:**
+
+> ⚠️ **Conflict Assessment Result**
+>
+> Significant changes have been made to `main` that conflict with this implementation:
+> - [List conflicting files and nature of changes]
+> - [Explain why re-implementation is recommended over merge resolution]
+>
+> **Recommendation:** Re-implement on a fresh branch from latest `main` to ensure:
+> - Clean integration with current codebase state
+> - No risk of regression from incorrect merge resolution
+> - Opportunity to leverage any new patterns introduced in main
+
+### Pull Request
+
+1. Open pull requests for review
+2. **Merging is the user's responsibility** - Never merge PRs automatically. Always leave the merge decision to the user.
 
 ## Testing Requirements
 

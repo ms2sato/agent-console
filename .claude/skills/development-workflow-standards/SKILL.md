@@ -11,5 +11,7 @@ Refer to [development-workflow-standards.md](development-workflow-standards.md) 
 
 - **Testing with code changes**: Always update or add tests. Code without tests is incomplete.
 - **TDD for bug fixes**: Write a failing test first, then implement the fix.
-- **GitHub-Flow**: Fetch latest `origin/main` and create feature branches from it.
+- **GitHub-Flow**: Always `git fetch origin` then branch from `origin/main`.
+- **Conflict assessment**: Before PR, check conflicts with latest main. If severe, propose re-implementation.
+- **Never merge PRs**: Merging is always the user's decision.
 - **Verification**: Run `bun run test` and `bun run typecheck` before completing changes.
