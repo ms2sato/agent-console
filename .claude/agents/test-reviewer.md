@@ -48,6 +48,35 @@ Provide evaluation as:
 3. **Issues** - Specific problems found
 4. **Recommendations** - Concrete suggestions for improvement
 
+## Anti-Patterns to Watch
+
+Review for these common testing mistakes documented in docs/testing-guidelines.md:
+
+### Logic Duplication
+- Test file re-implements production logic instead of importing it
+- Test-only classes that mirror production classes
+- If a test wouldn't break when production code changes, it's testing the wrong thing
+
+### Module-Level Mocking
+- Using `mock.module()` or `vi.mock()` instead of fetch-level mocks
+- Bypasses actual API function logic (URL construction, error handling)
+- Prefer mocking at lowest level: `globalThis.fetch`, `WebSocket`, file system
+
+### Private Method Testing
+- Attempting to test internal/private methods directly
+- Sign of needing design reconsideration
+- Test through public interface instead
+
+### Boundary Testing Gaps
+- Missing client-server boundary tests for forms
+- `null` vs `undefined` mismatches not caught
+- JSON serialization issues not tested
+
+### Form Testing Gaps
+- Schema unit tests only (insufficient)
+- Missing conditional field tests
+- Empty default value handling not tested
+
 ## Constraints
 
 - Do NOT modify any code files

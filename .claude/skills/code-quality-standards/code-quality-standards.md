@@ -199,6 +199,23 @@ Key principles:
 - Are secrets handled securely (not in code, not logged)?
 - Is authentication/authorization checked at proper boundaries?
 
+### Project-Specific Security Concerns
+
+**PTY Command Execution**
+- Commands passed to PTY should not be constructed from unsanitized user input
+- Agent command templates should be validated before execution
+- Environment variables passed to child processes should be filtered
+
+**Path Traversal**
+- Validate that session/worktree paths are within expected directories
+- `AGENT_CONSOLE_HOME` directory access should be scoped appropriately
+- File operations should use absolute paths and validate boundaries
+
+**WebSocket Security**
+- Validate message format before processing (use Valibot schemas)
+- Don't trust client-provided IDs without verification
+- Rate-limit rapid reconnection attempts
+
 ## 9. React Best Practices
 
 ### Suspense Usage

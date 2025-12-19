@@ -50,6 +50,18 @@ When reviewing React code, pay special attention to:
 1. **Suspense Usage** - Prefer Suspense for async operations and loading states over manual isLoading flags
 2. **useEffect Discipline** - Challenge every useEffect: could it be a derived value, event handler, or useMemo instead?
 3. **Icon Components** - SVG icons should be in `Icons.tsx`, not inline in View components
+4. **External State** - Use `useSyncExternalStore` for singleton/global state, not useEffect with manual subscriptions
+5. **Query Key Management** - TanStack Query keys should use consistent factories, invalidation should be complete
+
+## Backend-Specific Checks
+
+When reviewing backend code, pay special attention to:
+
+1. **Resource Cleanup** - Are PTY processes, WebSocket connections, and file handles properly cleaned up?
+2. **WebSocket Message Types** - Are server→client and client→server message types clearly defined and validated?
+3. **Structured Logging** - Use Pino with structured data: `logger.info({ sessionId, workerId }, 'message')`, not string interpolation
+4. **Callback Registration** - Are callbacks properly detached when resources are destroyed? (memory leak prevention)
+5. **Output Buffering** - Is rapid PTY output buffered before WebSocket send to reduce message frequency?
 
 ## When Existing Patterns Are Questionable
 
