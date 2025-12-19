@@ -4,6 +4,16 @@
 
 const PROMPT_ENV_VAR = '__AGENT_PROMPT__';
 
+/**
+ * Escape a string for safe use in shell commands (single-quoted context).
+ * This handles paths with special characters safely.
+ */
+function shellEscape(str: string): string {
+  // Escape single quotes by ending the string, adding escaped quote, and restarting
+  // e.g., "it's" becomes 'it'\''s'
+  return "'" + str.replace(/'/g, "'\\''") + "'";
+}
+
 export type ExpandTemplateOptions = {
   template: string;
   prompt?: string;
@@ -46,9 +56,11 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
   let command = template;
   const env: Record<string, string> = {};
 
-  // Expand {{cwd}} - direct substitution (safe, not user input)
+  // Expand {{cwd}} - shell-escaped to handle paths with special characters safely
+  // Although cwd is validated by validateSessionPath before reaching here,
+  // we still escape it as defense-in-depth against shell metacharacter issues
   if (command.includes('{{cwd}}')) {
-    command = command.replace(/\{\{cwd\}\}/g, cwd);
+    command = command.replace(/\{\{cwd\}\}/g, shellEscape(cwd));
   }
 
   // Expand {{prompt}} - via environment variable (user input, must be protected)

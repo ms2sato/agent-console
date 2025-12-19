@@ -13,7 +13,9 @@ import { createLogger } from '../lib/logger.js';
 const logger = createLogger('activity-detector');
 
 // ANSI escape sequence removal regex
-const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+// Simplified pattern with length limits to prevent ReDoS attacks
+// Matches: ESC followed by single char (@-Z, \, -, _) OR [ followed by params and terminator
+const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]{0,16}[ -/]{0,4}[@-~])/g;
 
 
 export interface ActivityDetectorOptions {

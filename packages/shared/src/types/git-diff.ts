@@ -77,6 +77,17 @@ export interface GitDiffFileDetail {
 // WebSocket Messages for GitDiffWorker
 // ============================================================
 
+/**
+ * Valid message types for GitDiffServerMessage.
+ * Single source of truth for both type definitions and runtime validation.
+ */
+export const GIT_DIFF_SERVER_MESSAGE_TYPES = {
+  'diff-data': 1,
+  'diff-error': 2,
+} as const;
+
+export type GitDiffServerMessageType = keyof typeof GIT_DIFF_SERVER_MESSAGE_TYPES;
+
 /** Server → Client messages */
 export type GitDiffServerMessage =
   | { type: 'diff-data'; data: GitDiffData }

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
@@ -121,10 +122,27 @@ function ensureConfigDir(): void {
   }
 }
 
+/**
+ * Write data to a file atomically using a unique temporary file.
+ * Uses PID + random bytes to ensure uniqueness across concurrent writes.
+ */
 function atomicWrite(filePath: string, data: string): void {
-  const tempPath = filePath + '.tmp';
-  fs.writeFileSync(tempPath, data, 'utf-8');
-  fs.renameSync(tempPath, filePath);
+  // Use unique temp file per write operation to prevent race conditions
+  const uniqueSuffix = `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
+  const tempPath = `${filePath}.${uniqueSuffix}.tmp`;
+
+  try {
+    fs.writeFileSync(tempPath, data, 'utf-8');
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    // Clean up temp file on failure
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw error;
+  }
 }
 
 function safeRead<T>(filePath: string, defaultValue: T): T {

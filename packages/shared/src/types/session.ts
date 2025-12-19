@@ -57,6 +57,19 @@ export type WorkerClientMessage =
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'image'; data: string; mimeType: string };
 
+/**
+ * Valid message types for WorkerServerMessage.
+ * Single source of truth for both type definitions and runtime validation.
+ */
+export const WORKER_SERVER_MESSAGE_TYPES = {
+  'output': 1,
+  'exit': 2,
+  'history': 3,
+  'activity': 4,
+} as const;
+
+export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
+
 export type WorkerServerMessage =
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number; signal: string | null }

@@ -27,7 +27,6 @@ interface Tab {
   id: string;           // Worker ID
   workerType: 'agent' | 'terminal' | 'git-diff';
   name: string;
-  wsUrl: string;
 }
 
 // Generate favicon based on activity state
@@ -65,18 +64,12 @@ function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
 }
 
-// Build WebSocket URL for a worker
-function buildWorkerWsUrl(sessionId: string, workerId: string): string {
-  return `ws://${window.location.host}/ws/session/${sessionId}/worker/${workerId}`;
-}
-
 // Convert workers to tabs
-function workersToTabs(sessionId: string, workers: Worker[]): Tab[] {
+function workersToTabs(workers: Worker[]): Tab[] {
   return workers.map(worker => ({
     id: worker.id,
     workerType: worker.type,
     name: worker.name,
-    wsUrl: buildWorkerWsUrl(sessionId, worker.id),
   }));
 }
 
@@ -207,7 +200,7 @@ function TerminalPage() {
   useEffect(() => {
     if (state.type === 'active' && tabs.length === 0) {
       const workers = state.session.workers;
-      const newTabs = workersToTabs(sessionId, workers);
+      const newTabs = workersToTabs(workers);
       setTabs(newTabs);
       // Set active tab to first agent worker if exists, otherwise first tab
       const firstAgent = findFirstAgentWorker(workers);
@@ -229,7 +222,6 @@ function TerminalPage() {
         id: worker.id,
         workerType: 'terminal',
         name: worker.name,
-        wsUrl: buildWorkerWsUrl(sessionId, worker.id),
       };
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
@@ -536,7 +528,8 @@ function TerminalPage() {
                 />
               ) : (
                 <Terminal
-                  wsUrl={tab.wsUrl}
+                  sessionId={sessionId}
+                  workerId={tab.id}
                   onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
                   onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
                   hideStatusBar

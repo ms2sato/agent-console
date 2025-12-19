@@ -1,5 +1,6 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
-import type { WorkerClientMessage, WorkerServerMessage, AgentActivityState } from '@agent-console/shared';
+import { useEffect, useCallback, useSyncExternalStore } from 'react';
+import type { AgentActivityState } from '@agent-console/shared';
+import * as workerWs from '../lib/worker-websocket.js';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string) => void;
@@ -17,98 +18,62 @@ interface UseTerminalWebSocketReturn {
 }
 
 export function useTerminalWebSocket(
-  wsUrl: string,
+  sessionId: string,
+  workerId: string,
   options: UseTerminalWebSocketOptions
 ): UseTerminalWebSocketReturn {
-  const wsRef = useRef<WebSocket | null>(null);
-  const [connected, setConnected] = useState(false);
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
+  const { onOutput, onHistory, onExit, onConnectionChange, onActivity } = options;
 
+  // Subscribe to connection state using useSyncExternalStore
+  const state = useSyncExternalStore(
+    (callback) => workerWs.subscribeState(sessionId, workerId, callback),
+    () => workerWs.getState(sessionId, workerId)
+  );
+
+  // Connect on mount, disconnect on unmount
+  // Only sessionId and workerId should trigger reconnection
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let cancelled = false;
-
-    // Small delay to handle React Strict Mode's double-mount behavior
-    // This ensures the first mount/unmount cycle completes before connecting
-    const timeoutId = setTimeout(() => {
-      if (cancelled) return;
-
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (cancelled) {
-          ws?.close();
-          return;
-        }
-        setConnected(true);
-        optionsRef.current.onConnectionChange(true);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg: WorkerServerMessage = JSON.parse(event.data);
-          switch (msg.type) {
-            case 'output':
-              optionsRef.current.onOutput(msg.data);
-              break;
-            case 'history':
-              optionsRef.current.onHistory(msg.data);
-              break;
-            case 'exit':
-              optionsRef.current.onExit(msg.exitCode, msg.signal);
-              break;
-            case 'activity':
-              optionsRef.current.onActivity?.(msg.state);
-              break;
-          }
-        } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
-        }
-      };
-
-      ws.onclose = () => {
-        if (!cancelled) {
-          setConnected(false);
-          optionsRef.current.onConnectionChange(false);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-    }, 0);
+    workerWs.connect(sessionId, workerId, {
+      type: 'terminal',
+      onOutput,
+      onHistory,
+      onExit,
+      onActivity,
+    });
 
     return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-      if (ws) {
-        ws.close();
-      }
+      workerWs.disconnect(sessionId, workerId);
     };
-  }, [wsUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, workerId]);
+
+  // Update callbacks without reconnecting when they change
+  useEffect(() => {
+    workerWs.updateCallbacks(sessionId, workerId, {
+      type: 'terminal',
+      onOutput,
+      onHistory,
+      onExit,
+      onActivity,
+    });
+  }, [sessionId, workerId, onOutput, onHistory, onExit, onActivity]);
+
+  // Notify connection changes
+  useEffect(() => {
+    onConnectionChange(state.connected);
+  }, [state.connected, onConnectionChange]);
 
   const sendInput = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: WorkerClientMessage = { type: 'input', data };
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
+    workerWs.sendInput(sessionId, workerId, data);
+  }, [sessionId, workerId]);
 
   const sendResize = useCallback((cols: number, rows: number) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: WorkerClientMessage = { type: 'resize', cols, rows };
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
+    workerWs.sendResize(sessionId, workerId, cols, rows);
+  }, [sessionId, workerId]);
 
   const sendImage = useCallback((data: string, mimeType: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: WorkerClientMessage = { type: 'image', data, mimeType };
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
+    workerWs.sendImage(sessionId, workerId, data, mimeType);
+  }, [sessionId, workerId]);
 
-  return { sendInput, sendResize, sendImage, connected };
+  return { sendInput, sendResize, sendImage, connected: state.connected };
 }

@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
-import { resolve as resolvePath, dirname } from 'node:path';
+import { resolve as resolvePath, dirname, sep as pathSep } from 'node:path';
 import { stat } from 'node:fs/promises';
 import open from 'open';
 import { validateSessionPath } from '../lib/path-validator.js';
+import { getRepositoriesDir } from '../lib/config.js';
 import type {
   CreateWorktreeRequest,
   CreateAgentRequest,
@@ -462,6 +463,13 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
 
   // Canonicalize path to prevent path traversal attacks
   const worktreePath = resolvePath(rawWorktreePath);
+
+  // SECURITY: Explicit boundary check - worktree path must be within the managed repositories directory
+  // This prevents deletion of arbitrary directories even if isWorktreeOf has a bug
+  const repositoriesDir = getRepositoriesDir();
+  if (!worktreePath.startsWith(repositoriesDir + pathSep)) {
+    throw new ValidationError('Worktree path is outside managed directory');
+  }
 
   // Verify this is actually a worktree of this repository
   if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
