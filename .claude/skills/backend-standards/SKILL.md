@@ -5,8 +5,6 @@ description: Hono/Bun patterns and backend best practices for this project. Use 
 
 # Backend Standards
 
-Refer to [backend-standards.md](backend-standards.md) for detailed patterns.
-
 ## Key Principles
 
 - **Server is the source of truth** - Backend manages all session/worker state
@@ -17,3 +15,8 @@ Refer to [backend-standards.md](backend-standards.md) for detailed patterns.
 ## Tech Stack
 
 - Bun, Hono, bun-pty, Pino, Valibot
+
+## Detailed Documentation
+
+- [backend-standards.md](backend-standards.md) - Directory structure, Hono, logging, services, testing, security
+- [websocket-patterns.md](websocket-patterns.md) - Dual WebSocket architecture, message protocol, broadcasting

@@ -36,10 +36,13 @@ Built-in:
 - `Plan` - Designing complex changes
 
 Project-defined (`.claude/agents/`):
+- `frontend-specialist` - Implementing frontend features and fixes in packages/client
+- `backend-specialist` - Implementing backend features and fixes in packages/server
 - `test-runner` - Running tests and analyzing failures
 - `test-reviewer` - Evaluating test adequacy (use after tests are modified)
 - `code-quality-reviewer` - Evaluating design and maintainability
 - `ux-architecture-reviewer` - Verifying state consistency in client-server interactions
+- `claude-config-specialist` - Analyzing and improving Claude Code configuration (.claude/, CLAUDE.md)
 
 Project-defined skills (in `.claude/skills/`):
 - **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Development process rules (testing, branching, commits)
