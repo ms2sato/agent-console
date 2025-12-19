@@ -173,6 +173,21 @@ See `AGENTS.md` for repository guidelines, commands, and testing expectations.
 - **Build**: [Bun bundler](https://bun.sh/docs/bundler) (server), [Vite](https://vite.dev) (frontend)
 - **Package Manager**: [Bun workspaces](https://bun.sh/docs/install/workspaces)
 
+## AI-Driven Development
+
+This project serves as a testbed for exploring the boundaries of AI-assisted software development. The goal is to minimize human involvement throughout the entire development lifecycle:
+
+- **Code generation**: All code is written by Claude Code, not by humans
+- **Code review**: Reviews are performed by Claude subagents (code-quality-reviewer, test-reviewer, ux-architecture-reviewer)
+- **Testing**: Test code is also generated and reviewed by AI
+
+The human role is limited to:
+- Providing high-level requirements and direction
+- Final approval of pull requests
+- Resolving issues that AI cannot handle autonomously
+
+This approach allows us to dogfood Agent Console while simultaneously validating how far AI can go in autonomous software development. The codebase you see here is the result of this experiment.
+
 ## Special Thanks
 
 This project is built on the shoulders of amazing open-source projects:
