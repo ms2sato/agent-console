@@ -328,6 +328,45 @@ describe('ServiceName', () => {
 
 ## Performance
 
+### Prefer Async Over Sync
+
+**Always use async functions instead of sync equivalents.**
+
+Bun runs on a single-threaded event loop. Sync functions block the entire thread, preventing all other requests from being processed until the operation completes. This directly impacts server responsiveness and throughput.
+
+| Avoid (Sync) | Use (Async) |
+|--------------|-------------|
+| `fs.readFileSync()` | `fs.promises.readFile()` or `Bun.file().text()` |
+| `fs.writeFileSync()` | `fs.promises.writeFile()` or `Bun.write()` |
+| `fs.existsSync()` | `fs.promises.access()` or `Bun.file().exists()` |
+| `fs.mkdirSync()` | `fs.promises.mkdir()` |
+| `fs.readdirSync()` | `fs.promises.readdir()` |
+| `fs.statSync()` | `fs.promises.stat()` |
+| `fs.rmSync()` | `fs.promises.rm()` |
+| `child_process.execSync()` | `child_process.exec()` with promisify or `Bun.spawn()` |
+| `child_process.spawnSync()` | `Bun.spawn()` |
+
+**Exceptions:**
+- **Application startup/initialization**: Sync operations during server bootstrap (before accepting requests) are acceptable since no requests are blocked
+- **CLI tools**: Command-line scripts that run to completion may use sync operations
+
+**Example:**
+
+```typescript
+// ❌ Blocks the event loop - all other requests wait
+const config = fs.readFileSync('config.json', 'utf-8');
+const data = JSON.parse(config);
+
+// ✅ Non-blocking - other requests continue processing
+const file = Bun.file('config.json');
+const data = await file.json();
+
+// ✅ Alternative with fs.promises
+import { readFile } from 'fs/promises';
+const config = await readFile('config.json', 'utf-8');
+const data = JSON.parse(config);
+```
+
 ### PTY Output Handling
 
 - Buffer output to reduce message frequency
