@@ -33,22 +33,25 @@ function RootLayout() {
         backgroundColor: '#0f172a',
         display: 'flex',
         alignItems: 'center',
-        gap: '20px',
         flexShrink: 0,
       }}>
-        <Link
-          to="/"
-          style={{
-            color: '#fff',
-            textDecoration: 'none',
-            fontSize: '0.875rem',
-            fontWeight: 'bold',
-          }}
-        >
-          Agent Console
-        </Link>
-        <AgentsNavLink />
-        <ValidationWarningIndicator />
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <Link
+            to="/"
+            style={{
+              color: '#fff',
+              textDecoration: 'none',
+              fontSize: '0.875rem',
+              fontWeight: 'bold',
+            }}
+          >
+            Agent Console
+          </Link>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <ValidationWarningIndicator />
+          <AgentsNavLink />
+        </div>
       </header>
       <ConnectionBanner connected={connected} />
       <main style={{ flex: 1, overflow: 'auto' }}>
