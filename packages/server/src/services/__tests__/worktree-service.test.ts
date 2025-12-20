@@ -18,6 +18,7 @@ describe('WorktreeService', () => {
 
     // Reset mocks
     mockGit.getRemoteUrl.mockReset();
+    mockGit.parseOrgRepo.mockReset();
     mockGit.listWorktrees.mockReset();
     mockGit.createWorktree.mockReset();
     mockGit.removeWorktree.mockReset();
@@ -27,6 +28,7 @@ describe('WorktreeService', () => {
 
     // Default implementations
     mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/repo-name.git'));
+    mockGit.parseOrgRepo.mockImplementation(() => 'owner/repo-name');
     mockGit.listWorktrees.mockImplementation(() => Promise.resolve(`worktree /repo/main
 HEAD abc123
 branch refs/heads/main
