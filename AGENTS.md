@@ -37,6 +37,9 @@
 - Use GitHub for issues.
 - You may use `gh` for GitHub issue/PR creation.
 
+## Execution Flow (Approvals)
+When a user requests an action (e.g., "Create a PR"), treat all standard prerequisite steps (commit/push/PR create, etc.) as implicitly authorized. Do not ask for extra verbal confirmation. Execute required commands directly; if the system blocks for approval, proceed according to the system prompt. Only ask the user when a decision is ambiguous (e.g., multiple valid options).
+
 ## Working Principles
 - Purpose over speed. Do not rush to finish quickly at the expense of losing sight of the original purpose.
 - Do not blindly follow existing patterns. Evaluate whether existing code is appropriate before adopting it.
