@@ -1,6 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
+import { usePersistentWebSocket } from './usePersistentWebSocket';
 
 /**
  * Hook for subscribing to app WebSocket state with a selector.
@@ -52,17 +53,23 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  useEffect(() => {
-    // If already connected, request a fresh sync (handles navigation case)
-    // Otherwise, connect() will trigger initial sync via onOpen
-    if (getState().connected) {
-      requestSync();
-    } else {
-      // Connect to WebSocket (idempotent - safe to call multiple times)
-      connect();
-    }
+  usePersistentWebSocket({
+    key: 'app',
+    connect: () => {
+      // If already connected, request a fresh sync (handles navigation case)
+      // Otherwise, connect() will trigger initial sync via onOpen.
+      if (getState().connected) {
+        requestSync();
+      } else {
+        // Connect to WebSocket (idempotent - safe to call multiple times).
+        connect();
+      }
+    },
+    disconnect: () => undefined,
+  });
 
-    // Subscribe to messages for callback notifications
+  useEffect(() => {
+    // Subscribe to messages for callback notifications.
     const unsubscribeMessage = subscribe((msg: AppServerMessage) => {
       switch (msg.type) {
         case 'sessions-sync':
@@ -105,7 +112,7 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
 
     return () => {
       unsubscribeMessage();
-      // Note: We don't disconnect here because the singleton should persist
+      // Note: We don't disconnect here because the singleton should persist.
     };
   }, []);
 }
