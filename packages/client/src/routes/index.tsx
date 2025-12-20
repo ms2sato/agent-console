@@ -563,6 +563,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
       {showCreateWorktree && (
         <CreateWorktreeForm
+          repositoryId={repository.id}
           defaultBranch={defaultBranch}
           isPending={createWorktreeMutation.isPending}
           onSubmit={handleCreateWorktree}

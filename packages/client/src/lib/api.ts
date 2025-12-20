@@ -12,6 +12,7 @@ import type {
   UpdateAgentRequest,
   SessionsValidationResponse,
   BranchNameFallback,
+  GitHubIssueSummary,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -282,6 +283,26 @@ export async function createWorktree(
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to create worktree');
+  }
+  return res.json();
+}
+
+export interface GitHubIssueResponse {
+  issue: GitHubIssueSummary;
+}
+
+export async function fetchGitHubIssue(
+  repositoryId: string,
+  reference: string
+): Promise<GitHubIssueResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/github-issue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to fetch GitHub issue');
   }
   return res.json();
 }

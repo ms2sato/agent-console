@@ -6,7 +6,7 @@ import { CreateWorktreeForm } from '../CreateWorktreeForm';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
+const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 // Restore original fetch after all tests
@@ -49,6 +49,7 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 
 function renderCreateWorktreeForm(props: Partial<React.ComponentProps<typeof CreateWorktreeForm>> = {}) {
   const defaultProps = {
+    repositoryId: 'repo-1',
     defaultBranch: 'main',
     isPending: false,
     onSubmit: mock(() => Promise.resolve()),
@@ -338,6 +339,58 @@ describe('CreateWorktreeForm', () => {
       expect(submitCall[0]).toMatchObject({
         baseBranch: 'develop',
       });
+    });
+  });
+
+  describe('GitHub issue', () => {
+    it('should populate prompt and branch from issue', async () => {
+      const user = userEvent.setup();
+      const issue = {
+        org: 'owner',
+        repo: 'repo',
+        number: 123,
+        title: 'Add docs',
+        body: 'Please update the README.',
+        url: 'https://github.com/owner/repo/issues/123',
+        suggestedBranch: 'add-docs',
+      };
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/github-issue')) {
+          return Promise.resolve(createMockResponse({ issue }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const openDialogButton = screen.getByText('Import from Issue');
+      await user.click(openDialogButton);
+
+      const issueInput = screen.getByPlaceholderText(/github.com\/owner\/repo\/issues/);
+      await user.type(issueInput, 'owner/repo#123');
+      await user.click(screen.getByText('Fetch'));
+
+      await waitFor(() => {
+        expect(screen.getByText(issue.title)).toBeTruthy();
+      });
+
+      await user.click(screen.getByText('Apply'));
+
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
+      expect(promptInput.value).toBe(issue.body);
+
+      const branchInput = screen.getByPlaceholderText('New branch name') as HTMLInputElement;
+      expect(branchInput.value).toBe(issue.suggestedBranch);
     });
   });
 

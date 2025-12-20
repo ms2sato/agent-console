@@ -7,6 +7,7 @@ import {
   CreateWorktreeCustomRequestSchema,
   CreateWorktreeExistingRequestSchema,
   DeleteWorktreeRequestSchema,
+  FetchGitHubIssueRequestSchema,
 } from '../repository';
 
 describe('CreateRepositoryRequestSchema', () => {
@@ -466,6 +467,32 @@ describe('DeleteWorktreeRequestSchema', () => {
   it('should reject non-boolean force', () => {
     const result = v.safeParse(DeleteWorktreeRequestSchema, {
       force: 'yes',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('FetchGitHubIssueRequestSchema', () => {
+  it('should accept a valid reference', () => {
+    const result = v.safeParse(FetchGitHubIssueRequestSchema, {
+      reference: 'owner/repo#123',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should trim and accept references with whitespace', () => {
+    const result = v.safeParse(FetchGitHubIssueRequestSchema, {
+      reference: '  #456  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.reference).toBe('#456');
+    }
+  });
+
+  it('should reject empty reference', () => {
+    const result = v.safeParse(FetchGitHubIssueRequestSchema, {
+      reference: '',
     });
     expect(result.success).toBe(false);
   });
