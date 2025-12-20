@@ -10,6 +10,7 @@ export interface Repository {
   name: string;         // Display name (directory name)
   path: string;         // Absolute path
   registeredAt: string; // Registration date (ISO 8601)
+  remoteUrl?: string;   // Git remote URL for origin (if available)
 }
 
 export interface Worktree {
@@ -35,4 +36,3 @@ export interface BranchNameFallback {
   /** The error message from the AI agent */
   reason: string;
 }
-

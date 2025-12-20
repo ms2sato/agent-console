@@ -16,6 +16,7 @@ import type {
   CreateRepositoryRequest,
   SystemOpenRequest,
   BranchNameFallback,
+  Repository,
 } from '@agent-console/shared';
 import {
   CreateSessionRequestSchema,
@@ -37,8 +38,17 @@ import { sessionValidationService } from '../services/session-validation-service
 import { persistenceService } from '../services/persistence-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 
 const api = new Hono();
+
+async function withRepositoryRemote(repository: Repository): Promise<Repository> {
+  const remoteUrl = await getRemoteUrl(repository.path);
+  return {
+    ...repository,
+    remoteUrl: remoteUrl ?? undefined,
+  };
+}
 
 // API info
 api.get('/', (c) => {
@@ -316,9 +326,35 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
 });
 
 // Get all repositories
-api.get('/repositories', (c) => {
+api.get('/repositories', async (c) => {
   const repositories = repositoryManager.getAllRepositories();
-  return c.json({ repositories });
+  const repositoriesWithRemote = await Promise.all(repositories.map(withRepositoryRemote));
+  return c.json({ repositories: repositoriesWithRemote });
+});
+
+// Redirect to repository GitHub URL
+api.get('/repositories/:id/github', async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const remoteUrl = await getRemoteUrl(repo.path);
+  if (!remoteUrl) {
+    throw new ValidationError('Repository does not have a git remote');
+  }
+  if (!remoteUrl.includes('github.com')) {
+    throw new ValidationError('Repository remote is not GitHub');
+  }
+
+  const orgRepo = parseOrgRepo(remoteUrl);
+  if (!orgRepo) {
+    throw new ValidationError('Failed to parse GitHub repository from remote');
+  }
+
+  return c.redirect(`https://github.com/${orgRepo}`, 302);
 });
 
 // Register a repository
@@ -328,7 +364,8 @@ api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c)
 
   try {
     const repository = await repositoryManager.registerRepository(path);
-    return c.json({ repository }, 201);
+    const repositoryWithRemote = await withRepositoryRemote(repository);
+    return c.json({ repository: repositoryWithRemote }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     throw new ValidationError(message);
