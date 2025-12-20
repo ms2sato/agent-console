@@ -12,6 +12,7 @@
     "start": "bun dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "bun test src/",
+    "test:coverage": "bun test --coverage src/",
     "test:watch": "bun test --watch src/"
   },
   "dependencies": {

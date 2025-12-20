@@ -15,7 +15,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src/"
+    "test": "bun test src/",
+    "test:coverage": "bun test --coverage src/"
   },
   "devDependencies": {
     "@types/bun": "^1.3.4",
