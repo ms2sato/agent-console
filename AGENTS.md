@@ -46,6 +46,23 @@ When a user requests an action (e.g., "Create a PR"), treat all standard prerequ
 - Think before you act. Consider the correct approach rather than immediately implementing the easiest solution.
 - Speak up about issues. Mention noteworthy problems even if they are outside the immediate task scope.
 
+## AI Execution Rules
+- Treat every Issue item (including "Additional Consideration" and "Low" priority notes) as in-scope unless the user explicitly says otherwise.
+- If skipping or deferring any Issue item, stop and ask for approval with a brief rationale and impact summary; do not proceed without confirmation.
+- Before claiming impact size or "breaking change", run an actual search (e.g., `rg`) and report the scope in 1 line.
+- Always state whether a decision is based on verified evidence or an assumption.
+- Verify PR body formatting (line breaks, bullets) before submitting.
+- Use body files for PR descriptions to avoid newline escaping issues. Example:
+  - `cat <<'EOF' > /tmp/pr-body.md`
+  - `## Summary`
+  - `- item 1`
+  - `- item 2`
+  - ``
+  - `## Testing`
+  - `- bun run test:only`
+  - `EOF`
+  - `gh pr create --title "..." --body-file /tmp/pr-body.md`
+
 ## Development Workflow
 - Follow GitHub-Flow; create feature branches from main and open PRs for review.
 - When modifying code, update or add corresponding tests.
