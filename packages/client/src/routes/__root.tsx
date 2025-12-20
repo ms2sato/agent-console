@@ -35,7 +35,7 @@ function RootLayout() {
         alignItems: 'center',
         flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
           <Link
             to="/"
             style={{
