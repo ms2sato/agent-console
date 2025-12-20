@@ -26,7 +26,25 @@ export class MockWebSocket {
   }
 
   send = mock(() => {});
-  close = mock((_code?: number) => {
+
+  /**
+   * Mock close method with browser-compatible validation.
+   *
+   * Browser WebSocket API restricts close codes to:
+   * - 1000 (NORMAL_CLOSURE)
+   * - 3000-4999 (application-defined)
+   *
+   * Codes like 1001 (GOING_AWAY) are valid in the WebSocket protocol
+   * but cannot be sent from browser-side JavaScript.
+   * This validation ensures tests catch such issues before manual testing.
+   */
+  close = mock((code?: number) => {
+    if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException(
+        `Failed to execute 'close' on 'WebSocket': The close code must be either 1000, or between 3000 and 4999. ${code} is neither.`,
+        'InvalidAccessError'
+      );
+    }
     this.readyState = MockWebSocket.CLOSED;
   });
 

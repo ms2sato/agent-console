@@ -4,7 +4,7 @@ import * as workerWs from '../lib/worker-websocket.js';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string) => void;
-  onHistory: (data: string) => void;
+  onHistory: (data: string, offset?: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
   onActivity?: (state: AgentActivityState) => void;

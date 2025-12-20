@@ -20,7 +20,14 @@ export function getAppWsUrl(): string {
 
 /**
  * Build a WebSocket URL for a worker connection.
+ * @param sessionId - The session ID
+ * @param workerId - The worker ID
+ * @param fromOffset - Optional offset for incremental history sync (visibility-based reconnection)
  */
-export function getWorkerWsUrl(sessionId: string, workerId: string): string {
-  return `${getWsProtocol()}//${window.location.host}/ws/session/${sessionId}/worker/${workerId}`;
+export function getWorkerWsUrl(sessionId: string, workerId: string, fromOffset?: number): string {
+  const baseUrl = `${getWsProtocol()}//${window.location.host}/ws/session/${sessionId}/worker/${workerId}`;
+  if (fromOffset !== undefined) {
+    return `${baseUrl}?fromOffset=${fromOffset}`;
+  }
+  return baseUrl;
 }

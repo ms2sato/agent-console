@@ -13,6 +13,7 @@ import { agentManager } from '../services/agent-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 
 const logger = createLogger('websocket');
@@ -169,6 +170,9 @@ export function setupWebSocketRoutes(
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
+      // Parse fromOffset query parameter for incremental sync
+      const fromOffsetParam = c.req.query('fromOffset');
+      const fromOffset = fromOffsetParam ? parseInt(fromOffsetParam, 10) : undefined;
 
       // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
       let currentGitDiffBaseCommit: string | null = null;
@@ -176,8 +180,12 @@ export function setupWebSocketRoutes(
       let connectionId: string | null = null;
 
       // Helper function to set up PTY worker handlers after async restore
-      function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
-        logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
+      // The order is critical to prevent duplicates and lost data:
+      // 1. Get current offset BEFORE registering callbacks (marks the boundary)
+      // 2. Register callbacks for NEW output (after the offset)
+      // 3. Send history UP TO the offset we recorded
+      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
+        logger.info({ sessionId, workerId, workerType, fromOffset }, 'Worker WebSocket connected');
 
         // Helper to safely send WebSocket messages with buffering
         let outputBuffer = '';
@@ -197,9 +205,22 @@ export function setupWebSocketRoutes(
         };
 
         const safeSend = (msg: WorkerServerMessage) => {
+          // Check if WebSocket is still open
+          const readyState = getWebSocketReadyState(ws);
+          if (readyState !== undefined && readyState !== WS_READY_STATE.OPEN) {
+            return; // Don't send to closing/closed WebSocket
+          }
+
           if (msg.type === 'output') {
             // Buffer output messages
             outputBuffer += msg.data;
+
+            // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
+            if (outputBuffer.length >= serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD) {
+              flushBuffer();
+              return;
+            }
+
             if (!flushTimer) {
               flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL);
             }
@@ -213,22 +234,11 @@ export function setupWebSocketRoutes(
           }
         };
 
-        // Send buffered output (history) BEFORE registering callbacks
-        // This prevents duplicate output when PTY emits new data immediately after callback registration
-        const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-        if (history) {
-          safeSend({ type: 'history', data: history });
-        }
+        // STEP 1: Get current offset BEFORE registering callbacks
+        // This marks the boundary - everything up to this offset goes to history
+        const currentOffset = await sessionManager.getCurrentOutputOffset(sessionId, workerId);
 
-        // Send current activity state on connection (for agent workers)
-        if (workerType === 'agent') {
-          const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
-          if (activityState && activityState !== 'unknown') {
-            safeSend({ type: 'activity', state: activityState });
-          }
-        }
-
-        // Attach callbacks to receive real-time output AFTER sending history
+        // STEP 2: Register callbacks for NEW output (after currentOffset)
         // Returns a connection ID for later detachment (supports multiple tabs)
         connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
           onData: (data) => {
@@ -241,6 +251,34 @@ export function setupWebSocketRoutes(
             safeSend({ type: 'activity', state });
           },
         });
+
+        // STEP 3: Send history UP TO the offset we recorded
+        // This is safe because callbacks only send data AFTER that offset
+        const historyResult = await sessionManager.getWorkerOutputHistory(
+          sessionId,
+          workerId,
+          fromOffset ?? 0
+        );
+        if (historyResult) {
+          // Only send if there's data or if client needs to know the offset
+          if (historyResult.data || historyResult.offset !== undefined) {
+            safeSend({ type: 'history', data: historyResult.data, offset: historyResult.offset });
+          }
+        } else {
+          // Fallback to in-memory buffer if file not available
+          const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+          if (history) {
+            safeSend({ type: 'history', data: history, offset: currentOffset });
+          }
+        }
+
+        // Send current activity state on connection (for agent workers)
+        if (workerType === 'agent') {
+          const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
+          if (activityState && activityState !== 'unknown') {
+            safeSend({ type: 'activity', state: activityState });
+          }
+        }
       }
 
       /**
@@ -305,7 +343,7 @@ export function setupWebSocketRoutes(
           // PTY-based worker handling (agent/terminal)
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
-          sessionManager.restoreWorker(sessionId, workerId).then((restoredWorker) => {
+          sessionManager.restoreWorker(sessionId, workerId).then(async (restoredWorker) => {
             if (!restoredWorker) {
               logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
               // restoreWorker returns null for: path not found, worker not found, or git-diff workers
@@ -313,7 +351,7 @@ export function setupWebSocketRoutes(
               return;
             }
 
-            setupPtyWorkerHandlers(ws, restoredWorker.type);
+            await setupPtyWorkerHandlers(ws, restoredWorker.type);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);

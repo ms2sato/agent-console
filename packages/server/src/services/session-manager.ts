@@ -38,6 +38,7 @@ import {
   stopWatching,
 } from './git-diff-service.js';
 import { createLogger } from '../lib/logger.js';
+import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 
 const logger = createLogger('session-manager');
 
@@ -326,10 +327,14 @@ export class SessionManager {
       }
     }
 
-    // Remove orphan sessions from persistence
+    // Remove orphan sessions from persistence and delete output files
     if (orphanSessionIds.length > 0) {
       for (const sessionId of orphanSessionIds) {
         persistenceService.removeSession(sessionId);
+        // Also delete output files for orphan session (fire-and-forget)
+        void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
+          logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
+        });
         logger.info({ sessionId }, 'Removed orphan session from persistence');
       }
     }
@@ -429,6 +434,11 @@ export class SessionManager {
         }
       }
     }
+
+    // Delete all output files for this session (fire-and-forget)
+    void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
+      logger.error({ sessionId: id, err }, 'Failed to delete session output files');
+    });
 
     this.sessions.delete(id);
     persistenceService.removeSession(id);
@@ -586,8 +596,16 @@ export class SessionManager {
     if (worker.type === 'agent') {
       if (worker.pty) worker.pty.kill();
       if (worker.activityDetector) worker.activityDetector.dispose();
+      // Delete output file (fire-and-forget)
+      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+      });
     } else if (worker.type === 'terminal') {
       if (worker.pty) worker.pty.kill();
+      // Delete output file (fire-and-forget)
+      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+      });
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);
@@ -867,7 +885,7 @@ export class SessionManager {
     this.setupWorkerEventHandlers(worker, null);
   }
 
-  private setupWorkerEventHandlers(worker: InternalPtyWorker, _sessionId: string | null): void {
+  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string | null): void {
     if (!worker.pty) {
       throw new Error('Cannot setup event handlers: worker.pty is null');
     }
@@ -876,6 +894,11 @@ export class SessionManager {
       const maxBufferSize = serverConfig.WORKER_OUTPUT_BUFFER_SIZE;
       if (worker.outputBuffer.length > maxBufferSize) {
         worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
+      }
+
+      // Buffer output to file for persistence (if sessionId is available)
+      if (sessionId) {
+        workerOutputFileManager.bufferOutput(sessionId, worker.id, data);
       }
 
       if (worker.type === 'agent' && worker.activityDetector) {
@@ -989,6 +1012,36 @@ export class SessionManager {
       return worker.activityState;
     }
     return undefined;
+  }
+
+  /**
+   * Get worker output history from file with optional offset for incremental sync.
+   * @param sessionId Session ID
+   * @param workerId Worker ID
+   * @param fromOffset If specified, return only data after this offset
+   * @returns History data and current offset, or null if not available
+   */
+  async getWorkerOutputHistory(
+    sessionId: string,
+    workerId: string,
+    fromOffset?: number
+  ): Promise<HistoryReadResult | null> {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type === 'git-diff') return null;
+
+    return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, fromOffset);
+  }
+
+  /**
+   * Get current output offset for a worker.
+   * Used to mark the boundary before registering callbacks.
+   * @returns Current file offset (0 if file doesn't exist)
+   */
+  async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type === 'git-diff') return 0;
+
+    return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
   }
 
   restartAgentWorker(
