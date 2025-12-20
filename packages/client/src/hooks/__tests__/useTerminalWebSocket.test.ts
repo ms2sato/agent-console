@@ -114,7 +114,27 @@ describe('useTerminalWebSocket', () => {
       ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data' }));
     });
 
-    expect(options.onHistory).toHaveBeenCalledWith('history data');
+    // onHistory is called with (data, offset?) - offset is undefined when not present in message
+    expect(options.onHistory).toHaveBeenCalledWith('history data', undefined);
+  });
+
+  it('should call onHistory with offset when receiving history message with offset', async () => {
+    const options = createDefaultOptions();
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data', offset: 1234 }));
+    });
+
+    // onHistory is called with (data, offset) when offset is present
+    expect(options.onHistory).toHaveBeenCalledWith('history data', 1234);
   });
 
   it('should call onExit when receiving exit message', async () => {

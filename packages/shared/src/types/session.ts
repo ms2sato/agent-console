@@ -83,7 +83,7 @@ export type WorkerErrorCode =
 export type WorkerServerMessage =
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number; signal: string | null }
-  | { type: 'history'; data: string }
+  | { type: 'history'; data: string; offset?: number }  // offset: current file position for incremental sync
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode };
 
