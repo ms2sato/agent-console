@@ -56,12 +56,16 @@ export {
   CreateWorktreeExistingRequestSchema,
   CreateWorktreeRequestSchema,
   DeleteWorktreeRequestSchema,
+  FetchGitHubIssueRequestSchema,
+  GitHubIssueSummarySchema,
   type CreateRepositoryRequest,
   type CreateWorktreePromptRequest,
   type CreateWorktreeCustomRequest,
   type CreateWorktreeExistingRequest,
   type CreateWorktreeRequest,
   type DeleteWorktreeRequest,
+  type FetchGitHubIssueRequest,
+  type GitHubIssueSummary,
 } from './repository.js';
 
 // System schemas

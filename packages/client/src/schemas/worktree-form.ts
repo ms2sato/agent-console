@@ -21,6 +21,12 @@ export const CreateWorktreeFormSchema = v.pipe(
   v.object({
     branchNameMode: v.picklist(['prompt', 'custom', 'existing']),
     initialPrompt: v.optional(v.string()),
+    githubIssue: v.optional(
+      v.pipe(
+        v.string(),
+        v.trim()
+      )
+    ),
     customBranch: v.optional(
       v.pipe(
         v.string(),

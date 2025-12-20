@@ -89,6 +89,30 @@ export const CreateWorktreeRequestSchema = v.union([
 ]);
 
 /**
+ * Schema for fetching a GitHub issue by reference
+ */
+export const FetchGitHubIssueRequestSchema = v.object({
+  reference: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Issue reference is required')
+  ),
+});
+
+/**
+ * Schema for a GitHub issue summary
+ */
+export const GitHubIssueSummarySchema = v.object({
+  org: v.string(),
+  repo: v.string(),
+  number: v.number(),
+  title: v.string(),
+  body: v.string(),
+  url: v.string(),
+  suggestedBranch: v.optional(v.string()),
+});
+
+/**
  * Schema for deleting a worktree
  */
 export const DeleteWorktreeRequestSchema = v.object({
@@ -102,3 +126,5 @@ export type CreateWorktreeCustomRequest = v.InferOutput<typeof CreateWorktreeCus
 export type CreateWorktreeExistingRequest = v.InferOutput<typeof CreateWorktreeExistingRequestSchema>;
 export type CreateWorktreeRequest = v.InferOutput<typeof CreateWorktreeRequestSchema>;
 export type DeleteWorktreeRequest = v.InferOutput<typeof DeleteWorktreeRequestSchema>;
+export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;
+export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;

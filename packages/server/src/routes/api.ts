@@ -17,6 +17,8 @@ import type {
   SystemOpenRequest,
   BranchNameFallback,
   Repository,
+  FetchGitHubIssueRequest,
+  GitHubIssueSummary,
 } from '@agent-console/shared';
 import {
   CreateSessionRequestSchema,
@@ -25,6 +27,7 @@ import {
   RestartWorkerRequestSchema,
   CreateRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
+  FetchGitHubIssueRequestSchema,
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
   SystemOpenRequestSchema,
@@ -36,6 +39,7 @@ import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { sessionValidationService } from '../services/session-validation-service.js';
 import { persistenceService } from '../services/persistence-service.js';
+import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
@@ -395,6 +399,26 @@ api.get('/repositories/:id/worktrees', async (c) => {
 
   const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
   return c.json({ worktrees });
+});
+
+// Fetch a GitHub issue for a repository
+api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestSchema), async (c) => {
+  const repoId = c.req.param('id');
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const body = getValidatedBody<FetchGitHubIssueRequest>(c);
+
+  try {
+    const issue: GitHubIssueSummary = await fetchGitHubIssue(body.reference, repo.path);
+    return c.json({ issue });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to fetch GitHub issue';
+    throw new ValidationError(message);
+  }
 });
 
 // Create a worktree
