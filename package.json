@@ -14,6 +14,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run typecheck && bun run test:only",
     "test:only": "bun run --filter '*' test",
+    "test:coverage": "bun run --filter '*' test:coverage",
     "lint": "bun run --filter '*' lint"
   },
   "devDependencies": {

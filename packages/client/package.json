@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "bun test --preload ./src/test/setup.ts src/",
+    "test:coverage": "bun test --coverage --preload ./src/test/setup.ts src/",
     "test:watch": "bun test --watch --preload ./src/test/setup.ts"
   },
   "dependencies": {

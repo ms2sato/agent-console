@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test src/",
-    "test:watch": "bun test --watch src/"
+    "test": "bun test --preload ./src/setup.ts src/",
+    "test:coverage": "bun test --coverage --preload ./src/setup.ts src/",
+    "test:watch": "bun test --watch --preload ./src/setup.ts src/"
   },
   "devDependencies": {
     "@agent-console/client": "*",
