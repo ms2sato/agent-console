@@ -18,6 +18,7 @@ import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-w
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
+import { GitHubIcon } from '../components/Icons';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -482,6 +483,13 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
+  const isGitHubRemote = Boolean(
+    repository.remoteUrl &&
+      (repository.remoteUrl.startsWith('git@github.com:') ||
+        repository.remoteUrl.startsWith('https://github.com/') ||
+        repository.remoteUrl.startsWith('http://github.com/') ||
+        repository.remoteUrl.startsWith('ssh://git@github.com/'))
+  );
 
   const { data: worktreesData } = useQuery({
     queryKey: ['worktrees', repository.id],
@@ -523,7 +531,21 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
     <div className="card">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-lg font-medium">{repository.name}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-medium">{repository.name}</h2>
+            {isGitHubRemote && (
+              <a
+                href={`/api/repositories/${repository.id}/github`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-gray-400 hover:text-gray-200"
+                aria-label={`${repository.name} on GitHub`}
+                title="Open on GitHub"
+              >
+                <GitHubIcon className="w-4 h-4" />
+              </a>
+            )}
+          </div>
           <PathLink path={repository.path} className="text-xs text-gray-500" />
         </div>
         <div className="flex gap-2">
