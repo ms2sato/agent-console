@@ -91,7 +91,6 @@ interface WorkerConnection {
   ws: WebSocket;
   state: WorkerConnectionState;
   callbacks: WorkerCallbacks;
-  stateListeners: Set<() => void>;
   // Reconnection state
   retryCount: number;
   retryTimeout: ReturnType<typeof setTimeout> | null;
@@ -121,9 +120,8 @@ type WorkerCallbacks = TerminalWorkerCallbacks | GitDiffWorkerCallbacks;
 // Connection storage
 const connections = new Map<string, WorkerConnection>();
 
-// Pending listeners for connections that don't exist yet
-// These are registered when useSyncExternalStore subscribes before connect() is called
-const pendingListeners = new Map<string, Set<() => void>>();
+// Global listeners for useSyncExternalStore subscriptions
+const stateListeners = new Set<() => void>();
 
 // Default state for disconnected workers (cached to avoid infinite loop in useSyncExternalStore)
 const DEFAULT_DISCONNECTED_STATE: WorkerConnectionState = Object.freeze({ connected: false });
@@ -223,7 +221,7 @@ function updateState(key: string, partial: Partial<WorkerConnectionState>): void
   if (!conn) return;
 
   conn.state = { ...conn.state, ...partial };
-  conn.stateListeners.forEach(fn => fn());
+  stateListeners.forEach(fn => fn());
 }
 
 /**
@@ -243,7 +241,6 @@ function scheduleReconnect(key: string): void {
   if (conn.retryCount >= MAX_RETRY_COUNT) {
     console.error(`[WorkerWS] Max retry attempts reached for ${key}, giving up`);
     // Clean up the failed connection to allow future connect() calls to work
-    conn.stateListeners.clear();
     connections.delete(key);
     return;
   }
@@ -275,9 +272,8 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     return;
   }
 
-  // Preserve retry state and listeners
+  // Preserve retry state
   const retryCount = existingConn.retryCount;
-  const stateListeners = existingConn.stateListeners;
 
   // CRITICAL: Close old WebSocket before creating new one to prevent memory leak
   // Remove event handlers first to prevent stale state updates during close
@@ -302,13 +298,14 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     ws,
     state: initialState,
     callbacks,
-    stateListeners,
     retryCount,
     retryTimeout: null,
     sessionId,
     workerId,
   };
   connections.set(key, conn);
+  // Notify subscribers that the connection state is now available.
+  updateState(key, {});
 
   setupWebSocketHandlers(key, ws, callbacks);
 }
@@ -475,24 +472,14 @@ export function connect(
     ws,
     state: initialState,
     callbacks,
-    stateListeners: new Set(),
     retryCount: 0,
     retryTimeout: null,
     sessionId,
     workerId,
   };
   connections.set(key, conn);
-
-  // Transfer pending listeners to the new connection
-  const pending = pendingListeners.get(key);
-  if (pending) {
-    for (const listener of pending) {
-      conn.stateListeners.add(listener);
-    }
-    pendingListeners.delete(key);
-    // Notify listeners that state is now available (triggers re-render)
-    conn.stateListeners.forEach(fn => fn());
-  }
+  // Notify subscribers that the connection state is now available.
+  updateState(key, {});
 
   setupWebSocketHandlers(key, ws, callbacks);
 
@@ -521,8 +508,6 @@ export function disconnect(sessionId: string, workerId: string): void {
     visibilityDisconnectedCallbacks.delete(key);
     terminalSnapshots.delete(key);
     historyOffsets.delete(key);
-    // Clear all listeners before removing connection to prevent memory leaks
-    conn.stateListeners.clear();
     connections.delete(key);
   }
 }
@@ -599,37 +584,12 @@ export function setTargetCommit(sessionId: string, workerId: string, ref: GitDif
 }
 
 /**
- * Subscribe to state changes for a specific worker (for useSyncExternalStore).
- * Supports subscribing before connection exists (pending listeners).
+ * Subscribe to state changes for worker connections (for useSyncExternalStore).
  * @returns Unsubscribe function
  */
-export function subscribeState(sessionId: string, workerId: string, listener: () => void): () => void {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-
-  if (conn) {
-    conn.stateListeners.add(listener);
-    return () => conn.stateListeners.delete(listener);
-  }
-
-  // No connection yet - store as pending listener
-  // These will be transferred to the connection when it's created
-  let pending = pendingListeners.get(key);
-  if (!pending) {
-    pending = new Set();
-    pendingListeners.set(key, pending);
-  }
-  pending.add(listener);
-
-  return () => {
-    const p = pendingListeners.get(key);
-    if (p) {
-      p.delete(listener);
-      if (p.size === 0) {
-        pendingListeners.delete(key);
-      }
-    }
-  };
+export function subscribeState(listener: () => void): () => void {
+  stateListeners.add(listener);
+  return () => stateListeners.delete(listener);
 }
 
 /**
@@ -678,7 +638,6 @@ export function disconnectSession(sessionId: string): void {
       visibilityDisconnectedCallbacks.delete(key);
       terminalSnapshots.delete(key);
       historyOffsets.delete(key);
-      conn.stateListeners.clear();
       connections.delete(key);
     }
   }
@@ -805,6 +764,7 @@ export function _reset(): void {
     }
   }
   connections.clear();
+  stateListeners.clear();
   visibilityDisconnectedKeys.clear();
   visibilityDisconnectedCallbacks.clear();
   terminalSnapshots.clear();

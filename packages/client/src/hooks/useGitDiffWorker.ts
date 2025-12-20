@@ -23,7 +23,7 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
 
   // Subscribe to connection state using useSyncExternalStore
   const state = useSyncExternalStore(
-    (callback) => workerWs.subscribeState(sessionId, workerId, callback),
+    (callback) => workerWs.subscribeState(callback),
     () => workerWs.getState(sessionId, workerId)
   );
 
