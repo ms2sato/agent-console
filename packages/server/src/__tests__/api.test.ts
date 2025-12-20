@@ -756,6 +756,76 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('https://github.com/owner/test-repo');
       });
+
+      it('should return 400 when repository has no git remote', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+
+        expect(createRes.status).toBe(201);
+        const createBody = (await createRes.json()) as { repository: Repository };
+
+        mockGit.getRemoteUrl.mockImplementationOnce(() => Promise.resolve(null));
+
+        const res = await app.request(`/api/repositories/${createBody.repository.id}/github`);
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Repository does not have a git remote');
+      });
+
+      it('should return 400 when repository remote is not GitHub', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+
+        expect(createRes.status).toBe(201);
+        const createBody = (await createRes.json()) as { repository: Repository };
+
+        mockGit.getRemoteUrl.mockImplementationOnce(() =>
+          Promise.resolve('git@bitbucket.org:owner/test-repo.git')
+        );
+
+        const res = await app.request(`/api/repositories/${createBody.repository.id}/github`);
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Repository remote is not GitHub');
+      });
+
+      it('should return 400 when GitHub remote cannot be parsed', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+
+        expect(createRes.status).toBe(201);
+        const createBody = (await createRes.json()) as { repository: Repository };
+
+        mockGit.getRemoteUrl.mockImplementationOnce(() =>
+          Promise.resolve('https://github.com/owner')
+        );
+
+        const res = await app.request(`/api/repositories/${createBody.repository.id}/github`);
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Failed to parse GitHub repository from remote');
+      });
     });
 
     describe('DELETE /api/repositories/:id', () => {
