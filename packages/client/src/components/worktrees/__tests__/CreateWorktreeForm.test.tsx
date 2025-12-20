@@ -6,7 +6,7 @@ import { CreateWorktreeForm } from '../CreateWorktreeForm';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
+const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 // Restore original fetch after all tests
@@ -356,7 +356,11 @@ describe('CreateWorktreeForm', () => {
       };
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string' ? input : input.url;
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
         if (url.includes('/github-issue')) {
           return Promise.resolve(createMockResponse({ issue }));
         }
