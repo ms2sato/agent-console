@@ -6,6 +6,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import * as workerWs from '../lib/worker-websocket.js';
+import { clearAndWrite } from '../lib/terminal-utils.js';
 import type { AgentActivityState } from '@agent-console/shared';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
@@ -52,12 +53,20 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (snapshot) {
         // Only set the flag after successfully consuming snapshot
         hasRestoredSnapshotRef.current = true;
-        terminal.clear();
-        terminal.write(snapshot);
-        // Only write diff (data after snapshot)
-        if (data) {
-          terminal.write(data);
-        }
+        clearAndWrite(terminal, () => {
+          return new Promise((resolve, reject) => {
+            try {
+              if (data) {
+                terminal.write(snapshot);
+                terminal.write(data, resolve);
+              } else {
+                terminal.write(snapshot, resolve);
+              }
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }).catch((e) => console.error('[Terminal] Failed to restore snapshot:', e));
         return;
       }
       // If no snapshot available, mark as restored to avoid re-checking
@@ -66,8 +75,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Normal history handling (no snapshot)
     if (data) {
-      terminal.clear();
-      terminal.write(data);
+      clearAndWrite(terminal, () => {
+        return new Promise((resolve, reject) => {
+          try {
+            terminal.write(data, resolve);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }).catch((e) => console.error('[Terminal] Failed to write history:', e));
     }
   }, [sessionId, workerId]);
 
