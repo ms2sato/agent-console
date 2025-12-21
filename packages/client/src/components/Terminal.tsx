@@ -38,7 +38,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current?.write(data);
   }, []);
 
-  const handleHistory = useCallback((data: string, offset?: number) => {
+  const handleHistory = useCallback(async (data: string, offset?: number) => {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
@@ -53,7 +53,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (snapshot) {
         // Only set the flag after successfully consuming snapshot
         hasRestoredSnapshotRef.current = true;
-        clearAndWrite(terminal, () => {
+        await clearAndWrite(terminal, () => {
           return new Promise((resolve, reject) => {
             try {
               if (data) {
@@ -75,7 +75,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Normal history handling (no snapshot)
     if (data) {
-      clearAndWrite(terminal, () => {
+      await clearAndWrite(terminal, () => {
         return new Promise((resolve, reject) => {
           try {
             terminal.write(data, resolve);
