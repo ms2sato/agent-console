@@ -105,10 +105,8 @@ export function CreateWorktreeForm({
     if (!getValues('sessionTitle')?.trim()) {
       setValue('sessionTitle', issueState.issue.title, { shouldDirty: true });
     }
-    if (issueState.issue.suggestedBranch) {
-      setValue('branchNameMode', 'custom', { shouldDirty: true, shouldValidate: true });
-      setValue('customBranch', issueState.issue.suggestedBranch, { shouldDirty: true, shouldValidate: true });
-    }
+    // Use 'prompt' mode to let LLM generate a unique branch name from the issue content
+    setValue('branchNameMode', 'prompt', { shouldDirty: true, shouldValidate: true });
   };
 
   const handleFormSubmit = async (data: CreateWorktreeFormData) => {

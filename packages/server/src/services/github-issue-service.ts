@@ -127,6 +127,7 @@ export async function fetchGitHubIssue(reference: string, repoPath: string): Pro
   }
 
   const responseText = await runGhApi(['api', `repos/${org}/${repo}/issues/${number}`], repoPath);
+
   let responseJson: { title?: string; body?: string | null; html_url?: string } | undefined;
   try {
     responseJson = JSON.parse(responseText) as { title?: string; body?: string | null; html_url?: string };

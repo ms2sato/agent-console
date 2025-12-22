@@ -343,7 +343,7 @@ describe('CreateWorktreeForm', () => {
   });
 
   describe('GitHub issue', () => {
-    it('should populate prompt and branch from issue', async () => {
+    it('should populate prompt from issue and use prompt mode for branch generation', async () => {
       const user = userEvent.setup();
       const issue = {
         org: 'owner',
@@ -389,8 +389,9 @@ describe('CreateWorktreeForm', () => {
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
       expect(promptInput.value).toBe(issue.body);
 
-      const branchInput = screen.getByPlaceholderText('New branch name') as HTMLInputElement;
-      expect(branchInput.value).toBe(issue.suggestedBranch);
+      // Verify 'prompt' mode is selected (Generate from prompt)
+      const promptRadio = screen.getByLabelText(/Generate from prompt/) as HTMLInputElement;
+      expect(promptRadio.checked).toBe(true);
     });
   });
 
