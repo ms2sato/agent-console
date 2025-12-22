@@ -390,7 +390,7 @@ export class SessionManager {
       this.createWorker(id, {
         type: 'agent',
         agentId: effectiveAgentId,
-        name: 'Claude',
+        // name is not specified; generateWorkerName will use the agent's name
       }, request.continueConversation ?? false, request.initialPrompt),
       this.createWorker(id, {
         type: 'git-diff',
@@ -483,7 +483,8 @@ export class SessionManager {
 
     const workerId = uuidv4();
     const createdAt = new Date().toISOString();
-    const workerName = request.name ?? this.generateWorkerName(session, request.type);
+    const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
+    const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
 
@@ -618,9 +619,12 @@ export class SessionManager {
     return true;
   }
 
-  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff'): string {
+  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): string {
     if (type === 'agent') {
-      return 'Claude';
+      // Get agent name from agentManager
+      const agent = agentId ? agentManager.getAgent(agentId) : undefined;
+      // Fall back to generic "AI" if agent not found
+      return agent?.name ?? 'AI';
     }
 
     if (type === 'git-diff') {
