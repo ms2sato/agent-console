@@ -70,7 +70,7 @@ This design was triggered by [Issue #129](https://github.com/ms2sato/agent-conso
 │ Server                                                          │
 │ ┌─────────────────────────────────────────────────────────────┐ │
 │ │ JobQueue                                                    │ │
-│ │ ├── SQLite (jobs.db)         ← Persistence                  │ │
+│ │ ├── SQLite (data.db)         ← Persistence                  │ │
 │ │ ├── EventEmitter             ← Event-driven processing      │ │
 │ │ ├── Worker Pool              ← Concurrency control          │ │
 │ │ └── Retry Scheduler          ← Backoff timer management     │ │
@@ -127,7 +127,7 @@ enqueue() → [pending] → [processing] → [completed] ✓      │
 ## Database Schema
 
 ```sql
--- File: ~/.agent-console/jobs.db
+-- Added to: ~/.agent-console/data.db (after SQLite migration)
 
 CREATE TABLE jobs (
   id TEXT PRIMARY KEY,
@@ -479,7 +479,7 @@ import { JobQueue } from './jobs/JobQueue'
 import { workerOutputFileManager } from './lib/worker-output-file'
 
 const jobQueue = new JobQueue(
-  path.join(AGENT_CONSOLE_HOME, 'jobs.db'),
+  path.join(getConfigDir(), 'data.db'),  // Uses existing SQLite database
   { concurrency: 4 }
 )
 
@@ -651,11 +651,14 @@ interface JobQueueConfig {
 5. **WebSocket notifications**: Real-time UI updates when job status changes
 6. **Bulk operations**: Retry all stalled, cancel all pending of type X
 
-### Related: SQLite Full Migration
+### Prerequisite: SQLite Migration
 
-The job queue uses a separate `jobs.db` file. For migrating other data (sessions, repositories, agents) to SQLite, see [SQLite Migration Design](./sqlite-migration-design.md).
+This job queue feature should be implemented **after** the [SQLite Migration](./sqlite-migration-design.md) is complete. Benefits of this order:
 
-Once that migration is complete, the job queue table can be consolidated into the main `data.db` file.
+- Kysely and SQLite infrastructure already in place
+- Repository pattern established; JobQueue follows the same architecture
+- Jobs table added directly to `data.db` (no separate `jobs.db` file needed)
+- Cleaner implementation without legacy JSON code to work around
 
 ## Implementation Plan
 
@@ -760,7 +763,7 @@ JobQueue will be injected as a third parameter with a default of `null` for back
 
   // Initialize job queue
   const jobQueue = new JobQueue(
-    path.join(getConfigDir(), 'jobs.db'),
+    path.join(getConfigDir(), 'data.db'),  // Uses existing SQLite database
     { concurrency: 4 }
   )
 
@@ -1032,7 +1035,7 @@ Test that SessionManager correctly enqueues jobs when deleting sessions/workers.
 
 ### Notes for Implementers
 
-1. **Database Location**: Use `path.join(getConfigDir(), 'jobs.db')` for consistency with other persistence
+1. **Database Location**: Use `path.join(getConfigDir(), 'data.db')` - the existing SQLite database from SQLite migration
 2. **Backward Compatibility**: Keep fallback to fire-and-forget when `jobQueue` is null (for tests that don't need it)
 3. **Circular Dependency**: Be careful with imports between `index.ts`, `session-manager.ts`, and `JobQueue.ts`. Use setter injection to avoid issues.
 4. **Concurrency**: Default concurrency of 4 is reasonable; cleanup jobs are I/O bound, not CPU bound

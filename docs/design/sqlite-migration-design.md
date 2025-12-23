@@ -275,8 +275,8 @@ async function initializeDatabase() {
 ```
 
 **Schema versioning:**
-- Phase 1 (Job Queue only): Simple `PRAGMA user_version`
-- Phase 2+ (Multiple tables): Consider [kysely-ctl](https://kysely.dev/) for migration management
+- Simple approach: Use `PRAGMA user_version` for tracking schema version
+- For complex migrations: Consider [kysely-ctl](https://kysely.dev/) for migration management
 
 ### JSON → SQLite Data Migration
 
