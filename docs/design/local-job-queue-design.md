@@ -57,111 +57,11 @@ This design was triggered by [Issue #129](https://github.com/ms2sato/agent-conso
 - Implement in-process retry with circuit breaker
 - Client-side reconnection with state recovery
 
-## Technology Choices
+## Technology
 
-### Query Builder: Kysely
-
-Use [Kysely](https://kysely.dev/) for type-safe SQL queries.
-
-**Why Kysely:**
-- Zero dependencies, lightweight
-- Type-safe at query construction time (not just results)
-- SQL-like syntax (low learning curve)
-- Works with bun:sqlite
-
-```typescript
-import { Kysely, SqliteDialect } from 'kysely'
-import { Database as BunDatabase } from 'bun:sqlite'
-
-interface Database {
-  jobs: {
-    id: string
-    type: string
-    status: 'pending' | 'processing' | 'completed' | 'stalled'
-    payload: string
-    attempts: number
-    // ...
-  }
-}
-
-const db = new Kysely<Database>({
-  dialect: new SqliteDialect({
-    database: new BunDatabase('jobs.db'),
-  }),
-})
-
-// Fully type-safe queries
-const pendingJobs = await db
-  .selectFrom('jobs')
-  .where('status', '=', 'pending')  // Type error if invalid status
-  .selectAll()
-  .execute()
-```
-
-**Alternatives considered:**
-- **Drizzle**: More ORM-like, heavier, type safety only on results
-- **Raw bun:sqlite**: No type safety
-- **Prisma**: Too heavy for this use case
-
-### Migration Strategy
-
-**Phase 1 (Job Queue only):** Simple `initSchema()` with `PRAGMA user_version`
-
-```typescript
-private initSchema(): void {
-  const version = this.db.query('PRAGMA user_version').get()
-
-  if (version.user_version === 0) {
-    // Initial schema
-    this.db.run(`CREATE TABLE IF NOT EXISTS jobs (...)`)
-    this.db.run('PRAGMA user_version = 1')
-  }
-
-  // Future migrations
-  if (version.user_version === 1) {
-    this.db.run('ALTER TABLE jobs ADD COLUMN priority INTEGER DEFAULT 0')
-    this.db.run('PRAGMA user_version = 2')
-  }
-}
-```
-
-**Phase 2+ (Multiple tables):** Consider [kysely-ctl](https://kysely.dev/) for migration management
-
-```bash
-# When schema changes become frequent
-npx kysely migrate:latest
-npx kysely migrate:down
-```
-
-### Migration Execution
-
-**Auto-migrate on startup** with automatic backup:
-
-```typescript
-async function startServer() {
-  const pending = await migrator.getPendingMigrations()
-
-  if (pending.length > 0) {
-    // Auto backup before migration
-    const backupPath = `${dbPath}.backup-${Date.now()}`
-    fs.copyFileSync(dbPath, backupPath)
-    logger.info(`Database backed up to ${backupPath}`)
-
-    // Apply migrations
-    for (const migration of pending) {
-      logger.info(`Applying migration: ${migration.name}`)
-      await migrator.apply(migration)
-    }
-  }
-
-  app.listen(3000)
-}
-```
-
-**Rationale:**
-- Local app → manual migration commands are inconvenient
-- Auto backup → safe rollback if issues occur
-- Logging → visibility into what changed
+- **SQLite**: Persistence via `bun:sqlite` (zero external dependencies)
+- **Kysely**: Type-safe SQL queries (see [SQLite Migration Design](./sqlite-migration-design.md) for details)
+- **Auto-migration**: On startup with automatic backup
 
 ## Architecture
 
@@ -751,50 +651,11 @@ interface JobQueueConfig {
 5. **WebSocket notifications**: Real-time UI updates when job status changes
 6. **Bulk operations**: Retry all stalled, cancel all pending of type X
 
-### SQLite Full Migration (Out of Scope)
+### Related: SQLite Full Migration
 
-Once the job queue is stable, consider migrating other persistence to SQLite:
+The job queue uses a separate `jobs.db` file. For migrating other data (sessions, repositories, agents) to SQLite, see [SQLite Migration Design](./sqlite-migration-design.md).
 
-| Current | Migration Target | Notes |
-|---------|------------------|-------|
-| `sessions.json` | `sessions` table | Resolves read-modify-write race conditions |
-| `repositories.json` | `repositories` table | Same benefits |
-| `agents.json` | `agents` table | Same benefits |
-| `outputs/**/*.log` | Keep as files | Append-heavy, SQLite adds overhead |
-
-**Benefits of unified SQLite storage:**
-- Single database file (`~/.agent-console/data.db`)
-- ACID transactions across all data
-- WAL mode for concurrent access
-- Simplified backup (single file)
-
-**JSON → SQLite Migration Strategy:**
-
-One-time migration on first startup after upgrade:
-
-```typescript
-async function migrateFromJson() {
-  // Skip if already migrated
-  const count = await db.selectFrom('sessions').select(countAll()).executeTakeFirst()
-  if (count && count.count > 0) return
-
-  // Migrate sessions.json → sessions table
-  const sessionsPath = path.join(AGENT_CONSOLE_HOME, 'sessions.json')
-  if (fs.existsSync(sessionsPath)) {
-    const sessions = JSON.parse(fs.readFileSync(sessionsPath, 'utf-8'))
-    for (const session of sessions) {
-      await db.insertInto('sessions').values(session).execute()
-    }
-    // Rename to indicate migration complete
-    fs.renameSync(sessionsPath, `${sessionsPath}.migrated`)
-    logger.info(`Migrated ${sessions.length} sessions from JSON to SQLite`)
-  }
-
-  // Repeat for repositories.json, agents.json...
-}
-```
-
-This is a separate initiative and not part of the job queue implementation.
+Once that migration is complete, the job queue table can be consolidated into the main `data.db` file.
 
 ## Implementation Plan
 
@@ -813,3 +674,366 @@ This is a separate initiative and not part of the job queue implementation.
 1. WebSocket notifications for real-time updates
 2. Job statistics dashboard
 3. Completed job cleanup
+
+---
+
+## Detailed Implementation Guide
+
+This section provides specific guidance for implementing the job queue, including exact file locations, code changes, and testing requirements.
+
+### Existing Code Analysis
+
+#### Fire-and-Forget Patterns to Replace
+
+| Location | Context | Current Code |
+|----------|---------|--------------|
+| `session-manager.ts:335-337` | Orphan session cleanup (server startup) | `void workerOutputFileManager.deleteSessionOutputs(sessionId).catch(...)` |
+| `session-manager.ts:439-441` | User deletes session | `void workerOutputFileManager.deleteSessionOutputs(id).catch(...)` |
+| `session-manager.ts:601-603` | User deletes agent worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
+| `session-manager.ts:607-609` | User deletes terminal worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
+| `repository-manager.ts:103-115` | User unregisters repository | `fs.rmSync(repoDir, { recursive: true })` in try/catch |
+
+#### Relevant Existing Files
+
+```
+packages/server/src/
+├── index.ts                      # Server entry point - add JobQueue initialization
+├── routes/
+│   └── api.ts                    # API routes - add /api/jobs endpoints
+├── services/
+│   ├── session-manager.ts        # 4 fire-and-forget patterns to replace
+│   ├── repository-manager.ts     # 1 fire-and-forget pattern to replace
+│   └── persistence-service.ts    # Reference for file persistence patterns
+├── lib/
+│   ├── worker-output-file.ts     # deleteSessionOutputs, deleteWorkerOutput methods
+│   ├── config.ts                 # getConfigDir() for database path
+│   └── logger.ts                 # createLogger() for logging
+└── __tests__/
+    └── utils/
+        └── mock-fs-helper.ts     # setupTestConfigDir for tests
+```
+
+#### SessionManager Constructor
+
+```typescript
+// Current signature (packages/server/src/services/session-manager.ts:143-146)
+constructor(
+  ptyProvider: PtyProvider = bunPtyProvider,
+  pathExists: (path: string) => Promise<boolean> = defaultPathExists
+)
+```
+
+JobQueue will be injected as a third parameter with a default of `null` for backward compatibility.
+
+### Implementation Checklist
+
+#### Step 1: Create JobQueue Class
+
+- [ ] Create `packages/server/src/jobs/` directory
+- [ ] Create `packages/server/src/jobs/JobQueue.ts`
+  - Implement the class as specified in this document
+  - Use `bun:sqlite` for database operations
+  - Use `EventEmitter` for event-driven processing
+- [ ] Create `packages/server/src/jobs/index.ts` (exports)
+
+#### Step 2: Add JobQueue Tests
+
+- [ ] Create `packages/server/src/jobs/__tests__/JobQueue.test.ts`
+- [ ] Test cases:
+  - `enqueue()` adds job to database with correct status
+  - `start()` processes pending jobs
+  - `start()` recovers processing jobs after restart
+  - Failed job retries with exponential backoff
+  - Job marked as `stalled` after max attempts
+  - `retryJob()` resets stalled job to pending
+  - `cancelJob()` removes pending/stalled jobs
+  - `getStats()` returns correct counts
+- [ ] Use `setupTestConfigDir()` from `mock-fs-helper.ts` for test isolation
+
+#### Step 3: Integrate with Server
+
+- [ ] Modify `packages/server/src/index.ts`:
+  ```typescript
+  import { JobQueue } from './jobs/JobQueue.js'
+  import { getConfigDir } from './lib/config.js'
+  import path from 'path'
+
+  // Initialize job queue
+  const jobQueue = new JobQueue(
+    path.join(getConfigDir(), 'jobs.db'),
+    { concurrency: 4 }
+  )
+
+  // Register handlers
+  jobQueue.registerHandler('cleanup:session-outputs', async ({ sessionId }) => {
+    await workerOutputFileManager.deleteSessionOutputs(sessionId)
+  })
+
+  jobQueue.registerHandler('cleanup:worker-output', async ({ sessionId, workerId }) => {
+    await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId)
+  })
+
+  jobQueue.registerHandler('cleanup:repository', async ({ repoDir }) => {
+    if (fs.existsSync(repoDir)) {
+      fs.rmSync(repoDir, { recursive: true })
+    }
+  })
+
+  // Start processing
+  await jobQueue.start()
+
+  // Export for use in other modules
+  export { jobQueue }
+  ```
+
+#### Step 4: Modify SessionManager
+
+- [ ] Add optional JobQueue parameter to constructor:
+  ```typescript
+  constructor(
+    ptyProvider: PtyProvider = bunPtyProvider,
+    pathExists: (path: string) => Promise<boolean> = defaultPathExists,
+    private jobQueue: JobQueue | null = null  // Add this
+  )
+  ```
+
+- [ ] Replace fire-and-forget at line 335-337:
+  ```typescript
+  // Before
+  void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
+    logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
+  });
+
+  // After
+  if (this.jobQueue) {
+    this.jobQueue.enqueue('cleanup:session-outputs', { sessionId });
+  } else {
+    void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
+      logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
+    });
+  }
+  ```
+
+- [ ] Replace fire-and-forget at line 439-441 (same pattern)
+
+- [ ] Replace fire-and-forget at line 601-603:
+  ```typescript
+  // Before
+  void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+    logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+  });
+
+  // After
+  if (this.jobQueue) {
+    this.jobQueue.enqueue('cleanup:worker-output', { sessionId, workerId });
+  } else {
+    void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+      logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+    });
+  }
+  ```
+
+- [ ] Replace fire-and-forget at line 607-609 (same pattern as above)
+
+#### Step 5: Modify RepositoryManager
+
+- [ ] Add optional JobQueue parameter to constructor
+- [ ] Replace cleanup at line 103-115:
+  ```typescript
+  // Before
+  private async cleanupRepositoryData(repoPath: string): Promise<void> {
+    const orgRepo = await getOrgRepoFromPath(repoPath);
+    const repoDir = getRepositoryDir(orgRepo);
+    if (fs.existsSync(repoDir)) {
+      try {
+        fs.rmSync(repoDir, { recursive: true });
+      } catch (e) {
+        console.error(`Failed to clean up repository data: ${repoDir}`, e);
+      }
+    }
+  }
+
+  // After
+  private async cleanupRepositoryData(repoPath: string): Promise<void> {
+    const orgRepo = await getOrgRepoFromPath(repoPath);
+    const repoDir = getRepositoryDir(orgRepo);
+    if (this.jobQueue) {
+      this.jobQueue.enqueue('cleanup:repository', { repoDir });
+    } else if (fs.existsSync(repoDir)) {
+      try {
+        fs.rmSync(repoDir, { recursive: true });
+      } catch (e) {
+        console.error(`Failed to clean up repository data: ${repoDir}`, e);
+      }
+    }
+  }
+  ```
+
+#### Step 6: Update Singleton Exports
+
+- [ ] Modify `packages/server/src/services/session-manager.ts` export:
+  ```typescript
+  // At bottom of file, update singleton creation
+  // Will need to pass jobQueue after it's initialized in index.ts
+  // Option A: Lazy initialization
+  // Option B: Factory function
+  // Option C: Setter method
+  ```
+
+  **Recommended: Option C (Setter method)**
+  ```typescript
+  export class SessionManager {
+    // ...
+    setJobQueue(jobQueue: JobQueue): void {
+      this.jobQueue = jobQueue;
+    }
+  }
+
+  export const sessionManager = new SessionManager();
+  ```
+
+  Then in `index.ts`:
+  ```typescript
+  import { sessionManager } from './services/session-manager.js';
+  sessionManager.setJobQueue(jobQueue);
+  ```
+
+#### Step 7: Add REST API Endpoints
+
+- [ ] Add to `packages/server/src/routes/api.ts`:
+  ```typescript
+  import { jobQueue } from '../index.js';
+
+  // GET /api/jobs - List jobs with filtering
+  api.get('/jobs', (c) => {
+    const status = c.req.query('status');
+    const type = c.req.query('type');
+    const limit = Number(c.req.query('limit')) || 50;
+    const offset = Number(c.req.query('offset')) || 0;
+
+    const jobs = jobQueue.getJobs({ status, type, limit, offset });
+    return c.json({ jobs, total: jobs.length });
+  });
+
+  // GET /api/jobs/stats - Get statistics
+  api.get('/jobs/stats', (c) => {
+    const stats = jobQueue.getStats();
+    return c.json(stats);
+  });
+
+  // GET /api/jobs/:id - Get single job
+  api.get('/jobs/:id', (c) => {
+    const job = jobQueue.getJob(c.req.param('id'));
+    if (!job) throw new NotFoundError('Job');
+    return c.json(job);
+  });
+
+  // POST /api/jobs/:id/retry - Retry stalled job
+  api.post('/jobs/:id/retry', (c) => {
+    const success = jobQueue.retryJob(c.req.param('id'));
+    if (!success) throw new NotFoundError('Job');
+    return c.json({ success: true });
+  });
+
+  // DELETE /api/jobs/:id - Cancel job
+  api.delete('/jobs/:id', (c) => {
+    const success = jobQueue.cancelJob(c.req.param('id'));
+    if (!success) throw new NotFoundError('Job');
+    return c.json({ success: true });
+  });
+  ```
+
+#### Step 8: Add API Tests
+
+- [ ] Add to `packages/server/src/__tests__/api.test.ts` or create new file:
+  - Test GET /api/jobs returns job list
+  - Test GET /api/jobs?status=stalled filters correctly
+  - Test GET /api/jobs/stats returns counts
+  - Test POST /api/jobs/:id/retry resets stalled job
+  - Test DELETE /api/jobs/:id removes job
+
+### Completion Criteria
+
+- [ ] All 5 fire-and-forget patterns replaced with `jobQueue.enqueue()`
+- [ ] JobQueue starts automatically on server startup
+- [ ] Jobs persist across server restarts
+- [ ] Failed jobs retry with exponential backoff (1s, 2s, 4s, 8s, ...)
+- [ ] Jobs marked as `stalled` after 5 failures
+- [ ] REST API endpoints functional
+- [ ] All existing tests pass (`bun run test`)
+- [ ] New tests for JobQueue class pass
+- [ ] Manual verification:
+  - Delete a session → job appears in `/api/jobs`
+  - Restart server → pending jobs resume processing
+  - Simulate failure → job retries with backoff
+  - After 5 failures → job status is `stalled`
+  - POST /api/jobs/:id/retry → job reprocesses
+
+### Testing Strategy
+
+#### Unit Tests (JobQueue.test.ts)
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { JobQueue } from '../JobQueue.js';
+import { setupTestConfigDir, cleanupTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
+import path from 'path';
+
+describe('JobQueue', () => {
+  let jobQueue: JobQueue;
+  const TEST_CONFIG_DIR = '/test/config';
+
+  beforeEach(() => {
+    setupTestConfigDir(TEST_CONFIG_DIR);
+    jobQueue = new JobQueue(path.join(TEST_CONFIG_DIR, 'jobs.db'));
+  });
+
+  afterEach(async () => {
+    await jobQueue.stop();
+    cleanupTestConfigDir();
+  });
+
+  describe('enqueue', () => {
+    it('should add job with pending status', () => {
+      const id = jobQueue.enqueue('test:job', { foo: 'bar' });
+      const job = jobQueue.getJob(id);
+
+      expect(job).not.toBeNull();
+      expect(job?.status).toBe('pending');
+      expect(job?.type).toBe('test:job');
+      expect(JSON.parse(job?.payload || '{}')).toEqual({ foo: 'bar' });
+    });
+  });
+
+  describe('processing', () => {
+    it('should process pending jobs', async () => {
+      let processed = false;
+      jobQueue.registerHandler('test:job', async () => {
+        processed = true;
+      });
+
+      jobQueue.enqueue('test:job', {});
+      await jobQueue.start();
+
+      // Wait for processing
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(processed).toBe(true);
+    });
+  });
+
+  // ... more tests
+});
+```
+
+#### Integration Tests
+
+Test that SessionManager correctly enqueues jobs when deleting sessions/workers.
+
+### Notes for Implementers
+
+1. **Database Location**: Use `path.join(getConfigDir(), 'jobs.db')` for consistency with other persistence
+2. **Backward Compatibility**: Keep fallback to fire-and-forget when `jobQueue` is null (for tests that don't need it)
+3. **Circular Dependency**: Be careful with imports between `index.ts`, `session-manager.ts`, and `JobQueue.ts`. Use setter injection to avoid issues.
+4. **Concurrency**: Default concurrency of 4 is reasonable; cleanup jobs are I/O bound, not CPU bound
+5. **Error Messages**: Preserve existing error log messages in job handlers for debugging
