@@ -51,7 +51,7 @@ Phase 1: Repository Layer (JSON implementation)
 Phase 2: SQLite Implementation
 ├── Implement SqliteSessionRepository
 ├── Add migration logic (JSON → SQLite)
-└── Swap implementation via dependency injection
+└── Auto-detect: use SQLite if data.db exists
 
 Phase 3: Extend to Other Data
 ├── RepositoryRepository, AgentRepository
@@ -318,7 +318,6 @@ async function migrateFromJson() {
 
 - **Single database file**: `~/.agent-console/data.db`
 - **ACID transactions**: Atomic operations across tables
-- **WAL mode**: Concurrent read/write access
 - **Simplified backup**: Single file to backup
 - **Query flexibility**: JOIN across sessions and workers
 
@@ -437,7 +436,7 @@ Repository only handles PersistedSession. SessionManager maintains consistency.
 2. Implement `SqliteSessionRepository`
 3. Add database initialization and migrations
 4. Implement JSON → SQLite migration
-5. Swap implementation (feature flag or config)
+5. Auto-detect backend: if `data.db` exists, use SQLite; otherwise use JSON
 6. Tests for SQLite Repository
 
 ### Phase 3: Extend to Other Data (Estimated: Small PRs)
