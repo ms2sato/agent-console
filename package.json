@@ -16,7 +16,7 @@
     "test:only": "bun run --filter '*' test",
     "test:coverage": "bun run --filter '*' test:coverage",
     "lint": "bun run --filter '*' lint",
-    "release": "bumpp -r"
+    "release": "bumpp"
   },
   "devDependencies": {
     "bumpp": "^10.1.0",
