@@ -15,9 +15,11 @@
     "test": "bun run typecheck && bun run test:only",
     "test:only": "bun run --filter '*' test",
     "test:coverage": "bun run --filter '*' test:coverage",
-    "lint": "bun run --filter '*' lint"
+    "lint": "bun run --filter '*' lint",
+    "release": "bumpp -r"
   },
   "devDependencies": {
+    "bumpp": "^10.1.0",
     "concurrently": "^9.2.1",
     "typescript": "^5.7.2"
   },
