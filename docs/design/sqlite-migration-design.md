@@ -485,3 +485,420 @@ After completing this SQLite migration, the [Job Queue](./local-job-queue-design
 1. Add `jobs` table to database schema
 2. Implement `JobQueue` class using existing SQLite infrastructure
 3. Integrate with SessionManager for cleanup operations
+
+---
+
+## Detailed Implementation Guide: Phase 1
+
+This section provides specific guidance for implementing the Repository Layer, including exact file locations, code changes, and testing requirements.
+
+### Existing Code Analysis
+
+#### Current `persistenceService` Usage
+
+| File | Function | Usage | Action |
+|------|----------|-------|--------|
+| `session-manager.ts` | `initializeSessions()` | `loadSessions()` | Use Repository |
+| `session-manager.ts` | `cleanupOrphanProcesses()` | `loadSessions()`, `saveSessions()` | Use Repository |
+| `session-manager.ts` | `deleteOrphanSessions()` | `removeSession()` | Use Repository |
+| `session-manager.ts` | `getSessionMetadata()` | wraps `persistenceService.getSessionMetadata()` | Use Repository |
+| `session-manager.ts` | `deleteSession()` | `removeSession()` | Use Repository |
+| `session-manager.ts` | `reconnectToWorker()` | `getSessionMetadata()` | Use Repository |
+| `session-manager.ts` | `persistSession()` | `loadSessions()`, `saveSessions()` | Use Repository |
+| `api.ts` | `DELETE /sessions/:id` | Direct `getSessionMetadata()`, `removeSession()` | **Go through SessionManager** |
+| `api.ts` | `GET /health/debug` | `loadSessions()` | Go through SessionManager |
+| `session-validation-service.ts` | `validateSessionExists()` | `loadSessions()` | Use Repository |
+| `repository-manager.ts` | `loadFromDisk()`, `saveToDisk()` | `loadRepositories()`, `saveRepositories()` | Phase 3 |
+| `agent-manager.ts` | various | `loadAgents()`, `saveAgents()` | Phase 3 |
+
+#### The Problem with `persistSession()`
+
+```typescript
+// Current implementation (O(n) on every save)
+private persistSession(session: InternalSession): void {
+  const sessions = persistenceService.loadSessions();  // Load ALL
+  const existingIdx = sessions.findIndex(s => s.id === session.id);
+  // ... modify array
+  persistenceService.saveSessions(sessions);  // Save ALL
+}
+```
+
+With Repository:
+```typescript
+// New implementation (O(1))
+private async persistSession(session: InternalSession): Promise<void> {
+  const persisted = this.toPersistedSession(session);
+  await this.sessionRepository.save(persisted);  // Save ONE
+}
+```
+
+#### The Problem with Direct `persistenceService` Access in Routes
+
+```typescript
+// Current: api.ts bypasses SessionManager
+api.delete('/sessions/:id', (c) => {
+  // Try sessionManager first
+  const deleted = sessionManager.deleteSession(sessionId);
+  if (deleted) return c.json({ success: true });
+
+  // Direct persistence access for orphaned sessions
+  const metadata = persistenceService.getSessionMetadata(sessionId);  // ← PROBLEM
+  persistenceService.removeSession(sessionId);  // ← PROBLEM
+});
+```
+
+Solution: Add method to SessionManager that handles both cases.
+
+### Relevant Existing Files
+
+```
+packages/server/src/
+├── services/
+│   ├── persistence-service.ts    # Current implementation (will be wrapped)
+│   ├── session-manager.ts        # Main consumer - needs refactoring
+│   ├── repository-manager.ts     # Phase 3 target
+│   └── agent-manager.ts          # Phase 3 target
+├── routes/
+│   └── api.ts                    # Has direct persistenceService calls
+├── repositories/                  # NEW DIRECTORY
+│   ├── session-repository.ts     # Interface
+│   └── json-session-repository.ts # Implementation
+└── __tests__/
+    └── utils/
+        └── mock-fs-helper.ts     # For test isolation
+```
+
+### Implementation Checklist
+
+#### Step 1: Create Repository Interface
+
+- [ ] Create `packages/server/src/repositories/` directory
+- [ ] Create `packages/server/src/repositories/session-repository.ts`:
+
+```typescript
+import type { PersistedSession } from '../services/persistence-service.js';
+
+export interface SessionRepository {
+  findAll(): Promise<PersistedSession[]>
+  findById(id: string): Promise<PersistedSession | null>
+  findByServerPid(pid: number): Promise<PersistedSession[]>
+  save(session: PersistedSession): Promise<void>
+  saveAll(sessions: PersistedSession[]): Promise<void>
+  delete(id: string): Promise<void>
+}
+```
+
+#### Step 2: Create JSON Implementation
+
+- [ ] Create `packages/server/src/repositories/json-session-repository.ts`:
+
+```typescript
+import type { SessionRepository } from './session-repository.js';
+import type { PersistedSession } from '../services/persistence-service.js';
+// Reuse atomicWrite, safeRead from persistence-service or extract to shared util
+
+export class JsonSessionRepository implements SessionRepository {
+  constructor(private filePath: string) {}
+
+  async findAll(): Promise<PersistedSession[]> {
+    return safeRead(this.filePath, []);
+  }
+
+  async findById(id: string): Promise<PersistedSession | null> {
+    const sessions = await this.findAll();
+    return sessions.find(s => s.id === id) ?? null;
+  }
+
+  async findByServerPid(pid: number): Promise<PersistedSession[]> {
+    const sessions = await this.findAll();
+    return sessions.filter(s => s.serverPid === pid);
+  }
+
+  async save(session: PersistedSession): Promise<void> {
+    const sessions = await this.findAll();
+    const idx = sessions.findIndex(s => s.id === session.id);
+    if (idx >= 0) {
+      sessions[idx] = session;
+    } else {
+      sessions.push(session);
+    }
+    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+  }
+
+  async saveAll(sessions: PersistedSession[]): Promise<void> {
+    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+  }
+
+  async delete(id: string): Promise<void> {
+    const sessions = await this.findAll();
+    const filtered = sessions.filter(s => s.id !== id);
+    atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));
+  }
+}
+```
+
+- [ ] Create `packages/server/src/repositories/index.ts` (exports)
+
+#### Step 3: Refactor SessionManager
+
+- [ ] Add SessionRepository parameter to constructor:
+
+```typescript
+import type { SessionRepository } from '../repositories/session-repository.js';
+import { JsonSessionRepository } from '../repositories/json-session-repository.js';
+
+export class SessionManager {
+  private sessionRepository: SessionRepository;
+
+  constructor(
+    ptyProvider: PtyProvider = bunPtyProvider,
+    pathExists: (path: string) => Promise<boolean> = defaultPathExists,
+    sessionRepository?: SessionRepository  // Optional for backward compatibility
+  ) {
+    this.ptyProvider = ptyProvider;
+    this.pathExists = pathExists;
+    this.sessionRepository = sessionRepository ??
+      new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+
+    // Note: initializeSessions needs to become async or use sync fallback
+    this.initializeSessions();
+    this.cleanupOrphanProcesses();
+  }
+```
+
+- [ ] Convert `persistSession()` to async:
+
+```typescript
+// Before (sync)
+private persistSession(session: InternalSession): void {
+  const sessions = persistenceService.loadSessions();
+  // ...
+  persistenceService.saveSessions(sessions);
+}
+
+// After (async)
+private async persistSession(session: InternalSession): Promise<void> {
+  const persisted = this.toPersistedSession(session);
+  await this.sessionRepository.save(persisted);
+}
+```
+
+- [ ] Update all callers of `persistSession()` to use `await`:
+  - `createSession()` - already async
+  - `createWorker()` - already async
+  - `activateWorkerPty()` - already async
+  - `deleteWorker()` - make async
+  - `restartAgentWorker()` - already async
+  - `restoreWorker()` - already async
+  - `updateSessionMetadata()` - already async
+
+- [ ] Convert `initializeSessions()` to async or use sync initialization pattern:
+
+```typescript
+// Option A: Make async with factory function
+static async create(
+  ptyProvider?: PtyProvider,
+  pathExists?: (path: string) => Promise<boolean>,
+  sessionRepository?: SessionRepository
+): Promise<SessionManager> {
+  const manager = new SessionManager(ptyProvider, pathExists, sessionRepository);
+  await manager.initialize();
+  return manager;
+}
+
+private async initialize(): Promise<void> {
+  await this.initializeSessions();
+  await this.cleanupOrphanProcesses();
+}
+
+// Option B: Keep sync for JSON, async for SQLite later
+// JsonSessionRepository uses sync methods internally
+```
+
+- [ ] Replace all direct `persistenceService` calls with repository methods
+
+#### Step 4: Add SessionManager Method for Orphaned Session Deletion
+
+- [ ] Add method to handle both in-memory and persisted-only sessions:
+
+```typescript
+// In SessionManager
+async forceDeleteSession(id: string): Promise<boolean> {
+  // Try in-memory first
+  if (this.deleteSession(id)) {
+    return true;
+  }
+
+  // Check persistence for orphaned session
+  const persisted = await this.sessionRepository.findById(id);
+  if (persisted) {
+    await this.sessionRepository.delete(id);
+    return true;
+  }
+
+  return false;
+}
+```
+
+#### Step 5: Update API Routes
+
+- [ ] Modify `packages/server/src/routes/api.ts`:
+
+```typescript
+// Before (direct persistenceService access)
+api.delete('/sessions/:id', (c) => {
+  const deleted = sessionManager.deleteSession(sessionId);
+  if (deleted) return c.json({ success: true });
+
+  const metadata = persistenceService.getSessionMetadata(sessionId);
+  if (!metadata) throw new NotFoundError('Session');
+  persistenceService.removeSession(sessionId);
+  return c.json({ success: true });
+});
+
+// After (through SessionManager)
+api.delete('/sessions/:id', async (c) => {
+  const deleted = await sessionManager.forceDeleteSession(sessionId);
+  if (!deleted) throw new NotFoundError('Session');
+  return c.json({ success: true });
+});
+```
+
+- [ ] Remove `persistenceService` import from `api.ts` (after all usages removed)
+
+#### Step 6: Update session-validation-service.ts
+
+- [ ] Inject SessionRepository or access through SessionManager:
+
+```typescript
+// Option: Add getAllPersistedSessions() to SessionManager
+getAllPersistedSessions(): Promise<PersistedSession[]> {
+  return this.sessionRepository.findAll();
+}
+```
+
+#### Step 7: Create Repository Tests
+
+- [ ] Create `packages/server/src/repositories/__tests__/json-session-repository.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { JsonSessionRepository } from '../json-session-repository.js';
+import { setupTestConfigDir, cleanupTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
+import path from 'path';
+
+describe('JsonSessionRepository', () => {
+  const TEST_CONFIG_DIR = '/test/config';
+  let repository: JsonSessionRepository;
+
+  beforeEach(() => {
+    setupTestConfigDir(TEST_CONFIG_DIR);
+    repository = new JsonSessionRepository(
+      path.join(TEST_CONFIG_DIR, 'sessions.json')
+    );
+  });
+
+  afterEach(() => {
+    cleanupTestConfigDir();
+  });
+
+  describe('findAll', () => {
+    it('should return empty array when no sessions exist', async () => {
+      const sessions = await repository.findAll();
+      expect(sessions).toEqual([]);
+    });
+  });
+
+  describe('save', () => {
+    it('should save a new session', async () => {
+      const session = createTestSession({ id: 'test-1' });
+      await repository.save(session);
+
+      const sessions = await repository.findAll();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].id).toBe('test-1');
+    });
+
+    it('should update existing session', async () => {
+      const session = createTestSession({ id: 'test-1', title: 'Original' });
+      await repository.save(session);
+
+      const updated = { ...session, title: 'Updated' };
+      await repository.save(updated);
+
+      const sessions = await repository.findAll();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].title).toBe('Updated');
+    });
+  });
+
+  describe('delete', () => {
+    it('should remove session by id', async () => {
+      await repository.save(createTestSession({ id: 'test-1' }));
+      await repository.save(createTestSession({ id: 'test-2' }));
+
+      await repository.delete('test-1');
+
+      const sessions = await repository.findAll();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].id).toBe('test-2');
+    });
+  });
+
+  describe('findById', () => {
+    it('should return session if exists', async () => {
+      await repository.save(createTestSession({ id: 'test-1' }));
+
+      const session = await repository.findById('test-1');
+      expect(session?.id).toBe('test-1');
+    });
+
+    it('should return null if not exists', async () => {
+      const session = await repository.findById('non-existent');
+      expect(session).toBeNull();
+    });
+  });
+});
+
+function createTestSession(overrides: Partial<PersistedSession> = {}): PersistedSession {
+  return {
+    id: 'default-id',
+    type: 'quick',
+    locationPath: '/test/path',
+    serverPid: process.pid,
+    createdAt: new Date().toISOString(),
+    workers: [],
+    ...overrides,
+  };
+}
+```
+
+#### Step 8: Update Existing SessionManager Tests
+
+- [ ] Update `session-manager.test.ts` to optionally inject mock repository
+- [ ] Ensure existing tests still pass with default JsonSessionRepository
+
+### Completion Criteria
+
+- [ ] All `persistenceService` calls removed from `session-manager.ts`
+- [ ] All `persistenceService` calls removed from `api.ts` (session-related)
+- [ ] SessionRepository interface defined
+- [ ] JsonSessionRepository implementation complete
+- [ ] SessionManager uses injected repository
+- [ ] New repository tests pass
+- [ ] All existing SessionManager tests pass
+- [ ] All existing API tests pass
+- [ ] `bun run test` passes
+- [ ] `bun run typecheck` passes
+
+### Notes for Implementers
+
+1. **Sync vs Async**: `JsonSessionRepository` methods are defined as `async` for interface consistency with future SQLite implementation, but internally use sync file operations. This is acceptable.
+
+2. **Backward Compatibility**: Keep `persistenceService` for now - it's still used by `repository-manager.ts` and `agent-manager.ts` (Phase 3). Only remove session-related code paths.
+
+3. **Migration Path**: After Phase 1, `persistenceService` will only contain repository/agent code. After Phase 3, it can be fully removed.
+
+4. **Testing Strategy**: Inject mock repository in unit tests for isolation. Use real JsonSessionRepository in integration tests.
+
+5. **Singleton Pattern**: The current `sessionManager` singleton export remains. Repository is injected via default parameter for production, explicit parameter for tests.
