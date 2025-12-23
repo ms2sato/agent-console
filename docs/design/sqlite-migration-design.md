@@ -76,10 +76,6 @@ interface SessionRepository {
   // Commands
   save(session: PersistedSession): Promise<void>
   delete(id: string): Promise<void>
-
-  // Metadata (for quick lookups without full session)
-  getMetadata(id: string): Promise<SessionMetadata | null>
-  updateMetadata(id: string, metadata: Partial<SessionMetadata>): Promise<void>
 }
 ```
 
@@ -448,6 +444,33 @@ Repository only handles PersistedSession. SessionManager maintains consistency.
 1. `RepositoryRepository` (repositories.json → SQLite)
 2. `AgentRepository` (agents.json → SQLite)
 3. Remove JSON file support (breaking change, major version)
+
+#### RepositoryRepository Interface
+
+```typescript
+// packages/server/src/repositories/repository-repository.ts
+
+interface RepositoryRepository {
+  findAll(): Promise<Repository[]>
+  findById(id: string): Promise<Repository | null>
+  findByPath(path: string): Promise<Repository | null>
+  save(repository: Repository): Promise<void>
+  delete(id: string): Promise<void>
+}
+```
+
+#### AgentRepository Interface
+
+```typescript
+// packages/server/src/repositories/agent-repository.ts
+
+interface AgentRepository {
+  findAll(): Promise<AgentDefinition[]>
+  findById(id: string): Promise<AgentDefinition | null>
+  save(agent: AgentDefinition): Promise<void>
+  delete(id: string): Promise<boolean>  // Returns false for built-in agents
+}
+```
 
 ## Future: Job Queue Integration
 

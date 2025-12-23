@@ -22,11 +22,11 @@ This design was triggered by [Issue #129](https://github.com/ms2sato/agent-conso
 
 | Location | Operation | Why Suitable |
 |----------|-----------|--------------|
-| `session-manager.ts:335-337` | Delete orphan session outputs | Idempotent file deletion, survives restart |
-| `session-manager.ts:439-441` | Delete session outputs on user delete | Idempotent file deletion, survives restart |
-| `session-manager.ts:601-603` | Delete agent worker output | Idempotent file deletion, survives restart |
-| `session-manager.ts:607-609` | Delete terminal worker output | Idempotent file deletion, survives restart |
-| `repository-manager.ts:103-115` | Cleanup repository data on unregister | Idempotent directory deletion, survives restart |
+| `session-manager.ts` → `deleteOrphanSessions()` | Delete orphan session outputs | Idempotent file deletion, survives restart |
+| `session-manager.ts` → `deleteSession()` | Delete session outputs on user delete | Idempotent file deletion, survives restart |
+| `session-manager.ts` → `removeAgentWorker()` | Delete agent worker output | Idempotent file deletion, survives restart |
+| `session-manager.ts` → `removeTerminalWorker()` | Delete terminal worker output | Idempotent file deletion, survives restart |
+| `repository-manager.ts` → `cleanupRepositoryData()` | Cleanup repository data on unregister | Idempotent directory deletion, survives restart |
 
 **Common characteristics:**
 - Operations are **idempotent** (safe to retry)
@@ -690,11 +690,11 @@ This section provides specific guidance for implementing the job queue, includin
 
 | Location | Context | Current Code |
 |----------|---------|--------------|
-| `session-manager.ts:335-337` | Orphan session cleanup (server startup) | `void workerOutputFileManager.deleteSessionOutputs(sessionId).catch(...)` |
-| `session-manager.ts:439-441` | User deletes session | `void workerOutputFileManager.deleteSessionOutputs(id).catch(...)` |
-| `session-manager.ts:601-603` | User deletes agent worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
-| `session-manager.ts:607-609` | User deletes terminal worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
-| `repository-manager.ts:103-115` | User unregisters repository | `fs.rmSync(repoDir, { recursive: true })` in try/catch |
+| `session-manager.ts` → `deleteOrphanSessions()` | Orphan session cleanup (server startup) | `void workerOutputFileManager.deleteSessionOutputs(sessionId).catch(...)` |
+| `session-manager.ts` → `deleteSession()` | User deletes session | `void workerOutputFileManager.deleteSessionOutputs(id).catch(...)` |
+| `session-manager.ts` → `removeAgentWorker()` | User deletes agent worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
+| `session-manager.ts` → `removeTerminalWorker()` | User deletes terminal worker | `void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch(...)` |
+| `repository-manager.ts` → `cleanupRepositoryData()` | User unregisters repository | `fs.rmSync(repoDir, { recursive: true })` in try/catch |
 
 #### Relevant Existing Files
 
@@ -800,7 +800,7 @@ JobQueue will be injected as a third parameter with a default of `null` for back
   )
   ```
 
-- [ ] Replace fire-and-forget at line 335-337:
+- [ ] Replace fire-and-forget in `deleteOrphanSessions()`:
   ```typescript
   // Before
   void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
@@ -817,9 +817,9 @@ JobQueue will be injected as a third parameter with a default of `null` for back
   }
   ```
 
-- [ ] Replace fire-and-forget at line 439-441 (same pattern)
+- [ ] Replace fire-and-forget in `deleteSession()` (same pattern)
 
-- [ ] Replace fire-and-forget at line 601-603:
+- [ ] Replace fire-and-forget in `removeAgentWorker()`:
   ```typescript
   // Before
   void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
@@ -836,12 +836,12 @@ JobQueue will be injected as a third parameter with a default of `null` for back
   }
   ```
 
-- [ ] Replace fire-and-forget at line 607-609 (same pattern as above)
+- [ ] Replace fire-and-forget in `removeTerminalWorker()` (same pattern as above)
 
 #### Step 5: Modify RepositoryManager
 
 - [ ] Add optional JobQueue parameter to constructor
-- [ ] Replace cleanup at line 103-115:
+- [ ] Replace cleanup in `cleanupRepositoryData()`:
   ```typescript
   // Before
   private async cleanupRepositoryData(repoPath: string): Promise<void> {
