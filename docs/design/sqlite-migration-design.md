@@ -6,13 +6,15 @@ A phased approach to migrate the persistence layer from JSON files to SQLite, im
 
 ## Background
 
-The current persistence layer has several issues identified during the [Job Queue design](./local-job-queue-design.md) discussion:
+The current persistence layer has several issues:
 
 1. **Inefficient persistence**: Every single session update reloads and rewrites ALL sessions (O(n))
 2. **Scattered persistence calls**: 6+ locations in SessionManager + direct calls from API routes
 3. **Duplicated conversion logic**: `toPersistedSession()` and `restoreWorkersFromPersistence()`
 4. **Lack of encapsulation**: API routes call `persistenceService` directly, bypassing SessionManager
 5. **Race conditions**: Read-modify-write pattern without locking
+
+This migration lays the groundwork for future features like the [Job Queue](./local-job-queue-design.md) that will also use SQLite.
 
 ## Goals
 
@@ -314,7 +316,6 @@ async function migrateFromJson() {
 | `sessions.json` | `sessions` + `workers` tables | Resolves read-modify-write race conditions |
 | `repositories.json` | `repositories` table | Same benefits |
 | `agents.json` | `agents` table | Same benefits |
-| `jobs.db` (new) | `jobs` table | Part of Job Queue feature |
 | `outputs/**/*.log` | Keep as files | Append-heavy, SQLite adds overhead |
 
 ### Benefits of Unified SQLite Storage
@@ -379,15 +380,6 @@ CREATE TABLE agents (
   cwd TEXT,
   activity_patterns TEXT,  -- JSON
   registered_at INTEGER NOT NULL
-);
-
--- Jobs table (see local-job-queue-design.md for details)
-CREATE TABLE jobs (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  -- ...
 );
 ```
 
@@ -455,17 +447,19 @@ Repository only handles PersistedSession. SessionManager maintains consistency.
 ### Phase 3: Extend to Other Data (Estimated: Small PRs)
 1. `RepositoryRepository` (repositories.json → SQLite)
 2. `AgentRepository` (agents.json → SQLite)
-3. Consolidate with Job Queue into single database
-4. Remove JSON file support (breaking change, major version)
+3. Remove JSON file support (breaking change, major version)
 
-## Relationship to Job Queue
+## Future: Job Queue Integration
 
-The [Job Queue](./local-job-queue-design.md) will use SQLite independently:
+After completing this SQLite migration, the [Job Queue](./local-job-queue-design.md) feature can be implemented.
 
-```
-Phase 1 (Job Queue): jobs.db (separate file)
-Phase 2 (This design): data.db (sessions, repositories, agents)
-Phase 3 (Consolidation): data.db (all tables including jobs)
-```
+**Benefits of completing SQLite migration first:**
+- Repository pattern established; JobQueue can follow the same architecture
+- SQLite infrastructure (Kysely, migrations) already in place
+- Jobs table can be added to existing `data.db` instead of separate file
+- Cleaner implementation without legacy JSON code
 
-Job Queue can proceed independently. When SQLite migration is complete, the job queue table can be consolidated into the main database.
+**Job Queue implementation (future work):**
+1. Add `jobs` table to database schema
+2. Implement `JobQueue` class using existing SQLite infrastructure
+3. Integrate with SessionManager for cleanup operations
