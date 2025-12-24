@@ -44,6 +44,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       workerWs.storeHistoryOffset(sessionId, workerId, offset);
     }
 
+    // Save scroll position before clearing
+    // Check if user was scrolled to somewhere in the middle (not at bottom)
+    const buffer = terminal.buffer.active;
+    const wasAtBottom = buffer.viewportY + terminal.rows >= buffer.length;
+    const savedViewportY = buffer.viewportY;
+
     // Clear terminal and write full history
     if (data) {
       clearAndWrite(terminal, () => {
@@ -55,8 +61,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           }
         });
       }).then(() => {
-        // Scroll to bottom after history is loaded
-        terminal.scrollToBottom();
+        // Restore scroll position or scroll to bottom
+        if (wasAtBottom) {
+          terminal.scrollToBottom();
+        } else {
+          // Restore previous scroll position
+          terminal.scrollToLine(savedViewportY);
+        }
       }).catch((e) => console.error('[Terminal] Failed to write history:', e));
     }
   }, [sessionId, workerId]);
