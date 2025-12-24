@@ -565,6 +565,39 @@ describe('JobQueue', () => {
       expect(job?.status).toBe('completed');
     });
 
+    it('should not cancel processing job', async () => {
+      let resolveHandler: () => void;
+      const handlerPromise = new Promise<void>((resolve) => {
+        resolveHandler = resolve;
+      });
+
+      jobQueue.registerHandler('test:job', async () => {
+        await handlerPromise; // Block until we allow completion
+      });
+
+      const id = jobQueue.enqueue('test:job', {});
+      await jobQueue.start();
+
+      // Wait for job to start processing
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('processing');
+
+      // Try to cancel while processing
+      const success = jobQueue.cancelJob(id);
+      expect(success).toBe(false);
+
+      // Verify job still exists
+      expect(jobQueue.getJob(id)).not.toBeNull();
+
+      // Complete the job
+      resolveHandler!();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(jobQueue.getJob(id)?.status).toBe('completed');
+    });
+
     it('should return false for non-existent job', () => {
       const success = jobQueue.cancelJob('non-existent');
       expect(success).toBe(false);
