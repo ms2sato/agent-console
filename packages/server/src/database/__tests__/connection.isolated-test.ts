@@ -19,7 +19,6 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import * as path from 'path';
 import * as os from 'os';
 import { sql } from 'kysely';
-import { v4 as uuid } from 'uuid';
 import {
   initializeDatabase,
   closeDatabase,
@@ -33,7 +32,7 @@ import {
  */
 function createTempDir(): string {
   const tmpBase = os.tmpdir();
-  const uniqueDir = path.join(tmpBase, `agent-console-db-test-${uuid()}`);
+  const uniqueDir = path.join(tmpBase, `agent-console-db-test-${crypto.randomUUID()}`);
   // Use Bun's native shell to create directory
   Bun.spawnSync(['mkdir', '-p', uniqueDir]);
   return uniqueDir;

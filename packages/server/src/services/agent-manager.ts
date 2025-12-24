@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 import {
   type AgentDefinition,
   type CreateAgentRequest,
@@ -97,7 +96,7 @@ export class AgentManager {
    * Register a new custom agent
    */
   async registerAgent(request: CreateAgentRequest): Promise<AgentDefinition> {
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
     const agentBase = {
