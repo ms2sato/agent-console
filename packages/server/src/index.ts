@@ -86,8 +86,9 @@ try {
 }
 
 // Initialize job queue after database initialization
+let jobQueue;
 try {
-  const jobQueue = getJobQueue();
+  jobQueue = getJobQueue();
   registerJobHandlers(jobQueue);
   await jobQueue.start();
   logger.info('JobQueue initialized and started');
@@ -99,7 +100,8 @@ try {
 // Setup WebSocket routes AFTER database initialization but BEFORE SPA fallback
 // This ensures SessionManager uses the properly initialized SQLite repository
 // and WebSocket routes are not caught by the catch-all SPA handler
-await setupWebSocketRoutes(app, upgradeWebSocket);
+// Pass jobQueue explicitly to ensure SessionManager/RepositoryManager have it set
+await setupWebSocketRoutes(app, upgradeWebSocket, jobQueue);
 
 // Static file serving (production only)
 // NOTE: Must be registered AFTER WebSocket routes to avoid catching /ws/* paths

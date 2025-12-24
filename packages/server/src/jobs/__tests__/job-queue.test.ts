@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { JobQueue } from '../job-queue.js';
+import { JobQueue, type JobRecord } from '../job-queue.js';
 
 describe('JobQueue', () => {
   let jobQueue: JobQueue;
@@ -597,6 +597,284 @@ describe('JobQueue', () => {
       const job = jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toContain('No handler registered');
+    });
+  });
+
+  // ===========================================================================
+  // Concurrent Job Claiming Tests
+  // ===========================================================================
+
+  describe('concurrent job claiming', () => {
+    it('should handle concurrent job claiming safely', async () => {
+      // Close the default queue and create one with higher concurrency
+      await jobQueue.stop();
+      jobQueue.close();
+      jobQueue = new JobQueue(':memory:', { concurrency: 10 });
+
+      const processedJobs: string[] = [];
+      jobQueue.registerHandler<{ id: string }>('test:job', async (payload) => {
+        processedJobs.push(payload.id);
+        // Simulate some work
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      // Create 3 jobs
+      const job1 = jobQueue.enqueue('test:job', { id: 'job1' });
+      const job2 = jobQueue.enqueue('test:job', { id: 'job2' });
+      const job3 = jobQueue.enqueue('test:job', { id: 'job3' });
+
+      // Use Promise.all to start the queue, which will claim jobs concurrently
+      await jobQueue.start();
+
+      // Wait for all jobs to complete
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Verify each job is only claimed once (no duplicates)
+      expect(processedJobs.length).toBe(3);
+      expect(processedJobs).toContain('job1');
+      expect(processedJobs).toContain('job2');
+      expect(processedJobs).toContain('job3');
+
+      // Verify all jobs are completed
+      expect(jobQueue.getJob(job1)?.status).toBe('completed');
+      expect(jobQueue.getJob(job2)?.status).toBe('completed');
+      expect(jobQueue.getJob(job3)?.status).toBe('completed');
+    });
+
+    it('should not allow duplicate claims when claimNextJob is called concurrently', async () => {
+      // Close the default queue and create a fresh one
+      await jobQueue.stop();
+      jobQueue.close();
+      jobQueue = new JobQueue(':memory:', { concurrency: 1 });
+
+      // Create 3 jobs
+      jobQueue.enqueue('test:job', { id: 1 });
+      jobQueue.enqueue('test:job', { id: 2 });
+      jobQueue.enqueue('test:job', { id: 3 });
+
+      // Access private method for testing atomicity
+      const claimNextJob = (
+        jobQueue as unknown as { claimNextJob: () => JobRecord | null }
+      ).claimNextJob.bind(jobQueue);
+
+      // Call claimNextJob concurrently using Promise.all
+      const claims = await Promise.all([
+        Promise.resolve(claimNextJob()),
+        Promise.resolve(claimNextJob()),
+        Promise.resolve(claimNextJob()),
+      ]);
+
+      // Each claim should return a unique job (no duplicates)
+      const claimedIds = claims.filter((c) => c !== null).map((c) => c!.id);
+      const uniqueIds = new Set(claimedIds);
+
+      expect(claimedIds.length).toBe(uniqueIds.size);
+    });
+  });
+
+  // ===========================================================================
+  // Invalid Payload Tests
+  // ===========================================================================
+
+  describe('invalid payload handling', () => {
+    it('should handle invalid JSON payload', async () => {
+      // Create a job with valid JSON first
+      const id = jobQueue.enqueue('test:job', { valid: true }, { maxAttempts: 1 });
+
+      // Directly update the database with invalid JSON
+      const db = (
+        jobQueue as unknown as { db: { run: (sql: string, params: unknown[]) => void } }
+      ).db;
+      db.run('UPDATE jobs SET payload = ? WHERE id = ?', ['not valid json {{{', id]);
+
+      jobQueue.registerHandler('test:job', async () => {
+        // This should not be called because parsing will fail
+      });
+
+      await jobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('stalled');
+      expect(job?.last_error).toContain('JSON');
+    });
+  });
+
+  // ===========================================================================
+  // Non-Error Throw Tests
+  // ===========================================================================
+
+  describe('non-Error throws', () => {
+    it('should handle non-Error throws from handler', async () => {
+      jobQueue.registerHandler('throws-string', async () => {
+        throw 'This is a string error';
+      });
+
+      const id = jobQueue.enqueue('throws-string', {}, { maxAttempts: 1 });
+      await jobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('stalled');
+      expect(job?.last_error).toContain('This is a string error');
+    });
+
+    it('should handle undefined throws from handler', async () => {
+      jobQueue.registerHandler('throws-undefined', async () => {
+        throw undefined;
+      });
+
+      const id = jobQueue.enqueue('throws-undefined', {}, { maxAttempts: 1 });
+      await jobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('stalled');
+      expect(job?.last_error).toBe('undefined');
+    });
+
+    it('should handle null throws from handler', async () => {
+      jobQueue.registerHandler('throws-null', async () => {
+        throw null;
+      });
+
+      const id = jobQueue.enqueue('throws-null', {}, { maxAttempts: 1 });
+      await jobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('stalled');
+      expect(job?.last_error).toBe('null');
+    });
+
+    it('should handle object throws from handler', async () => {
+      jobQueue.registerHandler('throws-object', async () => {
+        throw { code: 'ERR_TEST', message: 'test object error' };
+      });
+
+      const id = jobQueue.enqueue('throws-object', {}, { maxAttempts: 1 });
+      await jobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const job = jobQueue.getJob(id);
+      expect(job?.status).toBe('stalled');
+      // Object.toString() is used via String()
+      expect(job?.last_error).not.toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // Backoff Ceiling Tests
+  // ===========================================================================
+
+  describe('exponential backoff', () => {
+    it('should cap exponential backoff at 5 minutes', () => {
+      // Access private method for testing
+      const calculateBackoff = (
+        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
+      ).calculateBackoff.bind(jobQueue);
+
+      // After many attempts, backoff should be capped at 5 minutes (300000ms)
+      const backoff = calculateBackoff(20);
+      expect(backoff).toBe(5 * 60 * 1000);
+    });
+
+    it('should use exponential backoff for early attempts', () => {
+      const calculateBackoff = (
+        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
+      ).calculateBackoff.bind(jobQueue);
+
+      // First attempt: 1s * 2^0 = 1000ms
+      expect(calculateBackoff(1)).toBe(1000);
+      // Second attempt: 1s * 2^1 = 2000ms
+      expect(calculateBackoff(2)).toBe(2000);
+      // Third attempt: 1s * 2^2 = 4000ms
+      expect(calculateBackoff(3)).toBe(4000);
+      // Fourth attempt: 1s * 2^3 = 8000ms
+      expect(calculateBackoff(4)).toBe(8000);
+    });
+
+    it('should not exceed 5 minutes for any attempt count', () => {
+      const calculateBackoff = (
+        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
+      ).calculateBackoff.bind(jobQueue);
+
+      const maxBackoff = 5 * 60 * 1000;
+
+      // Test various high attempt counts
+      for (const attempts of [10, 15, 20, 50, 100]) {
+        expect(calculateBackoff(attempts)).toBe(maxBackoff);
+      }
+    });
+  });
+
+  // ===========================================================================
+  // Cancel During Retry Tests
+  // ===========================================================================
+
+  describe('cancel during retry wait', () => {
+    it('should not process job canceled while waiting for retry', async () => {
+      let attempts = 0;
+      jobQueue.registerHandler('retry-job', async () => {
+        attempts++;
+        if (attempts < 2) {
+          throw new Error('Temporary failure');
+        }
+      });
+
+      // Create a job that will fail once and be scheduled for retry
+      const id = jobQueue.enqueue('retry-job', {}, { maxAttempts: 3 });
+      await jobQueue.start();
+
+      // Wait for initial failure and retry scheduling
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Verify job is pending (waiting for retry)
+      let job = jobQueue.getJob(id);
+      expect(job?.status).toBe('pending');
+      expect(job?.attempts).toBe(1);
+      expect(attempts).toBe(1);
+
+      // Cancel the job while it's waiting for retry
+      const canceled = jobQueue.cancelJob(id);
+      expect(canceled).toBe(true);
+
+      // Wait past the retry time (default backoff is 1s for first retry)
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      // Verify job was not processed again
+      expect(attempts).toBe(1);
+
+      // Verify job is deleted
+      job = jobQueue.getJob(id);
+      expect(job).toBeNull();
+    });
+
+    it('should clear retry timer when job is canceled', async () => {
+      let attempts = 0;
+      jobQueue.registerHandler('retry-job', async () => {
+        attempts++;
+        throw new Error('Always fails');
+      });
+
+      const id = jobQueue.enqueue('retry-job', {}, { maxAttempts: 5 });
+      await jobQueue.start();
+
+      // Wait for initial failure
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Get the retry timers map
+      const retryTimers = (jobQueue as unknown as { retryTimers: Map<string, Timer> })
+        .retryTimers;
+
+      // Verify timer is set
+      expect(retryTimers.has(id)).toBe(true);
+
+      // Cancel the job
+      jobQueue.cancelJob(id);
+
+      // Verify timer is cleared
+      expect(retryTimers.has(id)).toBe(false);
     });
   });
 

@@ -146,6 +146,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 2) {
     await migrateToV2(database);
   }
+
+  if (currentVersion < 3) {
+    await migrateToV3(database);
+  }
 }
 
 /**
@@ -262,6 +266,59 @@ async function migrateToV2(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 2`.execute(database);
 
   logger.info('Migration to v2 completed');
+}
+
+/**
+ * Migration v3: Create jobs table for local job queue.
+ * This integrates the JobQueue schema into the main migration system.
+ */
+async function migrateToV3(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v3: Creating jobs table');
+
+  // Create jobs table with all columns matching JobQueue schema
+  await database.schema
+    .createTable('jobs')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('type', 'text', (col) => col.notNull())
+    .addColumn('payload', 'text', (col) => col.notNull())
+    .addColumn('status', 'text', (col) => col.notNull().defaultTo('pending'))
+    .addColumn('priority', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('attempts', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('max_attempts', 'integer', (col) => col.notNull().defaultTo(5))
+    .addColumn('next_retry_at', 'integer', (col) => col.notNull())
+    .addColumn('last_error', 'text')
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addColumn('started_at', 'integer')
+    .addColumn('completed_at', 'integer')
+    .execute();
+
+  // Create indexes for efficient job queue operations
+  await database.schema
+    .createIndex('idx_jobs_pending')
+    .ifNotExists()
+    .on('jobs')
+    .columns(['status', 'priority', 'next_retry_at'])
+    .execute();
+
+  await database.schema
+    .createIndex('idx_jobs_status')
+    .ifNotExists()
+    .on('jobs')
+    .column('status')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_jobs_type')
+    .ifNotExists()
+    .on('jobs')
+    .column('type')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 3`.execute(database);
+
+  logger.info('Migration to v3 completed');
 }
 
 /**

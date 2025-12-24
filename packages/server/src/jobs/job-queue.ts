@@ -134,14 +134,38 @@ export class JobQueue {
   constructor(dbPath: string, options?: JobQueueOptions) {
     this.db = new Database(dbPath);
     this.concurrency = options?.concurrency ?? this.defaultConcurrency;
-    this.initSchema();
+    // Schema is now managed by the main database migration system (connection.ts)
+    // Verify schema exists to catch misconfiguration early
+    this.verifySchema();
     logger.info({ dbPath, concurrency: this.concurrency }, 'JobQueue initialized');
   }
 
   /**
-   * Initialize the database schema for jobs.
+   * Verify that the jobs table exists, creating it if necessary.
+   * The schema is normally created by the migration system in connection.ts.
+   * This method provides a fallback for cases where:
+   * - Tests use in-memory databases
+   * - The database was created before the migration was added
+   *
+   * If the schema needs to be created here, a warning is logged to indicate
+   * potential misconfiguration in production scenarios.
    */
-  private initSchema(): void {
+  private verifySchema(): void {
+    const result = this.db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
+    ).get() as { name: string } | null;
+
+    if (!result) {
+      logger.warn('Jobs table not found, creating schema. This is expected in tests but may indicate misconfiguration in production.');
+      this.createSchema();
+    }
+  }
+
+  /**
+   * Create the jobs table schema.
+   * Used as a fallback when the migration system hasn't created the table.
+   */
+  private createSchema(): void {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY,

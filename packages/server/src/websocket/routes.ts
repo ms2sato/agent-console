@@ -6,6 +6,7 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
+import type { JobQueue } from '../jobs/index.js';
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { getSessionManager } from '../services/session-manager.js';
@@ -69,10 +70,14 @@ type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
 export async function setupWebSocketRoutes(
   app: Hono,
-  upgradeWebSocket: UpgradeWebSocketFn
+  upgradeWebSocket: UpgradeWebSocketFn,
+  jobQueue: JobQueue
 ) {
   // Get properly initialized SessionManager (with SQLite repository)
   const sessionManager = await getSessionManager();
+  // Explicitly inject jobQueue to ensure it's available for cleanup operations
+  // This fixes the race condition where SessionManager may be created before JobQueue
+  sessionManager.setJobQueue(jobQueue);
 
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
@@ -122,6 +127,8 @@ export async function setupWebSocketRoutes(
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
   const repositoryManager = await getRepositoryManager();
+  // Explicitly inject jobQueue to ensure it's available for cleanup operations
+  repositoryManager.setJobQueue(jobQueue);
   repositoryManager.setLifecycleCallbacks({
     onRepositoryCreated: (repository) => {
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');

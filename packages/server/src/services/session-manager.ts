@@ -155,6 +155,8 @@ export class SessionManager {
   /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
+   * @param options.jobQueue - JobQueue instance for background cleanup tasks.
+   *                           Must be provided for proper cleanup operations.
    */
   static async create(options?: {
     ptyProvider?: PtyProvider;
@@ -163,6 +165,7 @@ export class SessionManager {
     jobQueue?: JobQueue | null;
   }): Promise<SessionManager> {
     const manager = new SessionManager(options);
+    // Note: jobQueue is set via constructor options, making it available during initialize()
     await manager.initialize();
     return manager;
   }
@@ -193,17 +196,15 @@ export class SessionManager {
   }
 
   /**
-   * Clean up worker output file via job queue or direct deletion.
+   * Clean up worker output file via job queue.
    * Used by deleteWorker and other cleanup operations.
+   * @throws Error if jobQueue is not available
    */
   private cleanupWorkerOutput(sessionId: string, workerId: string): void {
-    if (this.jobQueue) {
-      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
-    } else {
-      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-      });
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for worker output cleanup. Ensure setJobQueue() is called before cleanup operations.');
     }
+    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }
 
   /**
@@ -399,16 +400,14 @@ export class SessionManager {
 
     // Remove orphan sessions from persistence and delete output files
     if (orphanSessionIds.length > 0) {
+      // Verify jobQueue is available for cleanup operations
+      if (!this.jobQueue) {
+        throw new Error('JobQueue not available for orphan session cleanup. Ensure jobQueue is passed to SessionManager.create().');
+      }
       for (const sessionId of orphanSessionIds) {
         await this.sessionRepository.delete(sessionId);
-        // Delete output files for orphan session (via job queue if available)
-        if (this.jobQueue) {
-          this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
-        } else {
-          void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
-            logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
-          });
-        }
+        // Delete output files for orphan session via job queue
+        this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
         logger.info({ sessionId }, 'Removed orphan session from persistence');
       }
     }
@@ -509,14 +508,11 @@ export class SessionManager {
       }
     }
 
-    // Delete all output files for this session (via job queue if available)
-    if (this.jobQueue) {
-      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
-    } else {
-      void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
-        logger.error({ sessionId: id, err }, 'Failed to delete session output files');
-      });
+    // Delete all output files for this session via job queue
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for session cleanup. Ensure setJobQueue() is called before cleanup operations.');
     }
+    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
     this.sessions.delete(id);
     await this.sessionRepository.delete(id);
@@ -1575,13 +1571,10 @@ export async function getSessionManager(): Promise<SessionManager> {
   sessionManagerPromise = (async () => {
     // Use createSessionRepository() to auto-select SQLite or JSON based on environment
     const sessionRepository = await createSessionRepository();
-    const manager = await SessionManager.create({ sessionRepository });
+    // Pass jobQueue during creation if available, ensuring it's set before initialize()
+    const jobQueue = isJobQueueInitialized() ? getJobQueue() : null;
+    const manager = await SessionManager.create({ sessionRepository, jobQueue });
     sessionManagerInstance = manager;
-
-    // Inject job queue if initialized
-    if (isJobQueueInitialized()) {
-      manager.setJobQueue(getJobQueue());
-    }
 
     return manager;
   })().catch((error) => {

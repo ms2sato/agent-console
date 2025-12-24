@@ -3,7 +3,14 @@ import * as fs from 'fs';
 import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
+import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
+import { JobQueue } from '../../jobs/index.js';
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { resetSessionManager } from '../session-manager.js';
+
+// Test JobQueue instance (created fresh for each test)
+let testJobQueue: JobQueue | null = null;
 
 /**
  * In-memory mock implementation of RepositoryRepository for testing.
@@ -49,7 +56,10 @@ describe('RepositoryManager', () => {
   let importCounter = 0;
   let mockRepository: InMemoryRepositoryRepository;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Close any existing database connection first
+    await closeDatabase();
+
     // Set up memfs with config dir and a git repo
     const gitRepoFiles = createMockGitRepoFiles(TEST_REPO_DIR);
     setupMemfs({
@@ -58,15 +68,35 @@ describe('RepositoryManager', () => {
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
+    // Initialize in-memory database (needed for SessionManager singleton)
+    await initializeDatabase(':memory:');
+
+    // Reset session manager singleton (needed for unregisterRepository check)
+    resetSessionManager();
+
+    // Reset process mock
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
     // Reset git mocks
     mockGit.getOrgRepoFromPath.mockReset();
     mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('test-org/repo'));
 
     // Create fresh mock repository for each test
     mockRepository = new InMemoryRepositoryRepository();
+
+    // Create a test JobQueue with in-memory database
+    testJobQueue = new JobQueue(':memory:');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Clean up test JobQueue
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue.close();
+      testJobQueue = null;
+    }
+    await closeDatabase();
     cleanupMemfs();
   });
 
@@ -75,7 +105,10 @@ describe('RepositoryManager', () => {
     // Pre-populate the repository before creating the manager
     mockRepository.setRepositories(preloadedRepos);
     const module = await import(`../repository-manager.js?v=${++importCounter}`);
-    return module.RepositoryManager.create({ repository: mockRepository });
+    return module.RepositoryManager.create({
+      repository: mockRepository,
+      jobQueue: testJobQueue,
+    });
   }
 
   describe('registerRepository', () => {

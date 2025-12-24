@@ -9,6 +9,7 @@ import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, isJobQueueInitialized, getJobQueue, type JobQueue } from '../jobs/index.js';
+import { getSessionManager } from './session-manager.js';
 
 const logger = createLogger('repository-manager');
 
@@ -136,6 +137,16 @@ export class RepositoryManager {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
+    // Check if any active sessions are using this repository
+    const sessionManager = await getSessionManager();
+    const activeSessions = sessionManager.getSessionsUsingRepository(id);
+    if (activeSessions.length > 0) {
+      throw new Error(
+        `Cannot unregister repository: ${activeSessions.length} active session(s) are using it. ` +
+        `Delete or close the sessions first.`
+      );
+    }
+
     // Clean up related directories
     await this.cleanupRepositoryData(repo.path);
 
@@ -152,22 +163,18 @@ export class RepositoryManager {
 
   /**
    * Clean up repository data directory (worktrees and templates)
+   * @throws Error if jobQueue is not available
    */
   private async cleanupRepositoryData(repoPath: string): Promise<void> {
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for repository cleanup. Ensure setJobQueue() is called before cleanup operations.');
+    }
+
     const orgRepo = await getOrgRepoFromPath(repoPath);
     const repoDir = getRepositoryDir(orgRepo);
 
-    // Clean up entire repository directory (via job queue if available)
-    if (this.jobQueue) {
-      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
-    } else if (fs.existsSync(repoDir)) {
-      try {
-        fs.rmSync(repoDir, { recursive: true });
-        logger.info({ repoDir }, 'Cleaned up repository data');
-      } catch (e) {
-        logger.error({ repoDir, err: e }, 'Failed to clean up repository data');
-      }
-    }
+    // Clean up entire repository directory via job queue
+    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
   }
 
   getRepository(id: string): Repository | undefined {

@@ -50,10 +50,11 @@ mock.module('open', () => ({
 // This avoids mock.module which applies globally and affects other test files.
 
 // Import singleton reset functions to ensure fresh state between tests
-import { resetRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager } from '../services/session-manager.js';
+import { resetRepositoryManager, getRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager, getSessionManager } from '../services/session-manager.js';
 import { resetAgentManager } from '../services/agent-manager.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
+import { JobQueue, resetJobQueue } from '../jobs/index.js';
 
 // =============================================================================
 // Test Setup
@@ -85,16 +86,24 @@ branch refs/heads/main
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/test-repo'));
 }
 
+// Test JobQueue instance (created fresh for each test)
+let testJobQueue: JobQueue | null = null;
+
 describe('API Routes Integration', () => {
   beforeEach(async () => {
     // Close any existing database connection and initialize fresh in-memory database
     await closeDatabase();
+    await resetJobQueue();
     await initializeDatabase(':memory:');
 
     // Reset service singletons to ensure fresh state for each test
     resetSessionManager();
     resetRepositoryManager();
     resetAgentManager();
+
+    // Create a test JobQueue with in-memory database
+    // The JobQueue will create its own schema since it uses a separate :memory: database
+    testJobQueue = new JobQueue(':memory:');
 
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
@@ -130,6 +139,12 @@ describe('API Routes Integration', () => {
   });
 
   afterEach(async () => {
+    // Clean up test JobQueue
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue.close();
+      testJobQueue = null;
+    }
     await closeDatabase();
     cleanupMemfs();
   });
@@ -155,6 +170,15 @@ describe('API Routes Integration', () => {
     const suffix = `?v=${++importCounter}`;
     const { api } = await import(`../routes/api.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
+
+    // Inject the test JobQueue into the managers
+    // This ensures cleanup operations have a valid jobQueue
+    if (testJobQueue) {
+      const sessionManager = await getSessionManager();
+      sessionManager.setJobQueue(testJobQueue);
+      const repositoryManager = await getRepositoryManager();
+      repositoryManager.setJobQueue(testJobQueue);
+    }
 
     const app = new Hono();
     app.onError(onApiError);

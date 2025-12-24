@@ -5,9 +5,13 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { JobQueue } from '../../jobs/index.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
+
+// Test JobQueue instance (created fresh for each test)
+let testJobQueue: JobQueue | null = null;
 
 // Create mock PTY factory (will be reset in beforeEach)
 const ptyFactory = createMockPtyFactory(10000);
@@ -28,6 +32,9 @@ describe('SessionManager', () => {
     // Initialize in-memory database (bypasses native file operations)
     await initializeDatabase(':memory:');
 
+    // Create a test JobQueue with in-memory database
+    testJobQueue = new JobQueue(':memory:');
+
     // Reset process mock and mark current process as alive
     // This ensures sessions created with serverPid=process.pid are not cleaned up
     resetProcessMock();
@@ -38,6 +45,12 @@ describe('SessionManager', () => {
   });
 
   afterEach(async () => {
+    // Clean up test JobQueue
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue.close();
+      testJobQueue = null;
+    }
     await closeDatabase();
     cleanupMemfs();
   });
@@ -48,8 +61,12 @@ describe('SessionManager', () => {
   // Helper to get fresh module instance with DI using the factory pattern
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
-    // Use the factory pattern for async initialization
-    return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: mockPathExists });
+    // Use the factory pattern for async initialization with jobQueue
+    return module.SessionManager.create({
+      ptyProvider: ptyFactory.provider,
+      pathExists: mockPathExists,
+      jobQueue: testJobQueue,
+    });
   }
 
   // Helper to simulate server restart
