@@ -4,6 +4,7 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -15,12 +16,18 @@ let importCounter = 0;
 let ptyFactory: ReturnType<typeof createMockPtyFactory>;
 
 describe('SessionManager cleanup on initialization', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Close any existing database connection first
+    await closeDatabase();
+
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Initialize in-memory database (bypasses native file operations)
+    await initializeDatabase(':memory:');
 
     // Reset process mock tracking
     resetProcessMock();
@@ -29,7 +36,8 @@ describe('SessionManager cleanup on initialization', () => {
     ptyFactory = createMockPtyFactory();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeDatabase();
     cleanupMemfs();
     delete process.env.AGENT_CONSOLE_HOME;
   });
@@ -55,7 +63,7 @@ describe('SessionManager cleanup on initialization', () => {
   // Helper to create a SessionManager instance using the factory pattern (async initialization)
   async function createSessionManager() {
     const SessionManager = await getSessionManager();
-    return SessionManager.create(ptyFactory.provider);
+    return SessionManager.create({ ptyProvider: ptyFactory.provider });
   }
 
   it('should inherit sessions without serverPid (legacy sessions) and kill worker processes', async () => {

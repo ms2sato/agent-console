@@ -144,15 +144,23 @@ export class SessionManager {
   private sessionRepository: SessionRepository;
 
   /**
+   * Options for creating a SessionManager instance.
+   */
+  static readonly defaultOptions = {
+    ptyProvider: bunPtyProvider,
+    pathExists: defaultPathExists,
+  };
+
+  /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
    */
-  static async create(
-    ptyProvider?: PtyProvider,
-    pathExists?: (path: string) => Promise<boolean>,
-    sessionRepository?: SessionRepository
-  ): Promise<SessionManager> {
-    const manager = new SessionManager(ptyProvider, pathExists, sessionRepository);
+  static async create(options?: {
+    ptyProvider?: PtyProvider;
+    pathExists?: (path: string) => Promise<boolean>;
+    sessionRepository?: SessionRepository;
+  }): Promise<SessionManager> {
+    const manager = new SessionManager(options);
     await manager.initialize();
     return manager;
   }
@@ -161,15 +169,23 @@ export class SessionManager {
    * Private constructor - use SessionManager.create() for async initialization.
    * The constructor is only public for backward compatibility during migration.
    */
-  constructor(
-    ptyProvider: PtyProvider = bunPtyProvider,
-    pathExists: (path: string) => Promise<boolean> = defaultPathExists,
-    sessionRepository?: SessionRepository
-  ) {
-    this.ptyProvider = ptyProvider;
-    this.pathExists = pathExists;
-    this.sessionRepository = sessionRepository ??
+  constructor(options?: {
+    ptyProvider?: PtyProvider;
+    pathExists?: (path: string) => Promise<boolean>;
+    sessionRepository?: SessionRepository;
+  }) {
+    this.ptyProvider = options?.ptyProvider ?? bunPtyProvider;
+    this.pathExists = options?.pathExists ?? defaultPathExists;
+    this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+  }
+
+  /**
+   * Get the session repository used by this manager.
+   * Useful for creating services that need to access session persistence directly.
+   */
+  getSessionRepository(): SessionRepository {
+    return this.sessionRepository;
   }
 
   /**
@@ -1510,8 +1526,8 @@ let sessionManagerInstance: SessionManager | null = null;
 export async function getSessionManager(): Promise<SessionManager> {
   if (!sessionManagerInstance) {
     // Use createSessionRepository() to auto-select SQLite or JSON based on environment
-    const repository = await createSessionRepository();
-    sessionManagerInstance = await SessionManager.create(undefined, undefined, repository);
+    const sessionRepository = await createSessionRepository();
+    sessionManagerInstance = await SessionManager.create({ sessionRepository });
   }
   return sessionManagerInstance;
 }

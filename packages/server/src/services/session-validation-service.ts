@@ -7,8 +7,6 @@ import type {
 } from '@agent-console/shared';
 import type { PersistedSession } from './persistence-service.js';
 import type { SessionRepository } from '../repositories/session-repository.js';
-import { JsonSessionRepository } from '../repositories/json-session-repository.js';
-import { getConfigDir } from '../lib/config.js';
 import { gitRefExists } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -139,7 +137,8 @@ export class SessionValidationService {
   }
 }
 
-// Default singleton with JsonSessionRepository
-export const sessionValidationService = new SessionValidationService(
-  new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'))
-);
+// Factory function to create validation service with the proper repository
+// Use this with getSessionManager() to get the correct repository
+export function createSessionValidationService(sessionRepository: SessionRepository): SessionValidationService {
+  return new SessionValidationService(sessionRepository);
+}

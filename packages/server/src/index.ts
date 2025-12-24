@@ -64,9 +64,6 @@ app.get('/health', (c) => {
 // Mount API routes
 app.route('/api', api);
 
-// Setup WebSocket routes
-setupWebSocketRoutes(app, upgradeWebSocket);
-
 // Static file serving (production only)
 if (isProduction) {
   const __dirname = path.dirname(new URL(import.meta.url).pathname);
@@ -85,7 +82,7 @@ if (isProduction) {
 
 const PORT = Number(serverConfig.PORT);
 
-// Initialize database before starting server
+// Initialize database before starting server and setting up WebSocket routes
 try {
   await initializeDatabase();
   logger.info('Database initialized successfully');
@@ -100,6 +97,10 @@ try {
   console.error(`  rm ${getConfigDir()}/data.db\n`);
   process.exit(1);
 }
+
+// Setup WebSocket routes AFTER database initialization
+// This ensures SessionManager uses the properly initialized SQLite repository
+await setupWebSocketRoutes(app, upgradeWebSocket);
 
 logger.info(
   { port: PORT, env: isProduction ? 'production' : 'development', pid: process.pid },

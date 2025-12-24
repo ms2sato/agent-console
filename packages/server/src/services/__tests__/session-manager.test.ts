@@ -4,6 +4,7 @@ import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-co
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -14,14 +15,18 @@ const ptyFactory = createMockPtyFactory(10000);
 let importCounter = 0;
 
 describe('SessionManager', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Close any existing database connection first
+    await closeDatabase();
+
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
-      [`${TEST_CONFIG_DIR}/agents.json`]: JSON.stringify([]),
-      [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Initialize in-memory database (bypasses native file operations)
+    await initializeDatabase(':memory:');
 
     // Reset process mock and mark current process as alive
     // This ensures sessions created with serverPid=process.pid are not cleaned up
@@ -32,7 +37,8 @@ describe('SessionManager', () => {
     ptyFactory.reset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeDatabase();
     cleanupMemfs();
   });
 
@@ -43,7 +49,7 @@ describe('SessionManager', () => {
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     // Use the factory pattern for async initialization
-    return module.SessionManager.create(ptyFactory.provider, mockPathExists);
+    return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: mockPathExists });
   }
 
   // Helper to simulate server restart
@@ -1135,7 +1141,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create(ptyFactory.provider, pathExistsFn);
+      return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn });
     }
 
     it('should return null when session path no longer exists', async () => {

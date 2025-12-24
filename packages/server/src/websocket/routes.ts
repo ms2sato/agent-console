@@ -8,7 +8,7 @@ import type {
 } from '@agent-console/shared';
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
-import { sessionManager } from '../services/session-manager.js';
+import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
@@ -64,35 +64,44 @@ function broadcastToApp(msg: AppServerMessage): void {
   }
 }
 
-// Set up global activity callback to broadcast to all app clients
-sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
-  broadcastToApp({
-    type: 'worker-activity',
-    sessionId,
-    workerId,
-    activityState: state,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
+
+export async function setupWebSocketRoutes(
+  app: Hono,
+  upgradeWebSocket: UpgradeWebSocketFn
+) {
+  // Get properly initialized SessionManager (with SQLite repository)
+  const sessionManager = await getSessionManager();
+
+  // Set up global activity callback to broadcast to all app clients
+  sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
+    broadcastToApp({
+      type: 'worker-activity',
+      sessionId,
+      workerId,
+      activityState: state,
+    });
   });
-});
 
-// Set up session lifecycle callbacks to broadcast to all app clients
-sessionManager.setSessionLifecycleCallbacks({
-  onSessionCreated: (session) => {
-    logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
-    broadcastToApp({ type: 'session-created', session });
-  },
-  onSessionUpdated: (session) => {
-    logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
-    broadcastToApp({ type: 'session-updated', session });
-  },
-  onSessionDeleted: (sessionId) => {
-    logger.debug({ sessionId }, 'Broadcasting session-deleted');
-    broadcastToApp({ type: 'session-deleted', sessionId });
-  },
-});
+  // Set up session lifecycle callbacks to broadcast to all app clients
+  sessionManager.setSessionLifecycleCallbacks({
+    onSessionCreated: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
+      broadcastToApp({ type: 'session-created', session });
+    },
+    onSessionUpdated: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
+      broadcastToApp({ type: 'session-updated', session });
+    },
+    onSessionDeleted: (sessionId) => {
+      logger.debug({ sessionId }, 'Broadcasting session-deleted');
+      broadcastToApp({ type: 'session-deleted', sessionId });
+    },
+  });
 
-// Set up agent lifecycle callbacks to broadcast to all app clients
-// This is done asynchronously since getAgentManager is async
-getAgentManager().then((agentManager) => {
+  // Set up agent lifecycle callbacks to broadcast to all app clients
+  const agentManager = await getAgentManager();
   agentManager.setLifecycleCallbacks({
     onAgentCreated: (agent) => {
       logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
@@ -107,13 +116,9 @@ getAgentManager().then((agentManager) => {
       broadcastToApp({ type: 'agent-deleted', agentId });
     },
   });
-}).catch((err) => {
-  logger.error({ err }, 'Failed to set up agent lifecycle callbacks');
-});
 
-// Set up repository lifecycle callbacks to broadcast to all app clients
-// This is done asynchronously since getRepositoryManager is async
-getRepositoryManager().then((repositoryManager) => {
+  // Set up repository lifecycle callbacks to broadcast to all app clients
+  const repositoryManager = await getRepositoryManager();
   repositoryManager.setLifecycleCallbacks({
     onRepositoryCreated: (repository) => {
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
@@ -124,35 +129,25 @@ getRepositoryManager().then((repositoryManager) => {
       broadcastToApp({ type: 'repository-deleted', repositoryId });
     },
   });
-}).catch((err) => {
-  logger.error({ err }, 'Failed to set up repository lifecycle callbacks');
-});
 
-// Create dependency object for app handlers
-const appDeps = {
-  getAllSessions: () => sessionManager.getAllSessions(),
-  getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
-  getAllAgents: async () => {
-    const agentManager = await getAgentManager();
-    return agentManager.getAllAgents();
-  },
-  getAllRepositories: async () => {
-    const repositoryManager = await getRepositoryManager();
-    return repositoryManager.getAllRepositories();
-  },
-  logger,
-};
+  // Create dependency object for app handlers
+  const appDeps = {
+    getAllSessions: () => sessionManager.getAllSessions(),
+    getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
+    getAllAgents: async () => {
+      const agentManager = await getAgentManager();
+      return agentManager.getAllAgents();
+    },
+    getAllRepositories: async () => {
+      const repositoryManager = await getRepositoryManager();
+      return repositoryManager.getAllRepositories();
+    },
+    logger,
+  };
 
-// Create app message handler with dependencies
-const handleAppMessage = createAppMessageHandler(appDeps);
+  // Create app message handler with dependencies
+  const handleAppMessage = createAppMessageHandler(appDeps);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
-
-export function setupWebSocketRoutes(
-  app: Hono,
-  upgradeWebSocket: UpgradeWebSocketFn
-) {
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',

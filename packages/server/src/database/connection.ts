@@ -37,60 +37,81 @@ export function getDatabase(): Kysely<Database> {
  * Initialize the SQLite database.
  * Creates the database file if it doesn't exist and runs migrations.
  * Uses a Promise-based mutex to prevent race conditions from concurrent calls.
+ * @param dbPath - Optional database path. Use ':memory:' for in-memory database (useful for tests).
+ *                 If not specified, uses the default path in config directory.
  * @returns The initialized Kysely database instance
  */
-export async function initializeDatabase(): Promise<Kysely<Database>> {
-  // Fast path: return existing instance
-  if (db) return db;
+export async function initializeDatabase(dbPath?: string): Promise<Kysely<Database>> {
+  // Fast path: return existing instance (only for default path)
+  if (db && !dbPath) return db;
 
-  // If initialization is already in progress, wait for it
-  if (initializationPromise) {
+  // If initialization is already in progress, wait for it (only for default path)
+  if (initializationPromise && !dbPath) {
     return initializationPromise;
   }
 
   // Start initialization and store the promise for concurrent callers
-  initializationPromise = doInitializeDatabase();
+  const promise = doInitializeDatabase(dbPath);
+
+  // Only cache the promise for default path (production use)
+  if (!dbPath) {
+    initializationPromise = promise;
+  }
 
   try {
-    return await initializationPromise;
+    return await promise;
   } finally {
     // Clear the promise after completion (success or failure)
     // This allows retry on next call if initialization failed
-    initializationPromise = null;
+    if (!dbPath) {
+      initializationPromise = null;
+    }
   }
 }
 
 /**
  * Internal function that performs the actual database initialization.
  * Should only be called from initializeDatabase() with proper mutex protection.
+ * @param customDbPath - Optional custom database path. Use ':memory:' for in-memory database.
  */
-async function doInitializeDatabase(): Promise<Kysely<Database>> {
-  const configDir = getConfigDir();
-  const dbPath = path.join(configDir, 'data.db');
+async function doInitializeDatabase(customDbPath?: string): Promise<Kysely<Database>> {
+  const isInMemory = customDbPath === ':memory:';
+  const dbPath = customDbPath ?? path.join(getConfigDir(), 'data.db');
 
-  // Ensure config directory exists
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
+  // Ensure config directory exists (skip for in-memory database)
+  if (!isInMemory) {
+    const configDir = path.dirname(dbPath);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
   }
 
   logger.info({ dbPath }, 'Initializing SQLite database');
 
   const bunDb = new BunDatabase(dbPath);
 
-  db = new Kysely<Database>({
+  const database = new Kysely<Database>({
     dialect: new BunSqliteDialect({ database: bunDb }),
   });
 
   // Enable foreign key constraints (required for cascade deletes)
-  await sql`PRAGMA foreign_keys = ON`.execute(db);
+  await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(db);
+  await runMigrations(database);
 
-  // Migrate data from JSON (one-time)
-  await migrateFromJson(db);
+  // Migrate data from JSON (one-time, skip for in-memory database)
+  if (!isInMemory) {
+    await migrateFromJson(database);
+  }
 
-  return db;
+  // Set global db for default path OR in-memory database
+  // In-memory is used for testing: test setup initializes once, and subsequent calls return it
+  if (!customDbPath || isInMemory) {
+    db = database;
+  }
+
+  return database;
 }
 
 /**

@@ -32,12 +32,12 @@ import {
   UpdateAgentRequestSchema,
   SystemOpenRequestSchema,
 } from '@agent-console/shared';
-import { sessionManager } from '../services/session-manager.js';
+import { getSessionManager } from '../services/session-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
-import { sessionValidationService } from '../services/session-validation-service.js';
+import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
@@ -65,13 +65,16 @@ api.get('/config', (c) => {
 
 // Validate all sessions
 api.get('/sessions/validate', async (c) => {
-  const response = await sessionValidationService.validateAllSessions();
+  const sessionManager = await getSessionManager();
+  const validationService = createSessionValidationService(sessionManager.getSessionRepository());
+  const response = await validationService.validateAllSessions();
   return c.json(response);
 });
 
 // Delete an invalid session (removes from persistence without trying to stop workers)
 api.delete('/sessions/:id/invalid', async (c) => {
   const sessionId = c.req.param('id');
+  const sessionManager = await getSessionManager();
   const deleted = await sessionManager.forceDeleteSession(sessionId);
   if (!deleted) {
     throw new NotFoundError('Session');
@@ -82,6 +85,7 @@ api.delete('/sessions/:id/invalid', async (c) => {
 // Get a single session
 api.get('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
+  const sessionManager = await getSessionManager();
 
   // First check if session is active
   const session = sessionManager.getSession(sessionId);
@@ -114,6 +118,7 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
     throw new ValidationError(validation.error || 'Invalid path');
   }
 
+  const sessionManager = await getSessionManager();
   const session = await sessionManager.createSession(body);
 
   return c.json({ session }, 201);
@@ -122,6 +127,7 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
 // Delete a session
 api.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
+  const sessionManager = await getSessionManager();
   const success = await sessionManager.deleteSession(sessionId);
 
   if (!success) {
@@ -146,6 +152,7 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
     updates.branch = branch.trim();
   }
 
+  const sessionManager = await getSessionManager();
   const result = await sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
@@ -163,8 +170,9 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
 });
 
 // Get workers for a session
-api.get('/sessions/:sessionId/workers', (c) => {
+api.get('/sessions/:sessionId/workers', async (c) => {
   const sessionId = c.req.param('sessionId');
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -177,6 +185,7 @@ api.get('/sessions/:sessionId/workers', (c) => {
 // Get branches for a session's repository
 api.get('/sessions/:sessionId/branches', async (c) => {
   const sessionId = c.req.param('sessionId');
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -192,6 +201,7 @@ api.get('/sessions/:sessionId/commits', async (c) => {
   const sessionId = c.req.param('sessionId');
   const baseRef = c.req.query('base');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -211,6 +221,7 @@ api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema)
   const sessionId = c.req.param('sessionId');
   const body = getValidatedBody<CreateWorkerRequest>(c);
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -233,6 +244,7 @@ api.delete('/sessions/:sessionId/workers/:workerId', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -253,6 +265,7 @@ api.post('/sessions/:sessionId/workers/:workerId/restart', validateBody(RestartW
   const body = getValidatedBody<RestartWorkerRequest>(c);
   const { continueConversation = false } = body;
 
+  const sessionManager = await getSessionManager();
   const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
 
   if (!worker) {
@@ -267,6 +280,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -297,6 +311,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
     throw new ValidationError('path query parameter is required');
   }
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -379,6 +394,7 @@ api.delete('/repositories/:id', async (c) => {
   }
 
   // Check if any active sessions use this repository
+  const sessionManager = await getSessionManager();
   const activeSessions = sessionManager.getSessionsUsingRepository(repoId);
   const activeSessionIds = new Set(activeSessions.map(s => s.id));
 
@@ -520,6 +536,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
+    const sessionManager = await getSessionManager();
     session = await sessionManager.createSession({
       type: 'worktree',
       repositoryId: repoId,
@@ -580,6 +597,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   }
 
   // Worktree deletion succeeded - now clean up any associated sessions
+  const sessionManager = await getSessionManager();
   const sessions = sessionManager.getAllSessions();
   for (const session of sessions) {
     if (session.locationPath === worktreePath) {
@@ -666,6 +684,7 @@ api.delete('/agents/:id', async (c) => {
   }
 
   // Check if agent is in use by any active sessions
+  const sessionManager = await getSessionManager();
   const activeSessions = sessionManager.getSessionsUsingAgent(agentId);
   const activeSessionIds = new Set(activeSessions.map(s => s.id));
 

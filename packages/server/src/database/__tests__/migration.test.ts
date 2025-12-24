@@ -2,18 +2,19 @@
  * Migration Integration Tests
  *
  * These tests verify the actual JSON to SQLite migration functions.
- * Uses real database initialization with temporary directories.
+ * Uses in-memory SQLite database and memfs for JSON files.
  *
- * Note: These tests set AGENT_CONSOLE_HOME to control where the database
- * and JSON files are created/read from.
+ * Note: These tests use migrateFromJson directly with ':memory:' database
+ * because initializeDatabase(':memory:') skips JSON migration.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import { v4 as uuid } from 'uuid';
-import { initializeDatabase, closeDatabase } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateFromJson } from '../connection.js';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+
+const TEST_CONFIG_DIR = '/test/config';
 
 // Test fixtures
 const TEST_SESSIONS = [
@@ -63,7 +64,7 @@ const TEST_AGENTS = [
   {
     id: 'custom-agent-1',
     name: 'Custom Agent',
-    commandTemplate: 'custom-agent {{prompt}}',  // Note: lowercase {{prompt}} required
+    commandTemplate: 'custom-agent {{prompt}}', // Note: lowercase {{prompt}} required
     isBuiltIn: false,
     registeredAt: '2024-01-01T00:00:00.000Z',
     capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
@@ -72,58 +73,41 @@ const TEST_AGENTS = [
   {
     id: 'claude-code-builtin',
     name: 'Claude Code',
-    commandTemplate: 'claude {{prompt}}',  // Note: lowercase {{prompt}} required
+    commandTemplate: 'claude {{prompt}}', // Note: lowercase {{prompt}} required
     isBuiltIn: true,
     registeredAt: '2024-01-01T00:00:00.000Z',
     capabilities: { supportsContinue: true, supportsHeadlessMode: true, supportsActivityDetection: true },
   },
 ];
 
-/**
- * Create a unique temporary directory using Bun native APIs.
- */
-function createTempDir(): string {
-  const tmpBase = os.tmpdir();
-  const uniqueDir = path.join(tmpBase, `agent-console-migration-test-${uuid()}`);
-  Bun.spawnSync(['mkdir', '-p', uniqueDir]);
-  return uniqueDir;
-}
-
-/**
- * Remove a directory recursively using Bun native APIs.
- */
-function removeTempDir(dirPath: string): void {
-  Bun.spawnSync(['rm', '-rf', dirPath]);
-}
-
 describe('migration', () => {
-  let testConfigDir: string;
-  let originalEnv: string | undefined;
-
   beforeEach(async () => {
     // Close any existing database connection from previous tests
     await closeDatabase();
 
-    // Create a unique test directory
-    testConfigDir = createTempDir();
-    originalEnv = process.env.AGENT_CONSOLE_HOME;
-    process.env.AGENT_CONSOLE_HOME = testConfigDir;
+    // Setup memfs with config directory
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
   });
 
   afterEach(async () => {
     await closeDatabase();
-    process.env.AGENT_CONSOLE_HOME = originalEnv;
-    removeTempDir(testConfigDir);
+    cleanupMemfs();
   });
 
-  describe('migrateRepositoriesFromJson (via initializeDatabase)', () => {
+  describe('migrateRepositoriesFromJson (via migrateFromJson)', () => {
     it('should migrate valid repositories from JSON to SQLite', async () => {
       // Create repositories.json before initializing database
-      const reposJsonPath = path.join(testConfigDir, 'repositories.json');
+      const reposJsonPath = path.join(TEST_CONFIG_DIR, 'repositories.json');
       fs.writeFileSync(reposJsonPath, JSON.stringify(TEST_REPOSITORIES));
 
-      // Initialize database - this triggers migrations including JSON migration
-      const db = await initializeDatabase();
+      // Initialize in-memory database
+      const db = await initializeDatabase(':memory:');
+
+      // Manually trigger JSON migration (skipped for :memory: in initializeDatabase)
+      await migrateFromJson(db);
 
       // Verify data was migrated
       const rows = await db.selectFrom('repositories').selectAll().execute();
@@ -139,11 +123,12 @@ describe('migration', () => {
 
     it('should skip if no repositories.json exists', async () => {
       // Ensure no JSON file exists
-      const reposJsonPath = path.join(testConfigDir, 'repositories.json');
+      const reposJsonPath = path.join(TEST_CONFIG_DIR, 'repositories.json');
       expect(fs.existsSync(reposJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify no data in database
       const rows = await db.selectFrom('repositories').selectAll().execute();
@@ -152,7 +137,7 @@ describe('migration', () => {
 
     it('should skip if SQLite already has data', async () => {
       // First initialize database and add some data
-      let db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
       await db
         .insertInto('repositories')
         .values({
@@ -163,15 +148,12 @@ describe('migration', () => {
         })
         .execute();
 
-      // Close and reinitialize (to test migration skip)
-      await closeDatabase();
-
       // Create repositories.json
-      const reposJsonPath = path.join(testConfigDir, 'repositories.json');
+      const reposJsonPath = path.join(TEST_CONFIG_DIR, 'repositories.json');
       fs.writeFileSync(reposJsonPath, JSON.stringify(TEST_REPOSITORIES));
 
-      // Reinitialize - migration should skip because data exists
-      db = await initializeDatabase();
+      // Trigger migration - should skip because data exists
+      await migrateFromJson(db);
 
       // Verify only existing data remains
       const rows = await db.selectFrom('repositories').selectAll().execute();
@@ -183,15 +165,16 @@ describe('migration', () => {
     });
   });
 
-  describe('migrateAgentsFromJson (via initializeDatabase)', () => {
+  describe('migrateAgentsFromJson (via migrateFromJson)', () => {
     it('should migrate custom agents from JSON to SQLite', async () => {
       // Create agents.json with only custom agent
       const customAgents = TEST_AGENTS.filter((a) => !a.isBuiltIn);
-      const agentsJsonPath = path.join(testConfigDir, 'agents.json');
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(customAgents));
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify only custom agent was migrated
       const rows = await db.selectFrom('agents').selectAll().execute();
@@ -206,11 +189,12 @@ describe('migration', () => {
 
     it('should skip built-in agents during migration', async () => {
       // Create agents.json with both custom and built-in
-      const agentsJsonPath = path.join(testConfigDir, 'agents.json');
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(TEST_AGENTS));
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify only custom agent was migrated (built-in was filtered)
       const rows = await db.selectFrom('agents').selectAll().execute();
@@ -224,7 +208,7 @@ describe('migration', () => {
         {
           id: 'valid-agent',
           name: 'Valid Agent',
-          commandTemplate: 'valid {{prompt}}',  // lowercase {{prompt}} required
+          commandTemplate: 'valid {{prompt}}', // lowercase {{prompt}} required
           isBuiltIn: false,
           registeredAt: '2024-01-01T00:00:00.000Z',
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
@@ -236,11 +220,12 @@ describe('migration', () => {
           // commandTemplate is missing
         },
       ];
-      const agentsJsonPath = path.join(testConfigDir, 'agents.json');
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(invalidAgents));
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify only valid agent was migrated
       const rows = await db.selectFrom('agents').selectAll().execute();
@@ -250,11 +235,12 @@ describe('migration', () => {
 
     it('should skip if no agents.json exists', async () => {
       // Ensure no JSON file exists
-      const agentsJsonPath = path.join(testConfigDir, 'agents.json');
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify no data in database
       const rows = await db.selectFrom('agents').selectAll().execute();
@@ -262,14 +248,15 @@ describe('migration', () => {
     });
   });
 
-  describe('migrateSessionsFromJson (via initializeDatabase)', () => {
+  describe('migrateSessionsFromJson (via migrateFromJson)', () => {
     it('should migrate valid sessions from JSON to SQLite', async () => {
       // Create sessions.json
-      const sessionsJsonPath = path.join(testConfigDir, 'sessions.json');
+      const sessionsJsonPath = path.join(TEST_CONFIG_DIR, 'sessions.json');
       fs.writeFileSync(sessionsJsonPath, JSON.stringify(TEST_SESSIONS));
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify sessions were migrated
       const sessions = await db.selectFrom('sessions').selectAll().execute();
@@ -291,11 +278,12 @@ describe('migration', () => {
     });
 
     it('should skip if no sessions.json exists', async () => {
-      const sessionsJsonPath = path.join(testConfigDir, 'sessions.json');
+      const sessionsJsonPath = path.join(TEST_CONFIG_DIR, 'sessions.json');
       expect(fs.existsSync(sessionsJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify no data in database
       const rows = await db.selectFrom('sessions').selectAll().execute();
@@ -304,7 +292,7 @@ describe('migration', () => {
 
     it('should skip if SQLite already has data', async () => {
       // First initialize database and add some data
-      let db = await initializeDatabase();
+      const db = await initializeDatabase(':memory:');
       await db
         .insertInto('sessions')
         .values({
@@ -320,15 +308,12 @@ describe('migration', () => {
         })
         .execute();
 
-      // Close and reinitialize
-      await closeDatabase();
-
       // Create sessions.json
-      const sessionsJsonPath = path.join(testConfigDir, 'sessions.json');
+      const sessionsJsonPath = path.join(TEST_CONFIG_DIR, 'sessions.json');
       fs.writeFileSync(sessionsJsonPath, JSON.stringify(TEST_SESSIONS));
 
-      // Reinitialize - migration should skip
-      db = await initializeDatabase();
+      // Trigger migration - should skip
+      await migrateFromJson(db);
 
       // Verify only existing session remains
       const rows = await db.selectFrom('sessions').selectAll().execute();
@@ -340,33 +325,24 @@ describe('migration', () => {
   describe('migrateFromJson error handling', () => {
     it('should handle unparseable JSON gracefully', async () => {
       // Create an invalid sessions.json with malformed JSON
-      const sessionsJsonPath = path.join(testConfigDir, 'sessions.json');
+      const sessionsJsonPath = path.join(TEST_CONFIG_DIR, 'sessions.json');
       fs.writeFileSync(sessionsJsonPath, 'not valid json {{{');
 
-      // Initialize database should fail due to JSON parse error
-      await expect(initializeDatabase()).rejects.toThrow();
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
 
-      // Verify database file was cleaned up
-      const dbPath = path.join(testConfigDir, 'data.db');
-      expect(fs.existsSync(dbPath)).toBe(false);
-
-      // Verify we can retry after cleanup
-      // Remove the broken JSON file
-      fs.unlinkSync(sessionsJsonPath);
-
-      // Now initialization should succeed
-      const db = await initializeDatabase();
-      expect(db).toBeDefined();
+      // migrateFromJson should fail due to JSON parse error
+      await expect(migrateFromJson(db)).rejects.toThrow();
     });
 
     it('should handle empty sessions.json as migrated', async () => {
       // Create empty sessions array
-      const sessionsJsonPath = path.join(testConfigDir, 'sessions.json');
+      const sessionsJsonPath = path.join(TEST_CONFIG_DIR, 'sessions.json');
       fs.writeFileSync(sessionsJsonPath, JSON.stringify([]));
 
-      // Initialize database should succeed
-      const db = await initializeDatabase();
-      expect(db).toBeDefined();
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
 
       // Verify JSON file was renamed to .migrated
       expect(fs.existsSync(sessionsJsonPath)).toBe(false);

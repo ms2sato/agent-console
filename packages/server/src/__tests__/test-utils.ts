@@ -1,7 +1,7 @@
 /**
  * Test utilities for Server Bridge Pattern tests.
  *
- * IMPORTANT: Importing this module sets up all required mocks (fs, pty, open, git, process, database).
+ * IMPORTANT: Importing this module sets up all required mocks (fs, pty, open, git, process).
  * The mock.module calls are executed when the helper modules are imported.
  *
  * @example
@@ -9,26 +9,24 @@
  * import { createTestApp, setupTestEnvironment, cleanupTestEnvironment } from '@agent-console/server/__tests__/test-utils';
  *
  * beforeEach(async () => {
- *   setupTestEnvironment();
+ *   await setupTestEnvironment();
  *   app = await createTestApp();
  * });
  *
- * afterEach(() => {
- *   cleanupTestEnvironment();
+ * afterEach(async () => {
+ *   await cleanupTestEnvironment();
  * });
  * ```
  */
 import { Hono } from 'hono';
 import { mock } from 'bun:test';
-import { Kysely } from 'kysely';
-import { BunSqliteDialect } from 'kysely-bun-sqlite';
-import { Database as BunDatabase } from 'bun:sqlite';
-import type { Database } from '../database/schema.js';
 import { MockPty } from './utils/mock-pty.js';
 
 // Import mock helpers - this sets up mock.module calls
 import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
+import { resetGitMocks } from './utils/mock-git-helper.js';
+import { initializeDatabase, closeDatabase } from '../database/connection.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -48,128 +46,13 @@ mock.module('../lib/pty-provider.js', () => ({
 }));
 
 // =============================================================================
-// Database Mock
+// Database Setup (uses in-memory SQLite via DI)
 // =============================================================================
 
-// Shared in-memory database for all tests using test-utils.
-// This prevents tests from creating database files on disk while still
-// allowing proper isolation with SQLite operations.
-let sharedMockDb: Kysely<Database> | null = null;
-
-/**
- * Creates or returns the shared in-memory mock database.
- * Creates all tables (v2 schema) if the database doesn't exist yet.
- */
-async function getOrCreateMockDatabase(): Promise<Kysely<Database>> {
-  // Return existing database if already created
-  if (sharedMockDb) {
-    return sharedMockDb;
-  }
-
-  const bunDb = new BunDatabase(':memory:');
-  bunDb.exec('PRAGMA foreign_keys = ON;');
-
-  sharedMockDb = new Kysely<Database>({
-    dialect: new BunSqliteDialect({ database: bunDb }),
-  });
-
-  // Create all tables (v2 schema)
-  await createMockTables(sharedMockDb);
-
-  return sharedMockDb;
-}
-
-/**
- * Creates the database tables for the mock database.
- * Matches the v2 schema from connection.ts migrations.
- */
-async function createMockTables(db: Kysely<Database>): Promise<void> {
-  // Sessions table
-  await db.schema
-    .createTable('sessions')
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('type', 'text', (col) => col.notNull())
-    .addColumn('location_path', 'text', (col) => col.notNull())
-    .addColumn('server_pid', 'integer')
-    .addColumn('created_at', 'text', (col) => col.notNull())
-    .addColumn('initial_prompt', 'text')
-    .addColumn('title', 'text')
-    .addColumn('repository_id', 'text')
-    .addColumn('worktree_id', 'text')
-    .execute();
-
-  // Workers table
-  await db.schema
-    .createTable('workers')
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('session_id', 'text', (col) =>
-      col.notNull().references('sessions.id').onDelete('cascade')
-    )
-    .addColumn('type', 'text', (col) => col.notNull())
-    .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('created_at', 'text', (col) => col.notNull())
-    .addColumn('pid', 'integer')
-    .addColumn('agent_id', 'text')
-    .addColumn('base_commit', 'text')
-    .execute();
-
-  // Repositories table
-  await db.schema
-    .createTable('repositories')
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('path', 'text', (col) => col.notNull().unique())
-    .addColumn('registered_at', 'text', (col) => col.notNull())
-    .execute();
-
-  // Agents table
-  await db.schema
-    .createTable('agents')
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('command_template', 'text', (col) => col.notNull())
-    .addColumn('continue_template', 'text')
-    .addColumn('headless_template', 'text')
-    .addColumn('description', 'text')
-    .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('registered_at', 'text')
-    .addColumn('activity_patterns', 'text')
-    .execute();
-}
-
-/**
- * Clears all data from the mock database tables.
- * Can be used between tests if explicit database cleanup is needed.
- * Note: With cache-busted imports, fresh service instances typically provide
- * sufficient isolation without needing to clear the database.
- */
-export async function clearMockDatabase(): Promise<void> {
-  if (!sharedMockDb) return;
-
-  // Delete in order to respect foreign key constraints
-  await sharedMockDb.deleteFrom('workers').execute();
-  await sharedMockDb.deleteFrom('sessions').execute();
-  await sharedMockDb.deleteFrom('repositories').execute();
-  await sharedMockDb.deleteFrom('agents').execute();
-}
-
-// Mock the database connection module
-mock.module('../database/connection.js', () => ({
-  initializeDatabase: async () => {
-    return getOrCreateMockDatabase();
-  },
-  getDatabase: () => {
-    if (!sharedMockDb) {
-      throw new Error('Database not initialized');
-    }
-    return sharedMockDb;
-  },
-  closeDatabase: async () => {
-    // Don't actually close - let it persist for other tests using cache-busted imports
-  },
-  databaseExists: async () => true,
-  migrateFromJson: async () => {},
-}));
+// Tests use initializeDatabase(':memory:') to get an in-memory database.
+// This avoids native file system operations that would bypass memfs.
+// migration.test.ts uses real file system with temp directories and
+// doesn't import test-utils.ts, so it's not affected by this setup.
 
 // =============================================================================
 // Open Mock
@@ -189,15 +72,16 @@ let importCounter = 0;
 
 /**
  * Sets up the test environment with memfs and required mocks.
+ * Must be called in beforeEach with await.
  */
-export function setupTestEnvironment(): void {
+export async function setupTestEnvironment(): Promise<void> {
   setupMemfs({
     [`${TEST_CONFIG_DIR}/.keep`]: '',
-    [`${TEST_CONFIG_DIR}/agents.json`]: JSON.stringify([]),
-    [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
-    [`${TEST_CONFIG_DIR}/repositories.json`]: JSON.stringify([]),
   });
   process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+  // Initialize in-memory database (bypasses native file operations)
+  await initializeDatabase(':memory:');
 
   // Reset PTY tracking
   mockPtyInstances.length = 0;
@@ -206,14 +90,19 @@ export function setupTestEnvironment(): void {
   // Reset process tracking
   resetProcessMock();
 
+  // Reset git mocks
+  resetGitMocks();
+
   // Reset open mock
   mockOpen.mockClear();
 }
 
 /**
  * Cleans up the test environment.
+ * Must be called in afterEach with await.
  */
-export function cleanupTestEnvironment(): void {
+export async function cleanupTestEnvironment(): Promise<void> {
+  await closeDatabase();
   cleanupMemfs();
 }
 
