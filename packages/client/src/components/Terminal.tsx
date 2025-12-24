@@ -54,6 +54,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             reject(e);
           }
         });
+      }).then(() => {
+        // Scroll to bottom after history is loaded
+        terminal.scrollToBottom();
       }).catch((e) => console.error('[Terminal] Failed to write history:', e));
     }
   }, [sessionId, workerId]);
