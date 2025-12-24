@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
@@ -29,6 +29,14 @@ interface Tab {
   name: string;
 }
 
+// Pre-generate favicon frames for animation to avoid expensive canvas.toDataURL() calls
+// Cache structure: { state: { frameIndex: dataUrl } }
+const faviconCache = new Map<string, string>();
+
+function getFaviconCacheKey(state: AgentActivityState, frameIndex: number): string {
+  return `${state}:${frameIndex}`;
+}
+
 // Generate favicon based on activity state
 function generateFavicon(state: AgentActivityState, bounce: number = 0): string {
   const canvas = document.createElement('canvas');
@@ -52,6 +60,26 @@ function generateFavicon(state: AgentActivityState, bounce: number = 0): string 
   ctx.fill();
 
   return canvas.toDataURL('image/png');
+}
+
+// Pre-generate animation frames for 'active' state (reduces CPU load during animation)
+// 16 frames = 1 full cycle, cached to avoid repeated canvas.toDataURL() calls
+const ANIMATION_FRAMES = 16;
+const ANIMATION_INTERVAL_MS = 100; // 10fps instead of 25fps
+
+function getOrGenerateFavicon(state: AgentActivityState, frameIndex: number = 0): string {
+  const cacheKey = getFaviconCacheKey(state, frameIndex);
+  const cached = faviconCache.get(cacheKey);
+  if (cached) return cached;
+
+  // Calculate bounce for this frame
+  const bounce = state === 'active'
+    ? Math.abs(Math.sin((frameIndex / ANIMATION_FRAMES) * Math.PI))
+    : 0;
+
+  const dataUrl = generateFavicon(state, bounce);
+  faviconCache.set(cacheKey, dataUrl);
+  return dataUrl;
 }
 
 // Get branch name from session (for worktree sessions)
@@ -153,6 +181,9 @@ function TerminalPage() {
     };
   }, [state, sessionTitle, branchName]);
 
+  // Track animation frame for favicon
+  const faviconFrameRef = useRef(0);
+
   // Update favicon based on activity state (with animation for active)
   useEffect(() => {
     let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -162,18 +193,17 @@ function TerminalPage() {
       document.head.appendChild(link);
     }
 
-    // Animate favicon when active
+    // Animate favicon when active (using cached frames at reduced frame rate)
     if (activityState === 'active') {
-      let frame = 0;
+      faviconFrameRef.current = 0;
       const interval = setInterval(() => {
-        // Bouncing ball effect using absolute sine
-        const bounce = Math.abs(Math.sin(frame * 0.12));
-        const faviconUrl = generateFavicon(activityState, bounce);
+        const frameIndex = faviconFrameRef.current % ANIMATION_FRAMES;
+        const faviconUrl = getOrGenerateFavicon(activityState, frameIndex);
         if (faviconUrl && link) {
           link.href = faviconUrl;
         }
-        frame++;
-      }, 40);
+        faviconFrameRef.current++;
+      }, ANIMATION_INTERVAL_MS);
 
       return () => {
         clearInterval(interval);
@@ -183,8 +213,8 @@ function TerminalPage() {
       };
     }
 
-    // Static favicon for non-active states
-    const faviconUrl = generateFavicon(activityState);
+    // Static favicon for non-active states (cached)
+    const faviconUrl = getOrGenerateFavicon(activityState, 0);
     if (faviconUrl) {
       link.href = faviconUrl;
     }

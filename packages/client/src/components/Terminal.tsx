@@ -134,8 +134,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminal.loadAddon(fitAddon);
 
     // Enable clickable URLs in terminal output
+    // Use noopener,noreferrer to prevent reverse tabnabbing attacks
     const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      window.open(uri, '_blank');
+      window.open(uri, '_blank', 'noopener,noreferrer');
     });
     terminal.loadAddon(webLinksAddon);
 

@@ -137,8 +137,8 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
   const containerRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // Parse the diff once
-  const parsedFiles = parsePatch(rawDiff);
+  // Memoize parsed diff to avoid re-parsing on every render (expensive for large diffs)
+  const parsedFiles = useMemo(() => parsePatch(rawDiff), [rawDiff]);
   const stripPrefix = (name: string | undefined) => name?.replace(/^[ab]\//, '');
 
   // Sort files to match the left sidebar tree order
