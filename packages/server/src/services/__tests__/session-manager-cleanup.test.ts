@@ -4,6 +4,7 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -15,12 +16,18 @@ let importCounter = 0;
 let ptyFactory: ReturnType<typeof createMockPtyFactory>;
 
 describe('SessionManager cleanup on initialization', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Close any existing database connection first
+    await closeDatabase();
+
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Initialize in-memory database (bypasses native file operations)
+    await initializeDatabase(':memory:');
 
     // Reset process mock tracking
     resetProcessMock();
@@ -29,7 +36,8 @@ describe('SessionManager cleanup on initialization', () => {
     ptyFactory = createMockPtyFactory();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeDatabase();
     cleanupMemfs();
     delete process.env.AGENT_CONSOLE_HOME;
   });
@@ -46,10 +54,16 @@ describe('SessionManager cleanup on initialization', () => {
     fs.writeFileSync(`${TEST_CONFIG_DIR}/agents.json`, JSON.stringify([]));
   }
 
-  // Helper to get fresh SessionManager class
+  // Helper to get fresh SessionManager class and create an instance using the factory pattern
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     return module.SessionManager;
+  }
+
+  // Helper to create a SessionManager instance using the factory pattern (async initialization)
+  async function createSessionManager() {
+    const SessionManager = await getSessionManager();
+    return SessionManager.create({ ptyProvider: ptyFactory.provider });
   }
 
   it('should inherit sessions without serverPid (legacy sessions) and kill worker processes', async () => {
@@ -76,9 +90,8 @@ describe('SessionManager cleanup on initialization', () => {
     // Mark the session process as alive
     mockProcess.markAlive(11111);
 
-    // Create SessionManager - cleanup runs in constructor
-    const SessionManager = await getSessionManager();
-    new SessionManager(ptyFactory.provider);
+    // Create SessionManager - cleanup runs during async initialization
+    await createSessionManager();
 
     // Legacy session worker should be killed (session is inherited)
     expect(mockProcess.wasKilled(11111)).toBe(true);
@@ -117,8 +130,7 @@ describe('SessionManager cleanup on initialization', () => {
     mockProcess.markAlive(22222);
     mockProcess.markAlive(33333);
 
-    const SessionManager = await getSessionManager();
-    new SessionManager(ptyFactory.provider);
+    await createSessionManager();
 
     // Session should NOT be killed because parent server is alive
     expect(mockProcess.wasKilled(22222)).toBe(false);
@@ -149,8 +161,7 @@ describe('SessionManager cleanup on initialization', () => {
     mockProcess.markAlive(44444);
     // Note: 55555 is NOT marked alive, so it's dead
 
-    const SessionManager = await getSessionManager();
-    new SessionManager(ptyFactory.provider);
+    await createSessionManager();
 
     // Orphan worker process should be killed
     expect(mockProcess.wasKilled(44444)).toBe(true);
@@ -228,8 +239,7 @@ describe('SessionManager cleanup on initialization', () => {
     mockProcess.markAlive(20001); // Alive parent server
     // 20002 is dead (not marked alive)
 
-    const SessionManager = await getSessionManager();
-    new SessionManager(ptyFactory.provider);
+    await createSessionManager();
 
     // Only orphan worker process should be killed (legacy session worker is also killed because serverPid is missing)
     expect(mockProcess.wasKilled(10001)).toBe(true);  // Legacy session (serverPid missing = inherited)
@@ -255,8 +265,7 @@ describe('SessionManager cleanup on initialization', () => {
     persistSessions([]);
     persistAgents();
 
-    const SessionManager = await getSessionManager();
-    new SessionManager(ptyFactory.provider);
+    await createSessionManager();
 
     // No processes should be killed
     expect(mockProcess.getKillCount()).toBe(0);

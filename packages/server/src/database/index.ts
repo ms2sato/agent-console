@@ -1,0 +1,35 @@
+export type {
+  Database,
+  Session,
+  Worker,
+  NewSession,
+  NewWorker,
+  SessionUpdate,
+  WorkerUpdate,
+  RepositoriesTable,
+  RepositoryRow,
+  NewRepository,
+  RepositoryUpdate,
+  AgentsTable,
+  AgentRow,
+  NewAgent,
+  AgentUpdate,
+} from './schema.js';
+export {
+  getDatabase,
+  initializeDatabase,
+  closeDatabase,
+  databaseExists,
+} from './connection.js';
+export {
+  toSessionRow,
+  toWorkerRow,
+  toPersistedWorker,
+  toPersistedSession,
+  toRepositoryRow,
+  toRepository,
+  toAgentRow,
+  toAgentDefinition,
+  assertNever,
+  DataIntegrityError,
+} from './mappers.js';

@@ -9,12 +9,12 @@
  * import { createTestApp, setupTestEnvironment, cleanupTestEnvironment } from '@agent-console/server/__tests__/test-utils';
  *
  * beforeEach(async () => {
- *   setupTestEnvironment();
+ *   await setupTestEnvironment();
  *   app = await createTestApp();
  * });
  *
- * afterEach(() => {
- *   cleanupTestEnvironment();
+ * afterEach(async () => {
+ *   await cleanupTestEnvironment();
  * });
  * ```
  */
@@ -25,6 +25,11 @@ import { MockPty } from './utils/mock-pty.js';
 // Import mock helpers - this sets up mock.module calls
 import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
+import { resetGitMocks } from './utils/mock-git-helper.js';
+import { initializeDatabase, closeDatabase } from '../database/connection.js';
+import { resetAgentManager } from '../services/agent-manager.js';
+import { resetRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager } from '../services/session-manager.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -44,6 +49,15 @@ mock.module('../lib/pty-provider.js', () => ({
 }));
 
 // =============================================================================
+// Database Setup (uses in-memory SQLite via DI)
+// =============================================================================
+
+// Tests use initializeDatabase(':memory:') to get an in-memory database.
+// This avoids native file system operations that would bypass memfs.
+// migration.test.ts uses real file system with temp directories and
+// doesn't import test-utils.ts, so it's not affected by this setup.
+
+// =============================================================================
 // Open Mock
 // =============================================================================
 
@@ -61,15 +75,16 @@ let importCounter = 0;
 
 /**
  * Sets up the test environment with memfs and required mocks.
+ * Must be called in beforeEach with await.
  */
-export function setupTestEnvironment(): void {
+export async function setupTestEnvironment(): Promise<void> {
   setupMemfs({
     [`${TEST_CONFIG_DIR}/.keep`]: '',
-    [`${TEST_CONFIG_DIR}/agents.json`]: JSON.stringify([]),
-    [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
-    [`${TEST_CONFIG_DIR}/repositories.json`]: JSON.stringify([]),
   });
   process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+  // Initialize in-memory database (bypasses native file operations)
+  await initializeDatabase(':memory:');
 
   // Reset PTY tracking
   mockPtyInstances.length = 0;
@@ -78,14 +93,24 @@ export function setupTestEnvironment(): void {
   // Reset process tracking
   resetProcessMock();
 
+  // Reset git mocks
+  resetGitMocks();
+
   // Reset open mock
   mockOpen.mockClear();
 }
 
 /**
  * Cleans up the test environment.
+ * Must be called in afterEach with await.
  */
-export function cleanupTestEnvironment(): void {
+export async function cleanupTestEnvironment(): Promise<void> {
+  // Reset singleton managers BEFORE closing database
+  // to ensure they don't hold references to destroyed DB connections
+  resetSessionManager();
+  resetRepositoryManager();
+  resetAgentManager();
+  await closeDatabase();
   cleanupMemfs();
 }
 

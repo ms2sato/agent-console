@@ -3,9 +3,14 @@ import * as fs from 'fs';
 import { access } from 'fs/promises';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
-import { persistenceService } from './persistence-service.js';
 import { getRepositoryDir } from '../lib/config.js';
 import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
+import { createLogger } from '../lib/logger.js';
+import { initializeDatabase } from '../database/connection.js';
+import type { RepositoryRepository } from '../repositories/repository-repository.js';
+import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
+
+const logger = createLogger('repository-manager');
 
 /**
  * Extract org/repo from git remote URL
@@ -16,29 +21,55 @@ async function getOrgRepoFromPath(repoPath: string): Promise<string> {
   return orgRepo ?? path.basename(repoPath);
 }
 
+export interface RepositoryLifecycleCallbacks {
+  onRepositoryCreated: (repository: Repository) => void;
+  onRepositoryDeleted: (repositoryId: string) => void;
+}
+
 export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
+  private repository: RepositoryRepository;
+  private lifecycleCallbacks: RepositoryLifecycleCallbacks | null = null;
 
-  constructor() {
-    this.loadFromDisk();
+  /**
+   * Create a RepositoryManager instance with async initialization.
+   * This is the preferred way to create a RepositoryManager.
+   */
+  static async create(repository?: RepositoryRepository): Promise<RepositoryManager> {
+    const repo = repository ?? new SqliteRepositoryRepository(await initializeDatabase());
+    const manager = new RepositoryManager(repo);
+    await manager.initialize();
+    return manager;
   }
 
-  private loadFromDisk(): void {
-    const persisted = persistenceService.loadRepositories();
+  /**
+   * Private constructor - use RepositoryManager.create() for async initialization.
+   */
+  private constructor(repository: RepositoryRepository) {
+    this.repository = repository;
+  }
+
+  /**
+   * Set callbacks for repository lifecycle events (for WebSocket broadcasting)
+   */
+  setLifecycleCallbacks(callbacks: RepositoryLifecycleCallbacks): void {
+    this.lifecycleCallbacks = callbacks;
+  }
+
+  /**
+   * Initialize by loading repositories from the database.
+   */
+  private async initialize(): Promise<void> {
+    const persisted = await this.repository.findAll();
     for (const repo of persisted) {
       // Validate that the path still exists
       if (fs.existsSync(repo.path)) {
         this.repositories.set(repo.id, repo);
-        console.log(`Loaded repository: ${repo.name} (${repo.id})`);
+        logger.info({ repositoryId: repo.id, name: repo.name }, 'Loaded repository');
       } else {
-        console.log(`Skipped missing repository: ${repo.name} (${repo.path})`);
+        logger.warn({ repositoryId: repo.id, name: repo.name, path: repo.path }, 'Skipped missing repository');
       }
     }
-  }
-
-  private saveToDisk(): void {
-    const repos = Array.from(this.repositories.values());
-    persistenceService.saveRepositories(repos);
   }
 
   async registerRepository(repoPath: string): Promise<Repository> {
@@ -74,12 +105,16 @@ export class RepositoryManager {
       id,
       name,
       path: absolutePath,
-      registeredAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     };
 
     this.repositories.set(id, repository);
-    this.saveToDisk();
-    console.log(`Repository registered: ${name} (${id})`);
+    await this.repository.save(repository);
+    logger.info({ repositoryId: id, name }, 'Repository registered');
+
+    // Callback fires after successful save - clients will receive state update
+    // only after database write is confirmed
+    this.lifecycleCallbacks?.onRepositoryCreated(repository);
 
     return repository;
   }
@@ -92,8 +127,13 @@ export class RepositoryManager {
     await this.cleanupRepositoryData(repo.path);
 
     this.repositories.delete(id);
-    this.saveToDisk();
-    console.log(`Repository unregistered: ${repo.name} (${id})`);
+    await this.repository.delete(id);
+    logger.info({ repositoryId: id, name: repo.name }, 'Repository unregistered');
+
+    // Callback fires after successful delete - clients will receive state update
+    // only after database write is confirmed
+    this.lifecycleCallbacks?.onRepositoryDeleted(id);
+
     return true;
   }
 
@@ -108,9 +148,9 @@ export class RepositoryManager {
     if (fs.existsSync(repoDir)) {
       try {
         fs.rmSync(repoDir, { recursive: true });
-        console.log(`Cleaned up repository data: ${repoDir}`);
+        logger.info({ repoDir }, 'Cleaned up repository data');
       } catch (e) {
-        console.error(`Failed to clean up repository data: ${repoDir}`, e);
+        logger.error({ repoDir, err: e }, 'Failed to clean up repository data');
       }
     }
   }
@@ -134,5 +174,34 @@ export class RepositoryManager {
   }
 }
 
-// Singleton instance
-export const repositoryManager = new RepositoryManager();
+// Singleton with lazy async initialization
+let repositoryManagerInstance: RepositoryManager | null = null;
+let initializationPromise: Promise<RepositoryManager> | null = null;
+
+export async function getRepositoryManager(): Promise<RepositoryManager> {
+  if (repositoryManagerInstance) {
+    return repositoryManagerInstance;
+  }
+
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = RepositoryManager.create()
+    .then((manager) => {
+      repositoryManagerInstance = manager;
+      return manager;
+    })
+    .catch((error) => {
+      initializationPromise = null; // Allow retry on next call
+      throw error;
+    });
+
+  return initializationPromise;
+}
+
+// For testing: reset the singleton
+export function resetRepositoryManager(): void {
+  repositoryManagerInstance = null;
+  initializationPromise = null;
+}

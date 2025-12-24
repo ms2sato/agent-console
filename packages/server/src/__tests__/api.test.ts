@@ -10,16 +10,18 @@ import type {
   Worker,
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
-import { resetProcessMock } from './utils/mock-process-helper.js';
+import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
 import { MockPty } from './utils/mock-pty.js';
 import { mockGit } from './utils/mock-git-helper.js';
+
+// Set up test config directory BEFORE any service imports to ensure
+// services use the test config path when their modules are loaded
+const TEST_CONFIG_DIR = '/test/config';
+process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
 // =============================================================================
 // Infrastructure Mocks (must be before any service imports)
 // =============================================================================
-
-// Test config directory
-const TEST_CONFIG_DIR = '/test/config';
 
 // Track PTY instances
 const mockPtyInstances: MockPty[] = [];
@@ -43,6 +45,15 @@ const mockOpen = mock(async () => {});
 mock.module('open', () => ({
   default: mockOpen,
 }));
+
+// Note: We use the real database connection module with in-memory SQLite.
+// This avoids mock.module which applies globally and affects other test files.
+
+// Import singleton reset functions to ensure fresh state between tests
+import { resetRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager } from '../services/session-manager.js';
+import { resetAgentManager } from '../services/agent-manager.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 
 // =============================================================================
 // Test Setup
@@ -75,13 +86,19 @@ branch refs/heads/main
 }
 
 describe('API Routes Integration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Close any existing database connection and initialize fresh in-memory database
+    await closeDatabase();
+    await initializeDatabase(':memory:');
+
+    // Reset service singletons to ensure fresh state for each test
+    resetSessionManager();
+    resetRepositoryManager();
+    resetAgentManager();
+
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
-      [`${TEST_CONFIG_DIR}/agents.json`]: JSON.stringify([]),
-      [`${TEST_CONFIG_DIR}/sessions.json`]: JSON.stringify([]),
-      [`${TEST_CONFIG_DIR}/repositories.json`]: JSON.stringify([]),
       ...createMockGitRepoFiles(TEST_REPO_PATH),
       // Common test path used by session creation tests
       '/test/path/.keep': '',
@@ -112,7 +129,8 @@ describe('API Routes Integration', () => {
     setupDefaultGitMocks();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeDatabase();
     cleanupMemfs();
   });
 
@@ -248,7 +266,7 @@ describe('API Routes Integration', () => {
       it('should persist session to storage', async () => {
         const app = await createApp();
 
-        await app.request('/api/sessions', {
+        const createRes = await app.request('/api/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -257,11 +275,13 @@ describe('API Routes Integration', () => {
             agentId: CLAUDE_CODE_AGENT_ID,
           }),
         });
+        const { session } = (await createRes.json()) as { session: Session };
 
-        // Verify session was persisted
-        const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-        expect(savedData.length).toBe(1);
-        expect(savedData[0].locationPath).toBe('/test/path');
+        // Verify session was persisted by fetching it again
+        const getRes = await app.request(`/api/sessions/${session.id}`);
+        expect(getRes.status).toBe(200);
+        const body = (await getRes.json()) as { session: Session };
+        expect(body.session.locationPath).toBe('/test/path');
       });
 
       it('should return 400 for invalid JSON body', async () => {
@@ -1556,27 +1576,31 @@ describe('API Routes Integration', () => {
         });
         const { agent } = (await createAgentRes.json()) as { agent: AgentDefinition };
 
-        // Directly write an inactive session to persistence (not in memory)
-        const inactiveSession = {
+        // Mark a fake server as alive so the session won't be inherited by this server
+        const fakeServerPid = 99999;
+        mockProcess.markAlive(fakeServerPid);
+
+        // Directly write an inactive session to SQLite database (not in memory)
+        // Using a "live" serverPid means it belongs to another server (not inherited by this one)
+        const db = getDatabase();
+        const createdAt = new Date().toISOString();
+        await db.insertInto('sessions').values({
           id: 'inactive-session-1',
           type: 'quick',
-          locationPath: '/test/path',
-          serverPid: 99999,
-          createdAt: new Date().toISOString(),
+          location_path: '/test/path',
+          server_pid: fakeServerPid,
+          created_at: createdAt,
           title: 'Inactive Session',
-          workers: [{
-            id: 'worker-1',
-            type: 'agent',
-            name: 'Agent',
-            agentId: agent.id,
-            pid: 88888,
-            createdAt: new Date().toISOString(),
-          }],
-        };
-        fs.writeFileSync(
-          `${TEST_CONFIG_DIR}/sessions.json`,
-          JSON.stringify([inactiveSession])
-        );
+        }).execute();
+        await db.insertInto('workers').values({
+          id: 'worker-1',
+          session_id: 'inactive-session-1',
+          type: 'agent',
+          name: 'Agent',
+          agent_id: agent.id,
+          pid: 88888,
+          created_at: createdAt,
+        }).execute();
 
         // Try to delete the agent - should fail because of inactive session in persistence
         const deleteRes = await app.request(`/api/agents/${agent.id}`, {
@@ -1614,32 +1638,31 @@ describe('API Routes Integration', () => {
         });
         expect(sessionRes.status).toBe(201);
 
-        // Read the current persistence (which includes the active session)
-        const currentSessions = JSON.parse(
-          fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8')
-        );
+        // Mark a fake server as alive so the session won't be inherited by this server
+        const fakeServerPid = 99999;
+        mockProcess.markAlive(fakeServerPid);
 
-        // Add an inactive session to persistence (different ID, not in memory)
-        const inactiveSession = {
+        // Add an inactive session directly to SQLite database (different ID, not in memory)
+        // Using a "live" serverPid means it belongs to another server
+        const db = getDatabase();
+        const createdAt = new Date().toISOString();
+        await db.insertInto('sessions').values({
           id: 'inactive-session-2',
           type: 'quick',
-          locationPath: '/test/path',
-          serverPid: 99999,
-          createdAt: new Date().toISOString(),
+          location_path: '/test/path',
+          server_pid: fakeServerPid,
+          created_at: createdAt,
           title: 'Inactive Session',
-          workers: [{
-            id: 'worker-2',
-            type: 'agent',
-            name: 'Agent',
-            agentId: agent.id,
-            pid: 88888,
-            createdAt: new Date().toISOString(),
-          }],
-        };
-        fs.writeFileSync(
-          `${TEST_CONFIG_DIR}/sessions.json`,
-          JSON.stringify([...currentSessions, inactiveSession])
-        );
+        }).execute();
+        await db.insertInto('workers').values({
+          id: 'worker-2',
+          session_id: 'inactive-session-2',
+          type: 'agent',
+          name: 'Agent',
+          agent_id: agent.id,
+          pid: 88888,
+          created_at: createdAt,
+        }).execute();
 
         // Try to delete the agent - should show both active and inactive
         const deleteRes = await app.request(`/api/agents/${agent.id}`, {

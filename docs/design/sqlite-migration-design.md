@@ -692,10 +692,10 @@ private async persistSession(session: InternalSession): Promise<void> {
   - `restoreWorker()` - already async
   - `updateSessionMetadata()` - already async
 
-- [ ] Convert `initializeSessions()` to async or use sync initialization pattern:
+- [ ] Convert `initializeSessions()` to async with factory function pattern:
 
 ```typescript
-// Option A: Make async with factory function
+// Factory function for async initialization
 static async create(
   ptyProvider?: PtyProvider,
   pathExists?: (path: string) => Promise<boolean>,
@@ -710,10 +710,9 @@ private async initialize(): Promise<void> {
   await this.initializeSessions();
   await this.cleanupOrphanProcesses();
 }
-
-// Option B: Keep sync for JSON, async for SQLite later
-// JsonSessionRepository uses sync methods internally
 ```
+
+Note: The constructor becomes private or should not call initialization methods. Callers must use `SessionManager.create()` instead of `new SessionManager()`.
 
 - [ ] Replace all direct `persistenceService` calls with repository methods
 
@@ -768,14 +767,32 @@ api.delete('/sessions/:id', async (c) => {
 
 #### Step 6: Update session-validation-service.ts
 
-- [ ] Inject SessionRepository or access through SessionManager:
+- [ ] Inject `SessionRepository` directly into `SessionValidationService`:
 
 ```typescript
-// Option: Add getAllPersistedSessions() to SessionManager
-getAllPersistedSessions(): Promise<PersistedSession[]> {
-  return this.sessionRepository.findAll();
+// Before: Direct persistenceService access
+export class SessionValidationService {
+  async validateSessionExists(sessionId: string): Promise<PersistedSession> {
+    const sessions = persistenceService.loadSessions();
+    // ...
+  }
+}
+
+// After: Repository injection
+export class SessionValidationService {
+  constructor(private sessionRepository: SessionRepository) {}
+
+  async validateSessionExists(sessionId: string): Promise<PersistedSession> {
+    const session = await this.sessionRepository.findById(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+    return session;
+  }
 }
 ```
+
+- [ ] Update instantiation in routes or create singleton with default repository
 
 #### Step 7: Create Repository Tests
 

@@ -683,7 +683,7 @@ describe('AgentDefinitionSchema', () => {
     name: 'Test Agent',
     commandTemplate: 'test-cli {{prompt}}',
     isBuiltIn: false,
-    registeredAt: '2024-01-01T00:00:00Z',
+    createdAt: '2024-01-01T00:00:00Z',
     capabilities: {
       supportsContinue: false,
       supportsHeadlessMode: false,
@@ -792,9 +792,9 @@ describe('AgentDefinitionSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject agent with missing registeredAt', () => {
-    const { registeredAt, ...agentWithoutRegisteredAt } = validAgent;
-    const result = v.safeParse(AgentDefinitionSchema, agentWithoutRegisteredAt);
+  it('should reject agent with missing createdAt', () => {
+    const { createdAt, ...agentWithoutCreatedAt } = validAgent;
+    const result = v.safeParse(AgentDefinitionSchema, agentWithoutCreatedAt);
     expect(result.success).toBe(false);
   });
 });

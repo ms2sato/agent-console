@@ -39,7 +39,7 @@ describe('PersistenceService', () => {
           id: 'test-id-1',
           name: 'test-repo',
           path: '/path/to/repo',
-          registeredAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
         },
       ];
 
@@ -53,10 +53,10 @@ describe('PersistenceService', () => {
       const service = await getPersistenceService();
 
       const repos1 = [
-        { id: '1', name: 'repo1', path: '/path1', registeredAt: '2024-01-01T00:00:00.000Z' },
+        { id: '1', name: 'repo1', path: '/path1', createdAt: '2024-01-01T00:00:00.000Z' },
       ];
       const repos2 = [
-        { id: '2', name: 'repo2', path: '/path2', registeredAt: '2024-01-02T00:00:00.000Z' },
+        { id: '2', name: 'repo2', path: '/path2', createdAt: '2024-01-02T00:00:00.000Z' },
       ];
 
       service.saveRepositories(repos1);
@@ -238,7 +238,7 @@ describe('PersistenceService', () => {
       const service = await getPersistenceService();
 
       service.saveRepositories([
-        { id: '1', name: 'repo', path: '/path', registeredAt: '2024-01-01T00:00:00.000Z' },
+        { id: '1', name: 'repo', path: '/path', createdAt: '2024-01-01T00:00:00.000Z' },
       ]);
 
       // Check for temp files
@@ -253,7 +253,7 @@ describe('PersistenceService', () => {
       name: 'Test Agent',
       commandTemplate: 'test {{prompt}}',
       isBuiltIn: false,
-      registeredAt: '2024-01-01T00:00:00.000Z',
+      createdAt: '2024-01-01T00:00:00.000Z',
       capabilities: {
         supportsContinue: false,
         supportsHeadlessMode: false,
@@ -312,7 +312,7 @@ describe('PersistenceService', () => {
       // Write raw JSON with invalid agents directly to file
       const agentsFile = path.join(getTestConfigDir(), 'agents.json');
       const invalidAgents = [
-        { id: 'valid', name: 'Valid', commandTemplate: 'test {{prompt}}', isBuiltIn: false, registeredAt: '2024-01-01', capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false } },
+        { id: 'valid', name: 'Valid', commandTemplate: 'test {{prompt}}', isBuiltIn: false, createdAt: '2024-01-01', capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false } },
         { name: 'Missing ID', commandTemplate: 'test {{prompt}}' }, // Missing id
         { id: 'missing-name', commandTemplate: 'test {{prompt}}' }, // Missing name
         { id: 'missing-template', name: 'Missing Template' }, // Missing commandTemplate
@@ -340,7 +340,7 @@ describe('PersistenceService', () => {
           name: 'Valid Agent',
           commandTemplate: 'test {{prompt}}',
           isBuiltIn: false,
-          registeredAt: '2024-01-01',
+          createdAt: '2024-01-01',
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
         },
         {
@@ -348,7 +348,7 @@ describe('PersistenceService', () => {
           name: 'Invalid Regex Agent',
           commandTemplate: 'test {{prompt}}',
           isBuiltIn: false,
-          registeredAt: '2024-01-01',
+          createdAt: '2024-01-01',
           activityPatterns: {
             askingPatterns: ['[invalid regex'],
           },

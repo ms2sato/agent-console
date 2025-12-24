@@ -28,7 +28,7 @@ const mockAgent: AgentDefinition = {
   commandTemplate: 'test-cli {{prompt}}',
   headlessTemplate: 'test-cli -p --format text {{prompt}}',
   isBuiltIn: false,
-  registeredAt: new Date().toISOString(),
+  createdAt: new Date().toISOString(),
   capabilities: {
     supportsContinue: false,
     supportsHeadlessMode: true,
@@ -41,7 +41,7 @@ const mockAgentWithoutHeadless: AgentDefinition = {
   name: 'No Headless Agent',
   commandTemplate: 'no-headless-cli {{prompt}}',
   isBuiltIn: false,
-  registeredAt: new Date().toISOString(),
+  createdAt: new Date().toISOString(),
   capabilities: {
     supportsContinue: false,
     supportsHeadlessMode: false,

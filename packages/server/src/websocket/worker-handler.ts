@@ -1,6 +1,5 @@
 import type { WSContext } from 'hono/ws';
 import type { WorkerClientMessage } from '@agent-console/shared';
-import { sessionManager as defaultSessionManager } from '../services/session-manager.js';
 import { writeFileSync as defaultWriteFileSync, mkdirSync as defaultMkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir as defaultTmpdir } from 'node:os';
@@ -10,20 +9,25 @@ import { createLogger } from '../lib/logger.js';
 const logger = createLogger('worker-handler');
 
 /**
+ * SessionManager interface used by worker handler
+ */
+export interface WorkerHandlerSessionManager {
+  writeWorkerInput: (sessionId: string, workerId: string, data: string) => void;
+  resizeWorker: (sessionId: string, workerId: string, cols: number, rows: number) => void;
+}
+
+/**
  * Dependencies for worker handler (enables dependency injection for testing)
  */
 export interface WorkerHandlerDependencies {
-  sessionManager: {
-    writeWorkerInput: (sessionId: string, workerId: string, data: string) => void;
-    resizeWorker: (sessionId: string, workerId: string, cols: number, rows: number) => void;
-  };
+  sessionManager: WorkerHandlerSessionManager;
   writeFileSync: typeof defaultWriteFileSync;
   mkdirSync: typeof defaultMkdirSync;
   tmpdir: typeof defaultTmpdir;
 }
 
-const defaultDeps: WorkerHandlerDependencies = {
-  sessionManager: defaultSessionManager,
+// Default dependencies (sessionManager must be provided explicitly)
+const defaultDeps: Omit<WorkerHandlerDependencies, 'sessionManager'> = {
   writeFileSync: defaultWriteFileSync,
   mkdirSync: defaultMkdirSync,
   tmpdir: defaultTmpdir,
@@ -93,9 +97,12 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
 }
 
 /**
- * Create a worker message handler with the given dependencies
+ * Create a worker message handler with the given dependencies.
+ * sessionManager is required - use getSessionManager() to obtain it.
  */
-export function createWorkerMessageHandler(deps: Partial<WorkerHandlerDependencies> = {}) {
+export function createWorkerMessageHandler(
+  deps: Pick<WorkerHandlerDependencies, 'sessionManager'> & Partial<Omit<WorkerHandlerDependencies, 'sessionManager'>>
+) {
   const { sessionManager, writeFileSync, mkdirSync, tmpdir } = { ...defaultDeps, ...deps };
 
   // Directory for storing uploaded images
@@ -162,10 +169,18 @@ export function createWorkerMessageHandler(deps: Partial<WorkerHandlerDependenci
           const filename = `${randomUUID()}.${ext}`;
           const filePath = join(IMAGE_UPLOAD_DIR, filename);
 
+          // SECURITY: Validate base64 format before decoding
+          // Buffer.from() tolerates invalid characters, so we need stricter validation
+          const normalizedData = parsed.data.replace(/\s+/g, '');
+          if (!/^[0-9A-Za-z+/]+={0,2}$/.test(normalizedData)) {
+            logger.warn({ sessionId, workerId }, 'Invalid base64 characters in image data');
+            break;
+          }
+
           // Decode base64 and validate actual size
           let buffer: Buffer;
           try {
-            buffer = Buffer.from(parsed.data, 'base64');
+            buffer = Buffer.from(normalizedData, 'base64');
           } catch {
             logger.warn({ sessionId, workerId }, 'Invalid base64 data');
             break;
@@ -190,6 +205,3 @@ export function createWorkerMessageHandler(deps: Partial<WorkerHandlerDependenci
     }
   };
 }
-
-// Default handler for backward compatibility
-export const handleWorkerMessage = createWorkerMessageHandler();

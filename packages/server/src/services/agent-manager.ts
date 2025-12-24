@@ -5,9 +5,11 @@ import {
   type UpdateAgentRequest,
   computeCapabilities,
 } from '@agent-console/shared';
-import { persistenceService } from './persistence-service.js';
 import { claudeCodeAgent, CLAUDE_CODE_AGENT_ID } from './agents/claude-code.js';
 import { createLogger } from '../lib/logger.js';
+import { initializeDatabase } from '../database/connection.js';
+import type { AgentRepository } from '../repositories/agent-repository.js';
+import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.js';
 
 const logger = createLogger('agent-manager');
 
@@ -23,9 +25,24 @@ export interface AgentLifecycleCallbacks {
 export class AgentManager {
   private agents: Map<string, AgentDefinition> = new Map();
   private lifecycleCallbacks: AgentLifecycleCallbacks | null = null;
+  private repository: AgentRepository;
 
-  constructor() {
-    this.initialize();
+  /**
+   * Create an AgentManager instance with async initialization.
+   * This is the preferred way to create an AgentManager.
+   */
+  static async create(repository?: AgentRepository): Promise<AgentManager> {
+    const repo = repository ?? new SqliteAgentRepository(await initializeDatabase());
+    const manager = new AgentManager(repo);
+    await manager.initialize();
+    return manager;
+  }
+
+  /**
+   * Private constructor - use AgentManager.create() for async initialization.
+   */
+  private constructor(repository: AgentRepository) {
+    this.repository = repository;
   }
 
   /**
@@ -38,12 +55,12 @@ export class AgentManager {
   /**
    * Initialize agent manager - load from persistence and ensure built-in agents exist
    */
-  private initialize(): void {
+  private async initialize(): Promise<void> {
     // Always register built-in agent first
     this.agents.set(CLAUDE_CODE_AGENT_ID, claudeCodeAgent);
 
     // Load custom agents from persistence
-    const customAgents = persistenceService.loadAgents();
+    const customAgents = await this.repository.findAll();
     for (const agent of customAgents) {
       // Skip if it's the built-in agent (already loaded)
       if (agent.isBuiltIn) {
@@ -79,7 +96,7 @@ export class AgentManager {
   /**
    * Register a new custom agent
    */
-  registerAgent(request: CreateAgentRequest): AgentDefinition {
+  async registerAgent(request: CreateAgentRequest): Promise<AgentDefinition> {
     const id = uuidv4();
     const now = new Date().toISOString();
 
@@ -91,7 +108,7 @@ export class AgentManager {
       headlessTemplate: request.headlessTemplate,
       description: request.description,
       isBuiltIn: false,
-      registeredAt: now,
+      createdAt: now,
       activityPatterns: request.activityPatterns,
     };
 
@@ -100,12 +117,16 @@ export class AgentManager {
       capabilities: computeCapabilities(agentBase),
     };
 
+    // Write to repository FIRST - if this fails, in-memory state remains unchanged
+    await this.repository.save(agent);
+
+    // Update in-memory map only after successful persistence
     this.agents.set(id, agent);
-    this.persistAgents();
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent registered');
 
-    // Notify lifecycle callbacks
+    // Callback fires after successful save - clients will receive state update
+    // only after database write is confirmed
     this.lifecycleCallbacks?.onAgentCreated(agent);
 
     return agent;
@@ -114,7 +135,7 @@ export class AgentManager {
   /**
    * Update an existing agent
    */
-  updateAgent(id: string, request: UpdateAgentRequest): AgentDefinition | null {
+  async updateAgent(id: string, request: UpdateAgentRequest): Promise<AgentDefinition | null> {
     const existing = this.agents.get(id);
     if (!existing) {
       return null;
@@ -155,12 +176,16 @@ export class AgentManager {
       capabilities: computeCapabilities(agentBaseWithoutCapabilities),
     };
 
+    // Write to repository FIRST - if this fails, in-memory state remains unchanged
+    await this.repository.save(updated);
+
+    // Update in-memory map only after successful persistence
     this.agents.set(id, updated);
-    this.persistAgents();
 
     logger.info({ agentId: id, agentName: updated.name }, 'Agent updated');
 
-    // Notify lifecycle callbacks
+    // Callback fires after successful save - clients will receive state update
+    // only after database write is confirmed
     this.lifecycleCallbacks?.onAgentUpdated(updated);
 
     return updated;
@@ -169,7 +194,7 @@ export class AgentManager {
   /**
    * Unregister (delete) an agent
    */
-  unregisterAgent(id: string): boolean {
+  async unregisterAgent(id: string): Promise<boolean> {
     const agent = this.agents.get(id);
     if (!agent) {
       return false;
@@ -181,34 +206,50 @@ export class AgentManager {
       return false;
     }
 
+    // Delete from repository FIRST - if this fails, in-memory state remains unchanged
+    await this.repository.delete(id);
+
+    // Update in-memory map only after successful persistence
     this.agents.delete(id);
-    this.persistAgents();
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent unregistered');
 
-    // Notify lifecycle callbacks
+    // Callback fires after successful delete - clients will receive state update
+    // only after database write is confirmed
     this.lifecycleCallbacks?.onAgentDeleted(id);
 
     return true;
   }
-
-  /**
-   * Persist all custom agents to storage
-   */
-  private persistAgents(): void {
-    const customAgents: AgentDefinition[] = [];
-
-    for (const agent of this.agents.values()) {
-      // Don't persist built-in agents
-      if (agent.isBuiltIn) {
-        continue;
-      }
-      customAgents.push(agent);
-    }
-
-    persistenceService.saveAgents(customAgents);
-  }
 }
 
-// Singleton instance
-export const agentManager = new AgentManager();
+// Singleton with lazy async initialization
+let agentManagerInstance: AgentManager | null = null;
+let initializationPromise: Promise<AgentManager> | null = null;
+
+export async function getAgentManager(): Promise<AgentManager> {
+  if (agentManagerInstance) {
+    return agentManagerInstance;
+  }
+
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = AgentManager.create()
+    .then((manager) => {
+      agentManagerInstance = manager;
+      return manager;
+    })
+    .catch((error) => {
+      initializationPromise = null; // Allow retry on next call
+      throw error;
+    });
+
+  return initializationPromise;
+}
+
+// For testing: reset the singleton
+export function resetAgentManager(): void {
+  agentManagerInstance = null;
+  initializationPromise = null;
+}

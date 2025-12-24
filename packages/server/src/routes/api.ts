@@ -32,13 +32,12 @@ import {
   UpdateAgentRequestSchema,
   SystemOpenRequestSchema,
 } from '@agent-console/shared';
-import { sessionManager } from '../services/session-manager.js';
-import { repositoryManager } from '../services/repository-manager.js';
+import { getSessionManager } from '../services/session-manager.js';
+import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
-import { agentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
+import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
-import { sessionValidationService } from '../services/session-validation-service.js';
-import { persistenceService } from '../services/persistence-service.js';
+import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
@@ -66,34 +65,27 @@ api.get('/config', (c) => {
 
 // Validate all sessions
 api.get('/sessions/validate', async (c) => {
-  const response = await sessionValidationService.validateAllSessions();
+  const sessionManager = await getSessionManager();
+  const validationService = createSessionValidationService(sessionManager.getSessionRepository());
+  const response = await validationService.validateAllSessions();
   return c.json(response);
 });
 
 // Delete an invalid session (removes from persistence without trying to stop workers)
-api.delete('/sessions/:id/invalid', (c) => {
+api.delete('/sessions/:id/invalid', async (c) => {
   const sessionId = c.req.param('id');
-
-  // Try to delete via sessionManager first (handles active sessions)
-  const deleted = sessionManager.deleteSession(sessionId);
-  if (deleted) {
-    return c.json({ success: true });
-  }
-
-  // If not found in sessionManager, try direct removal from persistence
-  // This handles orphaned sessions that exist only in sessions.json
-  const metadata = persistenceService.getSessionMetadata(sessionId);
-  if (!metadata) {
+  const sessionManager = await getSessionManager();
+  const deleted = await sessionManager.forceDeleteSession(sessionId);
+  if (!deleted) {
     throw new NotFoundError('Session');
   }
-
-  persistenceService.removeSession(sessionId);
   return c.json({ success: true });
 });
 
 // Get a single session
-api.get('/sessions/:id', (c) => {
+api.get('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
+  const sessionManager = await getSessionManager();
 
   // First check if session is active
   const session = sessionManager.getSession(sessionId);
@@ -102,7 +94,7 @@ api.get('/sessions/:id', (c) => {
   }
 
   // Check persisted metadata for inactive sessions
-  const metadata = sessionManager.getSessionMetadata(sessionId);
+  const metadata = await sessionManager.getSessionMetadata(sessionId);
   if (metadata) {
     // Return persisted data with inactive status
     return c.json({
@@ -126,15 +118,17 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
     throw new ValidationError(validation.error || 'Invalid path');
   }
 
+  const sessionManager = await getSessionManager();
   const session = await sessionManager.createSession(body);
 
   return c.json({ session }, 201);
 });
 
 // Delete a session
-api.delete('/sessions/:id', (c) => {
+api.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const success = sessionManager.deleteSession(sessionId);
+  const sessionManager = await getSessionManager();
+  const success = await sessionManager.deleteSession(sessionId);
 
   if (!success) {
     throw new NotFoundError('Session');
@@ -158,6 +152,7 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
     updates.branch = branch.trim();
   }
 
+  const sessionManager = await getSessionManager();
   const result = await sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
@@ -175,8 +170,9 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
 });
 
 // Get workers for a session
-api.get('/sessions/:sessionId/workers', (c) => {
+api.get('/sessions/:sessionId/workers', async (c) => {
   const sessionId = c.req.param('sessionId');
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -189,6 +185,7 @@ api.get('/sessions/:sessionId/workers', (c) => {
 // Get branches for a session's repository
 api.get('/sessions/:sessionId/branches', async (c) => {
   const sessionId = c.req.param('sessionId');
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -204,6 +201,7 @@ api.get('/sessions/:sessionId/commits', async (c) => {
   const sessionId = c.req.param('sessionId');
   const baseRef = c.req.query('base');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -223,6 +221,7 @@ api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema)
   const sessionId = c.req.param('sessionId');
   const body = getValidatedBody<CreateWorkerRequest>(c);
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -241,16 +240,17 @@ api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema)
 });
 
 // Delete a worker
-api.delete('/sessions/:sessionId/workers/:workerId', (c) => {
+api.delete('/sessions/:sessionId/workers/:workerId', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
   }
 
-  const success = sessionManager.deleteWorker(sessionId, workerId);
+  const success = await sessionManager.deleteWorker(sessionId, workerId);
   if (!success) {
     throw new NotFoundError('Worker');
   }
@@ -265,7 +265,8 @@ api.post('/sessions/:sessionId/workers/:workerId/restart', validateBody(RestartW
   const body = getValidatedBody<RestartWorkerRequest>(c);
   const { continueConversation = false } = body;
 
-  const worker = sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
+  const sessionManager = await getSessionManager();
+  const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
 
   if (!worker) {
     throw new NotFoundError('Worker');
@@ -279,6 +280,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -309,6 +311,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
     throw new ValidationError('path query parameter is required');
   }
 
+  const sessionManager = await getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -331,6 +334,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
 
 // Get all repositories
 api.get('/repositories', async (c) => {
+  const repositoryManager = await getRepositoryManager();
   const repositories = repositoryManager.getAllRepositories();
   const repositoriesWithRemote = await Promise.all(repositories.map(withRepositoryRemote));
   return c.json({ repositories: repositoriesWithRemote });
@@ -339,6 +343,7 @@ api.get('/repositories', async (c) => {
 // Redirect to repository GitHub URL
 api.get('/repositories/:id/github', async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -365,6 +370,7 @@ api.get('/repositories/:id/github', async (c) => {
 api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c) => {
   const body = getValidatedBody<CreateRepositoryRequest>(c);
   const { path } = body;
+  const repositoryManager = await getRepositoryManager();
 
   try {
     const repository = await repositoryManager.registerRepository(path);
@@ -379,9 +385,45 @@ api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c)
 // Unregister a repository
 api.delete('/repositories/:id', async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
+
+  // Check if repository exists
+  const repo = repositoryManager.getRepository(repoId);
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  // Check if any active sessions use this repository
+  const sessionManager = await getSessionManager();
+  const activeSessions = sessionManager.getSessionsUsingRepository(repoId);
+  const activeSessionIds = new Set(activeSessions.map(s => s.id));
+
+  // Also check persisted (inactive) sessions
+  const persistedSessions = await sessionManager.getAllPersistedSessions();
+  const inactiveSessions = persistedSessions.filter(ps =>
+    !activeSessionIds.has(ps.id) &&
+    ps.type === 'worktree' && ps.repositoryId === repoId
+  );
+
+  const totalCount = activeSessions.length + inactiveSessions.length;
+  if (totalCount > 0) {
+    const activeNames = activeSessions.map(s => s.title || s.id);
+    const inactiveNames = inactiveSessions.map(s => s.title || s.id);
+    const allNames = [...activeNames, ...inactiveNames].join(', ');
+
+    const details = activeSessions.length > 0 && inactiveSessions.length > 0
+      ? ` (${activeSessions.length} active, ${inactiveSessions.length} inactive)`
+      : activeSessions.length > 0 ? ' (active)' : ' (inactive)';
+
+    throw new ConflictError(
+      `Repository is in use by ${totalCount} session(s)${details}: ${allNames}`
+    );
+  }
+
   const success = await repositoryManager.unregisterRepository(repoId);
 
   if (!success) {
+    // Repository was likely deleted between the check and unregister (race condition)
     throw new NotFoundError('Repository');
   }
 
@@ -391,6 +433,7 @@ api.delete('/repositories/:id', async (c) => {
 // Get worktrees for a repository
 api.get('/repositories/:id/worktrees', async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -404,6 +447,7 @@ api.get('/repositories/:id/worktrees', async (c) => {
 // Fetch a GitHub issue for a repository
 api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestSchema), async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -424,6 +468,7 @@ api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestS
 // Create a worktree
 api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema), async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -440,6 +485,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
 
   // Get the agent for branch name generation (if prompt mode)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
+  const agentManager = await getAgentManager();
   const agent = agentManager.getAgent(selectedAgentId);
   if (!agent) {
     throw new ValidationError(`Agent not found: ${selectedAgentId}`);
@@ -490,6 +536,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
+    const sessionManager = await getSessionManager();
     session = await sessionManager.createSession({
       type: 'worktree',
       repositoryId: repoId,
@@ -507,6 +554,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
 // Delete a worktree
 api.delete('/repositories/:id/worktrees/*', async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -549,10 +597,11 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   }
 
   // Worktree deletion succeeded - now clean up any associated sessions
+  const sessionManager = await getSessionManager();
   const sessions = sessionManager.getAllSessions();
   for (const session of sessions) {
     if (session.locationPath === worktreePath) {
-      sessionManager.deleteSession(session.id);
+      await sessionManager.deleteSession(session.id);
     }
   }
 
@@ -562,6 +611,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
 // Get branches for a repository
 api.get('/repositories/:id/branches', async (c) => {
   const repoId = c.req.param('id');
+  const repositoryManager = await getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -573,14 +623,16 @@ api.get('/repositories/:id/branches', async (c) => {
 });
 
 // Get all agents
-api.get('/agents', (c) => {
+api.get('/agents', async (c) => {
+  const agentManager = await getAgentManager();
   const agents = agentManager.getAllAgents();
   return c.json({ agents });
 });
 
 // Get a single agent
-api.get('/agents/:id', (c) => {
+api.get('/agents/:id', async (c) => {
   const agentId = c.req.param('id');
+  const agentManager = await getAgentManager();
   const agent = agentManager.getAgent(agentId);
 
   if (!agent) {
@@ -593,8 +645,9 @@ api.get('/agents/:id', (c) => {
 // Register a new agent
 api.post('/agents', validateBody(CreateAgentRequestSchema), async (c) => {
   const body = getValidatedBody<CreateAgentRequest>(c);
+  const agentManager = await getAgentManager();
 
-  const agent = agentManager.registerAgent(body);
+  const agent = await agentManager.registerAgent(body);
 
   return c.json({ agent }, 201);
 });
@@ -603,8 +656,9 @@ api.post('/agents', validateBody(CreateAgentRequestSchema), async (c) => {
 api.patch('/agents/:id', validateBody(UpdateAgentRequestSchema), async (c) => {
   const agentId = c.req.param('id');
   const body = getValidatedBody<UpdateAgentRequest>(c);
+  const agentManager = await getAgentManager();
 
-  const agent = agentManager.updateAgent(agentId, body);
+  const agent = await agentManager.updateAgent(agentId, body);
 
   if (!agent) {
     throw new NotFoundError('Agent');
@@ -614,8 +668,9 @@ api.patch('/agents/:id', validateBody(UpdateAgentRequestSchema), async (c) => {
 });
 
 // Delete an agent
-api.delete('/agents/:id', (c) => {
+api.delete('/agents/:id', async (c) => {
   const agentId = c.req.param('id');
+  const agentManager = await getAgentManager();
 
   // Check if agent exists
   const agent = agentManager.getAgent(agentId);
@@ -629,11 +684,12 @@ api.delete('/agents/:id', (c) => {
   }
 
   // Check if agent is in use by any active sessions
+  const sessionManager = await getSessionManager();
   const activeSessions = sessionManager.getSessionsUsingAgent(agentId);
   const activeSessionIds = new Set(activeSessions.map(s => s.id));
 
   // Also check persisted (inactive) sessions
-  const persistedSessions = persistenceService.loadSessions();
+  const persistedSessions = await sessionManager.getAllPersistedSessions();
   const inactiveSessions = persistedSessions.filter(ps =>
     !activeSessionIds.has(ps.id) &&
     ps.workers.some(w => w.type === 'agent' && w.agentId === agentId)
@@ -654,7 +710,7 @@ api.delete('/agents/:id', (c) => {
     );
   }
 
-  const success = agentManager.unregisterAgent(agentId);
+  const success = await agentManager.unregisterAgent(agentId);
 
   if (!success) {
     // Agent was likely deleted between the check and unregister (race condition)

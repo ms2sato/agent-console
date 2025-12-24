@@ -255,6 +255,24 @@ function DashboardPage() {
     queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
   }, [queryClient]);
 
+  // Handle initial repository sync from WebSocket
+  const handleRepositoriesSync = useCallback(() => {
+    console.log('[Sync] Repositories sync received');
+    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+  }, [queryClient]);
+
+  // Handle new repository created
+  const handleRepositoryCreated = useCallback(() => {
+    console.log('[Repository] Created');
+    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+  }, [queryClient]);
+
+  // Handle repository deleted
+  const handleRepositoryDeleted = useCallback(() => {
+    console.log('[Repository] Deleted');
+    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+  }, [queryClient]);
+
   // Handle real-time activity updates via WebSocket
   // Note: ActivityDetector handles debouncing and sticky state transitions server-side
   const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -354,6 +372,9 @@ function DashboardPage() {
     onAgentCreated: handleAgentCreated,
     onAgentUpdated: handleAgentUpdated,
     onAgentDeleted: handleAgentDeleted,
+    onRepositoriesSync: handleRepositoriesSync,
+    onRepositoryCreated: handleRepositoryCreated,
+    onRepositoryDeleted: handleRepositoryDeleted,
   });
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 

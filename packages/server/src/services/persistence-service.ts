@@ -15,7 +15,7 @@ export interface PersistedRepository {
   id: string;
   name: string;
   path: string;
-  registeredAt: string;
+  createdAt: string;
 }
 
 // Base for all persisted workers
@@ -46,7 +46,8 @@ export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | P
 interface PersistedSessionBase {
   id: string;
   locationPath: string;
-  serverPid: number;
+  /** Server process ID that owns this session (undefined for orphaned sessions) */
+  serverPid?: number;
   createdAt: string;
   workers: PersistedWorker[];
   initialPrompt?: string;

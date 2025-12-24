@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { access } from 'fs/promises';
 import type {
@@ -12,18 +13,17 @@ import type {
   CreateSessionRequest,
   CreateWorkerParams,
 } from '@agent-console/shared';
-import {
-  persistenceService,
-  type PersistedSession,
-  type PersistedWorker,
-  type PersistedAgentWorker,
-  type PersistedTerminalWorker,
-  type PersistedGitDiffWorker,
+import type {
+  PersistedSession,
+  PersistedWorker,
+  PersistedAgentWorker,
+  PersistedTerminalWorker,
+  PersistedGitDiffWorker,
 } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
-import { agentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv } from './env-filter.js';
-import { getServerPid } from '../lib/config.js';
+import { getConfigDir, getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
@@ -39,6 +39,8 @@ import {
 } from './git-diff-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import type { SessionRepository } from '../repositories/index.js';
+import { createSessionRepository, JsonSessionRepository } from '../repositories/index.js';
 
 const logger = createLogger('session-manager');
 
@@ -139,18 +141,60 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private ptyProvider: PtyProvider;
   private pathExists: (path: string) => Promise<boolean>;
+  private sessionRepository: SessionRepository;
 
-  constructor(
-    ptyProvider: PtyProvider = bunPtyProvider,
-    pathExists: (path: string) => Promise<boolean> = defaultPathExists
-  ) {
-    this.ptyProvider = ptyProvider;
-    this.pathExists = pathExists;
-    // First load sessions into memory, then cleanup orphans from OTHER dead servers
-    // Order matters: initializeSessions must run before cleanupOrphanProcesses
-    // to avoid deleting sessions that should be inherited by this server
-    this.initializeSessions();
-    this.cleanupOrphanProcesses();
+  /**
+   * Options for creating a SessionManager instance.
+   */
+  static readonly defaultOptions = {
+    ptyProvider: bunPtyProvider,
+    pathExists: defaultPathExists,
+  };
+
+  /**
+   * Create a SessionManager instance with async initialization.
+   * This is the preferred way to create a SessionManager.
+   */
+  static async create(options?: {
+    ptyProvider?: PtyProvider;
+    pathExists?: (path: string) => Promise<boolean>;
+    sessionRepository?: SessionRepository;
+  }): Promise<SessionManager> {
+    const manager = new SessionManager(options);
+    await manager.initialize();
+    return manager;
+  }
+
+  /**
+   * Private constructor - use SessionManager.create() for async initialization.
+   * The constructor is only public for backward compatibility during migration.
+   */
+  constructor(options?: {
+    ptyProvider?: PtyProvider;
+    pathExists?: (path: string) => Promise<boolean>;
+    sessionRepository?: SessionRepository;
+  }) {
+    this.ptyProvider = options?.ptyProvider ?? bunPtyProvider;
+    this.pathExists = options?.pathExists ?? defaultPathExists;
+    this.sessionRepository = options?.sessionRepository ??
+      new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+  }
+
+  /**
+   * Get the session repository used by this manager.
+   * Useful for creating services that need to access session persistence directly.
+   */
+  getSessionRepository(): SessionRepository {
+    return this.sessionRepository;
+  }
+
+  /**
+   * Initialize sessions from persistence and clean up orphan processes.
+   * Called by SessionManager.create() factory method.
+   */
+  private async initialize(): Promise<void> {
+    await this.initializeSessions();
+    await this.cleanupOrphanProcesses();
   }
 
   /**
@@ -159,8 +203,8 @@ export class SessionManager {
    * Sessions owned by other live servers are left untouched.
    * Also kills orphan worker processes from inherited sessions.
    */
-  private initializeSessions(): void {
-    const persistedSessions = persistenceService.loadSessions();
+  private async initializeSessions(): Promise<void> {
+    const persistedSessions = await this.sessionRepository.findAll();
     const currentServerPid = getServerPid();
     const sessionsToSave: PersistedSession[] = [];
     let inheritedCount = 0;
@@ -245,7 +289,7 @@ export class SessionManager {
 
     // Save all sessions (inherited with updated PID, others unchanged)
     if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
-      persistenceService.saveSessions(sessionsToSave);
+      await this.sessionRepository.saveAll(sessionsToSave);
     }
 
     logger.info({
@@ -274,8 +318,8 @@ export class SessionManager {
    * Sessions that have been loaded into this.sessions (by initializeSessions) are preserved.
    * Only sessions from OTHER dead servers are considered orphans.
    */
-  private cleanupOrphanProcesses(): void {
-    const persistedSessions = persistenceService.loadSessions();
+  private async cleanupOrphanProcesses(): Promise<void> {
+    const persistedSessions = await this.sessionRepository.findAll();
     const currentServerPid = getServerPid();
     let killedCount = 0;
     let preservedCount = 0;
@@ -330,7 +374,7 @@ export class SessionManager {
     // Remove orphan sessions from persistence and delete output files
     if (orphanSessionIds.length > 0) {
       for (const sessionId of orphanSessionIds) {
-        persistenceService.removeSession(sessionId);
+        await this.sessionRepository.delete(sessionId);
         // Also delete output files for orphan session (fire-and-forget)
         void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
           logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
@@ -411,11 +455,11 @@ export class SessionManager {
     return session ? this.toPublicSession(session) : undefined;
   }
 
-  getSessionMetadata(id: string): PersistedSession | undefined {
-    return persistenceService.getSessionMetadata(id);
+  async getSessionMetadata(id: string): Promise<PersistedSession | null> {
+    return this.sessionRepository.findById(id);
   }
 
-  deleteSession(id: string): boolean {
+  async deleteSession(id: string): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
 
@@ -441,7 +485,7 @@ export class SessionManager {
     });
 
     this.sessions.delete(id);
-    persistenceService.removeSession(id);
+    await this.sessionRepository.delete(id);
     logger.info({ sessionId: id }, 'Session deleted');
 
     this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
@@ -451,6 +495,39 @@ export class SessionManager {
 
   getAllSessions(): Session[] {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
+  }
+
+  /**
+   * Force delete a session, whether it's in memory or only in persistence.
+   * Used for orphaned sessions that exist only in sessions.json.
+   * @returns true if session was deleted, false if not found
+   */
+  async forceDeleteSession(id: string): Promise<boolean> {
+    // Try in-memory first (handles active sessions)
+    const deleted = await this.deleteSession(id);
+    if (deleted) {
+      return true;
+    }
+
+    // Check persistence for orphaned session
+    const persisted = await this.sessionRepository.findById(id);
+    if (persisted) {
+      await this.sessionRepository.delete(id);
+      // Broadcast deletion to connected clients
+      this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
+      logger.info({ sessionId: id }, 'Orphaned session deleted from persistence');
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get all persisted sessions from the repository.
+   * Useful for checking inactive sessions.
+   */
+  async getAllPersistedSessions(): Promise<PersistedSession[]> {
+    return this.sessionRepository.findAll();
   }
 
   /**
@@ -472,6 +549,22 @@ export class SessionManager {
     return matchingSessions;
   }
 
+  /**
+   * Get all active sessions that belong to the specified repository.
+   * Used to check if a repository can be safely deleted.
+   */
+  getSessionsUsingRepository(repositoryId: string): Session[] {
+    const matchingSessions: Session[] = [];
+
+    for (const session of this.sessions.values()) {
+      if (session.type === 'worktree' && session.repositoryId === repositoryId) {
+        matchingSessions.push(this.toPublicSession(session));
+      }
+    }
+
+    return matchingSessions;
+  }
+
   async createWorker(
     sessionId: string,
     request: CreateWorkerParams,
@@ -484,12 +577,12 @@ export class SessionManager {
     const workerId = uuidv4();
     const createdAt = new Date().toISOString();
     const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
-    const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
+    const workerName = request.name ?? await this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
 
     if (request.type === 'agent') {
-      worker = this.initializeAgentWorker({
+      worker = await this.initializeAgentWorker({
         id: workerId,
         name: workerName,
         createdAt,
@@ -518,7 +611,7 @@ export class SessionManager {
     }
 
     session.workers.set(workerId, worker);
-    this.persistSession(session);
+    await this.persistSession(session);
 
     logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
 
@@ -562,12 +655,13 @@ export class SessionManager {
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
       // SECURITY: Verify agentId is still valid
+      const agentManager = await getAgentManager();
       const agent = agentManager.getAgent(worker.agentId);
       if (!agent) {
         logger.warn({ sessionId, workerId, agentId: worker.agentId }, 'Agent no longer valid, falling back to default');
       }
 
-      this.activateAgentWorkerPty(worker, {
+      await this.activateAgentWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
         agentId: agent ? worker.agentId : CLAUDE_CODE_AGENT_ID,
@@ -580,13 +674,13 @@ export class SessionManager {
       });
     }
 
-    this.persistSession(session);
+    await this.persistSession(session);
     logger.info({ workerId, sessionId, workerType: worker.type }, 'Worker PTY activated');
 
     return worker;
   }
 
-  deleteWorker(sessionId: string, workerId: string): boolean {
+  async deleteWorker(sessionId: string, workerId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
@@ -613,15 +707,16 @@ export class SessionManager {
     }
 
     session.workers.delete(workerId);
-    this.persistSession(session);
+    await this.persistSession(session);
 
     logger.info({ workerId, sessionId }, 'Worker deleted');
     return true;
   }
 
-  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): string {
+  private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): Promise<string> {
     if (type === 'agent') {
       // Get agent name from agentManager
+      const agentManager = await getAgentManager();
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
       // Fall back to generic "AI" if agent not found
       return agent?.name ?? 'AI';
@@ -641,7 +736,7 @@ export class SessionManager {
     return `Terminal ${count + 1}`;
   }
 
-  private initializeAgentWorker(params: {
+  private async initializeAgentWorker(params: {
     id: string;
     name: string;
     createdAt: string;
@@ -650,10 +745,11 @@ export class SessionManager {
     agentId: string;
     continueConversation: boolean;
     initialPrompt?: string;
-  }): InternalAgentWorker {
+  }): Promise<InternalAgentWorker> {
     const { id, name, createdAt, sessionId, locationPath, agentId, continueConversation, initialPrompt } = params;
 
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
+    const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
     // Select the appropriate template based on whether we're continuing a conversation
@@ -794,7 +890,7 @@ export class SessionManager {
    * Activate PTY for an existing agent worker (after server restart).
    * Mutates the worker object to add pty and activityDetector.
    */
-  private activateAgentWorkerPty(
+  private async activateAgentWorkerPty(
     worker: InternalAgentWorker,
     params: {
       sessionId: string;
@@ -803,7 +899,7 @@ export class SessionManager {
       continueConversation: boolean;
       initialPrompt?: string;
     }
-  ): void {
+  ): Promise<void> {
     // Idempotent: If PTY already active, skip (prevents resource leaks from concurrent activations)
     if (worker.pty !== null) {
       logger.debug({ workerId: worker.id, existingPid: worker.pty.pid }, 'Agent worker PTY already active, skipping activation');
@@ -812,6 +908,7 @@ export class SessionManager {
 
     const { sessionId, locationPath, agentId, continueConversation, initialPrompt } = params;
 
+    const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(agentId) ?? agentManager.getDefaultAgent();
 
     // Select the appropriate template based on whether we're continuing a conversation
@@ -1048,11 +1145,11 @@ export class SessionManager {
     return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
   }
 
-  restartAgentWorker(
+  async restartAgentWorker(
     sessionId: string,
     workerId: string,
     continueConversation: boolean
-  ): Worker | null {
+  ): Promise<Worker | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -1068,7 +1165,7 @@ export class SessionManager {
     }
 
     // Create new worker with same ID, preserving original createdAt for tab order
-    const newWorker = this.initializeAgentWorker({
+    const newWorker = await this.initializeAgentWorker({
       id: workerId,
       name: existingWorker.name,
       createdAt: existingWorker.createdAt,
@@ -1079,7 +1176,7 @@ export class SessionManager {
     });
 
     session.workers.set(workerId, newWorker);
-    this.persistSession(session);
+    await this.persistSession(session);
 
     logger.info({ workerId, sessionId, continueConversation }, 'Agent worker restarted');
 
@@ -1118,13 +1215,14 @@ export class SessionManager {
     // Activate PTY for the worker
     if (existingWorker.type === 'agent') {
       // SECURITY: Verify agentId is still valid before activating
+      const agentManager = await getAgentManager();
       const agent = agentManager.getAgent(existingWorker.agentId);
       const effectiveAgentId = agent ? existingWorker.agentId : CLAUDE_CODE_AGENT_ID;
       if (!agent) {
         logger.warn({ sessionId, workerId, originalAgentId: existingWorker.agentId, fallbackAgentId: effectiveAgentId }, 'Agent no longer valid, falling back to default');
       }
 
-      this.activateAgentWorkerPty(existingWorker, {
+      await this.activateAgentWorkerPty(existingWorker, {
         sessionId,
         locationPath: session.locationPath,
         agentId: effectiveAgentId,
@@ -1136,7 +1234,7 @@ export class SessionManager {
       });
     }
 
-    this.persistSession(session);
+    await this.persistSession(session);
 
     logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');
 
@@ -1162,13 +1260,21 @@ export class SessionManager {
 
     if (!session) {
       // Check persisted metadata for inactive sessions
-      const metadata = persistenceService.getSessionMetadata(sessionId);
+      const metadata = await this.sessionRepository.findById(sessionId);
       if (!metadata) {
         return { success: false, error: 'session_not_found' };
       }
 
-      // For inactive sessions, only branch rename is supported (no restart possible)
-      // Title update for inactive sessions is not supported yet
+      // For inactive sessions, title update is supported via database persistence
+      if (updates.title !== undefined) {
+        await this.sessionRepository.save({
+          ...metadata,
+          title: updates.title,
+        });
+        return { success: true, title: updates.title };
+      }
+
+      // For inactive sessions, branch rename is also supported (no restart possible)
       if (updates.branch) {
         if (metadata.type !== 'worktree') {
           return { success: false, error: 'Can only rename branch for worktree sessions' };
@@ -1178,6 +1284,13 @@ export class SessionManager {
 
         try {
           await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
+
+          // Persist the updated branch name (worktreeId) for inactive sessions
+          await this.sessionRepository.save({
+            ...metadata,
+            worktreeId: updates.branch,
+          });
+
           return { success: true, branch: updates.branch };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1208,7 +1321,7 @@ export class SessionManager {
         // Automatically restart agent worker to pick up new branch name
         const agentWorker = Array.from(session.workers.values()).find(w => w.type === 'agent');
         if (agentWorker) {
-          this.restartAgentWorker(sessionId, agentWorker.id, true);
+          await this.restartAgentWorker(sessionId, agentWorker.id, true);
           logger.info({ workerId: agentWorker.id, sessionId }, 'Agent worker auto-restarted after branch rename');
         }
       } catch (error) {
@@ -1217,7 +1330,7 @@ export class SessionManager {
       }
     }
 
-    this.persistSession(session);
+    await this.persistSession(session);
 
     // Broadcast session update via WebSocket
     this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
@@ -1240,19 +1353,9 @@ export class SessionManager {
     return this.updateSessionMetadata(sessionId, { branch: newBranch });
   }
 
-  private persistSession(session: InternalSession): void {
-    const sessions = persistenceService.loadSessions();
-    const existingIdx = sessions.findIndex(s => s.id === session.id);
-
+  private async persistSession(session: InternalSession): Promise<void> {
     const persisted = this.toPersistedSession(session);
-
-    if (existingIdx >= 0) {
-      sessions[existingIdx] = persisted;
-    } else {
-      sessions.push(persisted);
-    }
-
-    persistenceService.saveSessions(sessions);
+    await this.sessionRepository.save(persisted);
   }
 
   private toPersistedSession(session: InternalSession): PersistedSession {
@@ -1428,5 +1531,45 @@ export class SessionManager {
   }
 }
 
-// Singleton instance
-export const sessionManager = new SessionManager();
+// Create singleton with lazy initialization
+let sessionManagerInstance: SessionManager | null = null;
+let sessionManagerPromise: Promise<SessionManager> | null = null;
+
+export async function getSessionManager(): Promise<SessionManager> {
+  if (sessionManagerInstance) {
+    return sessionManagerInstance;
+  }
+
+  if (sessionManagerPromise) {
+    return sessionManagerPromise;
+  }
+
+  sessionManagerPromise = (async () => {
+    // Use createSessionRepository() to auto-select SQLite or JSON based on environment
+    const sessionRepository = await createSessionRepository();
+    const manager = await SessionManager.create({ sessionRepository });
+    sessionManagerInstance = manager;
+    return manager;
+  })().catch((error) => {
+    sessionManagerPromise = null; // Allow retry on next call
+    throw error;
+  });
+
+  return sessionManagerPromise;
+}
+
+// For testing: reset the singleton
+export function resetSessionManager(): void {
+  sessionManagerInstance = null;
+  sessionManagerPromise = null;
+}
+
+// @deprecated - Use getSessionManager() instead
+// This proxy throws an error to catch any remaining usages that need to be migrated
+export const sessionManager: SessionManager = new Proxy({} as SessionManager, {
+  get(_target, prop) {
+    throw new Error(
+      `sessionManager.${String(prop)} is deprecated. Use getSessionManager() instead.`
+    );
+  },
+});

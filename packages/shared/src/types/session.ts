@@ -1,6 +1,16 @@
 import type { Worker, AgentActivityState } from './worker.js';
 import type { AgentDefinition } from './agent.js';
 
+// Forward declaration of Repository to avoid circular dependency
+// The full type is defined in @agent-console/shared/src/index.ts
+interface Repository {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+  remoteUrl?: string;
+}
+
 // Re-export schema-derived types
 export type {
   CreateWorktreeSessionRequest,
@@ -110,6 +120,9 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'agent-created': 7,
   'agent-updated': 8,
   'agent-deleted': 9,
+  'repositories-sync': 10,
+  'repository-created': 11,
+  'repository-deleted': 12,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -126,7 +139,10 @@ export type AppServerMessage =
   | { type: 'agents-sync'; agents: AgentDefinition[] }
   | { type: 'agent-created'; agent: AgentDefinition }
   | { type: 'agent-updated'; agent: AgentDefinition }
-  | { type: 'agent-deleted'; agentId: string };
+  | { type: 'agent-deleted'; agentId: string }
+  | { type: 'repositories-sync'; repositories: Repository[] }
+  | { type: 'repository-created'; repository: Repository }
+  | { type: 'repository-deleted'; repositoryId: string };
 
 /**
  * Valid message types for AppClientMessage.

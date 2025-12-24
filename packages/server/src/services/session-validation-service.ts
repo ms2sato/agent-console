@@ -5,10 +5,8 @@ import type {
   SessionValidationIssue,
   SessionsValidationResponse,
 } from '@agent-console/shared';
-import {
-  persistenceService,
-  type PersistedSession,
-} from './persistence-service.js';
+import type { PersistedSession } from './persistence-service.js';
+import type { SessionRepository } from '../repositories/session-repository.js';
 import { gitRefExists } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -23,6 +21,8 @@ const logger = createLogger('session-validation');
  * 3. For worktree sessions: worktreeId (branch) exists
  */
 export class SessionValidationService {
+  constructor(private sessionRepository: SessionRepository) {}
+
   /**
    * Validate a single session
    */
@@ -70,7 +70,7 @@ export class SessionValidationService {
    * Validate all persisted sessions
    */
   async validateAllSessions(): Promise<SessionsValidationResponse> {
-    const persistedSessions = persistenceService.loadSessions();
+    const persistedSessions = await this.sessionRepository.findAll();
     const results: SessionValidationResult[] = [];
 
     for (const session of persistedSessions) {
@@ -137,5 +137,8 @@ export class SessionValidationService {
   }
 }
 
-// Singleton instance
-export const sessionValidationService = new SessionValidationService();
+// Factory function to create validation service with the proper repository
+// Use this with getSessionManager() to get the correct repository
+export function createSessionValidationService(sessionRepository: SessionRepository): SessionValidationService {
+  return new SessionValidationService(sessionRepository);
+}

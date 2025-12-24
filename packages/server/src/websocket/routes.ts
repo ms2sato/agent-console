@@ -8,9 +8,10 @@ import type {
 } from '@agent-console/shared';
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
-import { sessionManager } from '../services/session-manager.js';
-import { agentManager } from '../services/agent-manager.js';
-import { handleWorkerMessage } from './worker-handler.js';
+import { getSessionManager } from '../services/session-manager.js';
+import { getAgentManager } from '../services/agent-manager.js';
+import { getRepositoryManager } from '../services/repository-manager.js';
+import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -63,69 +64,93 @@ function broadcastToApp(msg: AppServerMessage): void {
   }
 }
 
-// Set up global activity callback to broadcast to all app clients
-sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
-  broadcastToApp({
-    type: 'worker-activity',
-    sessionId,
-    workerId,
-    activityState: state,
-  });
-});
-
-// Set up session lifecycle callbacks to broadcast to all app clients
-sessionManager.setSessionLifecycleCallbacks({
-  onSessionCreated: (session) => {
-    logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
-    broadcastToApp({ type: 'session-created', session });
-  },
-  onSessionUpdated: (session) => {
-    logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
-    broadcastToApp({ type: 'session-updated', session });
-  },
-  onSessionDeleted: (sessionId) => {
-    logger.debug({ sessionId }, 'Broadcasting session-deleted');
-    broadcastToApp({ type: 'session-deleted', sessionId });
-  },
-});
-
-// Set up agent lifecycle callbacks to broadcast to all app clients
-agentManager.setLifecycleCallbacks({
-  onAgentCreated: (agent) => {
-    logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
-    broadcastToApp({ type: 'agent-created', agent });
-  },
-  onAgentUpdated: (agent) => {
-    logger.debug({ agentId: agent.id }, 'Broadcasting agent-updated');
-    broadcastToApp({ type: 'agent-updated', agent });
-  },
-  onAgentDeleted: (agentId) => {
-    logger.debug({ agentId }, 'Broadcasting agent-deleted');
-    broadcastToApp({ type: 'agent-deleted', agentId });
-  },
-});
-
-// Create app message handler with dependencies
-const handleAppMessage = createAppMessageHandler({
-  getAllSessions: () => sessionManager.getAllSessions(),
-  getWorkerActivityState: (sessionId, workerId) => sessionManager.getWorkerActivityState(sessionId, workerId),
-  logger,
-});
-
-// Create dependency object for sendSessionsSync
-const appDeps = {
-  getAllSessions: () => sessionManager.getAllSessions(),
-  getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
-  logger,
-};
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
-export function setupWebSocketRoutes(
+export async function setupWebSocketRoutes(
   app: Hono,
   upgradeWebSocket: UpgradeWebSocketFn
 ) {
+  // Get properly initialized SessionManager (with SQLite repository)
+  const sessionManager = await getSessionManager();
+
+  // Create worker message handler with the properly initialized sessionManager
+  const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
+
+  // Set up global activity callback to broadcast to all app clients
+  sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
+    broadcastToApp({
+      type: 'worker-activity',
+      sessionId,
+      workerId,
+      activityState: state,
+    });
+  });
+
+  // Set up session lifecycle callbacks to broadcast to all app clients
+  sessionManager.setSessionLifecycleCallbacks({
+    onSessionCreated: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-created');
+      broadcastToApp({ type: 'session-created', session });
+    },
+    onSessionUpdated: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-updated');
+      broadcastToApp({ type: 'session-updated', session });
+    },
+    onSessionDeleted: (sessionId) => {
+      logger.debug({ sessionId }, 'Broadcasting session-deleted');
+      broadcastToApp({ type: 'session-deleted', sessionId });
+    },
+  });
+
+  // Set up agent lifecycle callbacks to broadcast to all app clients
+  const agentManager = await getAgentManager();
+  agentManager.setLifecycleCallbacks({
+    onAgentCreated: (agent) => {
+      logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
+      broadcastToApp({ type: 'agent-created', agent });
+    },
+    onAgentUpdated: (agent) => {
+      logger.debug({ agentId: agent.id }, 'Broadcasting agent-updated');
+      broadcastToApp({ type: 'agent-updated', agent });
+    },
+    onAgentDeleted: (agentId) => {
+      logger.debug({ agentId }, 'Broadcasting agent-deleted');
+      broadcastToApp({ type: 'agent-deleted', agentId });
+    },
+  });
+
+  // Set up repository lifecycle callbacks to broadcast to all app clients
+  const repositoryManager = await getRepositoryManager();
+  repositoryManager.setLifecycleCallbacks({
+    onRepositoryCreated: (repository) => {
+      logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
+      broadcastToApp({ type: 'repository-created', repository });
+    },
+    onRepositoryDeleted: (repositoryId) => {
+      logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
+      broadcastToApp({ type: 'repository-deleted', repositoryId });
+    },
+  });
+
+  // Create dependency object for app handlers
+  const appDeps = {
+    getAllSessions: () => sessionManager.getAllSessions(),
+    getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
+    getAllAgents: async () => {
+      const agentManager = await getAgentManager();
+      return agentManager.getAllAgents();
+    },
+    getAllRepositories: async () => {
+      const repositoryManager = await getRepositoryManager();
+      return repositoryManager.getAllRepositories();
+    },
+    logger,
+  };
+
+  // Create app message handler with dependencies
+  const handleAppMessage = createAppMessageHandler(appDeps);
+
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',
@@ -134,23 +159,35 @@ export function setupWebSocketRoutes(
         onOpen(_event: unknown, ws: WSContext) {
           logger.info('App WebSocket connected, sending initial sync');
 
-          // Send current state of all sessions on connect
-          // IMPORTANT: Send sync BEFORE adding to appClients to prevent race condition
-          // where a session-created broadcast arrives before sessions-sync
-          sendSessionsSync(ws, appDeps);
-
-          // Send current state of all agents
-          const allAgents = agentManager.getAllAgents();
-          const agentsSyncMsg: AppServerMessage = {
-            type: 'agents-sync',
-            agents: allAgents,
-          };
-          ws.send(JSON.stringify(agentsSyncMsg));
-          logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
-
-          // Add to broadcast list AFTER sending sync to ensure correct message ordering
-          appClients.add(ws);
-          logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
+          // Wait for ALL sync operations to complete before adding to appClients
+          // This prevents race conditions where broadcasts arrive before initial sync
+          Promise.all([
+            sendSessionsSync(ws, appDeps),
+            getAgentManager().then((agentManager) => {
+              const allAgents = agentManager.getAllAgents();
+              const agentsSyncMsg: AppServerMessage = {
+                type: 'agents-sync',
+                agents: allAgents,
+              };
+              ws.send(JSON.stringify(agentsSyncMsg));
+              logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
+            }),
+            getRepositoryManager().then((repositoryManager) => {
+              const allRepositories = repositoryManager.getAllRepositories();
+              const repositoriesSyncMsg: AppServerMessage = {
+                type: 'repositories-sync',
+                repositories: allRepositories,
+              };
+              ws.send(JSON.stringify(repositoriesSyncMsg));
+              logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
+            }),
+          ]).then(() => {
+            // Add to broadcast list AFTER all sync messages sent
+            appClients.add(ws);
+            logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
+          }).catch((err) => {
+            logger.error({ err }, 'Failed to send initial sync');
+          });
         },
         onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
           handleAppMessage(ws, event.data);
