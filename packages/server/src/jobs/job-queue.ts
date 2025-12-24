@@ -129,6 +129,13 @@ export interface JobQueueTestAPI {
 // JobQueue Class
 // =============================================================================
 
+/**
+ * Local Job Queue with SQLite persistence.
+ *
+ * This queue manages concurrency in-memory and is designed for single Node.js/Bun
+ * process deployments. It is not suitable for multi-process or distributed scenarios.
+ * For distributed job processing, consider external job queue systems like BullMQ.
+ */
 export class JobQueue {
   private db: Database;
   private handlers = new Map<string, JobHandler>();
