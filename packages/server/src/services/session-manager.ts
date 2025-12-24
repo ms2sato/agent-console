@@ -1564,6 +1564,15 @@ export class SessionManager {
 let sessionManagerInstance: SessionManager | null = null;
 let sessionManagerPromise: Promise<SessionManager> | null = null;
 
+/**
+ * Get the singleton SessionManager, creating and initializing it on first call.
+ *
+ * Creates and initializes a SessionManager backed by an auto-selected session repository,
+ * caches the instance for subsequent calls, and attempts to lazily inject the job queue if available.
+ * If initialization fails, the cached initialization promise is cleared to allow retries on subsequent calls.
+ *
+ * @returns The initialized singleton SessionManager instance
+ */
 export async function getSessionManager(): Promise<SessionManager> {
   if (sessionManagerInstance) {
     return sessionManagerInstance;

@@ -194,6 +194,13 @@ export class RepositoryManager {
 let repositoryManagerInstance: RepositoryManager | null = null;
 let initializationPromise: Promise<RepositoryManager> | null = null;
 
+/**
+ * Get the singleton RepositoryManager, creating and initializing it on first call.
+ *
+ * If a global job queue is available during initialization, it will be injected into the manager.
+ *
+ * @returns The initialized singleton RepositoryManager instance
+ */
 export async function getRepositoryManager(): Promise<RepositoryManager> {
   if (repositoryManagerInstance) {
     return repositoryManagerInstance;

@@ -63,6 +63,16 @@ interface JobResponse {
   completedAt: number | null;
 }
 
+/**
+ * Convert a JobRecord database row into a JobResponse suitable for API output.
+ *
+ * Parses the job's payload string as JSON. If parsing fails, the payload is set to
+ * an object containing `_parseError: true` and `raw` with the original payload string;
+ * a warning is also logged in that case.
+ *
+ * @param job - The database JobRecord to transform
+ * @returns The transformed JobResponse with camelCase fields and a parsed payload
+ */
 function toJobResponse(job: JobRecord): JobResponse {
   let parsedPayload: unknown;
   try {

@@ -14,9 +14,11 @@ const logger = createLogger('job-queue-instance');
 let jobQueueInstance: JobQueue | null = null;
 
 /**
- * Get the singleton JobQueue instance.
- * Creates the instance on first call using the database path from getConfigDir().
- * @returns The JobQueue instance
+ * Return the singleton JobQueue, creating it on first access.
+ *
+ * The instance is initialized using the application's config directory database file (`data.db`) with a concurrency of 4.
+ *
+ * @returns The singleton JobQueue instance
  */
 export function getJobQueue(): JobQueue {
   if (!jobQueueInstance) {
@@ -28,9 +30,9 @@ export function getJobQueue(): JobQueue {
 }
 
 /**
- * Reset the singleton JobQueue instance.
- * Used for testing to ensure test isolation.
- * Stops the queue and closes the database connection before resetting.
+ * Reset the module-level JobQueue singleton.
+ *
+ * Stops the queue, closes its database connection, and clears the singleton reference; no-op if the queue was not initialized.
  */
 export async function resetJobQueue(): Promise<void> {
   if (jobQueueInstance) {
@@ -42,8 +44,9 @@ export async function resetJobQueue(): Promise<void> {
 }
 
 /**
- * Check if JobQueue has been initialized.
- * Useful for conditional operations that depend on job queue availability.
+ * Determines whether the JobQueue singleton has been initialized.
+ *
+ * @returns `true` if the JobQueue instance exists, `false` otherwise.
  */
 export function isJobQueueInitialized(): boolean {
   return jobQueueInstance !== null;
