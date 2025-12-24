@@ -41,6 +41,7 @@ import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { createSessionRepository, JsonSessionRepository } from '../repositories/index.js';
+import type { JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('session-manager');
 
@@ -142,6 +143,7 @@ export class SessionManager {
   private ptyProvider: PtyProvider;
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
+  private jobQueue: JobQueue | null = null;
 
   /**
    * Options for creating a SessionManager instance.
@@ -159,6 +161,7 @@ export class SessionManager {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
+    jobQueue?: JobQueue | null;
   }): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
@@ -173,11 +176,21 @@ export class SessionManager {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
+    jobQueue?: JobQueue | null;
   }) {
     this.ptyProvider = options?.ptyProvider ?? bunPtyProvider;
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+    this.jobQueue = options?.jobQueue ?? null;
+  }
+
+  /**
+   * Set the job queue for background task processing.
+   * Can be called after construction to inject the job queue.
+   */
+  setJobQueue(jobQueue: JobQueue): void {
+    this.jobQueue = jobQueue;
   }
 
   /**
@@ -375,10 +388,14 @@ export class SessionManager {
     if (orphanSessionIds.length > 0) {
       for (const sessionId of orphanSessionIds) {
         await this.sessionRepository.delete(sessionId);
-        // Also delete output files for orphan session (fire-and-forget)
-        void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
-          logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
-        });
+        // Delete output files for orphan session (via job queue if available)
+        if (this.jobQueue) {
+          this.jobQueue.enqueue('cleanup:session-outputs', { sessionId });
+        } else {
+          void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
+            logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
+          });
+        }
         logger.info({ sessionId }, 'Removed orphan session from persistence');
       }
     }
@@ -479,10 +496,14 @@ export class SessionManager {
       }
     }
 
-    // Delete all output files for this session (fire-and-forget)
-    void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
-      logger.error({ sessionId: id, err }, 'Failed to delete session output files');
-    });
+    // Delete all output files for this session (via job queue if available)
+    if (this.jobQueue) {
+      this.jobQueue.enqueue('cleanup:session-outputs', { sessionId: id });
+    } else {
+      void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
+        logger.error({ sessionId: id, err }, 'Failed to delete session output files');
+      });
+    }
 
     this.sessions.delete(id);
     await this.sessionRepository.delete(id);
@@ -691,16 +712,24 @@ export class SessionManager {
     if (worker.type === 'agent') {
       if (worker.pty) worker.pty.kill();
       if (worker.activityDetector) worker.activityDetector.dispose();
-      // Delete output file (fire-and-forget)
-      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-      });
+      // Delete output file (via job queue if available)
+      if (this.jobQueue) {
+        this.jobQueue.enqueue('cleanup:worker-output', { sessionId, workerId });
+      } else {
+        void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+          logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+        });
+      }
     } else if (worker.type === 'terminal') {
       if (worker.pty) worker.pty.kill();
-      // Delete output file (fire-and-forget)
-      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-      });
+      // Delete output file (via job queue if available)
+      if (this.jobQueue) {
+        this.jobQueue.enqueue('cleanup:worker-output', { sessionId, workerId });
+      } else {
+        void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+          logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+        });
+      }
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);
@@ -1549,6 +1578,17 @@ export async function getSessionManager(): Promise<SessionManager> {
     const sessionRepository = await createSessionRepository();
     const manager = await SessionManager.create({ sessionRepository });
     sessionManagerInstance = manager;
+
+    // Inject job queue if available (lazy import to avoid circular dependency)
+    try {
+      const { isJobQueueInitialized, getJobQueue } = await import('../jobs/index.js');
+      if (isJobQueueInitialized()) {
+        manager.setJobQueue(getJobQueue());
+      }
+    } catch (error) {
+      logger.debug({ err: error }, 'Job queue not available, continuing without it');
+    }
+
     return manager;
   })().catch((error) => {
     sessionManagerPromise = null; // Allow retry on next call

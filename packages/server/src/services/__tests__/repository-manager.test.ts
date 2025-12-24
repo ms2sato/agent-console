@@ -75,7 +75,7 @@ describe('RepositoryManager', () => {
     // Pre-populate the repository before creating the manager
     mockRepository.setRepositories(preloadedRepos);
     const module = await import(`../repository-manager.js?v=${++importCounter}`);
-    return module.RepositoryManager.create(mockRepository);
+    return module.RepositoryManager.create({ repository: mockRepository });
   }
 
   describe('registerRepository', () => {

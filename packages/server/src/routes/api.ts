@@ -42,6 +42,52 @@ import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
+import { getJobQueue, type JobRecord } from '../jobs/index.js';
+
+/**
+ * Transform a JobRecord from database format (snake_case) to API response format (camelCase).
+ * Also parses the payload JSON string.
+ */
+interface JobResponse {
+  id: string;
+  type: string;
+  payload: unknown;
+  status: string;
+  priority: number;
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt: number;
+  lastError: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+}
+
+function toJobResponse(job: JobRecord): JobResponse {
+  let parsedPayload: unknown;
+  try {
+    parsedPayload = JSON.parse(job.payload);
+  } catch (error) {
+    // Log warning and include parse error indicator for debugging
+    console.warn(`Failed to parse job payload for job ${job.id}:`, error);
+    parsedPayload = { _parseError: true, raw: job.payload };
+  }
+
+  return {
+    id: job.id,
+    type: job.type,
+    payload: parsedPayload,
+    status: job.status,
+    priority: job.priority,
+    attempts: job.attempts,
+    maxAttempts: job.max_attempts,
+    nextRetryAt: job.next_retry_at,
+    lastError: job.last_error,
+    createdAt: job.created_at,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+  };
+}
 
 const api = new Hono();
 
@@ -748,6 +794,108 @@ api.post('/system/open', validateBody(SystemOpenRequestSchema), async (c) => {
     const message = error instanceof Error ? error.message : 'Failed to open path';
     throw new ValidationError(message);
   }
+});
+
+// ===========================================================================
+// Job Queue Management
+// ===========================================================================
+
+// Get jobs with optional filtering and pagination
+api.get('/jobs', (c) => {
+  const status = c.req.query('status') as 'pending' | 'processing' | 'completed' | 'stalled' | undefined;
+  const type = c.req.query('type');
+  const limitParam = c.req.query('limit');
+  const offsetParam = c.req.query('offset');
+
+  const limit = limitParam ? parseInt(limitParam, 10) : 50;
+  const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+
+  // Validate limit and offset
+  if (isNaN(limit) || limit < 1 || limit > 1000) {
+    throw new ValidationError('limit must be a number between 1 and 1000');
+  }
+  if (isNaN(offset) || offset < 0) {
+    throw new ValidationError('offset must be a non-negative number');
+  }
+
+  const jobQueue = getJobQueue();
+  const jobs = jobQueue.getJobs({ status, type, limit, offset });
+  const total = jobQueue.countJobs({ status, type });
+
+  return c.json({
+    jobs: jobs.map(toJobResponse),
+    total,
+  });
+});
+
+// Get job statistics
+api.get('/jobs/stats', (c) => {
+  const jobQueue = getJobQueue();
+  const stats = jobQueue.getStats();
+  return c.json(stats);
+});
+
+// Get a single job by ID
+api.get('/jobs/:id', (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+  const job = jobQueue.getJob(jobId);
+
+  if (!job) {
+    throw new NotFoundError('Job');
+  }
+
+  return c.json(toJobResponse(job));
+});
+
+// Retry a stalled job
+api.post('/jobs/:id/retry', (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+
+  // Check if job exists first
+  const job = jobQueue.getJob(jobId);
+  if (!job) {
+    throw new NotFoundError('Job');
+  }
+
+  // retryJob only works on stalled jobs
+  if (job.status !== 'stalled') {
+    throw new ValidationError('Only stalled jobs can be retried');
+  }
+
+  const success = jobQueue.retryJob(jobId);
+  if (!success) {
+    // This shouldn't happen since we checked status above, but handle it anyway
+    throw new NotFoundError('Job');
+  }
+
+  return c.json({ success: true });
+});
+
+// Cancel a pending or stalled job
+api.delete('/jobs/:id', (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+
+  // Check if job exists first
+  const job = jobQueue.getJob(jobId);
+  if (!job) {
+    throw new NotFoundError('Job');
+  }
+
+  // cancelJob only works on pending or stalled jobs
+  if (job.status !== 'pending' && job.status !== 'stalled') {
+    throw new ValidationError('Only pending or stalled jobs can be canceled');
+  }
+
+  const success = jobQueue.cancelJob(jobId);
+  if (!success) {
+    // This shouldn't happen since we checked status above, but handle it anyway
+    throw new NotFoundError('Job');
+  }
+
+  return c.json({ success: true });
 });
 
 export { api };
