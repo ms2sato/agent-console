@@ -8,7 +8,7 @@ import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
-import type { JobQueue } from '../jobs/index.js';
+import { JOB_TYPES, isJobQueueInitialized, getJobQueue, type JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('repository-manager');
 
@@ -159,7 +159,7 @@ export class RepositoryManager {
 
     // Clean up entire repository directory (via job queue if available)
     if (this.jobQueue) {
-      this.jobQueue.enqueue('cleanup:repository', { repoDir });
+      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
     } else if (fs.existsSync(repoDir)) {
       try {
         fs.rmSync(repoDir, { recursive: true });
@@ -203,17 +203,12 @@ export async function getRepositoryManager(): Promise<RepositoryManager> {
   }
 
   initializationPromise = RepositoryManager.create()
-    .then(async (manager) => {
+    .then((manager) => {
       repositoryManagerInstance = manager;
 
-      // Inject job queue if available (lazy import to avoid circular dependency)
-      try {
-        const { isJobQueueInitialized, getJobQueue } = await import('../jobs/index.js');
-        if (isJobQueueInitialized()) {
-          manager.setJobQueue(getJobQueue());
-        }
-      } catch (error) {
-        logger.debug({ err: error }, 'Job queue not available, continuing without it');
+      // Inject job queue if initialized
+      if (isJobQueueInitialized()) {
+        manager.setJobQueue(getJobQueue());
       }
 
       return manager;

@@ -86,10 +86,15 @@ try {
 }
 
 // Initialize job queue after database initialization
-const jobQueue = getJobQueue();
-registerJobHandlers(jobQueue);
-await jobQueue.start();
-logger.info('JobQueue initialized and started');
+try {
+  const jobQueue = getJobQueue();
+  registerJobHandlers(jobQueue);
+  await jobQueue.start();
+  logger.info('JobQueue initialized and started');
+} catch (error) {
+  logger.fatal({ err: error }, 'Failed to initialize job queue');
+  process.exit(1);
+}
 
 // Setup WebSocket routes AFTER database initialization but BEFORE SPA fallback
 // This ensures SessionManager uses the properly initialized SQLite repository

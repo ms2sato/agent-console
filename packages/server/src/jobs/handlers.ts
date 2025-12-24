@@ -1,39 +1,21 @@
 /**
  * Job handlers for the local job queue.
  *
- * Registers handlers for background cleanup operations:
- * - cleanup:session-outputs - Delete all output files for a session
- * - cleanup:worker-output - Delete output file for a single worker
- * - cleanup:repository - Remove repository data directory
+ * Registers handlers for background cleanup operations.
+ * See job-types.ts for available job types and their payloads.
  */
 import * as fs from 'fs/promises';
 import type { JobQueue } from './job-queue.js';
+import {
+  JOB_TYPES,
+  type CleanupSessionOutputsPayload,
+  type CleanupWorkerOutputPayload,
+  type CleanupRepositoryPayload,
+} from './job-types.js';
 import { workerOutputFileManager } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('job-handlers');
-
-/**
- * Payload for cleanup:session-outputs job.
- */
-interface CleanupSessionOutputsPayload {
-  sessionId: string;
-}
-
-/**
- * Payload for cleanup:worker-output job.
- */
-interface CleanupWorkerOutputPayload {
-  sessionId: string;
-  workerId: string;
-}
-
-/**
- * Payload for cleanup:repository job.
- */
-interface CleanupRepositoryPayload {
-  repoDir: string;
-}
 
 /**
  * Register all job handlers with the job queue.
@@ -42,7 +24,7 @@ interface CleanupRepositoryPayload {
 export function registerJobHandlers(jobQueue: JobQueue): void {
   // Handler for deleting all output files for a session
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
-    'cleanup:session-outputs',
+    JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
     async ({ sessionId }) => {
       logger.debug({ sessionId }, 'Executing cleanup:session-outputs job');
       await workerOutputFileManager.deleteSessionOutputs(sessionId);
@@ -52,7 +34,7 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
 
   // Handler for deleting output file for a single worker
   jobQueue.registerHandler<CleanupWorkerOutputPayload>(
-    'cleanup:worker-output',
+    JOB_TYPES.CLEANUP_WORKER_OUTPUT,
     async ({ sessionId, workerId }) => {
       logger.debug({ sessionId, workerId }, 'Executing cleanup:worker-output job');
       await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId);
@@ -62,11 +44,10 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
 
   // Handler for removing repository data directory
   jobQueue.registerHandler<CleanupRepositoryPayload>(
-    'cleanup:repository',
+    JOB_TYPES.CLEANUP_REPOSITORY,
     async ({ repoDir }) => {
       logger.debug({ repoDir }, 'Executing cleanup:repository job');
       try {
-        await fs.access(repoDir);
         await fs.rm(repoDir, { recursive: true });
         logger.info({ repoDir }, 'Repository data cleanup completed');
       } catch (error) {

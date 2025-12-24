@@ -42,7 +42,10 @@ import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
-import { getJobQueue, type JobRecord } from '../jobs/index.js';
+import { createLogger } from '../lib/logger.js';
+import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
+
+const logger = createLogger('api');
 
 /**
  * Transform a JobRecord from database format (snake_case) to API response format (camelCase).
@@ -69,7 +72,7 @@ function toJobResponse(job: JobRecord): JobResponse {
     parsedPayload = JSON.parse(job.payload);
   } catch (error) {
     // Log warning and include parse error indicator for debugging
-    console.warn(`Failed to parse job payload for job ${job.id}:`, error);
+    logger.warn({ jobId: job.id, err: error }, 'Failed to parse job payload');
     parsedPayload = { _parseError: true, raw: job.payload };
   }
 
@@ -802,10 +805,19 @@ api.post('/system/open', validateBody(SystemOpenRequestSchema), async (c) => {
 
 // Get jobs with optional filtering and pagination
 api.get('/jobs', (c) => {
-  const status = c.req.query('status') as 'pending' | 'processing' | 'completed' | 'stalled' | undefined;
+  const statusParam = c.req.query('status');
   const type = c.req.query('type');
   const limitParam = c.req.query('limit');
   const offsetParam = c.req.query('offset');
+
+  // Validate status parameter
+  let status: JobStatus | undefined;
+  if (statusParam) {
+    if (!JOB_STATUSES.includes(statusParam as JobStatus)) {
+      throw new ValidationError(`status must be one of: ${JOB_STATUSES.join(', ')}`);
+    }
+    status = statusParam as JobStatus;
+  }
 
   const limit = limitParam ? parseInt(limitParam, 10) : 50;
   const offset = offsetParam ? parseInt(offsetParam, 10) : 0;

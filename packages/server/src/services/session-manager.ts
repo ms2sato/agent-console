@@ -40,7 +40,7 @@ import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { createSessionRepository, JsonSessionRepository } from '../repositories/index.js';
-import type { JobQueue } from '../jobs/index.js';
+import { JOB_TYPES, isJobQueueInitialized, getJobQueue, type JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('session-manager');
 
@@ -190,6 +190,20 @@ export class SessionManager {
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
+  }
+
+  /**
+   * Clean up worker output file via job queue or direct deletion.
+   * Used by deleteWorker and other cleanup operations.
+   */
+  private cleanupWorkerOutput(sessionId: string, workerId: string): void {
+    if (this.jobQueue) {
+      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
+    } else {
+      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
+      });
+    }
   }
 
   /**
@@ -389,7 +403,7 @@ export class SessionManager {
         await this.sessionRepository.delete(sessionId);
         // Delete output files for orphan session (via job queue if available)
         if (this.jobQueue) {
-          this.jobQueue.enqueue('cleanup:session-outputs', { sessionId });
+          this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
         } else {
           void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
             logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
@@ -497,7 +511,7 @@ export class SessionManager {
 
     // Delete all output files for this session (via job queue if available)
     if (this.jobQueue) {
-      this.jobQueue.enqueue('cleanup:session-outputs', { sessionId: id });
+      this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
     } else {
       void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
         logger.error({ sessionId: id, err }, 'Failed to delete session output files');
@@ -711,24 +725,10 @@ export class SessionManager {
     if (worker.type === 'agent') {
       if (worker.pty) worker.pty.kill();
       if (worker.activityDetector) worker.activityDetector.dispose();
-      // Delete output file (via job queue if available)
-      if (this.jobQueue) {
-        this.jobQueue.enqueue('cleanup:worker-output', { sessionId, workerId });
-      } else {
-        void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-          logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-        });
-      }
+      this.cleanupWorkerOutput(sessionId, workerId);
     } else if (worker.type === 'terminal') {
       if (worker.pty) worker.pty.kill();
-      // Delete output file (via job queue if available)
-      if (this.jobQueue) {
-        this.jobQueue.enqueue('cleanup:worker-output', { sessionId, workerId });
-      } else {
-        void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-          logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-        });
-      }
+      this.cleanupWorkerOutput(sessionId, workerId);
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);
@@ -1578,14 +1578,9 @@ export async function getSessionManager(): Promise<SessionManager> {
     const manager = await SessionManager.create({ sessionRepository });
     sessionManagerInstance = manager;
 
-    // Inject job queue if available (lazy import to avoid circular dependency)
-    try {
-      const { isJobQueueInitialized, getJobQueue } = await import('../jobs/index.js');
-      if (isJobQueueInitialized()) {
-        manager.setJobQueue(getJobQueue());
-      }
-    } catch (error) {
-      logger.debug({ err: error }, 'Job queue not available, continuing without it');
+    // Inject job queue if initialized
+    if (isJobQueueInitialized()) {
+      manager.setJobQueue(getJobQueue());
     }
 
     return manager;

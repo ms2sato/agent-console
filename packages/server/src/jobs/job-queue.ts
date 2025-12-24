@@ -30,9 +30,25 @@ const logger = createLogger('job-queue');
 export type JobHandler<T = unknown> = (payload: T) => Promise<void>;
 
 /**
+ * Job status constants.
+ * Use these instead of raw strings (e.g., JOB_STATUS.PENDING instead of 'pending').
+ */
+export const JOB_STATUS = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  STALLED: 'stalled',
+} as const;
+
+/**
  * Job status in the lifecycle.
  */
-export type JobStatus = 'pending' | 'processing' | 'completed' | 'stalled';
+export type JobStatus = (typeof JOB_STATUS)[keyof typeof JOB_STATUS];
+
+/**
+ * Array of all valid job statuses (for validation).
+ */
+export const JOB_STATUSES = Object.values(JOB_STATUS);
 
 /**
  * Job record as stored in SQLite.
@@ -286,9 +302,12 @@ export class JobQueue {
 
     sql += ' ORDER BY created_at DESC';
 
-    if (options?.limit) {
+    // Apply limit. When offset is provided without limit, use a default of 50
+    // to prevent unbounded query results
+    const effectiveLimit = options?.limit ?? (options?.offset !== undefined ? 50 : undefined);
+    if (effectiveLimit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(options.limit);
+      params.push(effectiveLimit);
     }
     if (options?.offset) {
       sql += ' OFFSET ?';
@@ -421,37 +440,29 @@ export class JobQueue {
 
   /**
    * Claim the next available job for processing.
-   * Uses atomic UPDATE to prevent race conditions.
+   * Uses a single UPDATE with RETURNING to atomically find and claim a job.
    */
   private claimNextJob(): JobRecord | null {
     const now = Date.now();
 
-    // Find and claim the next available job atomically
+    // Atomically find and claim the next available job in a single statement
     const job = this.db
       .query(
         `
-      SELECT * FROM jobs
-      WHERE status = 'pending' AND next_retry_at <= ?
-      ORDER BY priority DESC, next_retry_at ASC
-      LIMIT 1
-    `
-      )
-      .get(now) as JobRecord | null;
-
-    if (!job) return null;
-
-    const result = this.db.run(
-      `
       UPDATE jobs
       SET status = 'processing', started_at = ?
-      WHERE id = ? AND status = 'pending'
-    `,
-      [now, job.id]
-    );
+      WHERE id = (
+        SELECT id FROM jobs
+        WHERE status = 'pending' AND next_retry_at <= ?
+        ORDER BY priority DESC, next_retry_at ASC
+        LIMIT 1
+      )
+      RETURNING *
+    `
+      )
+      .get(now, now) as JobRecord | null;
 
-    if (result.changes === 0) return null; // Another worker claimed it
-
-    return { ...job, status: 'processing', started_at: now };
+    return job;
   }
 
   /**
