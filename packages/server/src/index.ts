@@ -64,22 +64,6 @@ app.get('/health', (c) => {
 // Mount API routes
 app.route('/api', api);
 
-// Static file serving (production only)
-if (isProduction) {
-  const __dirname = path.dirname(new URL(import.meta.url).pathname);
-  const publicDir = path.join(__dirname, './public');
-
-  // Serve static files from public directory
-  app.use('/*', serveStatic({ root: publicDir }));
-
-  // SPA fallback: serve index.html for any non-API/WS routes
-  app.get('*', (c) => {
-    const indexPath = path.join(publicDir, 'index.html');
-    const html = fs.readFileSync(indexPath, 'utf-8');
-    return c.html(html);
-  });
-}
-
 const PORT = Number(serverConfig.PORT);
 
 // Initialize database before starting server and setting up WebSocket routes
@@ -98,9 +82,27 @@ try {
   process.exit(1);
 }
 
-// Setup WebSocket routes AFTER database initialization
+// Setup WebSocket routes AFTER database initialization but BEFORE SPA fallback
 // This ensures SessionManager uses the properly initialized SQLite repository
+// and WebSocket routes are not caught by the catch-all SPA handler
 await setupWebSocketRoutes(app, upgradeWebSocket);
+
+// Static file serving (production only)
+// NOTE: Must be registered AFTER WebSocket routes to avoid catching /ws/* paths
+if (isProduction) {
+  const __dirname = path.dirname(new URL(import.meta.url).pathname);
+  const publicDir = path.join(__dirname, './public');
+
+  // Serve static files from public directory
+  app.use('/*', serveStatic({ root: publicDir }));
+
+  // SPA fallback: serve index.html for any non-API/WS routes
+  app.get('*', (c) => {
+    const indexPath = path.join(publicDir, 'index.html');
+    const html = fs.readFileSync(indexPath, 'utf-8');
+    return c.html(html);
+  });
+}
 
 logger.info(
   { port: PORT, env: isProduction ? 'production' : 'development', pid: process.pid },
