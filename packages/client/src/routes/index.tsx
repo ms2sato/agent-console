@@ -52,7 +52,7 @@ function showNotification(title: string, body: string, sessionId: string, tag: s
     console.log('[showNotification] Notification created');
     // Click to focus the session
     notification.onclick = () => {
-      window.open(`/sessions/${sessionId}`, '_blank');
+      window.open(`/sessions/${sessionId}`, '_blank', 'noopener,noreferrer');
       notification.close();
     };
   } else {
@@ -539,7 +539,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         setFallbackInfo(data.branchNameFallback);
       }
       if (data.session) {
-        window.open(`/sessions/${data.session.id}`, '_blank');
+        window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
       }
     },
   });
@@ -746,7 +746,7 @@ function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowAddSession(false);
-      window.open(`/sessions/${data.session.id}`, '_blank');
+      window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
     },
   });
 
