@@ -1,5 +1,4 @@
 import * as path from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import { access } from 'fs/promises';
 import type {
   Session,
@@ -394,7 +393,7 @@ export class SessionManager {
   // ========== Session Lifecycle ==========
 
   async createSession(request: CreateSessionRequest): Promise<Session> {
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
     let internalSession: InternalSession;
@@ -574,7 +573,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
-    const workerId = uuidv4();
+    const workerId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
     const workerName = request.name ?? await this.generateWorkerName(session, request.type, agentIdForName);

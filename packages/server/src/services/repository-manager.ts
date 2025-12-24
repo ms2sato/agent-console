@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import { access } from 'fs/promises';
 import * as path from 'path';
@@ -98,7 +97,7 @@ export class RepositoryManager {
       }
     }
 
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const name = path.basename(absolutePath);
 
     const repository: Repository = {
