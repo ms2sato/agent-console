@@ -62,11 +62,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         });
       }).then(() => {
         // Restore scroll position or scroll to bottom
-        if (wasAtBottom) {
-          terminal.scrollToBottom();
-        } else {
-          // Restore previous scroll position
-          terminal.scrollToLine(savedViewportY);
+        // Check if terminal is still valid (not disposed)
+        if (!terminalRef.current) return;
+        try {
+          if (wasAtBottom) {
+            terminal.scrollToBottom();
+          } else {
+            // Restore previous scroll position
+            terminal.scrollToLine(savedViewportY);
+          }
+        } catch {
+          // Terminal may be disposed during async operation
         }
       }).catch((e) => console.error('[Terminal] Failed to write history:', e));
     }
