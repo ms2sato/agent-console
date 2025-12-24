@@ -140,36 +140,8 @@ interface VisibilityDisconnectedInfo {
 }
 const visibilityDisconnectedCallbacks = new Map<string, VisibilityDisconnectedInfo>();
 
-// Snapshot storage for terminal state (xterm.js serialized state)
-const terminalSnapshots = new Map<string, string>();
-
-// History offset storage for incremental sync
+// History offset storage for incremental sync (used for normal reconnections, not visibility-based)
 const historyOffsets = new Map<string, number>();
-
-// Snapshot callbacks for terminals to register their serialize function
-// These are called BEFORE WebSocket is closed on visibility change
-type SnapshotCallback = () => void;
-const snapshotCallbacks = new Map<string, SnapshotCallback>();
-
-/**
- * Store xterm.js snapshot before hiding page.
- */
-export function storeSnapshot(sessionId: string, workerId: string, snapshot: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  terminalSnapshots.set(key, snapshot);
-}
-
-/**
- * Get and delete snapshot (one-time use).
- */
-export function consumeSnapshot(sessionId: string, workerId: string): string | undefined {
-  const key = getConnectionKey(sessionId, workerId);
-  const snapshot = terminalSnapshots.get(key);
-  if (snapshot !== undefined) {
-    terminalSnapshots.delete(key);
-  }
-  return snapshot;
-}
 
 /**
  * Store last offset from history message for incremental sync.
@@ -177,33 +149,6 @@ export function consumeSnapshot(sessionId: string, workerId: string): string | u
 export function storeHistoryOffset(sessionId: string, workerId: string, offset: number): void {
   const key = getConnectionKey(sessionId, workerId);
   historyOffsets.set(key, offset);
-}
-
-/**
- * Get stored offset for reconnection.
- */
-export function getStoredHistoryOffset(sessionId: string, workerId: string): number | undefined {
-  const key = getConnectionKey(sessionId, workerId);
-  return historyOffsets.get(key);
-}
-
-/**
- * Register a snapshot callback for a worker.
- * This callback will be called synchronously BEFORE WebSocket is closed on visibility change.
- * Terminal components should register their serialize function here.
- */
-export function registerSnapshotCallback(sessionId: string, workerId: string, callback: SnapshotCallback): void {
-  const key = getConnectionKey(sessionId, workerId);
-  snapshotCallbacks.set(key, callback);
-}
-
-/**
- * Unregister snapshot callback for a worker.
- * Call this when Terminal component unmounts.
- */
-export function unregisterSnapshotCallback(sessionId: string, workerId: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  snapshotCallbacks.delete(key);
 }
 
 /**
@@ -506,7 +451,6 @@ export function disconnect(sessionId: string, workerId: string): void {
     // Clear visibility tracking data
     visibilityDisconnectedKeys.delete(key);
     visibilityDisconnectedCallbacks.delete(key);
-    terminalSnapshots.delete(key);
     historyOffsets.delete(key);
     connections.delete(key);
   }
@@ -636,7 +580,6 @@ export function disconnectSession(sessionId: string): void {
       // Clear visibility tracking data
       visibilityDisconnectedKeys.delete(key);
       visibilityDisconnectedCallbacks.delete(key);
-      terminalSnapshots.delete(key);
       historyOffsets.delete(key);
       connections.delete(key);
     }
@@ -648,32 +591,19 @@ export function disconnectSession(sessionId: string): void {
 /**
  * Handle page visibility change.
  * Disconnects all worker WebSockets when page is hidden (to save resources).
- * Reconnects with incremental sync when page becomes visible.
+ * Reconnects with full history when page becomes visible.
  */
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
-    // CRITICAL: Call snapshot callbacks FIRST, before closing any WebSockets
-    // This ensures Terminal components can serialize their state before disconnection
-    for (const [key] of connections.entries()) {
-      const snapshotCallback = snapshotCallbacks.get(key);
-      if (snapshotCallback) {
-        try {
-          snapshotCallback();
-        } catch (error) {
-          console.error(`[WorkerWS] Snapshot callback failed for ${key}:`, error);
-        }
-      }
-    }
-
     // Store connection info and disconnect all workers
     for (const [key, conn] of connections.entries()) {
-      // Store connection info for reconnection
-      const offset = historyOffsets.get(key);
+      // Store connection info for reconnection (no offset - always fetch full history)
       visibilityDisconnectedCallbacks.set(key, {
         callbacks: conn.callbacks,
         sessionId: conn.sessionId,
         workerId: conn.workerId,
-        historyOffset: offset,
+        // Don't store historyOffset for visibility-based reconnection
+        // We'll fetch full history to avoid sync issues
       });
       visibilityDisconnectedKeys.add(key);
 
@@ -716,8 +646,9 @@ function handleVisibilityChange(): void {
         continue;
       }
 
-      console.log(`[WorkerWS] Page visible, reconnecting ${key} with offset ${info.historyOffset ?? 'none'}`);
-      reconnect(info.sessionId, info.workerId, info.callbacks, info.historyOffset);
+      // Reconnect without offset - always fetch full history for visibility-based reconnection
+      console.log(`[WorkerWS] Page visible, reconnecting ${key} with full history`);
+      reconnect(info.sessionId, info.workerId, info.callbacks);
     }
   }
 }
@@ -728,15 +659,6 @@ if (typeof document !== 'undefined') {
 }
 
 /**
- * Check if a worker was disconnected due to visibility change.
- * Used by Terminal component to determine if snapshot should be restored.
- */
-export function wasVisibilityDisconnected(sessionId: string, workerId: string): boolean {
-  const key = getConnectionKey(sessionId, workerId);
-  return visibilityDisconnectedCallbacks.has(key);
-}
-
-/**
  * Clear visibility tracking for a specific worker.
  * Call this when Terminal component unmounts to prevent stale reconnection.
  */
@@ -744,9 +666,7 @@ export function clearVisibilityTracking(sessionId: string, workerId: string): vo
   const key = getConnectionKey(sessionId, workerId);
   visibilityDisconnectedKeys.delete(key);
   visibilityDisconnectedCallbacks.delete(key);
-  terminalSnapshots.delete(key);
   historyOffsets.delete(key);
-  snapshotCallbacks.delete(key);
 }
 
 /**
@@ -767,7 +687,5 @@ export function _reset(): void {
   stateListeners.clear();
   visibilityDisconnectedKeys.clear();
   visibilityDisconnectedCallbacks.clear();
-  terminalSnapshots.clear();
   historyOffsets.clear();
-  snapshotCallbacks.clear();
 }

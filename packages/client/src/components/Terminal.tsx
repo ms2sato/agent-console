@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import * as workerWs from '../lib/worker-websocket.js';
@@ -23,8 +22,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const serializeAddonRef = useRef<SerializeAddon | null>(null);
-  const hasRestoredSnapshotRef = useRef(false);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
@@ -42,38 +39,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    // Store the offset for future visibility-based reconnection
+    // Store the offset for normal WebSocket reconnection (not visibility-based)
     if (offset !== undefined) {
       workerWs.storeHistoryOffset(sessionId, workerId, offset);
     }
 
-    // Only consume snapshot on first history message after reconnect
-    if (!hasRestoredSnapshotRef.current) {
-      const snapshot = workerWs.consumeSnapshot(sessionId, workerId);
-      if (snapshot) {
-        // Only set the flag after successfully consuming snapshot
-        hasRestoredSnapshotRef.current = true;
-        clearAndWrite(terminal, () => {
-          return new Promise((resolve, reject) => {
-            try {
-              if (data) {
-                terminal.write(snapshot);
-                terminal.write(data, resolve);
-              } else {
-                terminal.write(snapshot, resolve);
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }).catch((e) => console.error('[Terminal] Failed to restore snapshot:', e));
-        return;
-      }
-      // If no snapshot available, mark as restored to avoid re-checking
-      hasRestoredSnapshotRef.current = true;
-    }
-
-    // Normal history handling (no snapshot)
+    // Clear terminal and write full history
     if (data) {
       clearAndWrite(terminal, () => {
         return new Promise((resolve, reject) => {
@@ -140,15 +111,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
     terminal.loadAddon(webLinksAddon);
 
-    // Enable terminal serialization for snapshot/restore on visibility change
-    const serializeAddon = new SerializeAddon();
-    terminal.loadAddon(serializeAddon);
-
     terminal.open(container);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
-    serializeAddonRef.current = serializeAddon;
 
     // Delay fit to ensure container has dimensions
     const fitTerminal = () => {
@@ -239,46 +205,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [connected, sendResize]);
 
-  // Register snapshot callback with worker-websocket for visibility-based serialization
-  // This ensures snapshot is captured BEFORE WebSocket is closed (fixes race condition)
+  // Clean up visibility tracking on unmount to prevent stale reconnection
   useEffect(() => {
-    const snapshotCallback = () => {
-      const serializeAddon = serializeAddonRef.current;
-      if (serializeAddon) {
-        try {
-          const snapshot = serializeAddon.serialize();
-          if (snapshot && snapshot.length > 0) {
-            workerWs.storeSnapshot(sessionId, workerId, snapshot);
-          }
-        } catch (error) {
-          console.error('[Terminal] Failed to serialize snapshot:', error);
-        }
-      }
-    };
-
-    workerWs.registerSnapshotCallback(sessionId, workerId, snapshotCallback);
-
     return () => {
-      workerWs.unregisterSnapshotCallback(sessionId, workerId);
-      // Clear visibility tracking on unmount to prevent stale reconnection
       workerWs.clearVisibilityTracking(sessionId, workerId);
     };
   }, [sessionId, workerId]);
-
-  // Handle visibility change to reset the snapshot restore flag when page becomes visible
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        // Reset the flag so the next history message can potentially use a snapshot
-        hasRestoredSnapshotRef.current = false;
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
 
   const statusColor =
     workerError ? 'bg-red-500' :
