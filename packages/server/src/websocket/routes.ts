@@ -11,7 +11,7 @@ import type { WSContext } from 'hono/ws';
 import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
-import { handleWorkerMessage } from './worker-handler.js';
+import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -73,6 +73,9 @@ export async function setupWebSocketRoutes(
 ) {
   // Get properly initialized SessionManager (with SQLite repository)
   const sessionManager = await getSessionManager();
+
+  // Create worker message handler with the properly initialized sessionManager
+  const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
 
   // Set up global activity callback to broadcast to all app clients
   sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
@@ -156,40 +159,35 @@ export async function setupWebSocketRoutes(
         onOpen(_event: unknown, ws: WSContext) {
           logger.info('App WebSocket connected, sending initial sync');
 
-          // Send current state of all sessions on connect
-          // IMPORTANT: Send sync BEFORE adding to appClients to prevent race condition
-          // where a session-created broadcast arrives before sessions-sync
-          sendSessionsSync(ws, appDeps);
-
-          // Send current state of all agents
-          getAgentManager().then((agentManager) => {
-            const allAgents = agentManager.getAllAgents();
-            const agentsSyncMsg: AppServerMessage = {
-              type: 'agents-sync',
-              agents: allAgents,
-            };
-            ws.send(JSON.stringify(agentsSyncMsg));
-            logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
+          // Wait for ALL sync operations to complete before adding to appClients
+          // This prevents race conditions where broadcasts arrive before initial sync
+          Promise.all([
+            sendSessionsSync(ws, appDeps),
+            getAgentManager().then((agentManager) => {
+              const allAgents = agentManager.getAllAgents();
+              const agentsSyncMsg: AppServerMessage = {
+                type: 'agents-sync',
+                agents: allAgents,
+              };
+              ws.send(JSON.stringify(agentsSyncMsg));
+              logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
+            }),
+            getRepositoryManager().then((repositoryManager) => {
+              const allRepositories = repositoryManager.getAllRepositories();
+              const repositoriesSyncMsg: AppServerMessage = {
+                type: 'repositories-sync',
+                repositories: allRepositories,
+              };
+              ws.send(JSON.stringify(repositoriesSyncMsg));
+              logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
+            }),
+          ]).then(() => {
+            // Add to broadcast list AFTER all sync messages sent
+            appClients.add(ws);
+            logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
-            logger.error({ err }, 'Failed to send agents-sync');
+            logger.error({ err }, 'Failed to send initial sync');
           });
-
-          // Send current state of all repositories
-          getRepositoryManager().then((repositoryManager) => {
-            const allRepositories = repositoryManager.getAllRepositories();
-            const repositoriesSyncMsg: AppServerMessage = {
-              type: 'repositories-sync',
-              repositories: allRepositories,
-            };
-            ws.send(JSON.stringify(repositoriesSyncMsg));
-            logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
-          }).catch((err) => {
-            logger.error({ err }, 'Failed to send repositories-sync');
-          });
-
-          // Add to broadcast list AFTER sending sync to ensure correct message ordering
-          appClients.add(ws);
-          logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
         },
         onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
           handleAppMessage(ws, event.data);

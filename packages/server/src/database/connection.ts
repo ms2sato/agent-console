@@ -408,13 +408,19 @@ async function migrateRepositoriesFromJson(database: Kysely<Database>): Promise<
   // Read and migrate JSON data
   try {
     const jsonContent = fs.readFileSync(repositoriesJsonPath, 'utf-8');
-    const repositories = JSON.parse(jsonContent) as PersistedRepository[];
+    const rawRepositories = JSON.parse(jsonContent) as unknown[];
 
-    if (repositories.length === 0) {
+    if (rawRepositories.length === 0) {
       logger.info('repositories.json is empty, marking as migrated');
       fs.renameSync(repositoriesJsonPath, `${repositoriesJsonPath}.migrated`);
       return;
     }
+
+    // Backward compatibility: transform old field names
+    // - registeredAt -> createdAt (renamed in SQLite migration)
+    const repositories = rawRepositories.map(
+      (item) => transformLegacyFields(item) as PersistedRepository
+    );
 
     logger.info({ count: repositories.length }, 'Migrating repositories from JSON to SQLite');
 
@@ -435,6 +441,27 @@ async function migrateRepositoriesFromJson(database: Kysely<Database>): Promise<
     // Let the parent migrateFromJson handle cleanup
     throw error;
   }
+}
+
+/**
+ * Transform legacy field names for backward compatibility.
+ * Used for both agents and repositories during JSON migration.
+ * - registeredAt -> createdAt (renamed in SQLite migration)
+ */
+function transformLegacyFields(item: unknown): unknown {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+
+  const obj = item as Record<string, unknown>;
+
+  // Transform registeredAt -> createdAt if present
+  if ('registeredAt' in obj && !('createdAt' in obj)) {
+    const { registeredAt, ...rest } = obj;
+    return { ...rest, createdAt: registeredAt };
+  }
+
+  return item;
 }
 
 /**
@@ -469,7 +496,11 @@ async function migrateAgentsFromJson(database: Kysely<Database>): Promise<void> 
 
     // Validate and filter agents
     const validAgents: AgentDefinition[] = [];
-    for (const item of rawAgents) {
+    for (const rawItem of rawAgents) {
+      // Backward compatibility: transform old field names
+      // - registeredAt -> createdAt (renamed in SQLite migration)
+      const item = transformLegacyFields(rawItem);
+
       const result = v.safeParse(AgentDefinitionSchema, item);
       if (result.success) {
         const agent = result.output as AgentDefinition;

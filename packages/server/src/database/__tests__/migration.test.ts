@@ -164,6 +164,59 @@ describe('migration', () => {
       // JSON file should not be renamed (migration was skipped)
       expect(fs.existsSync(reposJsonPath)).toBe(true);
     });
+
+    it('should transform legacy registeredAt field to createdAt', async () => {
+      // Create repositories.json with legacy 'registeredAt' field (old format before SQLite migration)
+      const legacyRepositories = [
+        {
+          id: 'legacy-repo',
+          name: 'Legacy Repository',
+          path: '/path/to/legacy-repo',
+          registeredAt: '2023-06-15T10:30:00.000Z', // old field name
+        },
+      ];
+      const reposJsonPath = path.join(TEST_CONFIG_DIR, 'repositories.json');
+      fs.writeFileSync(reposJsonPath, JSON.stringify(legacyRepositories));
+
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
+
+      // Verify repository was migrated with createdAt field
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('legacy-repo');
+      expect(rows[0].name).toBe('Legacy Repository');
+      expect(rows[0].created_at).toBe('2023-06-15T10:30:00.000Z');
+
+      // Verify JSON file was renamed
+      expect(fs.existsSync(reposJsonPath)).toBe(false);
+      expect(fs.existsSync(`${reposJsonPath}.migrated`)).toBe(true);
+    });
+
+    it('should prefer createdAt over registeredAt for repositories when both exist', async () => {
+      // Edge case: repository has both fields (should use createdAt)
+      const mixedRepositories = [
+        {
+          id: 'mixed-repo',
+          name: 'Mixed Repository',
+          path: '/path/to/mixed-repo',
+          createdAt: '2024-01-01T00:00:00.000Z', // new field
+          registeredAt: '2023-06-15T10:30:00.000Z', // old field (should be ignored)
+        },
+      ];
+      const reposJsonPath = path.join(TEST_CONFIG_DIR, 'repositories.json');
+      fs.writeFileSync(reposJsonPath, JSON.stringify(mixedRepositories));
+
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
+
+      // Verify repository uses createdAt (not registeredAt)
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
+    });
   });
 
   describe('migrateAgentsFromJson (via migrateFromJson)', () => {
@@ -232,6 +285,63 @@ describe('migration', () => {
       const rows = await db.selectFrom('agents').selectAll().execute();
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('valid-agent');
+    });
+
+    it('should transform legacy registeredAt field to createdAt', async () => {
+      // Create agents.json with legacy 'registeredAt' field (old format before SQLite migration)
+      const legacyAgents = [
+        {
+          id: 'legacy-agent',
+          name: 'Legacy Agent',
+          commandTemplate: 'legacy {{prompt}}',
+          isBuiltIn: false,
+          registeredAt: '2023-06-15T10:30:00.000Z', // old field name
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
+      ];
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
+      fs.writeFileSync(agentsJsonPath, JSON.stringify(legacyAgents));
+
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
+
+      // Verify agent was migrated with createdAt field
+      const rows = await db.selectFrom('agents').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('legacy-agent');
+      expect(rows[0].name).toBe('Legacy Agent');
+      expect(rows[0].created_at).toBe('2023-06-15T10:30:00.000Z');
+
+      // Verify JSON file was renamed
+      expect(fs.existsSync(agentsJsonPath)).toBe(false);
+      expect(fs.existsSync(`${agentsJsonPath}.migrated`)).toBe(true);
+    });
+
+    it('should prefer createdAt over registeredAt when both exist', async () => {
+      // Edge case: agent has both fields (should use createdAt)
+      const mixedAgents = [
+        {
+          id: 'mixed-agent',
+          name: 'Mixed Agent',
+          commandTemplate: 'mixed {{prompt}}',
+          isBuiltIn: false,
+          createdAt: '2024-01-01T00:00:00.000Z', // new field
+          registeredAt: '2023-06-15T10:30:00.000Z', // old field (should be ignored)
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
+      ];
+      const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
+      fs.writeFileSync(agentsJsonPath, JSON.stringify(mixedAgents));
+
+      // Initialize database
+      const db = await initializeDatabase(':memory:');
+      await migrateFromJson(db);
+
+      // Verify agent uses createdAt (not registeredAt)
+      const rows = await db.selectFrom('agents').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     });
 
     it('should skip if no agents.json exists', async () => {

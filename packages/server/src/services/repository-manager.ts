@@ -187,10 +187,15 @@ export async function getRepositoryManager(): Promise<RepositoryManager> {
     return initializationPromise;
   }
 
-  initializationPromise = RepositoryManager.create().then((manager) => {
-    repositoryManagerInstance = manager;
-    return manager;
-  });
+  initializationPromise = RepositoryManager.create()
+    .then((manager) => {
+      repositoryManagerInstance = manager;
+      return manager;
+    })
+    .catch((error) => {
+      initializationPromise = null; // Allow retry on next call
+      throw error;
+    });
 
   return initializationPromise;
 }

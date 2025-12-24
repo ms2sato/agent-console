@@ -11,6 +11,9 @@ import type {
   PersistedQuickSession,
   PersistedRepository,
 } from '../services/persistence-service.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('database-mappers');
 
 /**
  * Helper function for exhaustive type checking in discriminated unions.
@@ -309,9 +312,15 @@ export function toAgentRow(agent: AgentDefinition): NewAgent {
  * @returns The AgentDefinition object
  */
 export function toAgentDefinition(row: AgentRow): AgentDefinition {
-  const activityPatterns = row.activity_patterns
-    ? (JSON.parse(row.activity_patterns) as AgentActivityPatterns)
-    : undefined;
+  let activityPatterns: AgentActivityPatterns | undefined;
+  if (row.activity_patterns) {
+    try {
+      activityPatterns = JSON.parse(row.activity_patterns) as AgentActivityPatterns;
+    } catch {
+      logger.warn({ agentId: row.id }, 'Failed to parse activity_patterns, ignoring');
+      activityPatterns = undefined;
+    }
+  }
 
   const agentBase = {
     id: row.id,

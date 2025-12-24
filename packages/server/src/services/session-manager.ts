@@ -1265,12 +1265,16 @@ export class SessionManager {
         return { success: false, error: 'session_not_found' };
       }
 
-      // Title update not supported for inactive sessions - return explicit error
+      // For inactive sessions, title update is supported via database persistence
       if (updates.title !== undefined) {
-        return { success: false, error: 'Cannot update title of inactive session. Please activate the session first.' };
+        await this.sessionRepository.save({
+          ...metadata,
+          title: updates.title,
+        });
+        return { success: true, title: updates.title };
       }
 
-      // For inactive sessions, only branch rename is supported (no restart possible)
+      // For inactive sessions, branch rename is also supported (no restart possible)
       if (updates.branch) {
         if (metadata.type !== 'worktree') {
           return { success: false, error: 'Can only rename branch for worktree sessions' };
@@ -1280,6 +1284,13 @@ export class SessionManager {
 
         try {
           await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
+
+          // Persist the updated branch name (worktreeId) for inactive sessions
+          await this.sessionRepository.save({
+            ...metadata,
+            worktreeId: updates.branch,
+          });
+
           return { success: true, branch: updates.branch };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1522,21 +1533,43 @@ export class SessionManager {
 
 // Create singleton with lazy initialization
 let sessionManagerInstance: SessionManager | null = null;
+let sessionManagerPromise: Promise<SessionManager> | null = null;
 
 export async function getSessionManager(): Promise<SessionManager> {
-  if (!sessionManagerInstance) {
+  if (sessionManagerInstance) {
+    return sessionManagerInstance;
+  }
+
+  if (sessionManagerPromise) {
+    return sessionManagerPromise;
+  }
+
+  sessionManagerPromise = (async () => {
     // Use createSessionRepository() to auto-select SQLite or JSON based on environment
     const sessionRepository = await createSessionRepository();
-    sessionManagerInstance = await SessionManager.create({ sessionRepository });
-  }
-  return sessionManagerInstance;
+    const manager = await SessionManager.create({ sessionRepository });
+    sessionManagerInstance = manager;
+    return manager;
+  })().catch((error) => {
+    sessionManagerPromise = null; // Allow retry on next call
+    throw error;
+  });
+
+  return sessionManagerPromise;
 }
 
 // For testing: reset the singleton
 export function resetSessionManager(): void {
   sessionManagerInstance = null;
+  sessionManagerPromise = null;
 }
 
-// Backward compatible synchronous export for existing code during migration
-// TODO: Remove this once all callers are updated to use getSessionManager()
-export const sessionManager = new SessionManager();
+// @deprecated - Use getSessionManager() instead
+// This proxy throws an error to catch any remaining usages that need to be migrated
+export const sessionManager: SessionManager = new Proxy({} as SessionManager, {
+  get(_target, prop) {
+    throw new Error(
+      `sessionManager.${String(prop)} is deprecated. Use getSessionManager() instead.`
+    );
+  },
+});

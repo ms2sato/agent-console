@@ -117,8 +117,11 @@ export class AgentManager {
       capabilities: computeCapabilities(agentBase),
     };
 
-    this.agents.set(id, agent);
+    // Write to repository FIRST - if this fails, in-memory state remains unchanged
     await this.repository.save(agent);
+
+    // Update in-memory map only after successful persistence
+    this.agents.set(id, agent);
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent registered');
 
@@ -173,8 +176,11 @@ export class AgentManager {
       capabilities: computeCapabilities(agentBaseWithoutCapabilities),
     };
 
-    this.agents.set(id, updated);
+    // Write to repository FIRST - if this fails, in-memory state remains unchanged
     await this.repository.save(updated);
+
+    // Update in-memory map only after successful persistence
+    this.agents.set(id, updated);
 
     logger.info({ agentId: id, agentName: updated.name }, 'Agent updated');
 
@@ -200,8 +206,11 @@ export class AgentManager {
       return false;
     }
 
-    this.agents.delete(id);
+    // Delete from repository FIRST - if this fails, in-memory state remains unchanged
     await this.repository.delete(id);
+
+    // Update in-memory map only after successful persistence
+    this.agents.delete(id);
 
     logger.info({ agentId: id, agentName: agent.name }, 'Agent unregistered');
 
@@ -226,10 +235,15 @@ export async function getAgentManager(): Promise<AgentManager> {
     return initializationPromise;
   }
 
-  initializationPromise = AgentManager.create().then((manager) => {
-    agentManagerInstance = manager;
-    return manager;
-  });
+  initializationPromise = AgentManager.create()
+    .then((manager) => {
+      agentManagerInstance = manager;
+      return manager;
+    })
+    .catch((error) => {
+      initializationPromise = null; // Allow retry on next call
+      throw error;
+    });
 
   return initializationPromise;
 }
