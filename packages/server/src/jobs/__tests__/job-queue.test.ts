@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { JobQueue, type JobRecord } from '../job-queue.js';
+import { JobQueue } from '../job-queue.js';
 
 describe('JobQueue', () => {
   let jobQueue: JobQueue;
@@ -291,8 +291,8 @@ describe('JobQueue', () => {
       const id = jobQueue.enqueue('test:job', {});
 
       // Simulate crash by directly updating the database
-      const db = (jobQueue as unknown as { db: { run: (sql: string, params: unknown[]) => void } }).db;
-      db.run('UPDATE jobs SET status = ? WHERE id = ?', ['processing', id]);
+      const testAPI = jobQueue.__testOnly!;
+      testAPI.db.run('UPDATE jobs SET status = ? WHERE id = ?', ['processing', id]);
 
       // Verify it's in processing state
       let job = jobQueue.getJob(id);
@@ -686,9 +686,8 @@ describe('JobQueue', () => {
       jobQueue.enqueue('test:job', { id: 3 });
 
       // Access private method for testing atomicity
-      const claimNextJob = (
-        jobQueue as unknown as { claimNextJob: () => JobRecord | null }
-      ).claimNextJob.bind(jobQueue);
+      const testAPI = jobQueue.__testOnly!;
+      const claimNextJob = testAPI.claimNextJob;
 
       // Call claimNextJob concurrently using Promise.all
       const claims = await Promise.all([
@@ -715,10 +714,8 @@ describe('JobQueue', () => {
       const id = jobQueue.enqueue('test:job', { valid: true }, { maxAttempts: 1 });
 
       // Directly update the database with invalid JSON
-      const db = (
-        jobQueue as unknown as { db: { run: (sql: string, params: unknown[]) => void } }
-      ).db;
-      db.run('UPDATE jobs SET payload = ? WHERE id = ?', ['not valid json {{{', id]);
+      const testAPI = jobQueue.__testOnly!;
+      testAPI.db.run('UPDATE jobs SET payload = ? WHERE id = ?', ['not valid json {{{', id]);
 
       jobQueue.registerHandler('test:job', async () => {
         // This should not be called because parsing will fail
@@ -803,40 +800,34 @@ describe('JobQueue', () => {
   describe('exponential backoff', () => {
     it('should cap exponential backoff at 5 minutes', () => {
       // Access private method for testing
-      const calculateBackoff = (
-        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
-      ).calculateBackoff.bind(jobQueue);
+      const testAPI = jobQueue.__testOnly!;
 
       // After many attempts, backoff should be capped at 5 minutes (300000ms)
-      const backoff = calculateBackoff(20);
+      const backoff = testAPI.calculateBackoff(20);
       expect(backoff).toBe(5 * 60 * 1000);
     });
 
     it('should use exponential backoff for early attempts', () => {
-      const calculateBackoff = (
-        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
-      ).calculateBackoff.bind(jobQueue);
+      const testAPI = jobQueue.__testOnly!;
 
       // First attempt: 1s * 2^0 = 1000ms
-      expect(calculateBackoff(1)).toBe(1000);
+      expect(testAPI.calculateBackoff(1)).toBe(1000);
       // Second attempt: 1s * 2^1 = 2000ms
-      expect(calculateBackoff(2)).toBe(2000);
+      expect(testAPI.calculateBackoff(2)).toBe(2000);
       // Third attempt: 1s * 2^2 = 4000ms
-      expect(calculateBackoff(3)).toBe(4000);
+      expect(testAPI.calculateBackoff(3)).toBe(4000);
       // Fourth attempt: 1s * 2^3 = 8000ms
-      expect(calculateBackoff(4)).toBe(8000);
+      expect(testAPI.calculateBackoff(4)).toBe(8000);
     });
 
     it('should not exceed 5 minutes for any attempt count', () => {
-      const calculateBackoff = (
-        jobQueue as unknown as { calculateBackoff: (attempts: number) => number }
-      ).calculateBackoff.bind(jobQueue);
+      const testAPI = jobQueue.__testOnly!;
 
       const maxBackoff = 5 * 60 * 1000;
 
       // Test various high attempt counts
       for (const attempts of [10, 15, 20, 50, 100]) {
-        expect(calculateBackoff(attempts)).toBe(maxBackoff);
+        expect(testAPI.calculateBackoff(attempts)).toBe(maxBackoff);
       }
     });
   });
@@ -897,17 +888,16 @@ describe('JobQueue', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Get the retry timers map
-      const retryTimers = (jobQueue as unknown as { retryTimers: Map<string, Timer> })
-        .retryTimers;
+      const testAPI = jobQueue.__testOnly!;
 
       // Verify timer is set
-      expect(retryTimers.has(id)).toBe(true);
+      expect(testAPI.retryTimers.has(id)).toBe(true);
 
       // Cancel the job
       jobQueue.cancelJob(id);
 
       // Verify timer is cleared
-      expect(retryTimers.has(id)).toBe(false);
+      expect(testAPI.retryTimers.has(id)).toBe(false);
     });
   });
 

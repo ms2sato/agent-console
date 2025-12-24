@@ -8,7 +8,7 @@ import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { initializeDatabase, closeDatabase } from './database/connection.js';
 import { getConfigDir } from './lib/config.js';
-import { getJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
+import { getJobQueue, registerJobHandlers, resetJobQueue, type JobQueue } from './jobs/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -86,7 +86,7 @@ try {
 }
 
 // Initialize job queue after database initialization
-let jobQueue;
+let jobQueue: JobQueue;
 try {
   jobQueue = getJobQueue();
   registerJobHandlers(jobQueue);

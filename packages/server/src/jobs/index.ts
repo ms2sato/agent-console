@@ -15,6 +15,7 @@ export {
   type GetJobsOptions,
   type JobStats,
   type JobQueueOptions,
+  type JobQueueTestAPI,
 } from './job-queue.js';
 
 export { getJobQueue, resetJobQueue, isJobQueueInitialized } from './job-queue-instance.js';

@@ -111,6 +111,21 @@ export interface JobQueueOptions {
 }
 
 // =============================================================================
+// Test-Only API
+// =============================================================================
+
+/**
+ * Interface for testing internals.
+ * Only available when NODE_ENV === 'test'.
+ */
+export interface JobQueueTestAPI {
+  db: Database;
+  claimNextJob(): JobRecord | null;
+  calculateBackoff(attempts: number): number;
+  retryTimers: Map<string, Timer>;
+}
+
+// =============================================================================
 // JobQueue Class
 // =============================================================================
 
@@ -620,5 +635,22 @@ export class JobQueue {
     if (pendingJobs.length > 0) {
       logger.debug({ count: pendingJobs.length }, 'Scheduled pending retries');
     }
+  }
+
+  // ===========================================================================
+  // Test-Only API
+  // ===========================================================================
+
+  /**
+   * Access to internal state for testing purposes.
+   * @internal This property is for testing only. Do not use in production code.
+   */
+  get __testOnly(): JobQueueTestAPI {
+    return {
+      db: this.db,
+      claimNextJob: this.claimNextJob.bind(this),
+      calculateBackoff: this.calculateBackoff.bind(this),
+      retryTimers: this.retryTimers,
+    };
   }
 }
