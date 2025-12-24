@@ -9,7 +9,8 @@ import type {
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { sessionManager } from '../services/session-manager.js';
-import { agentManager } from '../services/agent-manager.js';
+import { getAgentManager } from '../services/agent-manager.js';
+import { getRepositoryManager } from '../services/repository-manager.js';
 import { handleWorkerMessage } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
@@ -90,34 +91,60 @@ sessionManager.setSessionLifecycleCallbacks({
 });
 
 // Set up agent lifecycle callbacks to broadcast to all app clients
-agentManager.setLifecycleCallbacks({
-  onAgentCreated: (agent) => {
-    logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
-    broadcastToApp({ type: 'agent-created', agent });
-  },
-  onAgentUpdated: (agent) => {
-    logger.debug({ agentId: agent.id }, 'Broadcasting agent-updated');
-    broadcastToApp({ type: 'agent-updated', agent });
-  },
-  onAgentDeleted: (agentId) => {
-    logger.debug({ agentId }, 'Broadcasting agent-deleted');
-    broadcastToApp({ type: 'agent-deleted', agentId });
-  },
+// This is done asynchronously since getAgentManager is async
+getAgentManager().then((agentManager) => {
+  agentManager.setLifecycleCallbacks({
+    onAgentCreated: (agent) => {
+      logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
+      broadcastToApp({ type: 'agent-created', agent });
+    },
+    onAgentUpdated: (agent) => {
+      logger.debug({ agentId: agent.id }, 'Broadcasting agent-updated');
+      broadcastToApp({ type: 'agent-updated', agent });
+    },
+    onAgentDeleted: (agentId) => {
+      logger.debug({ agentId }, 'Broadcasting agent-deleted');
+      broadcastToApp({ type: 'agent-deleted', agentId });
+    },
+  });
+}).catch((err) => {
+  logger.error({ err }, 'Failed to set up agent lifecycle callbacks');
 });
 
-// Create app message handler with dependencies
-const handleAppMessage = createAppMessageHandler({
-  getAllSessions: () => sessionManager.getAllSessions(),
-  getWorkerActivityState: (sessionId, workerId) => sessionManager.getWorkerActivityState(sessionId, workerId),
-  logger,
+// Set up repository lifecycle callbacks to broadcast to all app clients
+// This is done asynchronously since getRepositoryManager is async
+getRepositoryManager().then((repositoryManager) => {
+  repositoryManager.setLifecycleCallbacks({
+    onRepositoryCreated: (repository) => {
+      logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
+      broadcastToApp({ type: 'repository-created', repository });
+    },
+    onRepositoryDeleted: (repositoryId) => {
+      logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
+      broadcastToApp({ type: 'repository-deleted', repositoryId });
+    },
+  });
+}).catch((err) => {
+  logger.error({ err }, 'Failed to set up repository lifecycle callbacks');
 });
 
-// Create dependency object for sendSessionsSync
+// Create dependency object for app handlers
 const appDeps = {
   getAllSessions: () => sessionManager.getAllSessions(),
   getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
+  getAllAgents: async () => {
+    const agentManager = await getAgentManager();
+    return agentManager.getAllAgents();
+  },
+  getAllRepositories: async () => {
+    const repositoryManager = await getRepositoryManager();
+    return repositoryManager.getAllRepositories();
+  },
   logger,
 };
+
+// Create app message handler with dependencies
+const handleAppMessage = createAppMessageHandler(appDeps);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
@@ -140,13 +167,30 @@ export function setupWebSocketRoutes(
           sendSessionsSync(ws, appDeps);
 
           // Send current state of all agents
-          const allAgents = agentManager.getAllAgents();
-          const agentsSyncMsg: AppServerMessage = {
-            type: 'agents-sync',
-            agents: allAgents,
-          };
-          ws.send(JSON.stringify(agentsSyncMsg));
-          logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
+          getAgentManager().then((agentManager) => {
+            const allAgents = agentManager.getAllAgents();
+            const agentsSyncMsg: AppServerMessage = {
+              type: 'agents-sync',
+              agents: allAgents,
+            };
+            ws.send(JSON.stringify(agentsSyncMsg));
+            logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
+          }).catch((err) => {
+            logger.error({ err }, 'Failed to send agents-sync');
+          });
+
+          // Send current state of all repositories
+          getRepositoryManager().then((repositoryManager) => {
+            const allRepositories = repositoryManager.getAllRepositories();
+            const repositoriesSyncMsg: AppServerMessage = {
+              type: 'repositories-sync',
+              repositories: allRepositories,
+            };
+            ws.send(JSON.stringify(repositoriesSyncMsg));
+            logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
+          }).catch((err) => {
+            logger.error({ err }, 'Failed to send repositories-sync');
+          });
 
           // Add to broadcast list AFTER sending sync to ensure correct message ordering
           appClients.add(ws);

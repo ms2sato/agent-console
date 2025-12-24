@@ -44,6 +44,104 @@ mock.module('open', () => ({
   default: mockOpen,
 }));
 
+// Mock database connection module to use in-memory SQLite for API tests.
+// This prevents API tests from creating database files on disk while still
+// allowing proper isolation. The mock uses a shared database instance to
+// avoid issues with module cache busting.
+//
+// IMPORTANT: This mock affects other test files when run in the same process.
+// The connection.test.ts file is designed to run with the real implementation
+// and should be run separately or use its own test isolation.
+import { Kysely } from 'kysely';
+import { BunSqliteDialect } from 'kysely-bun-sqlite';
+import { Database as BunDatabase } from 'bun:sqlite';
+import type { Database } from '../database/schema.js';
+
+// Shared in-memory database for all API tests
+let sharedMockDb: Kysely<Database> | null = null;
+
+async function getOrCreateMockDatabase(): Promise<Kysely<Database>> {
+  // Return existing database if already created
+  if (sharedMockDb) {
+    return sharedMockDb;
+  }
+
+  const bunDb = new BunDatabase(':memory:');
+  bunDb.exec('PRAGMA foreign_keys = ON;');
+
+  sharedMockDb = new Kysely<Database>({
+    dialect: new BunSqliteDialect({ database: bunDb }),
+  });
+
+  // Create all tables (v2 schema)
+  await sharedMockDb.schema
+    .createTable('sessions')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('type', 'text', (col) => col.notNull())
+    .addColumn('location_path', 'text', (col) => col.notNull())
+    .addColumn('server_pid', 'integer')
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('initial_prompt', 'text')
+    .addColumn('title', 'text')
+    .addColumn('repository_id', 'text')
+    .addColumn('worktree_id', 'text')
+    .execute();
+
+  await sharedMockDb.schema
+    .createTable('workers')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('session_id', 'text', (col) =>
+      col.notNull().references('sessions.id').onDelete('cascade')
+    )
+    .addColumn('type', 'text', (col) => col.notNull())
+    .addColumn('name', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('pid', 'integer')
+    .addColumn('agent_id', 'text')
+    .addColumn('base_commit', 'text')
+    .execute();
+
+  await sharedMockDb.schema
+    .createTable('repositories')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('name', 'text', (col) => col.notNull())
+    .addColumn('path', 'text', (col) => col.notNull().unique())
+    .addColumn('registered_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await sharedMockDb.schema
+    .createTable('agents')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('name', 'text', (col) => col.notNull())
+    .addColumn('command_template', 'text', (col) => col.notNull())
+    .addColumn('continue_template', 'text')
+    .addColumn('headless_template', 'text')
+    .addColumn('description', 'text')
+    .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('registered_at', 'text')
+    .addColumn('activity_patterns', 'text')
+    .execute();
+
+  return sharedMockDb;
+}
+
+mock.module('../database/connection.js', () => ({
+  initializeDatabase: async () => {
+    return getOrCreateMockDatabase();
+  },
+  getDatabase: () => {
+    if (!sharedMockDb) {
+      throw new Error('Database not initialized');
+    }
+    return sharedMockDb;
+  },
+  closeDatabase: async () => {
+    // Don't actually close - let it persist for other tests using cache-busted imports
+  },
+  databaseExists: async () => true,
+  migrateFromJson: async () => {},
+}));
+
 // =============================================================================
 // Test Setup
 // =============================================================================

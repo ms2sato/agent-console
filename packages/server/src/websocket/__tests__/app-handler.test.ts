@@ -164,7 +164,7 @@ describe('App Handler', () => {
       const deps = {
         getAllSessions: () => [],
         getWorkerActivityState: () => undefined,
-        logger: { debug: mock(), warn: mock() },
+        logger: { debug: mock(), warn: mock(), error: mock() },
       };
 
       sendSessionsSync(mockWs, deps);
@@ -186,7 +186,7 @@ describe('App Handler', () => {
           { id: '2', type: 'quick', locationPath: '/', status: 'active', createdAt: '', workers: [] },
         ] as Session[],
         getWorkerActivityState: () => undefined,
-        logger: { debug: mockDebug, warn: mock() },
+        logger: { debug: mockDebug, warn: mock(), error: mock() },
       };
 
       sendSessionsSync(mockWs, deps);
@@ -207,28 +207,45 @@ describe('App Handler', () => {
       mockDeps = {
         getAllSessions: () => [],
         getWorkerActivityState: () => undefined,
-        logger: { debug: mock(), warn: mock() },
+        getAllAgents: async () => [],
+        getAllRepositories: async () => [],
+        logger: { debug: mock(), warn: mock(), error: mock() },
       };
     });
 
-    it('should handle request-sync message', () => {
+    it('should handle request-sync message', async () => {
       const handler = createAppMessageHandler(mockDeps);
       const message = JSON.stringify({ type: 'request-sync' });
 
       handler(mockWs, message);
 
-      expect(mockWs.send).toHaveBeenCalledTimes(1);
-      const sentData = JSON.parse((mockWs.send as ReturnType<typeof mock>).mock.calls[0][0]);
-      expect(sentData.type).toBe('sessions-sync');
+      // Wait for async operations to complete
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Should send sessions-sync (sync), agents-sync (async), and repositories-sync (async)
+      expect(mockWs.send).toHaveBeenCalledTimes(3);
+
+      const sentMessages = (mockWs.send as ReturnType<typeof mock>).mock.calls.map(
+        (call) => JSON.parse(call[0] as string)
+      );
+      const messageTypes = sentMessages.map((m: { type: string }) => m.type);
+
+      expect(messageTypes).toContain('sessions-sync');
+      expect(messageTypes).toContain('agents-sync');
+      expect(messageTypes).toContain('repositories-sync');
     });
 
-    it('should handle ArrayBuffer message', () => {
+    it('should handle ArrayBuffer message', async () => {
       const handler = createAppMessageHandler(mockDeps);
       const message = new TextEncoder().encode(JSON.stringify({ type: 'request-sync' })).buffer;
 
       handler(mockWs, message);
 
-      expect(mockWs.send).toHaveBeenCalledTimes(1);
+      // Wait for async operations to complete
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Should send all three sync messages
+      expect(mockWs.send).toHaveBeenCalledTimes(3);
     });
 
     it('should log and ignore invalid message type', () => {
@@ -266,7 +283,7 @@ describe('App Handler', () => {
 
       expect(mockDeps.logger.debug).toHaveBeenCalledWith(
         {},
-        'Received request-sync, sending sessions-sync'
+        'Received request-sync, sending full sync'
       );
     });
   });

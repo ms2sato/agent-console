@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -38,6 +38,12 @@ interface UseAppWsEventOptions {
   onAgentUpdated?: (agent: AgentDefinition) => void;
   /** Called when an agent is deleted */
   onAgentDeleted?: (agentId: string) => void;
+  /** Called when initial repository sync is received */
+  onRepositoriesSync?: (repositories: Repository[]) => void;
+  /** Called when a new repository is created */
+  onRepositoryCreated?: (repository: Repository) => void;
+  /** Called when a repository is deleted */
+  onRepositoryDeleted?: (repositoryId: string) => void;
 }
 
 /**
@@ -106,6 +112,18 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'agent-deleted':
           console.log(`[WebSocket] agent-deleted: ${msg.agentId}`);
           optionsRef.current.onAgentDeleted?.(msg.agentId);
+          break;
+        case 'repositories-sync':
+          console.log(`[WebSocket] repositories-sync received: ${msg.repositories.length} repositories`);
+          optionsRef.current.onRepositoriesSync?.(msg.repositories);
+          break;
+        case 'repository-created':
+          console.log(`[WebSocket] repository-created: ${msg.repository.id}`);
+          optionsRef.current.onRepositoryCreated?.(msg.repository);
+          break;
+        case 'repository-deleted':
+          console.log(`[WebSocket] repository-deleted: ${msg.repositoryId}`);
+          optionsRef.current.onRepositoryDeleted?.(msg.repositoryId);
           break;
       }
     });

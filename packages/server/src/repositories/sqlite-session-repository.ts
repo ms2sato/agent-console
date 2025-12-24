@@ -1,0 +1,133 @@
+import type { Kysely } from 'kysely';
+import type { SessionRepository } from './session-repository.js';
+import type { PersistedSession } from '../services/persistence-service.js';
+import type { Database, Session } from '../database/schema.js';
+import { createLogger } from '../lib/logger.js';
+import {
+  toSessionRow,
+  toWorkerRow,
+  toPersistedWorker,
+  toPersistedSession,
+  DataIntegrityError,
+} from '../database/mappers.js';
+
+const logger = createLogger('sqlite-session-repository');
+
+export class SqliteSessionRepository implements SessionRepository {
+  constructor(private db: Kysely<Database>) {}
+
+  async findAll(): Promise<PersistedSession[]> {
+    const sessions = await this.db
+      .selectFrom('sessions')
+      .selectAll()
+      .execute();
+
+    // Load workers for each session, skipping corrupted sessions
+    const results: PersistedSession[] = [];
+    for (const s of sessions) {
+      try {
+        results.push(await this.hydrate(s));
+      } catch (error) {
+        if (error instanceof DataIntegrityError) {
+          logger.warn({ sessionId: s.id, err: error }, 'Skipping corrupted session');
+          continue;
+        }
+        throw error;
+      }
+    }
+    return results;
+  }
+
+  async findById(id: string): Promise<PersistedSession | null> {
+    const session = await this.db
+      .selectFrom('sessions')
+      .where('id', '=', id)
+      .selectAll()
+      .executeTakeFirst();
+
+    return session ? this.hydrate(session) : null;
+  }
+
+  async findByServerPid(pid: number): Promise<PersistedSession[]> {
+    const sessions = await this.db
+      .selectFrom('sessions')
+      .where('server_pid', '=', pid)
+      .selectAll()
+      .execute();
+
+    return Promise.all(sessions.map((s) => this.hydrate(s)));
+  }
+
+  async save(session: PersistedSession): Promise<void> {
+    await this.db.transaction().execute(async (trx) => {
+      // Upsert session
+      const sessionRow = toSessionRow(session);
+
+      await trx
+        .insertInto('sessions')
+        .values(sessionRow)
+        .onConflict((oc) =>
+          oc.column('id').doUpdateSet({
+            type: sessionRow.type,
+            location_path: sessionRow.location_path,
+            server_pid: sessionRow.server_pid,
+            created_at: sessionRow.created_at,
+            initial_prompt: sessionRow.initial_prompt,
+            title: sessionRow.title,
+            repository_id: sessionRow.repository_id,
+            worktree_id: sessionRow.worktree_id,
+          })
+        )
+        .execute();
+
+      // Delete existing workers and re-insert (replace strategy)
+      await trx.deleteFrom('workers').where('session_id', '=', session.id).execute();
+
+      // Insert workers
+      for (const worker of session.workers) {
+        await trx.insertInto('workers').values(toWorkerRow(worker, session.id)).execute();
+      }
+    });
+
+    logger.debug({ sessionId: session.id }, 'Session saved');
+  }
+
+  async saveAll(sessions: PersistedSession[]): Promise<void> {
+    await this.db.transaction().execute(async (trx) => {
+      // Delete all sessions and workers (cascade will handle workers)
+      await trx.deleteFrom('sessions').execute();
+
+      // Insert all sessions and workers
+      for (const session of sessions) {
+        const sessionRow = toSessionRow(session);
+        await trx.insertInto('sessions').values(sessionRow).execute();
+
+        for (const worker of session.workers) {
+          await trx.insertInto('workers').values(toWorkerRow(worker, session.id)).execute();
+        }
+      }
+    });
+
+    logger.debug({ count: sessions.length }, 'All sessions saved');
+  }
+
+  async delete(id: string): Promise<void> {
+    // Workers are deleted automatically via CASCADE
+    await this.db.deleteFrom('sessions').where('id', '=', id).execute();
+    logger.debug({ sessionId: id }, 'Session deleted');
+  }
+
+  // ========== Private Helper Methods ==========
+
+  private async hydrate(session: Session): Promise<PersistedSession> {
+    const workers = await this.db
+      .selectFrom('workers')
+      .where('session_id', '=', session.id)
+      .selectAll()
+      .execute();
+
+    const persistedWorkers = workers.map((w) => toPersistedWorker(w));
+
+    return toPersistedSession(session, persistedWorkers);
+  }
+}

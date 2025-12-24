@@ -1,41 +1,84 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import * as fs from 'fs';
 import type { AgentDefinition } from '@agent-console/shared';
 import { setupTestConfigDir, cleanupTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
+import type { AgentRepository } from '../../repositories/agent-repository.js';
+
+/**
+ * In-memory mock implementation of AgentRepository for testing.
+ */
+class InMemoryAgentRepository implements AgentRepository {
+  private agents = new Map<string, AgentDefinition>();
+
+  async findAll(): Promise<AgentDefinition[]> {
+    return Array.from(this.agents.values());
+  }
+
+  async findById(id: string): Promise<AgentDefinition | null> {
+    return this.agents.get(id) ?? null;
+  }
+
+  async save(agent: AgentDefinition): Promise<void> {
+    // Skip built-in agents
+    if (agent.isBuiltIn) return;
+    this.agents.set(agent.id, agent);
+  }
+
+  async delete(id: string): Promise<void> {
+    const agent = this.agents.get(id);
+    if (!agent) {
+      return; // Idempotent
+    }
+    if (agent.isBuiltIn) {
+      throw new Error('Cannot delete built-in agent');
+    }
+    this.agents.delete(id);
+  }
+
+  // Test helper to pre-populate data
+  setAgents(agents: AgentDefinition[]): void {
+    this.agents.clear();
+    for (const agent of agents) {
+      if (!agent.isBuiltIn) {
+        this.agents.set(agent.id, agent);
+      }
+    }
+  }
+
+  // Test helper to get all saved agents
+  getAllSaved(): AgentDefinition[] {
+    return Array.from(this.agents.values());
+  }
+}
 
 describe('AgentManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
   let importCounter = 0;
+  let mockRepository: InMemoryAgentRepository;
 
   beforeEach(() => {
     setupTestConfigDir(TEST_CONFIG_DIR);
+    mockRepository = new InMemoryAgentRepository();
   });
 
   afterEach(() => {
     cleanupTestConfigDir();
   });
 
-  // Helper to get fresh module instances
-  async function getAgentManager() {
+  // Helper to get fresh AgentManager instance with the mock repository
+  async function getAgentManager(preloadedAgents: AgentDefinition[] = []) {
+    // Pre-populate the repository before creating the manager
+    mockRepository.setAgents(preloadedAgents);
     const module = await import(`../agent-manager.js?v=${++importCounter}`);
+    const manager = await module.AgentManager.create(mockRepository);
     return {
-      AgentManager: module.AgentManager,
+      manager,
       CLAUDE_CODE_AGENT_ID: module.CLAUDE_CODE_AGENT_ID,
     };
   }
 
-  // Helper to pre-populate agents file
-  function setupAgents(agents: AgentDefinition[]) {
-    fs.writeFileSync(
-      `${TEST_CONFIG_DIR}/agents.json`,
-      JSON.stringify(agents)
-    );
-  }
-
   describe('initialization', () => {
     it('should initialize with built-in Claude Code agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       const agents = manager.getAllAgents();
       expect(agents.length).toBeGreaterThanOrEqual(1);
@@ -46,7 +89,7 @@ describe('AgentManager', () => {
     });
 
     it('should load custom agents from persistence', async () => {
-      setupAgents([
+      const preloadedAgents: AgentDefinition[] = [
         {
           id: 'custom-agent',
           name: 'Custom Agent',
@@ -59,10 +102,9 @@ describe('AgentManager', () => {
             supportsActivityDetection: false,
           },
         },
-      ]);
+      ];
 
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager(preloadedAgents);
 
       const agents = manager.getAllAgents();
       expect(agents.length).toBe(2); // Built-in + custom
@@ -75,8 +117,7 @@ describe('AgentManager', () => {
 
   describe('getAllAgents', () => {
     it('should return all registered agents', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       const agents = manager.getAllAgents();
       expect(agents).toBeInstanceOf(Array);
@@ -86,8 +127,7 @@ describe('AgentManager', () => {
 
   describe('getAgent', () => {
     it('should return agent by id', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
 
       const agent = manager.getAgent(CLAUDE_CODE_AGENT_ID);
       expect(agent).toBeDefined();
@@ -95,8 +135,7 @@ describe('AgentManager', () => {
     });
 
     it('should return undefined for non-existent agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       const agent = manager.getAgent('non-existent');
       expect(agent).toBeUndefined();
@@ -105,8 +144,7 @@ describe('AgentManager', () => {
 
   describe('getDefaultAgent', () => {
     it('should return Claude Code agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       const agent = manager.getDefaultAgent();
       expect(agent.name).toBe('Claude Code');
@@ -116,10 +154,9 @@ describe('AgentManager', () => {
 
   describe('registerAgent', () => {
     it('should register a new custom agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'My Agent',
         commandTemplate: 'my-agent-cmd {{prompt}}',
         description: 'Test agent',
@@ -134,16 +171,15 @@ describe('AgentManager', () => {
       // Should be retrievable
       expect(manager.getAgent(agent.id)).toBeDefined();
 
-      // Should be persisted
-      const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/agents.json`, 'utf-8'));
-      expect(savedData.length).toBeGreaterThan(0);
+      // Should be persisted in the mock repository
+      const savedAgents = mockRepository.getAllSaved();
+      expect(savedAgents.length).toBeGreaterThan(0);
     });
 
     it('should register agent with activity patterns', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'Agent with Patterns',
         commandTemplate: 'cmd {{prompt}}',
         activityPatterns: {
@@ -156,10 +192,9 @@ describe('AgentManager', () => {
     });
 
     it('should register agent with continue template', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'Agent with Continue',
         commandTemplate: 'cmd {{prompt}}',
         continueTemplate: 'cmd --resume',
@@ -170,10 +205,9 @@ describe('AgentManager', () => {
     });
 
     it('should register agent with headless template', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'Agent with Headless',
         commandTemplate: 'cmd {{prompt}}',
         headlessTemplate: 'cmd -p {{prompt}}',
@@ -184,10 +218,9 @@ describe('AgentManager', () => {
     });
 
     it('should handle agent name with special characters', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'Agent 日本語 🤖',
         commandTemplate: 'my-cmd {{prompt}}',
       });
@@ -197,10 +230,9 @@ describe('AgentManager', () => {
     });
 
     it('should handle agent with empty description', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const agent = manager.registerAgent({
+      const agent = await manager.registerAgent({
         name: 'Agent',
         commandTemplate: 'cmd {{prompt}}',
         description: '',
@@ -210,11 +242,10 @@ describe('AgentManager', () => {
     });
 
     it('should compute capabilities correctly', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       // Agent with no optional templates
-      const basicAgent = manager.registerAgent({
+      const basicAgent = await manager.registerAgent({
         name: 'Basic Agent',
         commandTemplate: 'cmd {{prompt}}',
       });
@@ -223,7 +254,7 @@ describe('AgentManager', () => {
       expect(basicAgent.capabilities.supportsActivityDetection).toBe(false);
 
       // Agent with all features
-      const fullAgent = manager.registerAgent({
+      const fullAgent = await manager.registerAgent({
         name: 'Full Agent',
         commandTemplate: 'cmd {{prompt}}',
         continueTemplate: 'cmd --continue',
@@ -238,17 +269,16 @@ describe('AgentManager', () => {
 
   describe('updateAgent', () => {
     it('should update an existing custom agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
       // First register a custom agent
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Original Name',
         commandTemplate: 'original-cmd {{prompt}}',
       });
 
       // Then update it
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         name: 'Updated Name',
         commandTemplate: 'updated-cmd {{prompt}}',
       });
@@ -263,18 +293,16 @@ describe('AgentManager', () => {
     });
 
     it('should return null for non-existent agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const result = manager.updateAgent('non-existent', { name: 'Test' });
+      const result = await manager.updateAgent('non-existent', { name: 'Test' });
       expect(result).toBeNull();
     });
 
     it('should not update built-in agent', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
 
-      const result = manager.updateAgent(CLAUDE_CODE_AGENT_ID, {
+      const result = await manager.updateAgent(CLAUDE_CODE_AGENT_ID, {
         name: 'Modified Claude',
       });
 
@@ -286,17 +314,16 @@ describe('AgentManager', () => {
     });
 
     it('should partially update agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Original',
         commandTemplate: 'cmd {{prompt}}',
         description: 'Original description',
       });
 
       // Update only name
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         name: 'New Name',
       });
 
@@ -306,10 +333,9 @@ describe('AgentManager', () => {
     });
 
     it('should update capabilities when templates change', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Agent',
         commandTemplate: 'cmd {{prompt}}',
       });
@@ -317,7 +343,7 @@ describe('AgentManager', () => {
       expect(created.capabilities.supportsContinue).toBe(false);
 
       // Add continue template
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         continueTemplate: 'cmd --continue',
       });
 
@@ -325,10 +351,9 @@ describe('AgentManager', () => {
     });
 
     it('should clear optional templates when set to null', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Agent',
         commandTemplate: 'cmd {{prompt}}',
         continueTemplate: 'cmd --continue',
@@ -339,7 +364,7 @@ describe('AgentManager', () => {
       expect(created.capabilities.supportsHeadlessMode).toBe(true);
 
       // Clear templates by setting to null
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         continueTemplate: null,
         headlessTemplate: null,
       });
@@ -351,10 +376,9 @@ describe('AgentManager', () => {
     });
 
     it('should clear activityPatterns when set to null', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Agent with Patterns',
         commandTemplate: 'cmd {{prompt}}',
         activityPatterns: {
@@ -366,7 +390,7 @@ describe('AgentManager', () => {
       expect(created.capabilities.supportsActivityDetection).toBe(true);
 
       // Clear activityPatterns by setting to null
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         activityPatterns: null,
       });
 
@@ -375,10 +399,9 @@ describe('AgentManager', () => {
     });
 
     it('should preserve activityPatterns when not specified in update (undefined)', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'Agent with Patterns',
         commandTemplate: 'cmd {{prompt}}',
         activityPatterns: {
@@ -387,7 +410,7 @@ describe('AgentManager', () => {
       });
 
       // Update only name, activityPatterns not specified (undefined)
-      const updated = manager.updateAgent(created.id, {
+      const updated = await manager.updateAgent(created.id, {
         name: 'Renamed Agent',
       });
 
@@ -399,33 +422,30 @@ describe('AgentManager', () => {
 
   describe('unregisterAgent', () => {
     it('should unregister a custom agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const created = manager.registerAgent({
+      const created = await manager.registerAgent({
         name: 'To Delete',
         commandTemplate: 'cmd {{prompt}}',
       });
 
-      const result = manager.unregisterAgent(created.id);
+      const result = await manager.unregisterAgent(created.id);
 
       expect(result).toBe(true);
       expect(manager.getAgent(created.id)).toBeUndefined();
     });
 
     it('should return false for non-existent agent', async () => {
-      const { AgentManager } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager } = await getAgentManager();
 
-      const result = manager.unregisterAgent('non-existent');
+      const result = await manager.unregisterAgent('non-existent');
       expect(result).toBe(false);
     });
 
     it('should not unregister built-in agent', async () => {
-      const { AgentManager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
-      const manager = new AgentManager();
+      const { manager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
 
-      const result = manager.unregisterAgent(CLAUDE_CODE_AGENT_ID);
+      const result = await manager.unregisterAgent(CLAUDE_CODE_AGENT_ID);
 
       expect(result).toBe(false);
 

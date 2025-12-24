@@ -39,10 +39,11 @@ describe('SessionManager', () => {
   // Mock pathExists that always returns true (test paths don't exist on real filesystem)
   const mockPathExists = async (_path: string): Promise<boolean> => true;
 
-  // Helper to get fresh module instance with DI
+  // Helper to get fresh module instance with DI using the factory pattern
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
-    return new module.SessionManager(ptyFactory.provider, mockPathExists);
+    // Use the factory pattern for async initialization
+    return module.SessionManager.create(ptyFactory.provider, mockPathExists);
   }
 
   // Helper to simulate server restart
@@ -238,7 +239,7 @@ describe('SessionManager', () => {
       const session = await manager.createSession(sessionRequest);
       const workerId = session.workers[0].id;
 
-      const result = manager.deleteWorker(session.id, workerId);
+      const result = await manager.deleteWorker(session.id, workerId);
 
       expect(result).toBe(true);
       const updatedSession = manager.getSession(session.id);
@@ -255,7 +256,7 @@ describe('SessionManager', () => {
       };
 
       const session = await manager.createSession(sessionRequest);
-      const result = manager.deleteWorker(session.id, 'non-existent');
+      const result = await manager.deleteWorker(session.id, 'non-existent');
       expect(result).toBe(false);
     });
   });
@@ -365,7 +366,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      const result = manager.deleteSession(session.id);
+      const result = await manager.deleteSession(session.id);
 
       expect(result).toBe(true);
       expect(ptyFactory.instances[0].killed).toBe(true);
@@ -379,7 +380,7 @@ describe('SessionManager', () => {
     it('should return false for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const result = manager.deleteSession('non-existent');
+      const result = await manager.deleteSession('non-existent');
       expect(result).toBe(false);
     });
   });
@@ -577,7 +578,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      manager.deleteSession(session.id);
+      await manager.deleteSession(session.id);
 
       expect(onSessionDeleted).toHaveBeenCalledTimes(1);
       expect(onSessionDeleted).toHaveBeenCalledWith(session.id);
@@ -623,7 +624,7 @@ describe('SessionManager', () => {
       const onSessionDeleted = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionDeleted });
 
-      manager.deleteSession('non-existent');
+      await manager.deleteSession('non-existent');
 
       expect(onSessionDeleted).not.toHaveBeenCalled();
     });
@@ -641,7 +642,8 @@ describe('SessionManager', () => {
       });
 
       // Should not throw when deleting (onSessionDeleted is not set)
-      expect(() => manager.deleteSession(session.id)).not.toThrow();
+      const result = await manager.deleteSession(session.id);
+      expect(result).toBe(true);
       expect(onSessionCreated).toHaveBeenCalledTimes(1);
     });
 
@@ -670,7 +672,7 @@ describe('SessionManager', () => {
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
 
       // Delete
-      manager.deleteSession(session.id);
+      await manager.deleteSession(session.id);
       expect(onSessionDeleted).toHaveBeenCalledTimes(1);
     });
   });
@@ -1130,10 +1132,10 @@ describe('SessionManager', () => {
   });
 
   describe('restoreWorker - path validation', () => {
-    // Helper to get SessionManager with custom pathExists mock
+    // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return new module.SessionManager(ptyFactory.provider, pathExistsFn);
+      return module.SessionManager.create(ptyFactory.provider, pathExistsFn);
     }
 
     it('should return null when session path no longer exists', async () => {
@@ -1244,7 +1246,7 @@ describe('SessionManager', () => {
 
       const ptyCountBefore = ptyFactory.instances.length;
 
-      const restarted = manager.restartAgentWorker(session.id, originalWorkerId, false);
+      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, false);
 
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(originalWorkerId);
@@ -1269,7 +1271,7 @@ describe('SessionManager', () => {
       // Wait a bit to ensure time passes
       await new Promise(resolve => setTimeout(resolve, 10));
 
-      const restarted = manager.restartAgentWorker(session.id, originalWorkerId, false);
+      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, false);
 
       expect(restarted).not.toBeNull();
       // createdAt should be preserved (not updated to current time)
@@ -1303,7 +1305,7 @@ describe('SessionManager', () => {
       expect(workerOrderBefore).toContain(terminalWorker!.id);
 
       // Restart agent worker
-      manager.restartAgentWorker(session.id, agentWorkerId, false);
+      await manager.restartAgentWorker(session.id, agentWorkerId, false);
 
       // Worker order should be preserved (sorted by createdAt)
       const sessionAfter = manager.getSession(session.id)!;
@@ -1314,7 +1316,7 @@ describe('SessionManager', () => {
     it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const result = manager.restartAgentWorker('non-existent', 'worker-1', false);
+      const result = await manager.restartAgentWorker('non-existent', 'worker-1', false);
       expect(result).toBeNull();
     });
 
@@ -1327,7 +1329,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      const result = manager.restartAgentWorker(session.id, 'non-existent', false);
+      const result = await manager.restartAgentWorker(session.id, 'non-existent', false);
       expect(result).toBeNull();
     });
 
@@ -1345,7 +1347,7 @@ describe('SessionManager', () => {
         name: 'Shell',
       });
 
-      const result = manager.restartAgentWorker(session.id, terminalWorker!.id, false);
+      const result = await manager.restartAgentWorker(session.id, terminalWorker!.id, false);
       expect(result).toBeNull();
     });
   });

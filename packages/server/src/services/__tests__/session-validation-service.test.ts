@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { setupTestConfigDir, cleanupTestConfigDir, setupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import type { PersistedSession } from '../persistence-service.js';
@@ -26,8 +27,14 @@ describe('SessionValidationService', () => {
   async function getServices() {
     const module = await import(`../session-validation-service.js?v=${++importCounter}`);
     const persistenceModule = await import(`../persistence-service.js?v=${importCounter}`);
+    const repoModule = await import(`../../repositories/json-session-repository.js?v=${importCounter}`);
+
+    const sessionRepository = new repoModule.JsonSessionRepository(
+      path.join(TEST_CONFIG_DIR, 'sessions.json')
+    );
+
     return {
-      validationService: new module.SessionValidationService(),
+      validationService: new module.SessionValidationService(sessionRepository),
       persistenceService: new persistenceModule.PersistenceService(),
     };
   }

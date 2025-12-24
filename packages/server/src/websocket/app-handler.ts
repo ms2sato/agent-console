@@ -1,5 +1,13 @@
 import type { WSContext } from 'hono/ws';
-import type { AppClientMessage, Session, AgentActivityState, WorkerActivityInfo } from '@agent-console/shared';
+import type {
+  AppClientMessage,
+  AppServerMessage,
+  Session,
+  AgentActivityState,
+  WorkerActivityInfo,
+  AgentDefinition,
+  Repository,
+} from '@agent-console/shared';
 import { APP_CLIENT_MESSAGE_TYPES } from '@agent-console/shared';
 
 /**
@@ -21,9 +29,12 @@ export function isValidClientMessage(msg: unknown): msg is AppClientMessage {
 export interface AppHandlerDependencies {
   getAllSessions: () => Session[];
   getWorkerActivityState: (sessionId: string, workerId: string) => AgentActivityState | undefined;
+  getAllAgents: () => Promise<AgentDefinition[]>;
+  getAllRepositories: () => Promise<Repository[]>;
   logger: {
     debug: (obj: object, msg: string) => void;
     warn: (obj: object, msg: string) => void;
+    error: (obj: object, msg: string) => void;
   };
 }
 
@@ -73,6 +84,46 @@ export function sendSessionsSync(
 }
 
 /**
+ * Send agents-sync message to a specific client.
+ */
+export async function sendAgentsSync(
+  ws: WSContext,
+  deps: Pick<AppHandlerDependencies, 'getAllAgents' | 'logger'>
+): Promise<void> {
+  try {
+    const agents = await deps.getAllAgents();
+    const syncMsg: AppServerMessage = {
+      type: 'agents-sync',
+      agents,
+    };
+    ws.send(JSON.stringify(syncMsg));
+    deps.logger.debug({ agentCount: agents.length }, 'Sent agents-sync');
+  } catch (err) {
+    deps.logger.error({ err }, 'Failed to send agents-sync');
+  }
+}
+
+/**
+ * Send repositories-sync message to a specific client.
+ */
+export async function sendRepositoriesSync(
+  ws: WSContext,
+  deps: Pick<AppHandlerDependencies, 'getAllRepositories' | 'logger'>
+): Promise<void> {
+  try {
+    const repositories = await deps.getAllRepositories();
+    const syncMsg: AppServerMessage = {
+      type: 'repositories-sync',
+      repositories,
+    };
+    ws.send(JSON.stringify(syncMsg));
+    deps.logger.debug({ repoCount: repositories.length }, 'Sent repositories-sync');
+  } catch (err) {
+    deps.logger.error({ err }, 'Failed to send repositories-sync');
+  }
+}
+
+/**
  * Create app WebSocket message handler with injected dependencies.
  */
 export function createAppMessageHandler(deps: AppHandlerDependencies) {
@@ -88,8 +139,11 @@ export function createAppMessageHandler(deps: AppHandlerDependencies) {
 
       switch (parsed.type) {
         case 'request-sync':
-          deps.logger.debug({}, 'Received request-sync, sending sessions-sync');
+          deps.logger.debug({}, 'Received request-sync, sending full sync');
+          // Send all sync messages in parallel
           sendSessionsSync(ws, deps);
+          sendAgentsSync(ws, deps);
+          sendRepositoriesSync(ws, deps);
           break;
       }
     } catch (e) {

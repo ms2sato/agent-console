@@ -12,6 +12,7 @@ export interface AppWebSocketState {
   connected: boolean;
   sessionsSynced: boolean;
   agentsSynced: boolean;
+  repositoriesSynced: boolean;
 }
 
 // Connection state
@@ -20,6 +21,7 @@ let state: AppWebSocketState = {
   connected: false,
   sessionsSynced: false,
   agentsSynced: false,
+  repositoriesSynced: false,
 };
 let retryCount = 0;
 let retryTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -107,6 +109,9 @@ function handleMessage(event: MessageEvent) {
     if (parsed.type === 'agents-sync') {
       setState({ agentsSynced: true });
     }
+    if (parsed.type === 'repositories-sync') {
+      setState({ repositoriesSynced: true });
+    }
     messageListeners.forEach(fn => fn(parsed));
   } catch (e) {
     console.error('[WebSocket] Failed to parse message:', e);
@@ -165,7 +170,7 @@ export function connect(): void {
       // Reset all sync states on disconnect to ensure fresh sync on reconnection.
       // This prevents Dashboard from being stuck in stale state after reconnect.
       syncPending = false;
-      setState({ connected: false, sessionsSynced: false, agentsSynced: false });
+      setState({ connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false });
       console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
       if (!isReconnectCode(event.code)) {
@@ -272,7 +277,7 @@ export function _reset(): void {
   disconnect();
   retryCount = 0;
   syncPending = false;
-  state = { connected: false, sessionsSynced: false, agentsSynced: false };
+  state = { connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false };
   messageListeners.clear();
   stateListeners.clear();
 }

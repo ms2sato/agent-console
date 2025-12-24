@@ -6,6 +6,8 @@ import { setupWebSocketRoutes } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
+import { initializeDatabase, closeDatabase } from './database/connection.js';
+import { getConfigDir } from './lib/config.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,13 +28,15 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Log when server receives termination signals
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGTERM');
+  await closeDatabase();
   process.exit(0);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGINT');
+  await closeDatabase();
   process.exit(0);
 });
 
@@ -80,6 +84,22 @@ if (isProduction) {
 }
 
 const PORT = Number(serverConfig.PORT);
+
+// Initialize database before starting server
+try {
+  await initializeDatabase();
+  logger.info('Database initialized successfully');
+} catch (error) {
+  logger.fatal({ err: error }, 'Failed to initialize database');
+  console.error('\nDATABASE INITIALIZATION FAILED\n');
+  console.error('The database could not be initialized. This may be due to:');
+  console.error('  - Corrupted database file');
+  console.error('  - Insufficient disk space');
+  console.error('  - Permission issues\n');
+  console.error('To reset the database, delete the file:');
+  console.error(`  rm ${getConfigDir()}/data.db\n`);
+  process.exit(1);
+}
 
 logger.info(
   { port: PORT, env: isProduction ? 'production' : 'development', pid: process.pid },

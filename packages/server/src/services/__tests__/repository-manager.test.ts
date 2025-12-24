@@ -3,11 +3,51 @@ import * as fs from 'fs';
 import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
+import type { RepositoryRepository } from '../../repositories/repository-repository.js';
+
+/**
+ * In-memory mock implementation of RepositoryRepository for testing.
+ */
+class InMemoryRepositoryRepository implements RepositoryRepository {
+  private repositories = new Map<string, Repository>();
+
+  async findAll(): Promise<Repository[]> {
+    return Array.from(this.repositories.values());
+  }
+
+  async findById(id: string): Promise<Repository | null> {
+    return this.repositories.get(id) ?? null;
+  }
+
+  async findByPath(path: string): Promise<Repository | null> {
+    for (const repo of this.repositories.values()) {
+      if (repo.path === path) return repo;
+    }
+    return null;
+  }
+
+  async save(repository: Repository): Promise<void> {
+    this.repositories.set(repository.id, repository);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.repositories.delete(id);
+  }
+
+  // Test helper to pre-populate data
+  setRepositories(repos: Repository[]): void {
+    this.repositories.clear();
+    for (const repo of repos) {
+      this.repositories.set(repo.id, repo);
+    }
+  }
+}
 
 describe('RepositoryManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
   const TEST_REPO_DIR = '/test/repo';
   let importCounter = 0;
+  let mockRepository: InMemoryRepositoryRepository;
 
   beforeEach(() => {
     // Set up memfs with config dir and a git repo
@@ -21,30 +61,26 @@ describe('RepositoryManager', () => {
     // Reset git mocks
     mockGit.getOrgRepoFromPath.mockReset();
     mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('test-org/repo'));
+
+    // Create fresh mock repository for each test
+    mockRepository = new InMemoryRepositoryRepository();
   });
 
   afterEach(() => {
     cleanupMemfs();
   });
 
-  // Helper to get fresh module instance
-  async function getRepositoryManager() {
+  // Helper to get fresh RepositoryManager instance with the mock repository
+  async function getRepositoryManager(preloadedRepos: Repository[] = []) {
+    // Pre-populate the repository before creating the manager
+    mockRepository.setRepositories(preloadedRepos);
     const module = await import(`../repository-manager.js?v=${++importCounter}`);
-    return module.RepositoryManager;
-  }
-
-  // Helper to pre-populate repositories file
-  function setupRepositories(repos: Repository[]) {
-    fs.writeFileSync(
-      `${TEST_CONFIG_DIR}/repositories.json`,
-      JSON.stringify(repos)
-    );
+    return module.RepositoryManager.create(mockRepository);
   }
 
   describe('registerRepository', () => {
     it('should register a valid git repository', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const repo = await manager.registerRepository(TEST_REPO_DIR);
 
@@ -55,8 +91,7 @@ describe('RepositoryManager', () => {
     });
 
     it('should throw error for non-existent path', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       await expect(
         manager.registerRepository('/non/existent/path')
@@ -64,8 +99,7 @@ describe('RepositoryManager', () => {
     });
 
     it('should throw error for non-git directory', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       // Create a non-git directory
       fs.mkdirSync('/non-git-dir', { recursive: true });
@@ -76,8 +110,7 @@ describe('RepositoryManager', () => {
     });
 
     it('should throw error for duplicate registration', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       await manager.registerRepository(TEST_REPO_DIR);
 
@@ -86,23 +119,21 @@ describe('RepositoryManager', () => {
       ).rejects.toThrow('Repository already registered');
     });
 
-    it('should persist repository via persistence service', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+    it('should persist repository via repository', async () => {
+      const manager = await getRepositoryManager();
 
       await manager.registerRepository(TEST_REPO_DIR);
 
-      // Check persisted data
-      const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/repositories.json`, 'utf-8'));
-      expect(savedData.length).toBe(1);
-      expect(savedData[0].path).toBe(TEST_REPO_DIR);
+      // Check persisted data in the mock repository
+      const savedRepos = await mockRepository.findAll();
+      expect(savedRepos.length).toBe(1);
+      expect(savedRepos[0].path).toBe(TEST_REPO_DIR);
     });
   });
 
   describe('unregisterRepository', () => {
     it('should unregister existing repository', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       const result = await manager.unregisterRepository(repo.id);
@@ -112,30 +143,27 @@ describe('RepositoryManager', () => {
     });
 
     it('should return false for non-existent repository', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const result = await manager.unregisterRepository('non-existent-id');
       expect(result).toBe(false);
     });
 
-    it('should persist unregistration via persistence service', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+    it('should persist unregistration via repository', async () => {
+      const manager = await getRepositoryManager();
 
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await manager.unregisterRepository(repo.id);
 
-      // Check persisted data
-      const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/repositories.json`, 'utf-8'));
-      expect(savedData.length).toBe(0);
+      // Check persisted data in the mock repository
+      const savedRepos = await mockRepository.findAll();
+      expect(savedRepos.length).toBe(0);
     });
   });
 
   describe('getRepository', () => {
     it('should return repository by id', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const registered = await manager.registerRepository(TEST_REPO_DIR);
       const retrieved = manager.getRepository(registered.id);
@@ -144,8 +172,7 @@ describe('RepositoryManager', () => {
     });
 
     it('should return undefined for unknown id', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const result = manager.getRepository('unknown-id');
       expect(result).toBeUndefined();
@@ -154,16 +181,14 @@ describe('RepositoryManager', () => {
 
   describe('getAllRepositories', () => {
     it('should return empty array when no repositories', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const repos = manager.getAllRepositories();
       expect(repos).toEqual([]);
     });
 
     it('should return all registered repositories', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       // Register first repo
       const repo1 = await manager.registerRepository(TEST_REPO_DIR);
@@ -189,8 +214,7 @@ describe('RepositoryManager', () => {
 
   describe('findRepositoryByPath', () => {
     it('should find repository by path', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const registered = await manager.registerRepository(TEST_REPO_DIR);
       const found = manager.findRepositoryByPath(TEST_REPO_DIR);
@@ -199,28 +223,26 @@ describe('RepositoryManager', () => {
     });
 
     it('should return undefined for unregistered path', async () => {
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager();
 
       const result = manager.findRepositoryByPath('/some/other/path');
       expect(result).toBeUndefined();
     });
   });
 
-  describe('loading from disk', () => {
-    it('should load repositories from persistence service on construction', async () => {
-      // Pre-populate repositories file
-      setupRepositories([
+  describe('loading from repository', () => {
+    it('should load repositories from repository on construction', async () => {
+      // Pre-populate repository
+      const preloadedRepos: Repository[] = [
         {
           id: 'existing-id',
           name: 'repo',
           path: TEST_REPO_DIR,
           registeredAt: '2024-01-01T00:00:00.000Z',
         },
-      ]);
+      ];
 
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager(preloadedRepos);
 
       const repos = manager.getAllRepositories();
       expect(repos.length).toBe(1);
@@ -229,17 +251,16 @@ describe('RepositoryManager', () => {
 
     it('should skip repositories with missing paths on load', async () => {
       // Pre-populate with a repo that points to non-existent path
-      setupRepositories([
+      const preloadedRepos: Repository[] = [
         {
           id: 'missing-repo',
           name: 'missing',
           path: '/non/existent/path',
           registeredAt: '2024-01-01T00:00:00.000Z',
         },
-      ]);
+      ];
 
-      const RepositoryManager = await getRepositoryManager();
-      const manager = new RepositoryManager();
+      const manager = await getRepositoryManager(preloadedRepos);
 
       expect(manager.getAllRepositories().length).toBe(0);
     });
