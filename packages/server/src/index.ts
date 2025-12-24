@@ -8,6 +8,7 @@ import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { initializeDatabase, closeDatabase } from './database/connection.js';
 import { getConfigDir } from './lib/config.js';
+import { getJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -30,12 +31,14 @@ process.on('unhandledRejection', (reason, promise) => {
 // Log when server receives termination signals
 process.on('SIGTERM', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGTERM');
+  await resetJobQueue();
   await closeDatabase();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGINT');
+  await resetJobQueue();
   await closeDatabase();
   process.exit(0);
 });
@@ -81,6 +84,12 @@ try {
   console.error(`  rm ${getConfigDir()}/data.db\n`);
   process.exit(1);
 }
+
+// Initialize job queue after database initialization
+const jobQueue = getJobQueue();
+registerJobHandlers(jobQueue);
+await jobQueue.start();
+logger.info('JobQueue initialized and started');
 
 // Setup WebSocket routes AFTER database initialization but BEFORE SPA fallback
 // This ensures SessionManager uses the properly initialized SQLite repository
