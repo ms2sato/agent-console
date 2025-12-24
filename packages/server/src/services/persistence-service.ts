@@ -15,7 +15,7 @@ export interface PersistedRepository {
   id: string;
   name: string;
   path: string;
-  registeredAt: string;
+  createdAt: string;
 }
 
 // Base for all persisted workers

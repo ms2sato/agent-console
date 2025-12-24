@@ -1,4 +1,4 @@
-import type { Insertable, Selectable, Updateable } from 'kysely';
+import type { Generated, Insertable, Selectable, Updateable } from 'kysely';
 
 /**
  * Database table definitions for Kysely.
@@ -24,8 +24,10 @@ export interface SessionsTable {
   location_path: string;
   /** Server process ID that owns this session (null for orphaned sessions) */
   server_pid: number | null;
-  /** Creation timestamp as ISO 8601 string */
-  created_at: string;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
   /** Initial prompt used to start the session */
   initial_prompt: string | null;
   /** Human-readable title for the session */
@@ -49,8 +51,10 @@ export interface WorkersTable {
   type: 'agent' | 'terminal' | 'git-diff';
   /** Display name for the worker */
   name: string;
-  /** Creation timestamp as ISO 8601 string */
-  created_at: string;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
   /** PTY process ID (null for git-diff workers or inactive PTY workers) */
   pid: number | null;
   /** Agent ID for agent workers (null for other worker types) */
@@ -86,8 +90,10 @@ export interface RepositoriesTable {
   name: string;
   /** Absolute path to the repository */
   path: string;
-  /** Registration timestamp as ISO 8601 string */
-  registered_at: string;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
 }
 
 /** Repository row as returned from SELECT queries */
@@ -116,8 +122,10 @@ export interface AgentsTable {
   description: string | null;
   /** Whether this is a built-in agent (always 0 for persisted agents) */
   is_built_in: number;
-  /** Registration timestamp as ISO 8601 string (optional for built-in) */
-  registered_at: string | null;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
   /** JSON-serialized activity patterns (optional) */
   activity_patterns: string | null;
 }

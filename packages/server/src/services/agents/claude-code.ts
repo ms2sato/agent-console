@@ -40,7 +40,7 @@ const claudeCodeAgentBase = {
   headlessTemplate: 'claude -p --output-format text {{prompt}}',
   description: 'Anthropic Claude Code - Interactive AI coding assistant',
   isBuiltIn: true,
-  registeredAt: new Date(0).toISOString(), // Epoch time for built-in
+  createdAt: new Date(0).toISOString(), // Epoch time for built-in
   activityPatterns: {
     askingPatterns: ASKING_PATTERNS,
   },

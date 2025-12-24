@@ -71,7 +71,8 @@ export class SqliteSessionRepository implements SessionRepository {
             type: sessionRow.type,
             location_path: sessionRow.location_path,
             server_pid: sessionRow.server_pid,
-            created_at: sessionRow.created_at,
+            // Note: created_at is intentionally NOT updated (should never change after insert)
+            updated_at: sessionRow.updated_at,
             initial_prompt: sessionRow.initial_prompt,
             title: sessionRow.title,
             repository_id: sessionRow.repository_id,
@@ -80,12 +81,38 @@ export class SqliteSessionRepository implements SessionRepository {
         )
         .execute();
 
-      // Delete existing workers and re-insert (replace strategy)
-      await trx.deleteFrom('workers').where('session_id', '=', session.id).execute();
-
-      // Insert workers
+      // Upsert workers (preserves created_at, updates other fields)
       for (const worker of session.workers) {
-        await trx.insertInto('workers').values(toWorkerRow(worker, session.id)).execute();
+        const workerRow = toWorkerRow(worker, session.id);
+        await trx
+          .insertInto('workers')
+          .values(workerRow)
+          .onConflict((oc) =>
+            oc.column('id').doUpdateSet({
+              session_id: workerRow.session_id,
+              type: workerRow.type,
+              name: workerRow.name,
+              // Note: created_at is intentionally NOT updated (should never change after insert)
+              updated_at: workerRow.updated_at,
+              pid: workerRow.pid,
+              agent_id: workerRow.agent_id,
+              base_commit: workerRow.base_commit,
+            })
+          )
+          .execute();
+      }
+
+      // Delete orphaned workers (workers no longer in the session)
+      const currentWorkerIds = session.workers.map((w) => w.id);
+      if (currentWorkerIds.length > 0) {
+        await trx
+          .deleteFrom('workers')
+          .where('session_id', '=', session.id)
+          .where('id', 'not in', currentWorkerIds)
+          .execute();
+      } else {
+        // If no workers, delete all workers for this session
+        await trx.deleteFrom('workers').where('session_id', '=', session.id).execute();
       }
     });
 

@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteAgentRepository } from '../sqlite-agent-repository.js';
 import type { Database } from '../../database/schema.js';
 import type { AgentDefinition, AgentActivityPatterns } from '@agent-console/shared';
+
+const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 describe('SqliteAgentRepository', () => {
   let bunDb: BunDatabase;
@@ -30,7 +32,8 @@ describe('SqliteAgentRepository', () => {
       .addColumn('headless_template', 'text')
       .addColumn('description', 'text')
       .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
-      .addColumn('registered_at', 'text')
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('activity_patterns', 'text')
       .execute();
 
@@ -53,7 +56,7 @@ describe('SqliteAgentRepository', () => {
       headlessTemplate: overrides.headlessTemplate,
       description: overrides.description,
       isBuiltIn: overrides.isBuiltIn ?? false,
-      registeredAt: overrides.registeredAt ?? new Date().toISOString(),
+      createdAt: overrides.createdAt ?? new Date().toISOString(),
       activityPatterns: overrides.activityPatterns,
       capabilities: overrides.capabilities ?? {
         supportsContinue: false,
@@ -156,6 +159,50 @@ describe('SqliteAgentRepository', () => {
       expect(all.length).toBe(1);
     });
 
+    it('should preserve created_at and update updated_at on update', async () => {
+      const originalCreatedAt = '2024-01-01T00:00:00.000Z';
+      const agent = createAgent({
+        id: 'timestamp-test',
+        name: 'Original',
+        createdAt: originalCreatedAt,
+      });
+      await repository.save(agent);
+
+      // Get the original timestamps from database directly
+      const originalRow = await db
+        .selectFrom('agents')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      expect(originalRow?.created_at).toBe(originalCreatedAt);
+      const originalUpdatedAt = originalRow?.updated_at;
+
+      // Wait a bit to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Update with a different createdAt (simulating real-world scenario)
+      const updated = createAgent({
+        id: 'timestamp-test',
+        name: 'Updated',
+        createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt
+      });
+      await repository.save(updated);
+
+      // Get timestamps after update
+      const updatedRow = await db
+        .selectFrom('agents')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      // created_at should NOT change
+      expect(updatedRow?.created_at).toBe(originalCreatedAt);
+
+      // updated_at should change
+      expect(updatedRow?.updated_at).not.toBe(originalUpdatedAt);
+    });
+
     it('should not save built-in agents', async () => {
       const builtInAgent = createAgent({ id: 'built-in', isBuiltIn: true });
 
@@ -170,7 +217,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should preserve all optional fields', async () => {
-      const registeredAt = '2024-01-15T10:30:00.000Z';
+      const createdAt = '2024-01-15T10:30:00.000Z';
       const agent = createAgent({
         id: 'full-agent',
         name: 'Full Agent',
@@ -178,7 +225,7 @@ describe('SqliteAgentRepository', () => {
         continueTemplate: 'agent continue',
         headlessTemplate: 'agent headless --prompt={{prompt}}',
         description: 'A test agent with all fields',
-        registeredAt,
+        createdAt,
       });
 
       await repository.save(agent);
@@ -190,7 +237,7 @@ describe('SqliteAgentRepository', () => {
       expect(found?.continueTemplate).toBe('agent continue');
       expect(found?.headlessTemplate).toBe('agent headless --prompt={{prompt}}');
       expect(found?.description).toBe('A test agent with all fields');
-      expect(found?.registeredAt).toBe(registeredAt);
+      expect(found?.createdAt).toBe(createdAt);
     });
 
     it('should serialize and deserialize activity patterns', async () => {
@@ -264,6 +311,7 @@ describe('SqliteAgentRepository', () => {
       await repository.save(customAgent);
 
       // Then manually insert a built-in agent for testing the delete logic
+      const now = new Date().toISOString();
       await db
         .insertInto('agents')
         .values({
@@ -274,7 +322,8 @@ describe('SqliteAgentRepository', () => {
           headless_template: null,
           description: null,
           is_built_in: 1,
-          registered_at: new Date().toISOString(),
+          created_at: now,
+          updated_at: now,
           activity_patterns: null,
         })
         .execute();

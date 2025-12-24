@@ -36,19 +36,22 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
   }
 
   async save(repository: Repository): Promise<void> {
+    const now = new Date().toISOString();
     await this.db
       .insertInto('repositories')
       .values({
         id: repository.id,
         name: repository.name,
         path: repository.path,
-        registered_at: repository.registeredAt,
+        created_at: repository.createdAt,
+        updated_at: now,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
           name: repository.name,
           path: repository.path,
-          registered_at: repository.registeredAt,
+          // Note: created_at is intentionally NOT updated (should never change after insert)
+          updated_at: now,
         })
       )
       .execute();

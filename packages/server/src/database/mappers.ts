@@ -50,12 +50,14 @@ export class DataIntegrityError extends Error {
  * @returns Database row ready for insertion
  */
 export function toSessionRow(session: PersistedSession): NewSession {
+  const now = new Date().toISOString();
   const base = {
     id: session.id,
     type: session.type,
     location_path: session.locationPath,
     server_pid: session.serverPid ?? null,
     created_at: session.createdAt,
+    updated_at: now,
     initial_prompt: session.initialPrompt ?? null,
     title: session.title ?? null,
   };
@@ -85,12 +87,14 @@ export function toSessionRow(session: PersistedSession): NewSession {
  * @returns Database row ready for insertion
  */
 export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWorker {
+  const now = new Date().toISOString();
   const base = {
     id: worker.id,
     session_id: sessionId,
     type: worker.type,
     name: worker.name,
     created_at: worker.createdAt,
+    updated_at: now,
   };
 
   if (worker.type === 'agent') {
@@ -247,11 +251,13 @@ export function toPersistedSession(
  * @returns Database row ready for insertion
  */
 export function toRepositoryRow(repository: PersistedRepository): NewRepository {
+  const now = new Date().toISOString();
   return {
     id: repository.id,
     name: repository.name,
     path: repository.path,
-    registered_at: repository.registeredAt,
+    created_at: repository.createdAt,
+    updated_at: now,
   };
 }
 
@@ -266,7 +272,7 @@ export function toRepository(row: RepositoryRow): Repository {
     id: row.id,
     name: row.name,
     path: row.path,
-    registeredAt: row.registered_at,
+    createdAt: row.created_at,
   };
 }
 
@@ -280,6 +286,7 @@ export function toRepository(row: RepositoryRow): Repository {
  * @returns Database row ready for insertion
  */
 export function toAgentRow(agent: AgentDefinition): NewAgent {
+  const now = new Date().toISOString();
   return {
     id: agent.id,
     name: agent.name,
@@ -288,7 +295,8 @@ export function toAgentRow(agent: AgentDefinition): NewAgent {
     headless_template: agent.headlessTemplate ?? null,
     description: agent.description ?? null,
     is_built_in: agent.isBuiltIn ? 1 : 0,
-    registered_at: agent.registeredAt,
+    created_at: agent.createdAt,
+    updated_at: now,
     activity_patterns: agent.activityPatterns ? JSON.stringify(agent.activityPatterns) : null,
   };
 }
@@ -313,7 +321,7 @@ export function toAgentDefinition(row: AgentRow): AgentDefinition {
     headlessTemplate: row.headless_template ?? undefined,
     description: row.description ?? undefined,
     isBuiltIn: row.is_built_in === 1,
-    registeredAt: row.registered_at ?? new Date().toISOString(),
+    createdAt: row.created_at ?? new Date().toISOString(),
     activityPatterns,
   };
 

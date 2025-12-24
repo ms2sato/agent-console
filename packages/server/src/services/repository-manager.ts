@@ -105,7 +105,7 @@ export class RepositoryManager {
       id,
       name,
       path: absolutePath,
-      registeredAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     };
 
     this.repositories.set(id, repository);

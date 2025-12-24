@@ -50,13 +50,13 @@ const TEST_REPOSITORIES = [
     id: 'repo-1',
     name: 'my-project',
     path: '/path/to/my-project',
-    registeredAt: '2024-01-01T00:00:00.000Z',
+    createdAt: '2024-01-01T00:00:00.000Z',
   },
   {
     id: 'repo-2',
     name: 'another-project',
     path: '/path/to/another-project',
-    registeredAt: '2024-01-02T00:00:00.000Z',
+    createdAt: '2024-01-02T00:00:00.000Z',
   },
 ];
 
@@ -66,7 +66,7 @@ const TEST_AGENTS = [
     name: 'Custom Agent',
     commandTemplate: 'custom-agent {{prompt}}', // Note: lowercase {{prompt}} required
     isBuiltIn: false,
-    registeredAt: '2024-01-01T00:00:00.000Z',
+    createdAt: '2024-01-01T00:00:00.000Z',
     capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
   },
   // Built-in agent (should be skipped)
@@ -75,7 +75,7 @@ const TEST_AGENTS = [
     name: 'Claude Code',
     commandTemplate: 'claude {{prompt}}', // Note: lowercase {{prompt}} required
     isBuiltIn: true,
-    registeredAt: '2024-01-01T00:00:00.000Z',
+    createdAt: '2024-01-01T00:00:00.000Z',
     capabilities: { supportsContinue: true, supportsHeadlessMode: true, supportsActivityDetection: true },
   },
 ];
@@ -144,7 +144,8 @@ describe('migration', () => {
           id: 'existing-repo',
           name: 'Existing',
           path: '/existing',
-          registered_at: '2024-01-01T00:00:00.000Z',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
         })
         .execute();
 
@@ -210,7 +211,7 @@ describe('migration', () => {
           name: 'Valid Agent',
           commandTemplate: 'valid {{prompt}}', // lowercase {{prompt}} required
           isBuiltIn: false,
-          registeredAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
         },
         {

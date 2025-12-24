@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteRepositoryRepository } from '../sqlite-repository-repository.js';
 import type { Database } from '../../database/schema.js';
 import type { Repository } from '@agent-console/shared';
+
+const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 describe('SqliteRepositoryRepository', () => {
   let bunDb: BunDatabase;
@@ -26,7 +28,8 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('name', 'text', (col) => col.notNull())
       .addColumn('path', 'text', (col) => col.notNull().unique())
-      .addColumn('registered_at', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .execute();
 
     repository = new SqliteRepositoryRepository(db);
@@ -44,7 +47,7 @@ describe('SqliteRepositoryRepository', () => {
       id: overrides.id ?? 'test-repo-id',
       name: overrides.name ?? 'test-repo',
       path: overrides.path ?? '/test/path/repo',
-      registeredAt: overrides.registeredAt ?? new Date().toISOString(),
+      createdAt: overrides.createdAt ?? new Date().toISOString(),
     };
   }
 
@@ -157,13 +160,59 @@ describe('SqliteRepositoryRepository', () => {
       expect(all.length).toBe(1);
     });
 
+    it('should preserve created_at and update updated_at on update', async () => {
+      const originalCreatedAt = '2024-01-01T00:00:00.000Z';
+      const repo = createRepository({
+        id: 'timestamp-test',
+        name: 'Original',
+        path: '/timestamp/test',
+        createdAt: originalCreatedAt,
+      });
+      await repository.save(repo);
+
+      // Get the original timestamps from database directly
+      const originalRow = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      expect(originalRow?.created_at).toBe(originalCreatedAt);
+      const originalUpdatedAt = originalRow?.updated_at;
+
+      // Wait a bit to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Update with a different createdAt (simulating real-world scenario)
+      const updated = createRepository({
+        id: 'timestamp-test',
+        name: 'Updated',
+        path: '/timestamp/test',
+        createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt
+      });
+      await repository.save(updated);
+
+      // Get timestamps after update
+      const updatedRow = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      // created_at should NOT change
+      expect(updatedRow?.created_at).toBe(originalCreatedAt);
+
+      // updated_at should change
+      expect(updatedRow?.updated_at).not.toBe(originalUpdatedAt);
+    });
+
     it('should preserve all fields correctly', async () => {
-      const registeredAt = '2024-01-15T10:30:00.000Z';
+      const createdAt = '2024-01-15T10:30:00.000Z';
       const repo = createRepository({
         id: 'full-repo',
         name: 'Full Repository',
         path: '/home/user/projects/full-repo',
-        registeredAt,
+        createdAt,
       });
 
       await repository.save(repo);
@@ -172,7 +221,7 @@ describe('SqliteRepositoryRepository', () => {
       expect(found?.id).toBe('full-repo');
       expect(found?.name).toBe('Full Repository');
       expect(found?.path).toBe('/home/user/projects/full-repo');
-      expect(found?.registeredAt).toBe(registeredAt);
+      expect(found?.createdAt).toBe(createdAt);
     });
   });
 

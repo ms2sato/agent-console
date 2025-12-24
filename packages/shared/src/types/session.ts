@@ -7,7 +7,7 @@ interface Repository {
   id: string;
   name: string;
   path: string;
-  registeredAt: string;
+  createdAt: string;
   remoteUrl?: string;
 }
 

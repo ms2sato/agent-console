@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
@@ -11,6 +11,8 @@ import type {
   PersistedWorktreeSession,
   PersistedQuickSession,
 } from '../../services/persistence-service.js';
+
+const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 describe('SqliteSessionRepository', () => {
   let bunDb: BunDatabase;
@@ -33,7 +35,8 @@ describe('SqliteSessionRepository', () => {
       .addColumn('type', 'text', (col) => col.notNull())
       .addColumn('location_path', 'text', (col) => col.notNull())
       .addColumn('server_pid', 'integer')
-      .addColumn('created_at', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('initial_prompt', 'text')
       .addColumn('title', 'text')
       .addColumn('repository_id', 'text')
@@ -48,7 +51,8 @@ describe('SqliteSessionRepository', () => {
       )
       .addColumn('type', 'text', (col) => col.notNull())
       .addColumn('name', 'text', (col) => col.notNull())
-      .addColumn('created_at', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('pid', 'integer')
       .addColumn('agent_id', 'text')
       .addColumn('base_commit', 'text')
@@ -353,6 +357,196 @@ describe('SqliteSessionRepository', () => {
       // Verify only one session exists
       const all = await repository.findAll();
       expect(all.length).toBe(1);
+    });
+
+    it('should preserve created_at and update updated_at on update', async () => {
+      const originalCreatedAt = '2024-01-01T00:00:00.000Z';
+      const session = createQuickSession({
+        id: 'timestamp-test',
+        title: 'Original',
+        createdAt: originalCreatedAt,
+      });
+      await repository.save(session);
+
+      // Get the original timestamps from database directly
+      const originalRow = await db
+        .selectFrom('sessions')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      expect(originalRow?.created_at).toBe(originalCreatedAt);
+      const originalUpdatedAt = originalRow?.updated_at;
+
+      // Wait a bit to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Update with a different createdAt (simulating real-world scenario where
+      // the domain object might have different timestamp)
+      const updated = createQuickSession({
+        id: 'timestamp-test',
+        title: 'Updated',
+        createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt
+      });
+      await repository.save(updated);
+
+      // Get timestamps after update
+      const updatedRow = await db
+        .selectFrom('sessions')
+        .where('id', '=', 'timestamp-test')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      // created_at should NOT change (this was the bug!)
+      expect(updatedRow?.created_at).toBe(originalCreatedAt);
+
+      // updated_at should change
+      expect(updatedRow?.updated_at).not.toBe(originalUpdatedAt);
+    });
+
+    it('should preserve worker created_at and update updated_at on session update', async () => {
+      const originalWorkerCreatedAt = '2024-01-01T00:00:00.000Z';
+      const session = createQuickSession({
+        id: 'worker-timestamp-test',
+        workers: [
+          createAgentWorker({
+            id: 'worker-1',
+            name: 'Original Worker',
+            createdAt: originalWorkerCreatedAt,
+          }),
+        ],
+      });
+      await repository.save(session);
+
+      // Get original worker timestamps from database directly
+      const originalWorkerRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'worker-1')
+        .select(['created_at', 'updated_at', 'name'])
+        .executeTakeFirst();
+
+      expect(originalWorkerRow?.created_at).toBe(originalWorkerCreatedAt);
+      expect(originalWorkerRow?.name).toBe('Original Worker');
+      const originalWorkerUpdatedAt = originalWorkerRow?.updated_at;
+
+      // Wait a bit to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Update session with modified worker (same ID, different data)
+      const updated = createQuickSession({
+        id: 'worker-timestamp-test',
+        workers: [
+          createAgentWorker({
+            id: 'worker-1', // Same ID
+            name: 'Updated Worker',
+            createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt (simulates domain object)
+          }),
+        ],
+      });
+      await repository.save(updated);
+
+      // Get worker timestamps after update
+      const updatedWorkerRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'worker-1')
+        .select(['created_at', 'updated_at', 'name'])
+        .executeTakeFirst();
+
+      // Worker created_at should NOT change (this was the bug - delete-and-reinsert would lose it)
+      expect(updatedWorkerRow?.created_at).toBe(originalWorkerCreatedAt);
+
+      // Worker updated_at should change
+      expect(updatedWorkerRow?.updated_at).not.toBe(originalWorkerUpdatedAt);
+
+      // Worker name should be updated
+      expect(updatedWorkerRow?.name).toBe('Updated Worker');
+    });
+
+    it('should use upsert strategy for workers (not delete-and-reinsert)', async () => {
+      // This test verifies the upsert strategy by checking that created_at is preserved
+      // even when the worker is "updated" through a session save
+      const originalCreatedAt = '2024-01-01T00:00:00.000Z';
+      const session = createQuickSession({
+        id: 'upsert-test',
+        workers: [
+          createAgentWorker({
+            id: 'worker-1',
+            name: 'Original',
+            pid: 1111,
+            createdAt: originalCreatedAt,
+          }),
+        ],
+      });
+      await repository.save(session);
+
+      // Get original created_at directly from database
+      const originalRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'worker-1')
+        .select(['created_at'])
+        .executeTakeFirst();
+      expect(originalRow?.created_at).toBe(originalCreatedAt);
+
+      // Update session with same worker ID but different data
+      const updated = createQuickSession({
+        id: 'upsert-test',
+        workers: [
+          createAgentWorker({
+            id: 'worker-1', // Same ID
+            name: 'Updated',
+            pid: 9999, // Different PID
+          }),
+        ],
+      });
+      await repository.save(updated);
+
+      // Verify worker was upserted (not deleted and re-inserted)
+      const updatedRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'worker-1')
+        .select(['created_at', 'name', 'pid'])
+        .executeTakeFirst();
+
+      // If delete-and-reinsert, created_at would be NEW timestamp
+      // If upsert, created_at would be ORIGINAL timestamp
+      expect(updatedRow?.created_at).toBe(originalCreatedAt);
+      expect(updatedRow?.name).toBe('Updated');
+      expect(updatedRow?.pid).toBe(9999);
+    });
+
+    it('should delete all workers when session is updated to have no workers', async () => {
+      // Create session with workers
+      const session = createQuickSession({
+        id: 'delete-all-workers-test',
+        workers: [
+          createAgentWorker({ id: 'worker-1' }),
+          createTerminalWorker({ id: 'worker-2' }),
+        ],
+      });
+      await repository.save(session);
+
+      // Verify workers exist
+      const beforeWorkers = await db
+        .selectFrom('workers')
+        .where('session_id', '=', 'delete-all-workers-test')
+        .selectAll()
+        .execute();
+      expect(beforeWorkers.length).toBe(2);
+
+      // Update to have no workers
+      const updated = createQuickSession({
+        id: 'delete-all-workers-test',
+        workers: [], // Empty
+      });
+      await repository.save(updated);
+
+      // Verify all workers deleted
+      const afterWorkers = await db
+        .selectFrom('workers')
+        .where('session_id', '=', 'delete-all-workers-test')
+        .selectAll()
+        .execute();
+      expect(afterWorkers.length).toBe(0);
     });
 
     it('should save session with workers', async () => {

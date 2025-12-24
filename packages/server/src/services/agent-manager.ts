@@ -108,7 +108,7 @@ export class AgentManager {
       headlessTemplate: request.headlessTemplate,
       description: request.description,
       isBuiltIn: false,
-      registeredAt: now,
+      createdAt: now,
       activityPatterns: request.activityPatterns,
     };
 

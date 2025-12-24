@@ -178,10 +178,10 @@ function AgentDetailPage() {
             <span className="text-gray-400">ID:</span>{' '}
             <span className="font-mono">{agent.id}</span>
           </div>
-          {agent.registeredAt && (
+          {agent.createdAt && (
             <div>
-              <span className="text-gray-400">Registered:</span>{' '}
-              {new Date(agent.registeredAt).toLocaleString()}
+              <span className="text-gray-400">Created:</span>{' '}
+              {new Date(agent.createdAt).toLocaleString()}
             </div>
           )}
         </div>

@@ -11,6 +11,7 @@ import type { PersistedSession, PersistedRepository } from '../services/persiste
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
+import { addDatetime } from './schema-helpers.js';
 
 const logger = createLogger('database');
 
@@ -154,22 +155,27 @@ async function migrateToV1(database: Kysely<Database>): Promise<void> {
   logger.info('Running migration to v1: Creating sessions and workers tables');
 
   // Create sessions table
-  await database.schema
+  let sessionsTable = database.schema
     .createTable('sessions')
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
     .addColumn('type', 'text', (col) => col.notNull())
     .addColumn('location_path', 'text', (col) => col.notNull())
     .addColumn('server_pid', 'integer')
-    .addColumn('created_at', 'text', (col) => col.notNull())
     .addColumn('initial_prompt', 'text')
     .addColumn('title', 'text')
     .addColumn('repository_id', 'text')
-    .addColumn('worktree_id', 'text')
-    .execute();
+    .addColumn('worktree_id', 'text');
+  sessionsTable = addDatetime(sessionsTable, 'sessions', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  sessionsTable = addDatetime(sessionsTable, 'sessions', 'updated_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  await sessionsTable.execute();
 
   // Create workers table
-  await database.schema
+  let workersTable = database.schema
     .createTable('workers')
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
@@ -178,11 +184,16 @@ async function migrateToV1(database: Kysely<Database>): Promise<void> {
     )
     .addColumn('type', 'text', (col) => col.notNull())
     .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('created_at', 'text', (col) => col.notNull())
     .addColumn('pid', 'integer')
     .addColumn('agent_id', 'text')
-    .addColumn('base_commit', 'text')
-    .execute();
+    .addColumn('base_commit', 'text');
+  workersTable = addDatetime(workersTable, 'workers', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  workersTable = addDatetime(workersTable, 'workers', 'updated_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  await workersTable.execute();
 
   // Create index for foreign key lookups
   await database.schema
@@ -205,17 +216,30 @@ async function migrateToV2(database: Kysely<Database>): Promise<void> {
   logger.info('Running migration to v2: Creating repositories and agents tables');
 
   // Create repositories table
-  await database.schema
+  let repositoriesTable = database.schema
     .createTable('repositories')
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
     .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('path', 'text', (col) => col.notNull().unique())
-    .addColumn('registered_at', 'text', (col) => col.notNull())
-    .execute();
+    .addColumn('path', 'text', (col) => col.notNull().unique());
+  repositoriesTable = addDatetime(
+    repositoriesTable,
+    'repositories',
+    'created_at',
+    (col) => col.notNull(),
+    { defaultNow: true }
+  );
+  repositoriesTable = addDatetime(
+    repositoriesTable,
+    'repositories',
+    'updated_at',
+    (col) => col.notNull(),
+    { defaultNow: true }
+  );
+  await repositoriesTable.execute();
 
   // Create agents table
-  await database.schema
+  let agentsTable = database.schema
     .createTable('agents')
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
@@ -225,9 +249,14 @@ async function migrateToV2(database: Kysely<Database>): Promise<void> {
     .addColumn('headless_template', 'text')
     .addColumn('description', 'text')
     .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('registered_at', 'text')
-    .addColumn('activity_patterns', 'text')
-    .execute();
+    .addColumn('activity_patterns', 'text');
+  agentsTable = addDatetime(agentsTable, 'agents', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  agentsTable = addDatetime(agentsTable, 'agents', 'updated_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  await agentsTable.execute();
 
   // Update schema version
   await sql`PRAGMA user_version = 2`.execute(database);

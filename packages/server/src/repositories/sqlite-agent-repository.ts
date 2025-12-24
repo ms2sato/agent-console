@@ -45,7 +45,8 @@ export class SqliteAgentRepository implements AgentRepository {
           headless_template: row.headless_template,
           description: row.description,
           is_built_in: row.is_built_in,
-          registered_at: row.registered_at,
+          // Note: created_at is intentionally NOT updated (should never change after insert)
+          updated_at: row.updated_at,
           activity_patterns: row.activity_patterns,
         })
       )

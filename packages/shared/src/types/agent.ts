@@ -17,7 +17,7 @@ export interface AgentDefinition {
   name: string;
   description?: string;
   isBuiltIn: boolean;
-  registeredAt: string;
+  createdAt: string;
 
   // === Templates ===
 

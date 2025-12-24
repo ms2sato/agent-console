@@ -27,6 +27,9 @@ import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
+import { resetAgentManager } from '../services/agent-manager.js';
+import { resetRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager } from '../services/session-manager.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -102,6 +105,11 @@ export async function setupTestEnvironment(): Promise<void> {
  * Must be called in afterEach with await.
  */
 export async function cleanupTestEnvironment(): Promise<void> {
+  // Reset singleton managers BEFORE closing database
+  // to ensure they don't hold references to destroyed DB connections
+  resetSessionManager();
+  resetRepositoryManager();
+  resetAgentManager();
   await closeDatabase();
   cleanupMemfs();
 }

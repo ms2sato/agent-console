@@ -95,7 +95,7 @@ describe('AgentManager', () => {
           name: 'Custom Agent',
           commandTemplate: 'custom-cmd {{prompt}}',
           isBuiltIn: false,
-          registeredAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
           capabilities: {
             supportsContinue: false,
             supportsHeadlessMode: false,
@@ -166,7 +166,7 @@ describe('AgentManager', () => {
       expect(agent.name).toBe('My Agent');
       expect(agent.commandTemplate).toBe('my-agent-cmd {{prompt}}');
       expect(agent.isBuiltIn).toBe(false);
-      expect(agent.registeredAt).toBeDefined();
+      expect(agent.createdAt).toBeDefined();
 
       // Should be retrievable
       expect(manager.getAgent(agent.id)).toBeDefined();

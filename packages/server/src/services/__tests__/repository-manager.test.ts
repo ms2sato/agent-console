@@ -87,7 +87,7 @@ describe('RepositoryManager', () => {
       expect(repo.id).toBeDefined();
       expect(repo.name).toBe('repo');
       expect(repo.path).toBe(TEST_REPO_DIR);
-      expect(repo.registeredAt).toBeDefined();
+      expect(repo.createdAt).toBeDefined();
     });
 
     it('should throw error for non-existent path', async () => {
@@ -238,7 +238,7 @@ describe('RepositoryManager', () => {
           id: 'existing-id',
           name: 'repo',
           path: TEST_REPO_DIR,
-          registeredAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
         },
       ];
 
@@ -256,7 +256,7 @@ describe('RepositoryManager', () => {
           id: 'missing-repo',
           name: 'missing',
           path: '/non/existent/path',
-          registeredAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
         },
       ];
 

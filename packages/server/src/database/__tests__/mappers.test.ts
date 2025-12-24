@@ -152,6 +152,7 @@ describe('mappers', () => {
         type: 'agent',
         name: 'Agent',
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         pid: null,
         agent_id: null, // Missing required field
         base_commit: null,
@@ -168,6 +169,7 @@ describe('mappers', () => {
         type: 'git-diff',
         name: 'Git Diff',
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         pid: null,
         agent_id: null,
         base_commit: null, // Missing required field
@@ -184,6 +186,7 @@ describe('mappers', () => {
         type: 'agent',
         name: 'Agent',
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         pid: 1234,
         agent_id: 'claude-code-builtin',
         base_commit: null,
@@ -202,6 +205,7 @@ describe('mappers', () => {
         type: 'terminal',
         name: 'Terminal',
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         pid: 5678,
         agent_id: null,
         base_commit: null,
@@ -220,6 +224,7 @@ describe('mappers', () => {
         type: 'git-diff',
         name: 'Git Diff',
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         pid: null,
         agent_id: null,
         base_commit: 'abc123def456',
@@ -240,6 +245,7 @@ describe('mappers', () => {
         location_path: '/path',
         server_pid: 1234,
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         initial_prompt: null,
         title: null,
         repository_id: null, // Missing required field
@@ -257,6 +263,7 @@ describe('mappers', () => {
         location_path: '/path',
         server_pid: 1234,
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         initial_prompt: null,
         title: null,
         repository_id: 'repo-1',
@@ -274,6 +281,7 @@ describe('mappers', () => {
         location_path: '/path',
         server_pid: 1234,
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: 'test',
         title: 'Test',
         repository_id: null,
@@ -293,6 +301,7 @@ describe('mappers', () => {
         location_path: '/path/to/worktree',
         server_pid: 1234,
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: 'test prompt',
         title: 'Test Session',
         repository_id: 'repo-1',
@@ -313,6 +322,7 @@ describe('mappers', () => {
         location_path: '/path',
         server_pid: 1234,
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
         title: null,
         repository_id: null,
@@ -343,6 +353,7 @@ describe('mappers', () => {
         location_path: '/path',
         server_pid: null,
         created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
         title: null,
         repository_id: null,
@@ -443,7 +454,7 @@ describe('mappers', () => {
         id: 'repo-1',
         name: 'my-project',
         path: '/home/user/projects/my-project',
-        registeredAt: '2024-01-15T10:30:00.000Z',
+        createdAt: '2024-01-15T10:30:00.000Z',
       };
 
       const row = toRepositoryRow(repository);
@@ -451,7 +462,8 @@ describe('mappers', () => {
       expect(row.id).toBe('repo-1');
       expect(row.name).toBe('my-project');
       expect(row.path).toBe('/home/user/projects/my-project');
-      expect(row.registered_at).toBe('2024-01-15T10:30:00.000Z');
+      expect(row.created_at).toBe('2024-01-15T10:30:00.000Z');
+      expect(row.updated_at).toBeDefined();
     });
   });
 
@@ -461,7 +473,8 @@ describe('mappers', () => {
         id: 'repo-2',
         name: 'another-project',
         path: '/opt/repos/another-project',
-        registered_at: '2024-02-20T14:00:00.000Z',
+        created_at: '2024-02-20T14:00:00.000Z',
+        updated_at: '2024-02-20T14:00:00.000Z',
       };
 
       const repository = toRepository(row);
@@ -469,21 +482,22 @@ describe('mappers', () => {
       expect(repository.id).toBe('repo-2');
       expect(repository.name).toBe('another-project');
       expect(repository.path).toBe('/opt/repos/another-project');
-      expect(repository.registeredAt).toBe('2024-02-20T14:00:00.000Z');
+      expect(repository.createdAt).toBe('2024-02-20T14:00:00.000Z');
     });
 
-    it('should handle registered_at correctly', () => {
+    it('should handle created_at correctly', () => {
       const row: RepositoryRow = {
         id: 'repo-3',
         name: 'test-repo',
         path: '/tmp/test-repo',
-        registered_at: '2024-12-01T00:00:00.000Z',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
       };
 
       const repository = toRepository(row);
 
-      // Verify registeredAt is correctly mapped from registered_at
-      expect(repository.registeredAt).toBe('2024-12-01T00:00:00.000Z');
+      // Verify createdAt is correctly mapped from created_at
+      expect(repository.createdAt).toBe('2024-12-01T00:00:00.000Z');
     });
   });
 
@@ -497,7 +511,7 @@ describe('mappers', () => {
         headlessTemplate: 'my-agent --headless --prompt {{prompt}} --dir {{cwd}}',
         description: 'A custom agent for testing',
         isBuiltIn: false,
-        registeredAt: '2024-03-10T09:00:00.000Z',
+        createdAt: '2024-03-10T09:00:00.000Z',
         capabilities: {
           supportsContinue: true,
           supportsHeadlessMode: true,
@@ -514,7 +528,8 @@ describe('mappers', () => {
       expect(row.headless_template).toBe('my-agent --headless --prompt {{prompt}} --dir {{cwd}}');
       expect(row.description).toBe('A custom agent for testing');
       expect(row.is_built_in).toBe(0);
-      expect(row.registered_at).toBe('2024-03-10T09:00:00.000Z');
+      expect(row.created_at).toBe('2024-03-10T09:00:00.000Z');
+      expect(row.updated_at).toBeDefined();
       expect(row.activity_patterns).toBeNull();
     });
 
@@ -524,7 +539,7 @@ describe('mappers', () => {
         name: 'Agent With Patterns',
         commandTemplate: 'agent-cmd {{prompt}}',
         isBuiltIn: false,
-        registeredAt: '2024-03-10T09:00:00.000Z',
+        createdAt: '2024-03-10T09:00:00.000Z',
         activityPatterns: {
           askingPatterns: ['^Question:', '^Input needed:'],
         },
@@ -548,7 +563,7 @@ describe('mappers', () => {
         name: 'Minimal Agent',
         commandTemplate: 'minimal-cmd {{prompt}}',
         isBuiltIn: false,
-        registeredAt: '2024-03-10T09:00:00.000Z',
+        createdAt: '2024-03-10T09:00:00.000Z',
         // No optional fields
         capabilities: {
           supportsContinue: false,
@@ -576,7 +591,8 @@ describe('mappers', () => {
         headless_template: 'db-agent --headless {{prompt}}',
         description: 'Agent from database',
         is_built_in: 0,
-        registered_at: '2024-04-01T12:00:00.000Z',
+        created_at: '2024-04-01T12:00:00.000Z',
+        updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
       };
 
@@ -589,7 +605,7 @@ describe('mappers', () => {
       expect(agent.headlessTemplate).toBe('db-agent --headless {{prompt}}');
       expect(agent.description).toBe('Agent from database');
       expect(agent.isBuiltIn).toBe(false);
-      expect(agent.registeredAt).toBe('2024-04-01T12:00:00.000Z');
+      expect(agent.createdAt).toBe('2024-04-01T12:00:00.000Z');
       expect(agent.activityPatterns).toBeUndefined();
     });
 
@@ -602,7 +618,8 @@ describe('mappers', () => {
         headless_template: null,
         description: null,
         is_built_in: 0,
-        registered_at: '2024-04-01T12:00:00.000Z',
+        created_at: '2024-04-01T12:00:00.000Z',
+        updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: JSON.stringify({
           askingPatterns: ['^Ask:', '^Input:'],
         }),
@@ -624,7 +641,8 @@ describe('mappers', () => {
         headless_template: 'cmd --headless {{prompt}}',
         description: null,
         is_built_in: 0,
-        registered_at: '2024-04-01T12:00:00.000Z',
+        created_at: '2024-04-01T12:00:00.000Z',
+        updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
       };
 
@@ -641,7 +659,8 @@ describe('mappers', () => {
         headless_template: null,
         description: null,
         is_built_in: 0,
-        registered_at: '2024-04-01T12:00:00.000Z',
+        created_at: '2024-04-01T12:00:00.000Z',
+        updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
       };
 
@@ -651,7 +670,8 @@ describe('mappers', () => {
     });
 
     it('should handle null/undefined optional fields', () => {
-      const row: AgentRow = {
+      // Test fallback behavior if DB somehow contains null (defensive test)
+      const row = {
         id: 'null-fields-agent',
         name: 'Agent With Nulls',
         command_template: 'cmd {{prompt}}',
@@ -659,9 +679,10 @@ describe('mappers', () => {
         headless_template: null,
         description: null,
         is_built_in: 0,
-        registered_at: null, // This can be null in DB
+        created_at: null,
+        updated_at: null,
         activity_patterns: null,
-      };
+      } as unknown as AgentRow;
 
       const agent = toAgentDefinition(row);
 
@@ -669,8 +690,8 @@ describe('mappers', () => {
       expect(agent.headlessTemplate).toBeUndefined();
       expect(agent.description).toBeUndefined();
       expect(agent.activityPatterns).toBeUndefined();
-      // registeredAt should have a fallback when null
-      expect(agent.registeredAt).toBeDefined();
+      // createdAt should have a fallback when null
+      expect(agent.createdAt).toBeDefined();
     });
   });
 });

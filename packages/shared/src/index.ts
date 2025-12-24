@@ -9,7 +9,7 @@ export interface Repository {
   id: string;           // UUID
   name: string;         // Display name (directory name)
   path: string;         // Absolute path
-  registeredAt: string; // Registration date (ISO 8601)
+  createdAt: string;    // Creation date (ISO 8601)
   remoteUrl?: string;   // Git remote URL for origin (if available)
 }
 

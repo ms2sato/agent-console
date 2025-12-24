@@ -220,7 +220,7 @@ export const AgentDefinitionSchema = v.intersect([
   v.object({
     id: v.pipe(v.string(), v.minLength(1)),
     isBuiltIn: v.boolean(),
-    registeredAt: v.string(),
+    createdAt: v.string(),
     activityPatterns: v.optional(AgentActivityPatternsSchema),
     capabilities: AgentCapabilitiesSchema,
   }),
