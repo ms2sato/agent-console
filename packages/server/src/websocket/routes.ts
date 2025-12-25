@@ -207,9 +207,6 @@ export async function setupWebSocketRoutes(
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
-      // Parse fromOffset query parameter for incremental sync
-      const fromOffsetParam = c.req.query('fromOffset');
-      const fromOffset = fromOffsetParam ? parseInt(fromOffsetParam, 10) : undefined;
 
       // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
       let currentGitDiffBaseCommit: string | null = null;
@@ -222,7 +219,7 @@ export async function setupWebSocketRoutes(
       // 2. Register callbacks for NEW output (after the offset)
       // 3. Send history UP TO the offset we recorded
       async function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
-        logger.info({ sessionId, workerId, workerType, fromOffset }, 'Worker WebSocket connected');
+        logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
 
         // Helper to safely send WebSocket messages with buffering
         let outputBuffer = '';
@@ -271,12 +268,7 @@ export async function setupWebSocketRoutes(
           }
         };
 
-        // STEP 1: Get current offset BEFORE registering callbacks
-        // This marks the boundary - everything up to this offset goes to history
-        const currentOffset = await sessionManager.getCurrentOutputOffset(sessionId, workerId);
-
-        // STEP 2: Register callbacks for NEW output (after currentOffset)
-        // Returns a connection ID for later detachment (supports multiple tabs)
+        // Register callbacks for new output
         connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
           onData: (data) => {
             safeSend({ type: 'output', data });
@@ -289,23 +281,42 @@ export async function setupWebSocketRoutes(
           },
         });
 
-        // STEP 3: Send history UP TO the offset we recorded
-        // This is safe because callbacks only send data AFTER that offset
-        const historyResult = await sessionManager.getWorkerOutputHistory(
-          sessionId,
-          workerId,
-          fromOffset ?? 0
-        );
-        if (historyResult) {
-          // Only send if there's data or if client needs to know the offset
-          if (historyResult.data || historyResult.offset !== undefined) {
-            safeSend({ type: 'history', data: historyResult.data, offset: historyResult.offset });
+        // Send full history on initial connection with timeout protection
+        const INITIAL_HISTORY_TIMEOUT_MS = 15000; // 15s for initial connection (may be large file/slow disk)
+        const timeoutPromise = new Promise<null>((_, reject) => {
+          setTimeout(() => reject(new Error('Initial history request timeout')), INITIAL_HISTORY_TIMEOUT_MS);
+        });
+
+        try {
+          const historyResult = await Promise.race([
+            sessionManager.getWorkerOutputHistory(sessionId, workerId, 0),
+            timeoutPromise
+          ]);
+
+          if (historyResult) {
+            if (historyResult.data) {
+              safeSend({ type: 'history', data: historyResult.data });
+            }
+          } else {
+            // Fallback to in-memory buffer if file not available
+            const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+            if (history) {
+              safeSend({ type: 'history', data: history });
+            }
           }
-        } else {
-          // Fallback to in-memory buffer if file not available
+        } catch (err) {
+          logger.error({ sessionId, workerId, err }, 'Error loading initial history');
+          // Fallback to in-memory buffer on timeout or error
           const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
           if (history) {
-            safeSend({ type: 'history', data: history, offset: currentOffset });
+            safeSend({ type: 'history', data: history });
+          } else {
+            // No history available - send error
+            safeSend({
+              type: 'error',
+              message: 'Loading terminal history timed out. Try refreshing the page.',
+              code: 'HISTORY_LOAD_FAILED'
+            });
           }
         }
 
@@ -431,19 +442,25 @@ export async function setupWebSocketRoutes(
           try {
             const parsed = JSON.parse(data);
             if (parsed && typeof parsed === 'object' && parsed.type === 'request-history') {
-              // Handle request-history: send history to client
-              const fromOffset = typeof parsed.fromOffset === 'number' ? parsed.fromOffset : 0;
+              // Handle request-history: send full history to client with timeout
+              const HISTORY_REQUEST_TIMEOUT_MS = 5000;
 
-              sessionManager.getWorkerOutputHistory(sessionId, workerId, fromOffset)
+              const timeoutPromise = new Promise<null>((_, reject) => {
+                setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
+              });
+
+              Promise.race([
+                sessionManager.getWorkerOutputHistory(sessionId, workerId, 0),
+                timeoutPromise
+              ])
                 .then((historyResult) => {
                   if (historyResult) {
                     const historyMsg: WorkerServerMessage = {
                       type: 'history',
                       data: historyResult.data,
-                      offset: historyResult.offset
                     };
                     ws.send(JSON.stringify(historyMsg));
-                    logger.debug({ sessionId, workerId, offset: historyResult.offset, dataLength: historyResult.data.length }, 'Sent history on request');
+                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length }, 'Sent history on request');
                   } else {
                     // Fallback to in-memory buffer
                     const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
@@ -451,15 +468,36 @@ export async function setupWebSocketRoutes(
                       const historyMsg: WorkerServerMessage = {
                         type: 'history',
                         data: history,
-                        offset: 0
                       };
                       ws.send(JSON.stringify(historyMsg));
                       logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
+                    } else {
+                      // No history available - send error
+                      const errorMsg: WorkerServerMessage = {
+                        type: 'error',
+                        message: 'Terminal history not available. The session may have been recently created.',
+                        code: 'HISTORY_LOAD_FAILED'
+                      };
+                      ws.send(JSON.stringify(errorMsg));
+                      logger.warn({ sessionId, workerId }, 'No history available for request-history');
                     }
                   }
                 })
                 .catch((err) => {
                   logger.error({ sessionId, workerId, err }, 'Error sending history on request');
+                  // Send error to client
+                  try {
+                    const errorMsg: WorkerServerMessage = {
+                      type: 'error',
+                      message: err.message === 'History request timeout'
+                        ? 'Loading terminal history timed out. Try switching to another worker and back, or refresh the page.'
+                        : 'Failed to load terminal history. Try switching workers or refreshing.',
+                      code: 'HISTORY_LOAD_FAILED'
+                    };
+                    ws.send(JSON.stringify(errorMsg));
+                  } catch {
+                    // Connection may be closed
+                  }
                 });
               return;
             }

@@ -2,9 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import {
   connect,
-  disconnect,
   disconnectSession,
-  storeHistoryOffset,
   clearVisibilityTracking,
   _reset,
   type TerminalWorkerCallbacks,
@@ -51,35 +49,6 @@ describe('worker-websocket', () => {
     onExit: mock(() => {}),
     onActivity: mock(() => {}),
     onError: mock(() => {}),
-  });
-
-  describe('history offset storage', () => {
-    it('should store offset correctly', () => {
-      storeHistoryOffset('session-1', 'worker-1', 12345);
-      // Offset is stored but no getter is exposed - verify by disconnect clearing it
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-      disconnect('session-1', 'worker-1');
-      // No error thrown means it works
-    });
-
-    it('should clear offset after explicit disconnect', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Store offset via history message
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history', offset: 9999 }));
-
-      // Disconnect the worker explicitly
-      disconnect('session-1', 'worker-1');
-
-      // No error thrown means cleanup worked
-    });
   });
 
   describe('visibility-based reconnection', () => {
@@ -165,16 +134,6 @@ describe('worker-websocket', () => {
   });
 
   describe('clearVisibilityTracking', () => {
-    it('should clear offset for a specific worker', () => {
-      // Store offset
-      storeHistoryOffset('session-1', 'worker-1', 12345);
-
-      // Clear visibility tracking
-      clearVisibilityTracking('session-1', 'worker-1');
-
-      // No error thrown means cleanup worked
-    });
-
     it('should handle clearing non-existent data gracefully', () => {
       // Should not throw
       expect(() => clearVisibilityTracking('non-existent', 'worker')).not.toThrow();
@@ -193,10 +152,6 @@ describe('worker-websocket', () => {
       const ws2 = MockWebSocket.getInstances()[1];
       ws1?.simulateOpen();
       ws2?.simulateOpen();
-
-      // Store offsets for both workers
-      storeHistoryOffset('session-1', 'worker-1', 100);
-      storeHistoryOffset('session-1', 'worker-2', 200);
 
       // Disconnect the entire session
       disconnectSession('session-1');
@@ -217,10 +172,6 @@ describe('worker-websocket', () => {
       instances[0]?.simulateOpen();
       instances[1]?.simulateOpen();
 
-      // Store offsets for both sessions
-      storeHistoryOffset('session-1', 'worker-1', 100);
-      storeHistoryOffset('session-2', 'worker-1', 200);
-
       // Disconnect only session-1
       disconnectSession('session-1');
 
@@ -233,58 +184,78 @@ describe('worker-websocket', () => {
   });
 
   describe('history message handling', () => {
-    it('should call onHistory with offset when present in message', () => {
+    it('should call onHistory callback', () => {
       const callbacks = createTerminalCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      // Send history message with offset
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history', offset: 5678 }));
-
-      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history', 5678);
-    });
-
-    it('should call onHistory without offset when not present in message', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send history message without offset
+      // Send history message
       ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history' }));
 
-      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history', undefined);
-    });
-
-    it('should store offset automatically from history message', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send history message with offset
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history', offset: 1234 }));
-
-      // Offset is stored internally - verified by no errors
-      // (offset storage is used for normal reconnection, not visibility-based)
+      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history');
     });
   });
 
-  describe('reconnection with offset', () => {
-    it('should include offset in URL when reconnecting with fromOffset', () => {
-      // This tests the getWorkerWsUrl function indirectly through connect behavior
+  describe('error message handling', () => {
+    it('should call onError callback with HISTORY_LOAD_FAILED code', () => {
       const callbacks = createTerminalCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
-      // Verify URL does NOT have offset on initial connection
-      expect(ws?.url).not.toContain('fromOffset');
-      expect(ws?.url).toContain('session-1');
-      expect(ws?.url).toContain('worker-1');
+      ws?.simulateOpen();
+
+      // Send error message with HISTORY_LOAD_FAILED code
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'Loading terminal history timed out. Try refreshing the page.',
+        code: 'HISTORY_LOAD_FAILED'
+      }));
+
+      expect(callbacks.onError).toHaveBeenCalledWith(
+        'Loading terminal history timed out. Try refreshing the page.',
+        'HISTORY_LOAD_FAILED'
+      );
+    });
+
+    it('should call onError callback without code when code is missing', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Send error message without code
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'Some error occurred'
+      }));
+
+      expect(callbacks.onError).toHaveBeenCalledWith(
+        'Some error occurred',
+        undefined
+      );
+    });
+
+    it('should call onError callback with other error codes', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Send error message with WORKER_NOT_FOUND code
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'Worker not found',
+        code: 'WORKER_NOT_FOUND'
+      }));
+
+      expect(callbacks.onError).toHaveBeenCalledWith(
+        'Worker not found',
+        'WORKER_NOT_FOUND'
+      );
     });
   });
 });

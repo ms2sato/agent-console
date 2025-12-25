@@ -35,8 +35,8 @@ export function useTerminalWebSocket(
   const [error, setError] = useState<WorkerError | null>(null);
 
   // Error handler callback
-  const handleError = useCallback((message: string, code?: string) => {
-    setError({ message, code: code as WorkerErrorCode | undefined });
+  const handleError = useCallback((message: string, code?: WorkerErrorCode) => {
+    setError({ message, code });
   }, []);
 
   // Subscribe to connection state using useSyncExternalStore

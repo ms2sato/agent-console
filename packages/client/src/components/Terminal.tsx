@@ -35,15 +35,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current?.write(data);
   }, []);
 
-  const handleHistory = useCallback((data: string, offset?: number) => {
+  const handleHistory = useCallback((data: string) => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
-    }
-
-    // Store the offset for normal WebSocket reconnection (not visibility-based)
-    if (offset !== undefined) {
-      workerWs.storeHistoryOffset(sessionId, workerId, offset);
     }
 
     if (!data) return;
@@ -76,7 +71,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         }
       }
     }).catch((e) => console.error('[Terminal] Failed to write history:', e));
-  }, [sessionId, workerId]);
+  }, []);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');

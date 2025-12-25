@@ -65,6 +65,7 @@ Per-worker WebSocket for terminal I/O.
 | `input` | `{ data: string }` | Terminal input |
 | `resize` | `{ cols: number, rows: number }` | Terminal resize |
 | `image` | `{ data: string, mimeType: string }` | Image data (base64) |
+| `request-history` | (none) | Request full terminal history (sent when component remounts with existing connection) |
 
 ### Server → Client Messages
 
@@ -72,8 +73,27 @@ Per-worker WebSocket for terminal I/O.
 |------|---------|-------------|
 | `output` | `{ data: string }` | PTY output |
 | `exit` | `{ exitCode: number, signal: string \| null }` | Process exit |
-| `history` | `{ data: string }` | Buffered output on reconnect |
+| `history` | `{ data: string }` | Full terminal output history |
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
+| `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., history request timeout, worker not found) |
+
+### History Request Behavior
+
+When a Terminal component remounts while the WebSocket connection is still open (e.g., navigating away and back), the client sends `request-history` to request the full terminal output history without reconnecting.
+
+**Timeout Protection:**
+- Server-side timeout: 5 seconds
+- If history retrieval takes too long, server sends `error` message with code `ACTIVATION_FAILED`
+
+**Debouncing:**
+- Client-side debounce: 100ms
+- Prevents duplicate requests during rapid component remounts (e.g., React Strict Mode double-render)
+- Only the last request within the debounce window is sent
+
+**Fallback Behavior:**
+- Primary: Read from persistent file storage
+- Fallback: Use in-memory buffer if file not available
+- Error: Send `error` message if neither source is available
 
 ## Reconnection Strategy
 
