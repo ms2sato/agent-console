@@ -10,5 +10,8 @@ export type { RestartSessionDialogProps } from './RestartSessionDialog';
 export { DeleteWorktreeDialog } from './DeleteWorktreeDialog';
 export type { DeleteWorktreeDialogProps } from './DeleteWorktreeDialog';
 
+export { InitialPromptDialog } from './InitialPromptDialog';
+export type { InitialPromptDialogProps } from './InitialPromptDialog';
+
 export { SessionSettingsMenu } from './SessionSettingsMenu';
 export type { SessionSettingsMenuProps, MenuAction } from './SessionSettingsMenu';
