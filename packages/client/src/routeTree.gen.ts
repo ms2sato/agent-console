@@ -11,8 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as MaintenanceRouteImport } from './routes/maintenance'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
+import { Route as JobsJobIdIndexRouteImport } from './routes/jobs/$jobId/index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents/$agentId/index'
 import { Route as AgentsAgentIdEditRouteImport } from './routes/agents/$agentId/edit'
 
@@ -26,6 +28,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JobsIndexRoute = JobsIndexRouteImport.update({
+  id: '/jobs/',
+  path: '/jobs/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsIndexRoute = AgentsIndexRouteImport.update({
   id: '/agents/',
   path: '/agents/',
@@ -34,6 +41,11 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   id: '/sessions/$sessionId',
   path: '/sessions/$sessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const JobsJobIdIndexRoute = JobsJobIdIndexRouteImport.update({
+  id: '/jobs/$jobId/',
+  path: '/jobs/$jobId/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AgentsAgentIdIndexRoute = AgentsAgentIdIndexRouteImport.update({
@@ -52,16 +64,20 @@ export interface FileRoutesByFullPath {
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/agents': typeof AgentsIndexRoute
+  '/jobs': typeof JobsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
+  '/jobs/$jobId': typeof JobsJobIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/agents': typeof AgentsIndexRoute
+  '/jobs': typeof JobsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
+  '/jobs/$jobId': typeof JobsJobIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -69,8 +85,10 @@ export interface FileRoutesById {
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/agents/': typeof AgentsIndexRoute
+  '/jobs/': typeof JobsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
+  '/jobs/$jobId/': typeof JobsJobIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -79,24 +97,30 @@ export interface FileRouteTypes {
     | '/maintenance'
     | '/sessions/$sessionId'
     | '/agents'
+    | '/jobs'
     | '/agents/$agentId/edit'
     | '/agents/$agentId'
+    | '/jobs/$jobId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/maintenance'
     | '/sessions/$sessionId'
     | '/agents'
+    | '/jobs'
     | '/agents/$agentId/edit'
     | '/agents/$agentId'
+    | '/jobs/$jobId'
   id:
     | '__root__'
     | '/'
     | '/maintenance'
     | '/sessions/$sessionId'
     | '/agents/'
+    | '/jobs/'
     | '/agents/$agentId/edit'
     | '/agents/$agentId/'
+    | '/jobs/$jobId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -104,8 +128,10 @@ export interface RootRouteChildren {
   MaintenanceRoute: typeof MaintenanceRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
+  JobsIndexRoute: typeof JobsIndexRoute
   AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
+  JobsJobIdIndexRoute: typeof JobsJobIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -124,6 +150,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/jobs/': {
+      id: '/jobs/'
+      path: '/jobs'
+      fullPath: '/jobs'
+      preLoaderRoute: typeof JobsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/': {
       id: '/agents/'
       path: '/agents'
@@ -136,6 +169,13 @@ declare module '@tanstack/react-router' {
       path: '/sessions/$sessionId'
       fullPath: '/sessions/$sessionId'
       preLoaderRoute: typeof SessionsSessionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/jobs/$jobId/': {
+      id: '/jobs/$jobId/'
+      path: '/jobs/$jobId'
+      fullPath: '/jobs/$jobId'
+      preLoaderRoute: typeof JobsJobIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents/$agentId/': {
@@ -160,8 +200,10 @@ const rootRouteChildren: RootRouteChildren = {
   MaintenanceRoute: MaintenanceRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
+  JobsIndexRoute: JobsIndexRoute,
   AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
+  JobsJobIdIndexRoute: JobsJobIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

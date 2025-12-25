@@ -50,6 +50,7 @@ function RootLayout() {
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
           <ValidationWarningIndicator />
+          <JobsNavLink />
           <AgentsNavLink />
         </div>
       </header>
@@ -58,6 +59,27 @@ function RootLayout() {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function JobsNavLink() {
+  const location = useLocation();
+  const isActive = location.pathname.startsWith('/jobs');
+
+  return (
+    <Link
+      to="/jobs"
+      style={{
+        color: isActive ? '#fff' : '#94a3b8',
+        textDecoration: 'none',
+        fontSize: '0.875rem',
+        padding: '4px 8px',
+        borderRadius: '4px',
+        backgroundColor: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
+      }}
+    >
+      Jobs
+    </Link>
   );
 }
 
