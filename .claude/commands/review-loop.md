@@ -3,248 +3,269 @@ description: Run automated parallel review loop with all reviewers until CRITICA
 model: sonnet
 ---
 
-You are coordinating a **parallel** code review and fix system. This system processes issues concurrently for maximum efficiency.
+You are coordinating a **parallel** code review and fix system optimized for maximum efficiency.
 
 ## Architecture Overview
 
 ```
-[Phase 1: Parallel Review]
+[Phase 1: Parallel Review + Real-time Fix]
 Reviewer 1 (bg) ──┐
-Reviewer 2 (bg) ──┼─→ Append issues to queue as found
-Reviewer 3 (bg) ──┘   ├→ single-file.jsonl (parallel fix)
-                      └→ cross-file.jsonl (sequential fix)
+Reviewer 2 (bg) ──┼─→ Write issues to own file
+Reviewer 3 (bg) ──┘   - test-reviewer.jsonl
+                      - code-quality-reviewer.jsonl
+                      - ux-architecture-reviewer.jsonl
+         ↓
+Main Coordinator (polling)
+  ├─ Read new issues from reviewer files
+  ├─ Manage worker pool (2-3 workers)
+  └─ Dispatch:
+      ├─ Idle worker available → Direct assignment
+      └─ All workers busy → Add to queue.jsonl
 
-[Phase 2: Parallel Single-File Fixes]
-Fix Worker 1 ──┐
-Fix Worker 2 ──┼─→ Process single-file queue concurrently
-Fix Worker 3 ──┘   (file-level locking prevents conflicts)
-
-[Phase 3: Sequential Cross-File Fixes]
-Main coordinator → Process cross-file queue one by one
+[Phase 2: Cleanup]
+Process remaining queue
+Collect final reports from reviewers
 ```
 
-## Initialization
+## Phase 1: Launch Reviewers
 
-Before starting, initialize the queue system:
+### Initialize
 
 ```bash
-.claude/review-queue/queue-manager.sh init
+mkdir -p .claude/review-queue
+rm -f .claude/review-queue/*.jsonl
 ```
 
-## Phase 1: Launch All Reviewers (Background)
+### Launch All Reviewers in Parallel
 
-Launch all three reviewers **in parallel with run_in_background=true**:
+Launch all three reviewers with `run_in_background=true` in a single message:
 
-### Task 1: test-reviewer
+**Reviewer Prompt Template:**
 ```
-Review all test files for quality, coverage, and anti-patterns.
+Review [scope] for [criteria].
 
-For each issue found, classify as single-file or cross-file:
-- Single-file: Fix contained within one test file
-- Cross-file: Fix requires changes to multiple files
+For EACH CRITICAL or HIGH severity single-file issue found:
 
-Append to queue immediately using:
-bash .claude/review-queue/queue-manager.sh add <type> <severity> test-reviewer <file> <line> "<description>"
+1. Create JSON object:
+{
+  "severity": "CRITICAL|HIGH",
+  "file": "relative/path/to/file.ts",
+  "line": 123,
+  "description": "Brief description",
+  "recommendation": "How to fix"
+}
 
-Where:
-- <type>: "single-file" or "cross-file"
-- <severity>: "CRITICAL", "HIGH", "MEDIUM", "LOW"
+2. Append to YOUR file using Write tool:
+   - Read `.claude/review-queue/[reviewer-name].jsonl`
+   - Append new JSON as a single line
+   - Write back the entire content
 
-Continue appending as you find issues. Do not wait until review is complete.
-```
+**CRITICAL**:
+- ONLY CRITICAL and HIGH severity
+- ONLY single-file issues (fix within one file)
+- ONE JSON object per line (JSONLines format)
+- Use Write tool, NOT Bash
 
-### Task 2: code-quality-reviewer
-```
-Review all production code for design, architecture, and patterns.
+Other findings (MEDIUM/LOW, cross-file):
+- Keep internal notes
+- Report at the end in final summary
 
-For each issue found, classify as single-file or cross-file:
-- Single-file: Fix contained within one file (type error, null check, function logic)
-- Cross-file: Fix spans multiple files (API changes, refactoring, renames)
-
-Append to queue immediately using:
-bash .claude/review-queue/queue-manager.sh add <type> <severity> code-quality-reviewer <file> <line> "<description>"
-
-Continue appending as you find issues.
-```
-
-### Task 3: ux-architecture-reviewer
-```
-Review UX architecture for state consistency and edge cases.
-
-For each issue found, classify as single-file or cross-file:
-- Single-file: Fix in one component or service
-- Cross-file: Fix requires client-server contract changes
-
-Append to queue immediately using:
-bash .claude/review-queue/queue-manager.sh add <type> <severity> ux-architecture-reviewer <file> <line> "<description>"
-
-Continue appending as you find issues.
+Continue reviewing ALL files in scope.
 ```
 
-**Launch all three with run_in_background=true in a single message.**
+**Specific reviewer scopes:**
+- `test-reviewer`: All test files, file=`.claude/review-queue/test-reviewer.jsonl`
+- `code-quality-reviewer`: Production code, file=`.claude/review-queue/code-quality-reviewer.jsonl`
+- `ux-architecture-reviewer`: UX architecture, file=`.claude/review-queue/ux-architecture-reviewer.jsonl`
 
-## Phase 2: Parallel Single-File Fixes
+## Phase 2: Real-time Fix Coordination
 
-While reviewers are running in the background, start processing the single-file queue.
+### Setup Worker Pool
 
-### Launch Multiple Fix Workers
+Create 2-3 background fix workers:
 
-Create 2-3 fix worker agents that run this loop concurrently:
-
-```
-Fix Worker Loop:
-
-1. Get next pending CRITICAL/HIGH issue:
-   issue=$(bash .claude/review-queue/queue-manager.sh next)
-
-2. If no issue, wait 10 seconds and retry (reviewers may still be working)
-
-3. Extract file path from issue and check lock:
-   bash .claude/review-queue/queue-manager.sh lock <file> <worker-id> <issue-id>
-
-4. If lock failed, skip to next issue (another worker is fixing it)
-
-5. Fix the issue based on file location:
-   - packages/client/** → Use frontend-specialist
-   - packages/server/** → Use backend-specialist
-
-6. Update status and release lock:
-   bash .claude/review-queue/queue-manager.sh update <issue-id> fixed
-   bash .claude/review-queue/queue-manager.sh unlock <file>
-
-7. Repeat until no more pending CRITICAL/HIGH issues
+```python
+workers = {
+  'frontend-1': None,  # agent ID when active
+  'backend-1': None,
+  'backend-2': None
+}
 ```
 
-**Implementation:**
+### Polling Loop
 
-Launch 2-3 fix worker agents with run_in_background=true. Each worker should:
-- Be a `frontend-specialist` or `backend-specialist` depending on component
-- Run the fix loop independently
-- Coordinate via the queue and lock files
+```python
+processed_counts = {
+  'test-reviewer.jsonl': 0,
+  'code-quality-reviewer.jsonl': 0,
+  'ux-architecture-reviewer.jsonl': 0
+}
 
-## Phase 3: Wait and Monitor
+while reviewers_running or new_issues_exist:
+  # Check each reviewer file
+  for file in reviewer_files:
+    issues = read_new_issues(file, processed_counts[file])
 
-Use TaskOutput to monitor background agents:
+    for issue in issues:
+      idle_worker = find_idle_worker(workers, issue.file)
 
-1. Check reviewers periodically - are they still finding issues?
-2. Check fix workers - are they making progress?
-3. Display progress:
-   ```bash
-   bash .claude/review-queue/queue-manager.sh count
-   ```
+      if idle_worker:
+        # Direct assignment
+        assign_to_worker(idle_worker, issue)
+      else:
+        # Add to overflow queue
+        append_to_queue('.claude/review-queue/queue.jsonl', issue)
 
-## Phase 4: Verification
+    processed_counts[file] = get_line_count(file)
 
-After all single-file CRITICAL/HIGH issues are fixed:
+  sleep(10)  # Poll every 10 seconds
+```
+
+### Worker Assignment Logic
+
+```python
+def find_idle_worker(workers, file_path):
+  # Determine component
+  if file_path.startswith('packages/client'):
+    component = 'frontend'
+  elif file_path.startswith('packages/server'):
+    component = 'backend'
+  else:
+    component = 'backend'  # shared defaults to backend
+
+  # Find idle worker matching component
+  for worker_id, task in workers.items():
+    if task is None and worker_id.startswith(component):
+      return worker_id
+
+  return None
+
+def assign_to_worker(worker_id, issue):
+  # Launch fix worker with specific issue
+  task_id = Task(
+    subagent_type=get_specialist_type(worker_id),
+    prompt=f"Fix this issue:\n{issue.description}\n\nFile: {issue.file}:{issue.line}\n\nRecommendation: {issue.recommendation}\n\nAfter fixing, verify with: bun run test",
+    run_in_background=true
+  )
+
+  workers[worker_id] = task_id
+
+def check_worker_completion(workers):
+  for worker_id, task_id in workers.items():
+    if task_id:
+      result = TaskOutput(task_id, block=false)
+      if result.status == 'completed':
+        workers[worker_id] = None  # Mark as idle
+```
+
+## Phase 3: Monitor and Report
+
+### Progress Display
+
+Show periodic updates:
+
+```
+## Review Loop - Iteration 1
+
+Reviewers: 3 running
+Issues found: 12 (8 CRITICAL, 4 HIGH)
+Workers: frontend-1 active, backend-1 active, backend-2 idle
+Queue: 3 pending
+
+[Update every 30 seconds]
+```
+
+### Completion Criteria
+
+Wait until:
+1. All reviewers completed
+2. All issues processed (files empty + queue empty)
+3. All workers idle
+
+## Phase 4: Final Report
+
+Collect from each reviewer:
+
+```
+TaskOutput(reviewer_id, block=true)
+```
+
+Extract final summaries including:
+- Total issues found (all severities)
+- MEDIUM/LOW recommendations
+- Cross-file issues
+- Statistics
+
+## Phase 5: Verification
 
 ```bash
 bun run test
 ```
 
-If tests fail:
-- Identify which fix caused the failure
-- Mark issue as failed
-- Optionally retry or ask user
+If failures:
+- Identify which fix caused it
+- Retry or report to user
 
-## Phase 5: Cross-File Fixes
-
-Process cross-file queue sequentially (one at a time):
-
-```bash
-# Get all pending CRITICAL/HIGH cross-file issues
-grep '"severity":"CRITICAL"' .claude/review-queue/cross-file.jsonl | grep '"status":"pending"'
-grep '"severity":"HIGH"' .claude/review-queue/cross-file.jsonl | grep '"status":"pending"'
-```
-
-For each issue:
-1. Delegate to appropriate specialist (or both if needed)
-2. Run `bun run test` after each fix
-3. Update status
-
-## Phase 6: Re-review Decision
-
-After all fixes:
-
-```bash
-bash .claude/review-queue/queue-manager.sh count
-```
-
-Check remaining CRITICAL/HIGH issues:
-- **If any remain** → Start next iteration (clean queue and restart)
-- **If none remain** → Complete the loop
-- **If iteration count reaches 5** → Stop and report
-
-## Output Requirements
-
-### Per-Phase Updates
-
-Show progress after each phase:
-
-```
-## Phase 1: Review - In Progress
-Reviewers running in background...
-Issues queued so far: {count}
-
-## Phase 2: Single-File Fixes - In Progress
-Fix workers: 3 active
-Pending: {count} | Fixed: {count}
-
-## Phase 4: Verification
-Tests: ✓/✗
-
-## Phase 5: Cross-File Fixes
-Processing {count} cross-file issues...
-```
-
-### Final Summary
+## Phase 6: Summary
 
 ```
 ## Review Loop Complete
 
-Iterations: {N}
-
-### Status
-- CRITICAL issues resolved: ✓/✗
-- HIGH issues resolved: ✓/✗
+### Iteration 1 Results
+- CRITICAL resolved: {count}
+- HIGH resolved: {count}
 - Remaining MEDIUM: {count}
 - Remaining LOW: {count}
+- Cross-file issues: {count}
 
 ### Statistics
 - Total issues found: {count}
-- Single-file (parallel): {count}
-- Cross-file (sequential): {count}
-- Fix time saved by parallelization: ~{estimate}
+- Fixed in parallel: {count}
+- Average fix time: {estimate}
+- Worker utilization: {percent}
 
 ### Next Steps
-[Recommendations for remaining MEDIUM/LOW issues]
+[Recommendations for remaining issues]
 ```
 
-## Constraints
+## Implementation Notes
 
-- **Maximum 5 iterations**
-- **Only auto-fix CRITICAL and HIGH** severity issues
-- **Always delegate** to specialist agents
-- **File-level locking** prevents conflicts
-- **Use TodoWrite** to track progress
+### Reading New Issues
+
+```python
+def read_new_issues(file_path, last_count):
+  content = Read(file_path)
+  lines = content.split('\n')
+  new_lines = lines[last_count:]
+
+  issues = []
+  for line in new_lines:
+    if line.strip():
+      issues.append(json.loads(line))
+
+  return issues
+```
+
+### Queue Format
+
+`.claude/review-queue/queue.jsonl`:
+```jsonl
+{"severity":"HIGH","file":"packages/server/src/file.ts","line":42,"description":"...","recommendation":"..."}
+{"severity":"CRITICAL","file":"packages/client/src/App.tsx","line":10,"description":"...","recommendation":"..."}
+```
 
 ## Error Handling
 
-If a fix worker fails:
-1. Mark issue as failed in queue
-2. Release lock
-3. Continue with other issues
-4. Report failures at end
+- **Reviewer crashes**: Continue with remaining reviewers
+- **Worker fails**: Mark issue as failed, continue with next
+- **Parse errors**: Log and skip malformed JSON
+- **Timeout**: Set 10-minute max per reviewer
 
-If reviewers stall:
-- Set reasonable timeout (e.g., 5 minutes)
-- Process whatever issues were found
-- Report incomplete review
+## Constraints
 
-## Tips for Efficiency
-
-- Start fix workers early (don't wait for all reviews to complete)
-- Use 2-3 fix workers for optimal parallelism
-- Monitor queue counts to see progress
-- Most issues should be single-file (~80%), so parallelization helps significantly
+- Maximum 5 iterations
+- Only auto-fix CRITICAL and HIGH
+- Only single-file issues auto-fixed
+- Always verify with tests
 
 Begin Phase 1 now.
