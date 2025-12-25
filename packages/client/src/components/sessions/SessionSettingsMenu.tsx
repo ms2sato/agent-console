@@ -6,18 +6,21 @@ import {
   FolderIcon,
   CopyIcon,
   TrashIcon,
+  DocumentIcon,
 } from '../Icons';
 import { openPath } from '../../lib/api';
 
-export type MenuAction = 'edit' | 'restart' | 'delete-worktree';
+export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'view-initial-prompt';
 
 export interface SessionSettingsMenuProps {
   worktreePath: string;
+  initialPrompt?: string;
   onMenuAction: (action: MenuAction) => void;
 }
 
 export function SessionSettingsMenu({
   worktreePath,
+  initialPrompt,
   onMenuAction,
 }: SessionSettingsMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -99,6 +102,15 @@ export function SessionSettingsMenu({
               <EditIcon />
               Edit Session
             </button>
+            {initialPrompt && (
+              <button
+                onClick={() => handleMenuAction('view-initial-prompt')}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
+              >
+                <DocumentIcon />
+                View Initial Prompt
+              </button>
+            )}
             <button
               onClick={() => handleMenuAction('restart')}
               className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"

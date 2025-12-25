@@ -538,6 +538,7 @@ function TerminalPage() {
               repositoryId={repositoryId}
               currentBranch={branchName}
               currentTitle={sessionTitle}
+              initialPrompt={session.initialPrompt}
               worktreePath={session.locationPath}
               onBranchChange={setBranchName}
               onTitleChange={setSessionTitle}

@@ -4,6 +4,7 @@ import {
   EditSessionDialog,
   RestartSessionDialog,
   DeleteWorktreeDialog,
+  InitialPromptDialog,
   type MenuAction,
 } from './sessions';
 
@@ -12,6 +13,7 @@ interface SessionSettingsProps {
   repositoryId: string;
   currentBranch: string;
   currentTitle?: string;
+  initialPrompt?: string;
   worktreePath: string;
   onBranchChange: (newBranch: string) => void;
   onTitleChange?: (newTitle: string) => void;
@@ -25,6 +27,7 @@ export function SessionSettings({
   repositoryId,
   currentBranch,
   currentTitle,
+  initialPrompt,
   worktreePath,
   onBranchChange,
   onTitleChange,
@@ -44,6 +47,7 @@ export function SessionSettings({
     <>
       <SessionSettingsMenu
         worktreePath={worktreePath}
+        initialPrompt={initialPrompt}
         onMenuAction={handleMenuAction}
       />
 
@@ -70,6 +74,12 @@ export function SessionSettings({
         onOpenChange={(open) => !open && closeDialog()}
         repositoryId={repositoryId}
         worktreePath={worktreePath}
+      />
+
+      <InitialPromptDialog
+        open={activeDialog === 'view-initial-prompt'}
+        onOpenChange={(open) => !open && closeDialog()}
+        initialPrompt={initialPrompt}
       />
     </>
   );
