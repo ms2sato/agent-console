@@ -13,6 +13,11 @@ import type {
   SessionsValidationResponse,
   BranchNameFallback,
   GitHubIssueSummary,
+  Job,
+  JobsResponse,
+  JobStats,
+  JobStatus,
+  JobType,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -413,5 +418,83 @@ export async function deleteInvalidSession(sessionId: string): Promise<void> {
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to delete invalid session');
+  }
+}
+
+// ===========================================================================
+// Jobs API
+// ===========================================================================
+
+// Re-export job types from shared package
+export type { Job, JobsResponse, JobStats, JobStatus, JobType };
+
+/**
+ * Parameters for fetching jobs.
+ */
+export interface FetchJobsParams {
+  status?: JobStatus;
+  type?: JobType;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.status) {
+    searchParams.set('status', params.status);
+  }
+  if (params?.type) {
+    searchParams.set('type', params.type);
+  }
+  if (params?.limit !== undefined) {
+    searchParams.set('limit', String(params.limit));
+  }
+  if (params?.offset !== undefined) {
+    searchParams.set('offset', String(params.offset));
+  }
+
+  const queryString = searchParams.toString();
+  const url = queryString ? `${API_BASE}/jobs?${queryString}` : `${API_BASE}/jobs`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch jobs: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchJobStats(): Promise<JobStats> {
+  const res = await fetch(`${API_BASE}/jobs/stats`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch job stats: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchJob(jobId: string): Promise<Job> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch job: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function retryJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to retry job');
+  }
+}
+
+export async function cancelJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to cancel job');
   }
 }
