@@ -18,6 +18,7 @@ import type {
   JobStats,
   JobStatus,
   JobType,
+  SetupCommandResult,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -215,6 +216,30 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
   }
 }
 
+export interface UpdateRepositoryRequest {
+  setupCommand?: string | null;
+}
+
+export interface UpdateRepositoryResponse {
+  repository: Repository;
+}
+
+export async function updateRepository(
+  repositoryId: string,
+  request: UpdateRepositoryRequest
+): Promise<UpdateRepositoryResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to update repository');
+  }
+  return res.json();
+}
+
 export interface WorktreesResponse {
   worktrees: Worktree[];
 }
@@ -230,6 +255,8 @@ export interface CreateWorktreeResponse {
   session: Session | null;
   /** Present when AI-based branch name generation failed and a fallback name was used */
   branchNameFallback?: BranchNameFallback;
+  /** Present when a setup command was configured and executed */
+  setupCommandResult?: SetupCommandResult;
 }
 
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {

@@ -14,9 +14,11 @@ import type {
   CreateWorkerRequest,
   RestartWorkerRequest,
   CreateRepositoryRequest,
+  UpdateRepositoryRequest,
   SystemOpenRequest,
   BranchNameFallback,
   Repository,
+  SetupCommandResult,
   FetchGitHubIssueRequest,
   GitHubIssueSummary,
 } from '@agent-console/shared';
@@ -26,6 +28,7 @@ import {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   CreateRepositoryRequestSchema,
+  UpdateRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
   CreateAgentRequestSchema,
@@ -479,6 +482,22 @@ api.delete('/repositories/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// Update a repository
+api.patch('/repositories/:id', validateBody(UpdateRepositoryRequestSchema), async (c) => {
+  const repoId = c.req.param('id');
+  const body = getValidatedBody<UpdateRepositoryRequest>(c);
+  const repositoryManager = getRepositoryManager();
+
+  const updated = await repositoryManager.updateRepository(repoId, body);
+
+  if (!updated) {
+    throw new NotFoundError('Repository');
+  }
+
+  const repositoryWithRemote = await withRepositoryRemote(updated);
+  return c.json({ repository: repositoryWithRemote });
+});
+
 // Get worktrees for a repository
 api.get('/repositories/:id/worktrees', async (c) => {
   const repoId = c.req.param('id');
@@ -582,6 +601,20 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
   const worktree = worktrees.find(wt => wt.path === result.worktreePath);
 
+  // Execute setup command if configured
+  let setupCommandResult: SetupCommandResult | undefined;
+  if (repo.setupCommand && worktree && result.index !== undefined) {
+    setupCommandResult = await worktreeService.executeSetupCommand(
+      repo.setupCommand,
+      result.worktreePath,
+      {
+        worktreeNum: result.index,
+        branch: worktree.branch,
+        repo: repo.name,
+      }
+    );
+  }
+
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
@@ -597,7 +630,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
     });
   }
 
-  return c.json({ worktree, session, branchNameFallback }, 201);
+  return c.json({ worktree, session, branchNameFallback, setupCommandResult }, 201);
 });
 
 // Delete a worktree

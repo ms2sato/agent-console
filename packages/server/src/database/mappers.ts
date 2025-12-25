@@ -261,6 +261,7 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     path: repository.path,
     created_at: repository.createdAt,
     updated_at: now,
+    setup_command: repository.setupCommand ?? null,
   };
 }
 
@@ -276,6 +277,7 @@ export function toRepository(row: RepositoryRow): Repository {
     name: row.name,
     path: row.path,
     createdAt: row.created_at,
+    setupCommand: row.setup_command ?? null,
   };
 }
 

@@ -31,7 +31,7 @@ import {
 import { AddRepositoryForm } from '../components/repositories';
 import { CreateWorktreeForm } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -273,6 +273,15 @@ function DashboardPage() {
     queryClient.invalidateQueries({ queryKey: ['repositories'] });
   }, [queryClient]);
 
+  // Handle repository updated
+  const handleRepositoryUpdated = useCallback((repository: Repository) => {
+    console.log(`[Repository] Updated: ${repository.id}`);
+    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(['repositories'], (old) => {
+      if (!old) return old;
+      return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
+    });
+  }, [queryClient]);
+
   // Handle real-time activity updates via WebSocket
   // Note: ActivityDetector handles debouncing and sticky state transitions server-side
   const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -375,6 +384,7 @@ function DashboardPage() {
     onRepositoriesSync: handleRepositoriesSync,
     onRepositoryCreated: handleRepositoryCreated,
     onRepositoryDeleted: handleRepositoryDeleted,
+    onRepositoryUpdated: handleRepositoryUpdated,
   });
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
@@ -504,6 +514,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
+  const [setupCommandFailure, setSetupCommandFailure] = useState<SetupCommandResult | null>(null);
   const isGitHubRemote = Boolean(
     repository.remoteUrl &&
       (repository.remoteUrl.startsWith('git@github.com:') ||
@@ -537,6 +548,10 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       // Show fallback notification if branch name generation failed
       if (data.branchNameFallback) {
         setFallbackInfo(data.branchNameFallback);
+      }
+      // Show setup command failure notification if command failed
+      if (data.setupCommandResult && !data.setupCommandResult.success) {
+        setSetupCommandFailure(data.setupCommandResult);
       }
       if (data.session) {
         window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
@@ -610,6 +625,11 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       <BranchNameFallbackDialog
         fallbackInfo={fallbackInfo}
         onClose={() => setFallbackInfo(null)}
+      />
+
+      <SetupCommandFailureDialog
+        result={setupCommandFailure}
+        onClose={() => setSetupCommandFailure(null)}
       />
     </div>
   );
@@ -890,6 +910,53 @@ function BranchNameFallbackDialog({ fallbackInfo, onClose }: BranchNameFallbackD
             </div>
             <p className="text-xs text-gray-500">
               You can rename the branch later from the session settings.
+            </p>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction onClick={onClose}>
+            OK
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// =============================================================================
+// Setup Command Failure Dialog
+// =============================================================================
+
+interface SetupCommandFailureDialogProps {
+  result: SetupCommandResult | null;
+  onClose: () => void;
+}
+
+function SetupCommandFailureDialog({ result, onClose }: SetupCommandFailureDialogProps) {
+  return (
+    <AlertDialog open={result !== null} onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-red-400">Setup Command Failed</AlertDialogTitle>
+          <AlertDialogDescription className="space-y-3">
+            <p>
+              The worktree was created successfully, but the setup command failed to execute.
+            </p>
+            <div className="bg-slate-900 rounded p-3 text-sm max-h-60 overflow-auto">
+              {result?.error && (
+                <div className="text-red-400 font-mono whitespace-pre-wrap">
+                  {result.error}
+                </div>
+              )}
+              {result?.output && (
+                <div className="text-gray-400 font-mono whitespace-pre-wrap mt-2 border-t border-slate-700 pt-2">
+                  <span className="text-gray-500 text-xs">Output:</span>
+                  <pre className="mt-1">{result.output}</pre>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-gray-500">
+              You can run the setup command manually in the terminal, or check the repository settings.
             </p>
           </AlertDialogDescription>
         </AlertDialogHeader>

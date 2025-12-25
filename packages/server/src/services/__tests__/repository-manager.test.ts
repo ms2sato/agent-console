@@ -4,7 +4,7 @@ import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import type { RepositoryRepository } from '../../repositories/repository-repository.js';
+import type { RepositoryRepository, RepositoryUpdates } from '../../repositories/repository-repository.js';
 import { JobQueue } from '../../jobs/index.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetSessionManager, initializeSessionManager } from '../session-manager.js';
@@ -36,6 +36,14 @@ class InMemoryRepositoryRepository implements RepositoryRepository {
 
   async save(repository: Repository): Promise<void> {
     this.repositories.set(repository.id, repository);
+  }
+
+  async update(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
+    const repo = this.repositories.get(id);
+    if (!repo) return null;
+    const updated = { ...repo, ...updates };
+    this.repositories.set(id, updated);
+    return updated;
   }
 
   async delete(id: string): Promise<void> {

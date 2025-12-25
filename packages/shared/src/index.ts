@@ -12,6 +12,16 @@ export interface Repository {
   path: string;         // Absolute path
   createdAt: string;    // Creation date (ISO 8601)
   remoteUrl?: string;   // Git remote URL for origin (if available)
+  setupCommand?: string | null; // Shell command to run after creating worktrees
+}
+
+/**
+ * Result of executing a setup command after worktree creation
+ */
+export interface SetupCommandResult {
+  success: boolean;
+  output?: string;
+  error?: string;
 }
 
 export interface Worktree {

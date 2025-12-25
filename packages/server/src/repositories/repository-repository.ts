@@ -1,6 +1,13 @@
 import type { Repository } from '@agent-console/shared';
 
 /**
+ * Updates that can be applied to a repository.
+ */
+export interface RepositoryUpdates {
+  setupCommand?: string | null;
+}
+
+/**
  * Repository interface for persisting git repositories.
  * Provides an abstraction layer for repository storage operations.
  */
@@ -30,6 +37,14 @@ export interface RepositoryRepository {
    * @param repository - The repository to save
    */
   save(repository: Repository): Promise<void>;
+
+  /**
+   * Update specific fields of a repository.
+   * @param id - The repository ID to update
+   * @param updates - The fields to update
+   * @returns The updated repository if found, null otherwise
+   */
+  update(id: string, updates: RepositoryUpdates): Promise<Repository | null>;
 
   /**
    * Delete a repository by its ID.

@@ -6,7 +6,7 @@ import { getRepositoryDir } from '../lib/config.js';
 import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
-import type { RepositoryRepository } from '../repositories/repository-repository.js';
+import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 import { getSessionManager } from './session-manager.js';
@@ -24,6 +24,7 @@ async function getOrgRepoFromPath(repoPath: string): Promise<string> {
 
 export interface RepositoryLifecycleCallbacks {
   onRepositoryCreated: (repository: Repository) => void;
+  onRepositoryUpdated: (repository: Repository) => void;
   onRepositoryDeleted: (repositoryId: string) => void;
 }
 
@@ -159,6 +160,29 @@ export class RepositoryManager {
     this.lifecycleCallbacks?.onRepositoryDeleted(id);
 
     return true;
+  }
+
+  /**
+   * Update a repository's settings.
+   * @param id - Repository ID to update
+   * @param updates - Fields to update
+   * @returns Updated repository if found, null otherwise
+   */
+  async updateRepository(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
+    const repo = this.repositories.get(id);
+    if (!repo) return null;
+
+    const updated = await this.repository.update(id, updates);
+    if (!updated) return null;
+
+    this.repositories.set(id, updated);
+    logger.info({ repositoryId: id }, 'Repository updated');
+
+    // Callback fires after successful update - clients will receive state update
+    // only after database write is confirmed
+    this.lifecycleCallbacks?.onRepositoryUpdated(updated);
+
+    return updated;
   }
 
   /**

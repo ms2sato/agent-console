@@ -119,6 +119,13 @@ export const DeleteWorktreeRequestSchema = v.object({
   force: v.optional(v.boolean()),
 });
 
+/**
+ * Schema for updating a repository
+ */
+export const UpdateRepositoryRequestSchema = v.object({
+  setupCommand: v.optional(v.pipe(v.string(), v.trim())),
+});
+
 // Inferred types from schemas
 export type CreateRepositoryRequest = v.InferOutput<typeof CreateRepositoryRequestSchema>;
 export type CreateWorktreePromptRequest = v.InferOutput<typeof CreateWorktreePromptRequestSchema>;
@@ -126,5 +133,6 @@ export type CreateWorktreeCustomRequest = v.InferOutput<typeof CreateWorktreeCus
 export type CreateWorktreeExistingRequest = v.InferOutput<typeof CreateWorktreeExistingRequestSchema>;
 export type CreateWorktreeRequest = v.InferOutput<typeof CreateWorktreeRequestSchema>;
 export type DeleteWorktreeRequest = v.InferOutput<typeof DeleteWorktreeRequestSchema>;
+export type UpdateRepositoryRequest = v.InferOutput<typeof UpdateRepositoryRequestSchema>;
 export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;
 export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;

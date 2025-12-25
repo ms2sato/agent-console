@@ -56,6 +56,7 @@ export {
   CreateWorktreeExistingRequestSchema,
   CreateWorktreeRequestSchema,
   DeleteWorktreeRequestSchema,
+  UpdateRepositoryRequestSchema,
   FetchGitHubIssueRequestSchema,
   GitHubIssueSummarySchema,
   type CreateRepositoryRequest,
@@ -64,6 +65,7 @@ export {
   type CreateWorktreeExistingRequest,
   type CreateWorktreeRequest,
   type DeleteWorktreeRequest,
+  type UpdateRepositoryRequest,
   type FetchGitHubIssueRequest,
   type GitHubIssueSummary,
 } from './repository.js';
