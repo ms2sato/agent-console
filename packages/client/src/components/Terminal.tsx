@@ -37,45 +37,45 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleHistory = useCallback((data: string, offset?: number) => {
     const terminal = terminalRef.current;
-    if (!terminal) return;
+    if (!terminal) {
+      return;
+    }
 
     // Store the offset for normal WebSocket reconnection (not visibility-based)
     if (offset !== undefined) {
       workerWs.storeHistoryOffset(sessionId, workerId, offset);
     }
 
-    // Save scroll position before clearing
-    // Check if user was scrolled to somewhere in the middle (not at bottom)
-    const buffer = terminal.buffer.active;
-    const wasAtBottom = buffer.viewportY + terminal.rows >= buffer.length;
-    const savedViewportY = buffer.viewportY;
+    if (!data) return;
 
-    // Clear terminal and write full history
-    if (data) {
-      clearAndWrite(terminal, () => {
-        return new Promise((resolve, reject) => {
-          try {
-            terminal.write(data, resolve);
-          } catch (e) {
-            reject(e);
-          }
-        });
-      }).then(() => {
-        // Restore scroll position or scroll to bottom
-        // Check if terminal is still valid (not disposed)
-        if (!terminalRef.current) return;
-        try {
-          if (wasAtBottom) {
-            terminal.scrollToBottom();
-          } else {
-            // Restore previous scroll position
-            terminal.scrollToLine(savedViewportY);
-          }
-        } catch {
-          // Terminal may be disposed during async operation
-        }
-      }).catch((e) => console.error('[Terminal] Failed to write history:', e));
+    // Check if user was at bottom before clearing
+    let wasAtBottom = true;
+    try {
+      const buffer = terminal.buffer.active;
+      wasAtBottom = buffer.viewportY + terminal.rows >= buffer.length;
+    } catch {
+      // Terminal may not be fully initialized
     }
+
+    // Clear and write history (clearAndWrite preserves scroll position)
+    clearAndWrite(terminal, () => {
+      return new Promise((resolve, reject) => {
+        try {
+          terminal.write(data, resolve);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).then(() => {
+      // If was at bottom, scroll to bottom (clearAndWrite restores position, but we want bottom)
+      if (wasAtBottom) {
+        try {
+          terminalRef.current?.scrollToBottom();
+        } catch {
+          // Terminal may be disposed
+        }
+      }
+    }).catch((e) => console.error('[Terminal] Failed to write history:', e));
   }, [sessionId, workerId]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
@@ -148,7 +148,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
 
     // Initial fit with delay
-    requestAnimationFrame(fitTerminal);
+    const rafId = requestAnimationFrame(fitTerminal);
 
     // Handle terminal input
     terminal.onData((data) => {
@@ -211,9 +211,23 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     window.addEventListener('resize', handleResize);
 
     return () => {
+      cancelAnimationFrame(rafId);
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
-      terminal.dispose();
+      // Delay disposal to allow any pending xterm.js operations to complete
+      // This prevents "Cannot read properties of undefined (reading 'dimensions')" errors
+      // from xterm.js internal code trying to access disposed terminal
+      setTimeout(() => {
+        // Null out refs just before disposal to allow callbacks to write to terminal
+        // until the last moment (important for React Strict Mode double-render)
+        if (terminalRef.current === terminal) {
+          terminalRef.current = null;
+        }
+        if (fitAddonRef.current === fitAddon) {
+          fitAddonRef.current = null;
+        }
+        terminal.dispose();
+      }, 0);
     };
   }, [sendInput, sendResize, sendImage]);
 

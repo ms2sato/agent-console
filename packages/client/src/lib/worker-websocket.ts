@@ -392,9 +392,29 @@ export function connect(
   // Check existing connection
   const existing = connections.get(key);
   if (existing) {
-    // Skip if already connecting or connected
-    if (existing.ws.readyState === WebSocket.CONNECTING || existing.ws.readyState === WebSocket.OPEN) {
+    // Skip if already connecting
+    if (existing.ws.readyState === WebSocket.CONNECTING) {
+      // Connection is still being established - just update callbacks
+      existing.callbacks = callbacks;
       return false;
+    }
+
+    // If connection is open but callbacks don't match, it means component remounted
+    // Close the existing connection and create a new one to get fresh history
+    if (existing.ws.readyState === WebSocket.OPEN) {
+      // Remove event handlers to prevent reconnection attempts
+      existing.ws.onopen = null;
+      existing.ws.onmessage = null;
+      existing.ws.onerror = null;
+      existing.ws.onclose = null;
+      // Close the connection
+      existing.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
+      // Clear retry timeout if any
+      if (existing.retryTimeout) {
+        clearTimeout(existing.retryTimeout);
+        existing.retryTimeout = null;
+      }
+      // Fall through to create new connection
     }
     // If socket is closing, abandon it and create new one
     if (existing.ws.readyState === WebSocket.CLOSING) {
