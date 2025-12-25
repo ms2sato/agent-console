@@ -34,7 +34,26 @@ bun install --production
 
 echo "==> Restarting service..."
 # Use bootout + bootstrap to ensure plist changes (including environment variables) are reloaded
-launchctl bootout "gui/$(id -u)/com.agent-console" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.agent-console.plist
+SERVICE_TARGET="gui/$(id -u)/com.agent-console"
+SERVICE_DOMAIN="gui/$(id -u)"
+
+# Bootout the existing service (ignore errors if not loaded)
+launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
+
+# Wait for the service to be fully unloaded before bootstrapping
+# This prevents "Bootstrap failed: 5: Input/output error" race condition
+MAX_WAIT=30
+WAITED=0
+while launchctl list "com.agent-console" >/dev/null 2>&1; do
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        echo "Warning: Service did not unload within ${MAX_WAIT}s, proceeding anyway..."
+        break
+    fi
+    sleep 0.5
+    WAITED=$((WAITED + 1))
+done
+
+# Bootstrap the service with the updated plist
+launchctl bootstrap "$SERVICE_DOMAIN" ~/Library/LaunchAgents/com.agent-console.plist
 
 echo "==> Done!"
