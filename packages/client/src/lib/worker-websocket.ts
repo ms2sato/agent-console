@@ -99,6 +99,8 @@ interface WorkerConnection {
   historyRequestTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
+  // Terminal history data for diff calculation (persists across tab switches)
+  lastHistoryData: string;
 }
 
 // Callbacks for terminal/agent workers
@@ -229,6 +231,9 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     ...(callbacks.type === 'git-diff' ? { diffData: null, diffError: null, diffLoading: true } : {}),
   };
 
+  // Preserve lastHistoryData from existing connection for diff calculation
+  const lastHistoryData = existingConn.lastHistoryData;
+
   const conn: WorkerConnection = {
     ws,
     state: initialState,
@@ -238,6 +243,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     historyRequestTimeout: null,
     sessionId,
     workerId,
+    lastHistoryData,
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -297,6 +303,23 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     updateState(key, { connected: true });
     if (callbacks.type === 'git-diff') {
       updateState(key, { diffLoading: true });
+    } else {
+      // Request history for terminal/agent workers on connection
+      // Use debounce to prevent duplicate requests during React Strict Mode double render
+      const currentConn = connections.get(key);
+      if (currentConn) {
+        // Clear any pending history request
+        if (currentConn.historyRequestTimeout) {
+          clearTimeout(currentConn.historyRequestTimeout);
+        }
+        const HISTORY_REQUEST_DEBOUNCE_MS = 100;
+        currentConn.historyRequestTimeout = setTimeout(() => {
+          currentConn.historyRequestTimeout = null;
+          if (currentConn.ws.readyState === WebSocket.OPEN) {
+            currentConn.ws.send(JSON.stringify({ type: 'request-history' }));
+          }
+        }, HISTORY_REQUEST_DEBOUNCE_MS);
+      }
     }
     console.log(`[WorkerWS] Connected: ${key}`);
   };
@@ -433,6 +456,7 @@ export function connect(
     historyRequestTimeout: null,
     sessionId,
     workerId,
+    lastHistoryData: '',
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -575,6 +599,28 @@ export function isConnected(sessionId: string, workerId: string): boolean {
   const key = getConnectionKey(sessionId, workerId);
   const conn = connections.get(key);
   return conn?.ws.readyState === WebSocket.OPEN;
+}
+
+/**
+ * Get the last history data for a worker (for diff calculation).
+ * Returns empty string if connection doesn't exist.
+ */
+export function getLastHistoryData(sessionId: string, workerId: string): string {
+  const key = getConnectionKey(sessionId, workerId);
+  const conn = connections.get(key);
+  return conn?.lastHistoryData ?? '';
+}
+
+/**
+ * Set the last history data for a worker (for diff calculation).
+ * Call this after processing history to enable accurate diff on next update.
+ */
+export function setLastHistoryData(sessionId: string, workerId: string, data: string): void {
+  const key = getConnectionKey(sessionId, workerId);
+  const conn = connections.get(key);
+  if (conn) {
+    conn.lastHistoryData = data;
+  }
 }
 
 /**

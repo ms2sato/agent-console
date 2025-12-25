@@ -6,7 +6,20 @@ import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import * as workerWs from '../lib/worker-websocket.js';
 import { clearAndWrite } from '../lib/terminal-utils.js';
+import { calculateHistoryUpdate } from '../lib/terminal-history-utils.js';
 import type { AgentActivityState } from '@agent-console/shared';
+
+/**
+ * Check if the terminal is scrolled to the bottom of the buffer.
+ */
+function isScrolledToBottom(terminal: XTerm): boolean {
+  const buffer = terminal.buffer.active;
+  // viewportY is the first visible line in the viewport
+  // buffer.length is total lines in the buffer
+  // terminal.rows is the number of visible rows
+  // At bottom when: viewportY + rows >= buffer.length
+  return buffer.viewportY + terminal.rows >= buffer.length;
+}
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
@@ -43,35 +56,76 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     if (!data) return;
 
-    // Check if user was at bottom before clearing
-    let wasAtBottom = true;
-    try {
-      const buffer = terminal.buffer.active;
-      wasAtBottom = buffer.viewportY + terminal.rows >= buffer.length;
-    } catch {
-      // Terminal may not be fully initialized
-    }
+    // Get lastHistoryData from worker-websocket (persists across tab switches)
+    const lastHistoryData = workerWs.getLastHistoryData(sessionId, workerId);
+    const update = calculateHistoryUpdate(lastHistoryData, data);
 
-    // Clear and write history (clearAndWrite preserves scroll position)
-    clearAndWrite(terminal, () => {
-      return new Promise((resolve, reject) => {
-        try {
-          terminal.write(data, resolve);
-        } catch (e) {
-          reject(e);
+    // Update the cached history data in worker-websocket
+    workerWs.setLastHistoryData(sessionId, workerId, data);
+
+    // Handle different update types
+    if (update.type === 'diff') {
+      // Append-only update (tab switch) - write only the diff
+      if (!update.newData) return; // No new content to write
+
+      // Capture scroll state BEFORE async write
+      // Check if user was at bottom - if so, let natural scroll happen after write
+      let wasAtBottom = false;
+      let scrollPosition = 0;
+      try {
+        wasAtBottom = isScrolledToBottom(terminal);
+        if (!wasAtBottom) {
+          scrollPosition = terminal.buffer.active.viewportY;
         }
-      });
-    }).then(() => {
-      // If was at bottom, scroll to bottom (clearAndWrite restores position, but we want bottom)
-      if (wasAtBottom) {
-        try {
-          terminalRef.current?.scrollToBottom();
-        } catch {
-          // Terminal may be disposed
-        }
+      } catch (e) {
+        console.warn('[Terminal] Failed to capture scroll position:', e);
       }
-    }).catch((e) => console.error('[Terminal] Failed to write history:', e));
-  }, []);
+
+      try {
+        terminal.write(update.newData, () => {
+          // Only restore scroll position if user was NOT at bottom
+          // If user was at bottom, let xterm's natural scroll behavior show new content
+          if (!wasAtBottom) {
+            try {
+              const currentTerminal = terminalRef.current;
+              if (currentTerminal) {
+                // Validate scroll position is within valid range
+                const maxScrollPosition = Math.max(0, currentTerminal.buffer.active.length - currentTerminal.rows);
+                const safePosition = Math.min(scrollPosition, maxScrollPosition);
+                currentTerminal.scrollToLine(safePosition);
+              }
+            } catch (e) {
+              console.warn('[Terminal] Failed to restore scroll position:', e);
+            }
+          }
+        });
+      } catch (e) {
+        console.error('[Terminal] Failed to write history diff:', e);
+      }
+    } else {
+      // Initial load or full rewrite - clear and write all data
+      clearAndWrite(terminal, () => {
+        return new Promise((resolve, reject) => {
+          try {
+            terminal.write(update.newData, resolve);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      })
+        .then(() => {
+          // Scroll to bottom only on initial load
+          if (update.shouldScrollToBottom) {
+            try {
+              terminalRef.current?.scrollToBottom();
+            } catch (e) {
+              console.warn('[Terminal] Failed to scroll to bottom:', e);
+            }
+          }
+        })
+        .catch((e) => console.error('[Terminal] Failed to write history:', e));
+    }
+  }, [sessionId, workerId]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
