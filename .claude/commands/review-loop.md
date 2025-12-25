@@ -3,269 +3,175 @@ description: Run automated parallel review loop with all reviewers until CRITICA
 model: sonnet
 ---
 
-You are coordinating a **parallel** code review and fix system optimized for maximum efficiency.
+You are coordinating an automated review and fix loop. Your role is to orchestrate reviewers and specialists to iteratively improve code quality.
 
-## Architecture Overview
+## Overview
 
+1. Launch 3 reviewers in parallel (background)
+2. Collect their findings
+3. If CRITICAL/HIGH issues exist → Fix them with specialists
+4. Re-review after fixes
+5. Repeat until no CRITICAL/HIGH issues remain (max 5 iterations)
+
+## Iteration Loop
+
+For each iteration (max 5):
+
+### Step 1: Launch Reviewers in Parallel
+
+Launch all three reviewers with `run_in_background=true` in a **single message**:
+
+**test-reviewer:**
 ```
-[Phase 1: Parallel Review + Real-time Fix]
-Reviewer 1 (bg) ──┐
-Reviewer 2 (bg) ──┼─→ Write issues to own file
-Reviewer 3 (bg) ──┘   - test-reviewer.jsonl
-                      - code-quality-reviewer.jsonl
-                      - ux-architecture-reviewer.jsonl
-         ↓
-Main Coordinator (polling)
-  ├─ Read new issues from reviewer files
-  ├─ Manage worker pool (2-3 workers)
-  └─ Dispatch:
-      ├─ Idle worker available → Direct assignment
-      └─ All workers busy → Add to queue.jsonl
+Review all test files for test quality, coverage, and anti-patterns.
 
-[Phase 2: Cleanup]
-Process remaining queue
-Collect final reports from reviewers
-```
+Report ALL issues found with their severity levels (CRITICAL, HIGH, MEDIUM, LOW).
 
-## Phase 1: Launch Reviewers
+For CRITICAL and HIGH severity issues, provide:
+- Severity level
+- File path and line number
+- Clear description of the problem
+- Specific recommendation for fixing
 
-### Initialize
-
-```bash
-mkdir -p .claude/review-queue
-rm -f .claude/review-queue/*.jsonl
-```
-
-### Launch All Reviewers in Parallel
-
-Launch all three reviewers with `run_in_background=true` in a single message:
-
-**Reviewer Prompt Template:**
-```
-Review [scope] for [criteria].
-
-For EACH CRITICAL or HIGH severity single-file issue found:
-
-1. Create JSON object:
-{
-  "severity": "CRITICAL|HIGH",
-  "file": "relative/path/to/file.ts",
-  "line": 123,
-  "description": "Brief description",
-  "recommendation": "How to fix"
-}
-
-2. Append to YOUR file using Write tool:
-   - Read `.claude/review-queue/[reviewer-name].jsonl`
-   - Append new JSON as a single line
-   - Write back the entire content
-
-**CRITICAL**:
-- ONLY CRITICAL and HIGH severity
-- ONLY single-file issues (fix within one file)
-- ONE JSON object per line (JSONLines format)
-- Use Write tool, NOT Bash
-
-Other findings (MEDIUM/LOW, cross-file):
-- Keep internal notes
-- Report at the end in final summary
-
-Continue reviewing ALL files in scope.
+Format your findings clearly so they can be easily identified and addressed.
 ```
 
-**Specific reviewer scopes:**
-- `test-reviewer`: All test files, file=`.claude/review-queue/test-reviewer.jsonl`
-- `code-quality-reviewer`: Production code, file=`.claude/review-queue/code-quality-reviewer.jsonl`
-- `ux-architecture-reviewer`: UX architecture, file=`.claude/review-queue/ux-architecture-reviewer.jsonl`
+**code-quality-reviewer:**
+```
+Review production code for design quality, maintainability, and adherence to project patterns.
 
-## Phase 2: Real-time Fix Coordination
+Report ALL issues found with their severity levels (CRITICAL, HIGH, MEDIUM, LOW).
 
-### Setup Worker Pool
+For CRITICAL and HIGH severity issues, provide:
+- Severity level
+- File path and line number
+- Clear description of the problem
+- Specific recommendation for fixing
 
-Create 2-3 background fix workers:
-
-```python
-workers = {
-  'frontend-1': None,  # agent ID when active
-  'backend-1': None,
-  'backend-2': None
-}
+Format your findings clearly so they can be easily identified and addressed.
 ```
 
-### Polling Loop
+**ux-architecture-reviewer:**
+```
+Review for UX architecture issues: state consistency, WebSocket/REST API contracts, session/worker lifecycle handling, and edge cases.
 
-```python
-processed_counts = {
-  'test-reviewer.jsonl': 0,
-  'code-quality-reviewer.jsonl': 0,
-  'ux-architecture-reviewer.jsonl': 0
-}
+Report ALL issues found with their severity levels (CRITICAL, HIGH, MEDIUM, LOW).
 
-while reviewers_running or new_issues_exist:
-  # Check each reviewer file
-  for file in reviewer_files:
-    issues = read_new_issues(file, processed_counts[file])
+For CRITICAL and HIGH severity issues, provide:
+- Severity level
+- File path and line number
+- Clear description of the problem
+- Specific recommendation for fixing
 
-    for issue in issues:
-      idle_worker = find_idle_worker(workers, issue.file)
-
-      if idle_worker:
-        # Direct assignment
-        assign_to_worker(idle_worker, issue)
-      else:
-        # Add to overflow queue
-        append_to_queue('.claude/review-queue/queue.jsonl', issue)
-
-    processed_counts[file] = get_line_count(file)
-
-  sleep(10)  # Poll every 10 seconds
+Format your findings clearly so they can be easily identified and addressed.
 ```
 
-### Worker Assignment Logic
+### Step 2: Collect Results
 
-```python
-def find_idle_worker(workers, file_path):
-  # Determine component
-  if file_path.startswith('packages/client'):
-    component = 'frontend'
-  elif file_path.startswith('packages/server'):
-    component = 'backend'
-  else:
-    component = 'backend'  # shared defaults to backend
-
-  # Find idle worker matching component
-  for worker_id, task in workers.items():
-    if task is None and worker_id.startswith(component):
-      return worker_id
-
-  return None
-
-def assign_to_worker(worker_id, issue):
-  # Launch fix worker with specific issue
-  task_id = Task(
-    subagent_type=get_specialist_type(worker_id),
-    prompt=f"Fix this issue:\n{issue.description}\n\nFile: {issue.file}:{issue.line}\n\nRecommendation: {issue.recommendation}\n\nAfter fixing, verify with: bun run test",
-    run_in_background=true
-  )
-
-  workers[worker_id] = task_id
-
-def check_worker_completion(workers):
-  for worker_id, task_id in workers.items():
-    if task_id:
-      result = TaskOutput(task_id, block=false)
-      if result.status == 'completed':
-        workers[worker_id] = None  # Mark as idle
-```
-
-## Phase 3: Monitor and Report
-
-### Progress Display
-
-Show periodic updates:
+Use `TaskOutput` with `block=true` to wait for each reviewer to complete:
 
 ```
-## Review Loop - Iteration 1
-
-Reviewers: 3 running
-Issues found: 12 (8 CRITICAL, 4 HIGH)
-Workers: frontend-1 active, backend-1 active, backend-2 idle
-Queue: 3 pending
-
-[Update every 30 seconds]
+test_result = TaskOutput(test_reviewer_id, block=true)
+quality_result = TaskOutput(quality_reviewer_id, block=true)
+ux_result = TaskOutput(ux_reviewer_id, block=true)
 ```
 
-### Completion Criteria
+### Step 3: Extract CRITICAL/HIGH Issues
 
-Wait until:
-1. All reviewers completed
-2. All issues processed (files empty + queue empty)
-3. All workers idle
+From each reviewer's output, identify all CRITICAL and HIGH severity issues.
 
-## Phase 4: Final Report
+Group issues by component:
+- `packages/client/**` → frontend issues
+- `packages/server/**` → backend issues
+- `packages/shared/**` → classify based on primary consumer
 
-Collect from each reviewer:
+### Step 4: Fix Issues
 
+If CRITICAL/HIGH issues exist:
+
+**For frontend issues:**
+Launch `frontend-specialist` with the list of issues to fix:
 ```
-TaskOutput(reviewer_id, block=true)
-```
+Fix the following CRITICAL/HIGH issues in packages/client:
 
-Extract final summaries including:
-- Total issues found (all severities)
-- MEDIUM/LOW recommendations
-- Cross-file issues
-- Statistics
+[List all frontend issues with file, line, description, and recommendation]
 
-## Phase 5: Verification
+After fixing each issue:
+1. Ensure the fix addresses the root cause
+2. Update related tests if needed
+3. Verify code still follows frontend standards
 
-```bash
-bun run test
-```
-
-If failures:
-- Identify which fix caused it
-- Retry or report to user
-
-## Phase 6: Summary
-
-```
-## Review Loop Complete
-
-### Iteration 1 Results
-- CRITICAL resolved: {count}
-- HIGH resolved: {count}
-- Remaining MEDIUM: {count}
-- Remaining LOW: {count}
-- Cross-file issues: {count}
-
-### Statistics
-- Total issues found: {count}
-- Fixed in parallel: {count}
-- Average fix time: {estimate}
-- Worker utilization: {percent}
-
-### Next Steps
-[Recommendations for remaining issues]
+After all fixes, run: bun run test
 ```
 
-## Implementation Notes
+**For backend issues:**
+Launch `backend-specialist` with the list of issues to fix:
+```
+Fix the following CRITICAL/HIGH issues in packages/server:
 
-### Reading New Issues
+[List all backend issues with file, line, description, and recommendation]
 
-```python
-def read_new_issues(file_path, last_count):
-  content = Read(file_path)
-  lines = content.split('\n')
-  new_lines = lines[last_count:]
+After fixing each issue:
+1. Ensure the fix addresses the root cause
+2. Update related tests if needed
+3. Verify code still follows backend standards
 
-  issues = []
-  for line in new_lines:
-    if line.strip():
-      issues.append(json.loads(line))
-
-  return issues
+After all fixes, run: bun run test
 ```
 
-### Queue Format
+**Note:** If you have both frontend and backend issues, launch both specialists **in parallel** in a single message.
 
-`.claude/review-queue/queue.jsonl`:
-```jsonl
-{"severity":"HIGH","file":"packages/server/src/file.ts","line":42,"description":"...","recommendation":"..."}
-{"severity":"CRITICAL","file":"packages/client/src/App.tsx","line":10,"description":"...","recommendation":"..."}
+### Step 5: Verify Fixes
+
+After specialists complete, verify:
+1. All CRITICAL/HIGH issues were addressed
+2. Tests pass (`bun run test`)
+3. No new issues were introduced
+
+### Step 6: Decide Next Action
+
+- **If CRITICAL/HIGH issues remain:** Start next iteration
+- **If no CRITICAL/HIGH issues:** Exit loop (success)
+- **If max iterations (5) reached:** Exit loop and report remaining issues
+
+## Final Report
+
+After the loop completes, provide a summary:
+
+```
+## Review Loop Complete - Iteration {N}
+
+### Results
+- CRITICAL issues resolved: {count}
+- HIGH issues resolved: {count}
+- Remaining MEDIUM issues: {count}
+- Remaining LOW issues: {count}
+
+### Iterations Summary
+{Brief summary of what was fixed in each iteration}
+
+### Remaining Issues
+{List of MEDIUM/LOW issues that weren't auto-fixed}
+
+### Verification
+- All tests passing: {yes/no}
+- Type check passing: {yes/no}
 ```
 
 ## Error Handling
 
-- **Reviewer crashes**: Continue with remaining reviewers
-- **Worker fails**: Mark issue as failed, continue with next
-- **Parse errors**: Log and skip malformed JSON
-- **Timeout**: Set 10-minute max per reviewer
+- **Reviewer fails:** Continue with remaining reviewers, report the failure
+- **Specialist fails:** Report the failure, continue to next iteration to retry
+- **Tests fail after fix:** Report which fix caused the failure, attempt to revert or fix in next iteration
 
-## Constraints
+## Important Notes
 
-- Maximum 5 iterations
-- Only auto-fix CRITICAL and HIGH
-- Only single-file issues auto-fixed
-- Always verify with tests
+- **Primary agent role:** You (the primary agent) coordinate but do NOT write code directly. Delegate all fixes to specialists.
+- **Parallel execution:** Launch reviewers in parallel (single message with 3 Task calls). Launch specialists in parallel when you have both frontend and backend issues.
+- **Maximum iterations:** Stop after 5 iterations even if CRITICAL/HIGH issues remain
+- **Focus:** Only auto-fix CRITICAL and HIGH severity issues
+- **Verification:** Always run tests after fixes
 
-Begin Phase 1 now.
+## Begin Now
+
+Start with Iteration 1: Launch all three reviewers in parallel.
