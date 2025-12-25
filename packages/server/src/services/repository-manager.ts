@@ -8,6 +8,8 @@ import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
+import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+import { getSessionManager } from './session-manager.js';
 
 const logger = createLogger('repository-manager');
 
@@ -29,14 +31,18 @@ export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
   private repository: RepositoryRepository;
   private lifecycleCallbacks: RepositoryLifecycleCallbacks | null = null;
+  private jobQueue: JobQueue | null = null;
 
   /**
    * Create a RepositoryManager instance with async initialization.
    * This is the preferred way to create a RepositoryManager.
    */
-  static async create(repository?: RepositoryRepository): Promise<RepositoryManager> {
-    const repo = repository ?? new SqliteRepositoryRepository(await initializeDatabase());
-    const manager = new RepositoryManager(repo);
+  static async create(options?: {
+    repository?: RepositoryRepository;
+    jobQueue?: JobQueue | null;
+  }): Promise<RepositoryManager> {
+    const repo = options?.repository ?? new SqliteRepositoryRepository(await initializeDatabase());
+    const manager = new RepositoryManager(repo, options?.jobQueue ?? null);
     await manager.initialize();
     return manager;
   }
@@ -44,8 +50,17 @@ export class RepositoryManager {
   /**
    * Private constructor - use RepositoryManager.create() for async initialization.
    */
-  private constructor(repository: RepositoryRepository) {
+  private constructor(repository: RepositoryRepository, jobQueue: JobQueue | null = null) {
     this.repository = repository;
+    this.jobQueue = jobQueue;
+  }
+
+  /**
+   * Set the job queue for background task processing.
+   * @internal For testing only. In production, pass jobQueue to initializeRepositoryManager().
+   */
+  setJobQueue(jobQueue: JobQueue): void {
+    this.jobQueue = jobQueue;
   }
 
   /**
@@ -122,6 +137,16 @@ export class RepositoryManager {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
+    // Check if any active sessions are using this repository
+    const sessionManager = getSessionManager();
+    const activeSessions = sessionManager.getSessionsUsingRepository(id);
+    if (activeSessions.length > 0) {
+      throw new Error(
+        `Cannot unregister repository: ${activeSessions.length} active session(s) are using it. ` +
+        `Delete or close the sessions first.`
+      );
+    }
+
     // Clean up related directories
     await this.cleanupRepositoryData(repo.path);
 
@@ -138,20 +163,18 @@ export class RepositoryManager {
 
   /**
    * Clean up repository data directory (worktrees and templates)
+   * @throws Error if jobQueue is not available
    */
   private async cleanupRepositoryData(repoPath: string): Promise<void> {
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for repository cleanup. Ensure initializeRepositoryManager() was called with jobQueue.');
+    }
+
     const orgRepo = await getOrgRepoFromPath(repoPath);
     const repoDir = getRepositoryDir(orgRepo);
 
-    // Clean up entire repository directory
-    if (fs.existsSync(repoDir)) {
-      try {
-        fs.rmSync(repoDir, { recursive: true });
-        logger.info({ repoDir }, 'Cleaned up repository data');
-      } catch (e) {
-        logger.error({ repoDir, err: e }, 'Failed to clean up repository data');
-      }
-    }
+    // Clean up entire repository directory via job queue
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
   }
 
   getRepository(id: string): Repository | undefined {
@@ -173,34 +196,47 @@ export class RepositoryManager {
   }
 }
 
-// Singleton with lazy async initialization
+// Singleton instance
 let repositoryManagerInstance: RepositoryManager | null = null;
-let initializationPromise: Promise<RepositoryManager> | null = null;
 
-export async function getRepositoryManager(): Promise<RepositoryManager> {
+/**
+ * Initialize the RepositoryManager singleton.
+ * Must be called once at application startup before getRepositoryManager().
+ * @param options.jobQueue - JobQueue for background cleanup tasks
+ * @param options.repository - Optional custom repository implementation
+ */
+export async function initializeRepositoryManager(options: {
+  jobQueue: JobQueue;
+  repository?: RepositoryRepository;
+}): Promise<void> {
   if (repositoryManagerInstance) {
-    return repositoryManagerInstance;
+    throw new Error('RepositoryManager already initialized');
   }
-
-  if (initializationPromise) {
-    return initializationPromise;
-  }
-
-  initializationPromise = RepositoryManager.create()
-    .then((manager) => {
-      repositoryManagerInstance = manager;
-      return manager;
-    })
-    .catch((error) => {
-      initializationPromise = null; // Allow retry on next call
-      throw error;
-    });
-
-  return initializationPromise;
+  repositoryManagerInstance = await RepositoryManager.create(options);
 }
 
-// For testing: reset the singleton
+/**
+ * Get the RepositoryManager singleton.
+ * @throws Error if initializeRepositoryManager() has not been called
+ */
+export function getRepositoryManager(): RepositoryManager {
+  if (!repositoryManagerInstance) {
+    throw new Error('RepositoryManager not initialized. Call initializeRepositoryManager() first.');
+  }
+  return repositoryManagerInstance;
+}
+
+/**
+ * Check if RepositoryManager has been initialized.
+ */
+export function isRepositoryManagerInitialized(): boolean {
+  return repositoryManagerInstance !== null;
+}
+
+/**
+ * Reset the singleton for testing.
+ * @internal For testing only.
+ */
 export function resetRepositoryManager(): void {
   repositoryManagerInstance = null;
-  initializationPromise = null;
 }

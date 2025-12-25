@@ -208,7 +208,7 @@ describe('App Handler', () => {
         getAllSessions: () => [],
         getWorkerActivityState: () => undefined,
         getAllAgents: async () => [],
-        getAllRepositories: async () => [],
+        getAllRepositories: () => [],
         logger: { debug: mock(), warn: mock(), error: mock() },
       };
     });

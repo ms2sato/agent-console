@@ -39,7 +39,8 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
-import { createSessionRepository, JsonSessionRepository } from '../repositories/index.js';
+import { JsonSessionRepository } from '../repositories/index.js';
+import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('session-manager');
 
@@ -141,6 +142,7 @@ export class SessionManager {
   private ptyProvider: PtyProvider;
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
+  private jobQueue: JobQueue | null = null;
 
   /**
    * Options for creating a SessionManager instance.
@@ -153,13 +155,17 @@ export class SessionManager {
   /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
+   * @param options.jobQueue - JobQueue instance for background cleanup tasks.
+   *                           Must be provided for proper cleanup operations.
    */
   static async create(options?: {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
+    jobQueue?: JobQueue | null;
   }): Promise<SessionManager> {
     const manager = new SessionManager(options);
+    // Note: jobQueue is set via constructor options, making it available during initialize()
     await manager.initialize();
     return manager;
   }
@@ -172,11 +178,33 @@ export class SessionManager {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
+    jobQueue?: JobQueue | null;
   }) {
     this.ptyProvider = options?.ptyProvider ?? bunPtyProvider;
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+    this.jobQueue = options?.jobQueue ?? null;
+  }
+
+  /**
+   * Set the job queue for background task processing.
+   * @internal For testing only. In production, pass jobQueue to create() or getSessionManager().
+   */
+  setJobQueue(jobQueue: JobQueue): void {
+    this.jobQueue = jobQueue;
+  }
+
+  /**
+   * Clean up worker output file via job queue.
+   * Used by deleteWorker and other cleanup operations.
+   * @throws Error if jobQueue is not available
+   */
+  private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for worker output cleanup. Ensure initializeSessionManager() was called with jobQueue.');
+    }
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }
 
   /**
@@ -372,12 +400,14 @@ export class SessionManager {
 
     // Remove orphan sessions from persistence and delete output files
     if (orphanSessionIds.length > 0) {
+      // Verify jobQueue is available for cleanup operations
+      if (!this.jobQueue) {
+        throw new Error('JobQueue not available for orphan session cleanup. Ensure jobQueue is passed to SessionManager.create().');
+      }
       for (const sessionId of orphanSessionIds) {
         await this.sessionRepository.delete(sessionId);
-        // Also delete output files for orphan session (fire-and-forget)
-        void workerOutputFileManager.deleteSessionOutputs(sessionId).catch((err) => {
-          logger.error({ sessionId, err }, 'Failed to delete orphan session output files');
-        });
+        // Delete output files for orphan session via job queue
+        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
         logger.info({ sessionId }, 'Removed orphan session from persistence');
       }
     }
@@ -478,10 +508,11 @@ export class SessionManager {
       }
     }
 
-    // Delete all output files for this session (fire-and-forget)
-    void workerOutputFileManager.deleteSessionOutputs(id).catch((err) => {
-      logger.error({ sessionId: id, err }, 'Failed to delete session output files');
-    });
+    // Delete all output files for this session via job queue
+    if (!this.jobQueue) {
+      throw new Error('JobQueue not available for session cleanup. Ensure initializeSessionManager() was called with jobQueue.');
+    }
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
     this.sessions.delete(id);
     await this.sessionRepository.delete(id);
@@ -690,16 +721,10 @@ export class SessionManager {
     if (worker.type === 'agent') {
       if (worker.pty) worker.pty.kill();
       if (worker.activityDetector) worker.activityDetector.dispose();
-      // Delete output file (fire-and-forget)
-      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-      });
+      await this.cleanupWorkerOutput(sessionId, workerId);
     } else if (worker.type === 'terminal') {
       if (worker.pty) worker.pty.kill();
-      // Delete output file (fire-and-forget)
-      void workerOutputFileManager.deleteWorkerOutput(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to delete worker output file');
-      });
+      await this.cleanupWorkerOutput(sessionId, workerId);
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);
@@ -1530,45 +1555,47 @@ export class SessionManager {
   }
 }
 
-// Create singleton with lazy initialization
+// Singleton instance
 let sessionManagerInstance: SessionManager | null = null;
-let sessionManagerPromise: Promise<SessionManager> | null = null;
 
-export async function getSessionManager(): Promise<SessionManager> {
+/**
+ * Initialize the SessionManager singleton.
+ * Must be called once at application startup before getSessionManager().
+ * @param options.sessionRepository - Repository for session persistence
+ * @param options.jobQueue - JobQueue for background cleanup tasks
+ */
+export async function initializeSessionManager(options: {
+  sessionRepository: SessionRepository;
+  jobQueue: JobQueue;
+}): Promise<void> {
   if (sessionManagerInstance) {
-    return sessionManagerInstance;
+    throw new Error('SessionManager already initialized');
   }
-
-  if (sessionManagerPromise) {
-    return sessionManagerPromise;
-  }
-
-  sessionManagerPromise = (async () => {
-    // Use createSessionRepository() to auto-select SQLite or JSON based on environment
-    const sessionRepository = await createSessionRepository();
-    const manager = await SessionManager.create({ sessionRepository });
-    sessionManagerInstance = manager;
-    return manager;
-  })().catch((error) => {
-    sessionManagerPromise = null; // Allow retry on next call
-    throw error;
-  });
-
-  return sessionManagerPromise;
+  sessionManagerInstance = await SessionManager.create(options);
 }
 
-// For testing: reset the singleton
+/**
+ * Get the SessionManager singleton.
+ * @throws Error if initializeSessionManager() has not been called
+ */
+export function getSessionManager(): SessionManager {
+  if (!sessionManagerInstance) {
+    throw new Error('SessionManager not initialized. Call initializeSessionManager() first.');
+  }
+  return sessionManagerInstance;
+}
+
+/**
+ * Check if SessionManager has been initialized.
+ */
+export function isSessionManagerInitialized(): boolean {
+  return sessionManagerInstance !== null;
+}
+
+/**
+ * Reset the singleton for testing.
+ * @internal For testing only.
+ */
 export function resetSessionManager(): void {
   sessionManagerInstance = null;
-  sessionManagerPromise = null;
 }
-
-// @deprecated - Use getSessionManager() instead
-// This proxy throws an error to catch any remaining usages that need to be migrated
-export const sessionManager: SessionManager = new Proxy({} as SessionManager, {
-  get(_target, prop) {
-    throw new Error(
-      `sessionManager.${String(prop)} is deprecated. Use getSessionManager() instead.`
-    );
-  },
-});

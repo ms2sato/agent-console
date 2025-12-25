@@ -8,7 +8,7 @@ import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
-import { getConfigDir } from '../lib/config.js';
+import { getConfigDir, getDbPath } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
 import { addDatetime } from './schema-helpers.js';
@@ -77,7 +77,7 @@ export async function initializeDatabase(dbPath?: string): Promise<Kysely<Databa
  */
 async function doInitializeDatabase(customDbPath?: string): Promise<Kysely<Database>> {
   const isInMemory = customDbPath === ':memory:';
-  const dbPath = customDbPath ?? path.join(getConfigDir(), 'data.db');
+  const dbPath = customDbPath ?? getDbPath();
 
   // Ensure config directory exists (skip for in-memory database)
   if (!isInMemory) {
@@ -145,6 +145,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
 
   if (currentVersion < 2) {
     await migrateToV2(database);
+  }
+
+  if (currentVersion < 3) {
+    await migrateToV3(database);
   }
 }
 
@@ -265,17 +269,68 @@ async function migrateToV2(database: Kysely<Database>): Promise<void> {
 }
 
 /**
+ * Migration v3: Create jobs table for local job queue.
+ * This integrates the JobQueue schema into the main migration system.
+ */
+async function migrateToV3(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v3: Creating jobs table');
+
+  // Create jobs table with all columns matching JobQueue schema
+  await database.schema
+    .createTable('jobs')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('type', 'text', (col) => col.notNull())
+    .addColumn('payload', 'text', (col) => col.notNull())
+    .addColumn('status', 'text', (col) => col.notNull().defaultTo('pending'))
+    .addColumn('priority', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('attempts', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('max_attempts', 'integer', (col) => col.notNull().defaultTo(5))
+    .addColumn('next_retry_at', 'integer', (col) => col.notNull())
+    .addColumn('last_error', 'text')
+    .addColumn('created_at', 'integer', (col) => col.notNull())
+    .addColumn('started_at', 'integer')
+    .addColumn('completed_at', 'integer')
+    .execute();
+
+  // Create indexes for efficient job queue operations
+  await database.schema
+    .createIndex('idx_jobs_pending')
+    .ifNotExists()
+    .on('jobs')
+    .columns(['status', 'priority', 'next_retry_at'])
+    .execute();
+
+  await database.schema
+    .createIndex('idx_jobs_status')
+    .ifNotExists()
+    .on('jobs')
+    .column('status')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_jobs_type')
+    .ifNotExists()
+    .on('jobs')
+    .column('type')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 3`.execute(database);
+
+  logger.info('Migration to v3 completed');
+}
+
+/**
  * Check if SQLite database exists.
  * Used for auto-detection during migration from JSON to SQLite.
  * Uses Bun's native file API to avoid issues with fs mocks in tests.
  * @returns Promise that resolves to true if database file exists
  */
 export async function databaseExists(): Promise<boolean> {
-  const configDir = getConfigDir();
-  const dbPath = path.join(configDir, 'data.db');
   // Use Bun.file().exists() for reliable file existence check
   // This bypasses any fs module mocks that might be active in tests
-  return Bun.file(dbPath).exists();
+  return Bun.file(getDbPath()).exists();
 }
 
 /**
@@ -287,8 +342,7 @@ export async function databaseExists(): Promise<boolean> {
  * states where some data is in SQLite and some remains in JSON.
  */
 export async function migrateFromJson(database: Kysely<Database>): Promise<void> {
-  const configDir = getConfigDir();
-  const dbPath = path.join(configDir, 'data.db');
+  const dbPath = getDbPath();
 
   try {
     await migrateSessionsFromJson(database);

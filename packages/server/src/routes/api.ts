@@ -42,6 +42,55 @@ import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
+import { createLogger } from '../lib/logger.js';
+import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
+
+const logger = createLogger('api');
+
+/**
+ * Transform a JobRecord from database format (snake_case) to API response format (camelCase).
+ * Also parses the payload JSON string.
+ */
+interface JobResponse {
+  id: string;
+  type: string;
+  payload: unknown;
+  status: string;
+  priority: number;
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt: number;
+  lastError: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+}
+
+function toJobResponse(job: JobRecord): JobResponse {
+  let parsedPayload: unknown;
+  try {
+    parsedPayload = JSON.parse(job.payload);
+  } catch (error) {
+    // Log warning and include parse error indicator for debugging
+    logger.warn({ jobId: job.id, err: error }, 'Failed to parse job payload');
+    parsedPayload = { _parseError: true, raw: job.payload };
+  }
+
+  return {
+    id: job.id,
+    type: job.type,
+    payload: parsedPayload,
+    status: job.status,
+    priority: job.priority,
+    attempts: job.attempts,
+    maxAttempts: job.max_attempts,
+    nextRetryAt: job.next_retry_at,
+    lastError: job.last_error,
+    createdAt: job.created_at,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+  };
+}
 
 const api = new Hono();
 
@@ -65,7 +114,7 @@ api.get('/config', (c) => {
 
 // Validate all sessions
 api.get('/sessions/validate', async (c) => {
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const validationService = createSessionValidationService(sessionManager.getSessionRepository());
   const response = await validationService.validateAllSessions();
   return c.json(response);
@@ -74,7 +123,7 @@ api.get('/sessions/validate', async (c) => {
 // Delete an invalid session (removes from persistence without trying to stop workers)
 api.delete('/sessions/:id/invalid', async (c) => {
   const sessionId = c.req.param('id');
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const deleted = await sessionManager.forceDeleteSession(sessionId);
   if (!deleted) {
     throw new NotFoundError('Session');
@@ -85,7 +134,7 @@ api.delete('/sessions/:id/invalid', async (c) => {
 // Get a single session
 api.get('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
 
   // First check if session is active
   const session = sessionManager.getSession(sessionId);
@@ -118,7 +167,7 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
     throw new ValidationError(validation.error || 'Invalid path');
   }
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = await sessionManager.createSession(body);
 
   return c.json({ session }, 201);
@@ -127,7 +176,7 @@ api.post('/sessions', validateBody(CreateSessionRequestSchema), async (c) => {
 // Delete a session
 api.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const success = await sessionManager.deleteSession(sessionId);
 
   if (!success) {
@@ -152,7 +201,7 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
     updates.branch = branch.trim();
   }
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const result = await sessionManager.updateSessionMetadata(sessionId, updates);
 
   if (!result.success) {
@@ -172,7 +221,7 @@ api.patch('/sessions/:id', validateBody(UpdateSessionRequestSchema), async (c) =
 // Get workers for a session
 api.get('/sessions/:sessionId/workers', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -185,7 +234,7 @@ api.get('/sessions/:sessionId/workers', async (c) => {
 // Get branches for a session's repository
 api.get('/sessions/:sessionId/branches', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
 
   if (!session) {
@@ -201,7 +250,7 @@ api.get('/sessions/:sessionId/commits', async (c) => {
   const sessionId = c.req.param('sessionId');
   const baseRef = c.req.query('base');
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -221,7 +270,7 @@ api.post('/sessions/:sessionId/workers', validateBody(CreateWorkerRequestSchema)
   const sessionId = c.req.param('sessionId');
   const body = getValidatedBody<CreateWorkerRequest>(c);
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -244,7 +293,7 @@ api.delete('/sessions/:sessionId/workers/:workerId', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -265,7 +314,7 @@ api.post('/sessions/:sessionId/workers/:workerId/restart', validateBody(RestartW
   const body = getValidatedBody<RestartWorkerRequest>(c);
   const { continueConversation = false } = body;
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
 
   if (!worker) {
@@ -280,7 +329,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff', async (c) => {
   const sessionId = c.req.param('sessionId');
   const workerId = c.req.param('workerId');
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -311,7 +360,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
     throw new ValidationError('path query parameter is required');
   }
 
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const session = sessionManager.getSession(sessionId);
   if (!session) {
     throw new NotFoundError('Session');
@@ -334,7 +383,7 @@ api.get('/sessions/:sessionId/workers/:workerId/diff/file', async (c) => {
 
 // Get all repositories
 api.get('/repositories', async (c) => {
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repositories = repositoryManager.getAllRepositories();
   const repositoriesWithRemote = await Promise.all(repositories.map(withRepositoryRemote));
   return c.json({ repositories: repositoriesWithRemote });
@@ -343,7 +392,7 @@ api.get('/repositories', async (c) => {
 // Redirect to repository GitHub URL
 api.get('/repositories/:id/github', async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -370,7 +419,7 @@ api.get('/repositories/:id/github', async (c) => {
 api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c) => {
   const body = getValidatedBody<CreateRepositoryRequest>(c);
   const { path } = body;
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
 
   try {
     const repository = await repositoryManager.registerRepository(path);
@@ -385,7 +434,7 @@ api.post('/repositories', validateBody(CreateRepositoryRequestSchema), async (c)
 // Unregister a repository
 api.delete('/repositories/:id', async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
 
   // Check if repository exists
   const repo = repositoryManager.getRepository(repoId);
@@ -394,7 +443,7 @@ api.delete('/repositories/:id', async (c) => {
   }
 
   // Check if any active sessions use this repository
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const activeSessions = sessionManager.getSessionsUsingRepository(repoId);
   const activeSessionIds = new Set(activeSessions.map(s => s.id));
 
@@ -433,7 +482,7 @@ api.delete('/repositories/:id', async (c) => {
 // Get worktrees for a repository
 api.get('/repositories/:id/worktrees', async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -447,7 +496,7 @@ api.get('/repositories/:id/worktrees', async (c) => {
 // Fetch a GitHub issue for a repository
 api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestSchema), async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -468,7 +517,7 @@ api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestS
 // Create a worktree
 api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema), async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -536,7 +585,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   // Optionally start a session
   let session = null;
   if (autoStartSession && worktree) {
-    const sessionManager = await getSessionManager();
+    const sessionManager = getSessionManager();
     session = await sessionManager.createSession({
       type: 'worktree',
       repositoryId: repoId,
@@ -554,7 +603,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
 // Delete a worktree
 api.delete('/repositories/:id/worktrees/*', async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -597,7 +646,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
   }
 
   // Worktree deletion succeeded - now clean up any associated sessions
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const sessions = sessionManager.getAllSessions();
   for (const session of sessions) {
     if (session.locationPath === worktreePath) {
@@ -611,7 +660,7 @@ api.delete('/repositories/:id/worktrees/*', async (c) => {
 // Get branches for a repository
 api.get('/repositories/:id/branches', async (c) => {
   const repoId = c.req.param('id');
-  const repositoryManager = await getRepositoryManager();
+  const repositoryManager = getRepositoryManager();
   const repo = repositoryManager.getRepository(repoId);
 
   if (!repo) {
@@ -684,7 +733,7 @@ api.delete('/agents/:id', async (c) => {
   }
 
   // Check if agent is in use by any active sessions
-  const sessionManager = await getSessionManager();
+  const sessionManager = getSessionManager();
   const activeSessions = sessionManager.getSessionsUsingAgent(agentId);
   const activeSessionIds = new Set(activeSessions.map(s => s.id));
 
@@ -748,6 +797,107 @@ api.post('/system/open', validateBody(SystemOpenRequestSchema), async (c) => {
     const message = error instanceof Error ? error.message : 'Failed to open path';
     throw new ValidationError(message);
   }
+});
+
+// ===========================================================================
+// Job Queue Management
+// ===========================================================================
+
+// Get jobs with optional filtering and pagination
+api.get('/jobs', async (c) => {
+  const statusParam = c.req.query('status');
+  const type = c.req.query('type');
+  const limitParam = c.req.query('limit');
+  const offsetParam = c.req.query('offset');
+
+  // Validate status parameter
+  let status: JobStatus | undefined;
+  if (statusParam) {
+    if (!JOB_STATUSES.includes(statusParam as JobStatus)) {
+      throw new ValidationError(`status must be one of: ${JOB_STATUSES.join(', ')}`);
+    }
+    status = statusParam as JobStatus;
+  }
+
+  const limit = limitParam ? parseInt(limitParam, 10) : 50;
+  const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+
+  // Validate limit and offset
+  if (isNaN(limit) || limit < 1 || limit > 1000) {
+    throw new ValidationError('limit must be a number between 1 and 1000');
+  }
+  if (isNaN(offset) || offset < 0) {
+    throw new ValidationError('offset must be a non-negative number');
+  }
+
+  const jobQueue = getJobQueue();
+  const jobs = await jobQueue.getJobs({ status, type, limit, offset });
+  const total = await jobQueue.countJobs({ status, type });
+
+  return c.json({
+    jobs: jobs.map(toJobResponse),
+    total,
+  });
+});
+
+// Get job statistics
+api.get('/jobs/stats', async (c) => {
+  const jobQueue = getJobQueue();
+  const stats = await jobQueue.getStats();
+  return c.json(stats);
+});
+
+// Get a single job by ID
+api.get('/jobs/:id', async (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+  const job = await jobQueue.getJob(jobId);
+
+  if (!job) {
+    throw new NotFoundError('Job');
+  }
+
+  return c.json(toJobResponse(job));
+});
+
+// Retry a stalled job
+api.post('/jobs/:id/retry', async (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+
+  // Use atomic operation - retryJob only succeeds for stalled jobs
+  const success = await jobQueue.retryJob(jobId);
+  if (!success) {
+    // Re-fetch to provide accurate error message (avoids TOCTOU race condition)
+    const job = await jobQueue.getJob(jobId);
+    if (!job) {
+      throw new NotFoundError('Job');
+    }
+    // Job exists but has wrong status
+    throw new ValidationError('Only stalled jobs can be retried');
+  }
+
+  return c.json({ success: true });
+});
+
+// Cancel a pending or stalled job
+api.delete('/jobs/:id', async (c) => {
+  const jobId = c.req.param('id');
+  const jobQueue = getJobQueue();
+
+  // Use atomic operation - cancelJob only succeeds for pending or stalled jobs
+  const success = await jobQueue.cancelJob(jobId);
+  if (!success) {
+    // Re-fetch to provide accurate error message (avoids TOCTOU race condition)
+    const job = await jobQueue.getJob(jobId);
+    if (!job) {
+      throw new NotFoundError('Job');
+    }
+    // Job exists but has wrong status
+    throw new ValidationError('Only pending or stalled jobs can be canceled');
+  }
+
+  return c.json({ success: true });
 });
 
 export { api };
