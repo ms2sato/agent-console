@@ -144,7 +144,7 @@ When you genuinely need fire-and-forget (rare), make it explicit:
 
 ```typescript
 // ✅ Explicit fire-and-forget with error handling
-const handleClick = () => {
+const handleClick = async () => {
   // Intentionally not awaiting - fire-and-forget for analytics
   trackAnalytics('button_clicked').catch((error) => {
     console.error('Analytics failed:', error);
