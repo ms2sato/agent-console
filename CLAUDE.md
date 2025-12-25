@@ -100,6 +100,7 @@ Monorepo with Bun workspaces:
 - Avoid `any`. Use `unknown` with proper type guards only when the type is genuinely uncertain.
 - Do not use `unknown` as a shortcut to bypass type checking. Casting through `unknown` (e.g., `value as unknown as TargetType`) is prohibited.
 - Define shared types in `packages/shared`.
+- Always use `async/await`. Avoid fire-and-forget patterns (calling async functions without awaiting). See frontend-standards and backend-standards for detailed rules.
 
 ## Schema Validation (Valibot)
 

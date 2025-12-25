@@ -68,6 +68,95 @@ export const Route = createFileRoute('/sessions/$sessionId')({
 - Better UX with coordinated loading states
 - Enables streaming and progressive rendering
 
+## Async/Await and Fire-and-Forget
+
+**Always use async/await. Avoid fire-and-forget patterns.**
+
+Fire-and-forget (calling an async function without awaiting) causes:
+- Silent errors that are difficult to debug
+- Race conditions and unpredictable behavior
+- Unhandled promise rejections
+
+### Event Handlers
+
+```typescript
+// ❌ Fire-and-forget - errors are silently swallowed
+const handleClick = () => {
+  submitForm(data);  // Promise ignored
+};
+
+// ❌ async without await - same problem
+const handleClick = async () => {
+  submitForm(data);  // Still fire-and-forget
+};
+
+// ✅ Proper async/await with error handling
+const handleClick = async () => {
+  try {
+    await submitForm(data);
+  } catch (error) {
+    showErrorToast(error);
+  }
+};
+```
+
+### useEffect with Async Operations
+
+```typescript
+// ❌ Fire-and-forget in useEffect
+useEffect(() => {
+  fetchData();  // Promise ignored, no cleanup
+}, []);
+
+// ❌ async useEffect (not allowed by React)
+useEffect(async () => {  // TypeScript error
+  await fetchData();
+}, []);
+
+// ✅ Proper pattern with cleanup
+useEffect(() => {
+  let cancelled = false;
+
+  const load = async () => {
+    try {
+      const result = await fetchData();
+      if (!cancelled) {
+        setData(result);
+      }
+    } catch (error) {
+      if (!cancelled) {
+        setError(error);
+      }
+    }
+  };
+
+  load();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
+```
+
+### Intentional Background Work
+
+When you genuinely need fire-and-forget (rare), make it explicit:
+
+```typescript
+// ✅ Explicit fire-and-forget with error handling
+const handleClick = () => {
+  // Intentionally not awaiting - fire-and-forget for analytics
+  trackAnalytics('button_clicked').catch((error) => {
+    console.error('Analytics failed:', error);
+  });
+
+  // Main action is still properly awaited
+  await performMainAction();
+};
+```
+
+**Note:** For data fetching, prefer TanStack Query over manual useEffect patterns.
+
 ## Component Design
 
 - Prefer function components with hooks
