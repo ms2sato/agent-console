@@ -1,7 +1,7 @@
 ---
 name: code-quality-reviewer
 description: Review code design and quality. Use when evaluating code architecture, design patterns, maintainability, or identifying potential issues before or after implementation.
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, Bash
 model: sonnet
 skills: development-workflow-standards, code-quality-standards, frontend-standards, backend-standards
 ---

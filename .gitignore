@@ -30,3 +30,5 @@ src/routeTree.gen.ts
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/review-queue/*.jsonl
+.claude/review-queue/fixing.json

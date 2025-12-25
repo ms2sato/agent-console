@@ -1,7 +1,7 @@
 ---
 name: test-reviewer
 description: Review test quality and coverage. Use when evaluating whether tests are adequate, well-designed, or need improvement after tests are added or modified.
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, Bash
 model: sonnet
 skills: development-workflow-standards, code-quality-standards
 ---
