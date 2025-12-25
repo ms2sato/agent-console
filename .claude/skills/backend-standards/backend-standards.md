@@ -310,6 +310,80 @@ const config = await readFile('config.json', 'utf-8');
 const data = JSON.parse(config);
 ```
 
+### Async/Await and Fire-and-Forget
+
+**Always use async/await. Avoid fire-and-forget patterns.**
+
+Fire-and-forget (calling an async function without awaiting) is problematic because:
+- **Silent errors:** Errors are never caught, making debugging extremely difficult
+- **Race conditions:** Operations complete in unpredictable order
+- **Difficult tracing:** Stack traces are lost when promises are not awaited
+- **Unhandled rejections:** Can crash the process or leave it in an inconsistent state
+
+#### Route Handlers
+
+```typescript
+// ❌ Fire-and-forget - error silently ignored
+app.post('/sessions', (c) => {
+  sessionManager.createSession(data);  // Promise ignored
+  return c.json({ success: true });
+});
+
+// ❌ async handler without await - same problem
+app.post('/sessions', async (c) => {
+  sessionManager.createSession(data);  // Still fire-and-forget
+  return c.json({ success: true });
+});
+
+// ✅ Proper async/await
+app.post('/sessions', async (c) => {
+  try {
+    const session = await sessionManager.createSession(data);
+    return c.json(session);
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to create session');
+    throw error;  // Let error handler respond appropriately
+  }
+});
+```
+
+#### Callbacks and Event Handlers
+
+```typescript
+// ❌ Fire-and-forget in callback
+worker.onData((data) => {
+  persistToFile(data);  // Promise ignored
+});
+
+// ✅ Proper async callback with error handling
+worker.onData(async (data) => {
+  try {
+    await persistToFile(data);
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to persist data');
+  }
+});
+```
+
+#### Process-Level Error Handling
+
+Add process-level handlers as a safety net for unhandled rejections:
+
+```typescript
+// lib/error-handler.ts
+process.on('unhandledRejection', (reason, promise) => {
+  logger.fatal({ reason, promise }, 'Unhandled promise rejection');
+  // Optionally: graceful shutdown
+});
+
+process.on('uncaughtException', (error) => {
+  logger.fatal({ err: error }, 'Uncaught exception');
+  process.exit(1);
+});
+```
+
+**Note:** Process-level handlers are a safety net, not a substitute for proper await/catch patterns.
+
 ### PTY Output Handling
 
 - Buffer output to reduce message frequency
