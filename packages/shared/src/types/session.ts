@@ -9,6 +9,7 @@ interface Repository {
   path: string;
   createdAt: string;
   remoteUrl?: string;
+  setupCommand?: string | null;
 }
 
 // Re-export schema-derived types
@@ -124,7 +125,8 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'agent-deleted': 9,
   'repositories-sync': 10,
   'repository-created': 11,
-  'repository-deleted': 12,
+  'repository-updated': 12,
+  'repository-deleted': 13,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -144,6 +146,7 @@ export type AppServerMessage =
   | { type: 'agent-deleted'; agentId: string }
   | { type: 'repositories-sync'; repositories: Repository[] }
   | { type: 'repository-created'; repository: Repository }
+  | { type: 'repository-updated'; repository: Repository }
   | { type: 'repository-deleted'; repositoryId: string };
 
 /**

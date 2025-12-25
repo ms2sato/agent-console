@@ -44,6 +44,8 @@ interface UseAppWsEventOptions {
   onRepositoryCreated?: (repository: Repository) => void;
   /** Called when a repository is deleted */
   onRepositoryDeleted?: (repositoryId: string) => void;
+  /** Called when a repository is updated */
+  onRepositoryUpdated?: (repository: Repository) => void;
 }
 
 /**
@@ -124,6 +126,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'repository-deleted':
           console.log(`[WebSocket] repository-deleted: ${msg.repositoryId}`);
           optionsRef.current.onRepositoryDeleted?.(msg.repositoryId);
+          break;
+        case 'repository-updated':
+          console.log(`[WebSocket] repository-updated: ${msg.repository.id}`);
+          optionsRef.current.onRepositoryUpdated?.(msg.repository);
           break;
       }
     });

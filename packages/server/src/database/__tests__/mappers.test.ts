@@ -475,6 +475,7 @@ describe('mappers', () => {
         path: '/opt/repos/another-project',
         created_at: '2024-02-20T14:00:00.000Z',
         updated_at: '2024-02-20T14:00:00.000Z',
+        setup_command: null,
       };
 
       const repository = toRepository(row);
@@ -483,6 +484,7 @@ describe('mappers', () => {
       expect(repository.name).toBe('another-project');
       expect(repository.path).toBe('/opt/repos/another-project');
       expect(repository.createdAt).toBe('2024-02-20T14:00:00.000Z');
+      expect(repository.setupCommand).toBeNull();
     });
 
     it('should handle created_at correctly', () => {
@@ -492,12 +494,28 @@ describe('mappers', () => {
         path: '/tmp/test-repo',
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
       };
 
       const repository = toRepository(row);
 
       // Verify createdAt is correctly mapped from created_at
       expect(repository.createdAt).toBe('2024-12-01T00:00:00.000Z');
+    });
+
+    it('should map setup_command to setupCommand', () => {
+      const row: RepositoryRow = {
+        id: 'repo-4',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: 'npm install',
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.setupCommand).toBe('npm install');
     });
   });
 

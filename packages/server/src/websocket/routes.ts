@@ -127,6 +127,10 @@ export async function setupWebSocketRoutes(
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
       broadcastToApp({ type: 'repository-created', repository });
     },
+    onRepositoryUpdated: (repository) => {
+      logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-updated');
+      broadcastToApp({ type: 'repository-updated', repository });
+    },
     onRepositoryDeleted: (repositoryId) => {
       logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
       broadcastToApp({ type: 'repository-deleted', repositoryId });

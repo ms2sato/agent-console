@@ -1,6 +1,6 @@
 import type { Kysely } from 'kysely';
 import type { Repository } from '@agent-console/shared';
-import type { RepositoryRepository } from './repository-repository.js';
+import type { RepositoryRepository, RepositoryUpdates } from './repository-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 import { toRepository } from '../database/mappers.js';
@@ -45,11 +45,13 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         path: repository.path,
         created_at: repository.createdAt,
         updated_at: now,
+        setup_command: repository.setupCommand ?? null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
           name: repository.name,
           path: repository.path,
+          setup_command: repository.setupCommand ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
         })
@@ -57,6 +59,33 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       .execute();
 
     logger.debug({ repositoryId: repository.id }, 'Repository saved');
+  }
+
+  async update(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
+    const now = new Date().toISOString();
+
+    // Build update object with only provided fields
+    const updateData: Record<string, unknown> = {
+      updated_at: now,
+    };
+
+    if (updates.setupCommand !== undefined) {
+      // Convert empty string to null for database storage
+      updateData.setup_command = updates.setupCommand === '' ? null : updates.setupCommand;
+    }
+
+    const result = await this.db
+      .updateTable('repositories')
+      .set(updateData)
+      .where('id', '=', id)
+      .execute();
+
+    if (result[0]?.numUpdatedRows === 0n) {
+      return null;
+    }
+
+    logger.debug({ repositoryId: id }, 'Repository updated');
+    return this.findById(id);
   }
 
   async delete(id: string): Promise<void> {

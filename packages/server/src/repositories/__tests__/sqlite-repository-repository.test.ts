@@ -22,7 +22,7 @@ describe('SqliteRepositoryRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create tables manually (v2 schema)
+    // Create tables manually (v4 schema)
     await db.schema
       .createTable('repositories')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -30,6 +30,7 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('path', 'text', (col) => col.notNull().unique())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('setup_command', 'text')
       .execute();
 
     repository = new SqliteRepositoryRepository(db);
@@ -48,6 +49,7 @@ describe('SqliteRepositoryRepository', () => {
       name: overrides.name ?? 'test-repo',
       path: overrides.path ?? '/test/path/repo',
       createdAt: overrides.createdAt ?? new Date().toISOString(),
+      setupCommand: overrides.setupCommand,
     };
   }
 
@@ -275,6 +277,155 @@ describe('SqliteRepositoryRepository', () => {
       const remaining = await repository.findById('repo-2');
       expect(remaining).not.toBeNull();
       expect(remaining?.name).toBe('Repository Two');
+    });
+  });
+
+  describe('update', () => {
+    it('should update setupCommand from null to string', async () => {
+      const repo = createRepository({ id: 'repo-setup', name: 'Repo Setup' });
+      await repository.save(repo);
+
+      // Verify setupCommand is initially null
+      const before = await repository.findById('repo-setup');
+      expect(before?.setupCommand).toBeNull();
+
+      // Update setupCommand
+      const updated = await repository.update('repo-setup', {
+        setupCommand: 'npm install',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.setupCommand).toBe('npm install');
+    });
+
+    it('should update setupCommand from string to new string', async () => {
+      const repo = createRepository({
+        id: 'repo-update-cmd',
+        name: 'Repo Update Cmd',
+        setupCommand: 'npm install',
+      });
+      await repository.save(repo);
+
+      // Verify initial setupCommand
+      const before = await repository.findById('repo-update-cmd');
+      expect(before?.setupCommand).toBe('npm install');
+
+      // Update to new command
+      const updated = await repository.update('repo-update-cmd', {
+        setupCommand: 'bun install && bun run build',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.setupCommand).toBe('bun install && bun run build');
+    });
+
+    it('should update setupCommand to null when given empty string', async () => {
+      const repo = createRepository({
+        id: 'repo-clear-cmd',
+        name: 'Repo Clear Cmd',
+        setupCommand: 'npm install',
+      });
+      await repository.save(repo);
+
+      // Verify initial setupCommand
+      const before = await repository.findById('repo-clear-cmd');
+      expect(before?.setupCommand).toBe('npm install');
+
+      // Update with empty string should clear the command
+      const updated = await repository.update('repo-clear-cmd', {
+        setupCommand: '',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.setupCommand).toBeNull();
+
+      // Double check via direct DB query
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-clear-cmd')
+        .select('setup_command')
+        .executeTakeFirst();
+      expect(row?.setup_command).toBeNull();
+    });
+
+    it('should return null for non-existent repository', async () => {
+      const updated = await repository.update('non-existent-id', {
+        setupCommand: 'some command',
+      });
+
+      expect(updated).toBeNull();
+    });
+
+    it('should update updated_at but keep created_at unchanged', async () => {
+      const originalCreatedAt = '2024-01-01T00:00:00.000Z';
+      const repo = createRepository({
+        id: 'repo-timestamps',
+        name: 'Repo Timestamps',
+        path: '/path/timestamps',
+        createdAt: originalCreatedAt,
+      });
+      await repository.save(repo);
+
+      // Get original timestamps
+      const originalRow = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-timestamps')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      expect(originalRow?.created_at).toBe(originalCreatedAt);
+      const originalUpdatedAt = originalRow?.updated_at;
+
+      // Wait a bit to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Perform update
+      await repository.update('repo-timestamps', {
+        setupCommand: 'new command',
+      });
+
+      // Get updated timestamps
+      const updatedRow = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-timestamps')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+
+      // created_at should NOT change
+      expect(updatedRow?.created_at).toBe(originalCreatedAt);
+
+      // updated_at should change
+      expect(updatedRow?.updated_at).not.toBe(originalUpdatedAt);
+    });
+
+    it('should not modify other fields when updating setupCommand', async () => {
+      const repo = createRepository({
+        id: 'repo-preserve-fields',
+        name: 'Original Name',
+        path: '/original/path',
+      });
+      await repository.save(repo);
+
+      await repository.update('repo-preserve-fields', {
+        setupCommand: 'npm install',
+      });
+
+      const updated = await repository.findById('repo-preserve-fields');
+      expect(updated?.name).toBe('Original Name');
+      expect(updated?.path).toBe('/original/path');
+      expect(updated?.setupCommand).toBe('npm install');
+    });
+
+    it('should update setupCommand with template variables', async () => {
+      const repo = createRepository({ id: 'repo-template' });
+      await repository.save(repo);
+
+      const commandWithTemplate = 'export PORT={{WORKTREE_NUM + 3000}} && npm start';
+      const updated = await repository.update('repo-template', {
+        setupCommand: commandWithTemplate,
+      });
+
+      expect(updated?.setupCommand).toBe(commandWithTemplate);
     });
   });
 

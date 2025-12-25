@@ -11,8 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as MaintenanceRouteImport } from './routes/maintenance'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as SettingsRepositoriesRouteImport } from './routes/settings/repositories'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as JobsJobIdIndexRouteImport } from './routes/jobs/$jobId/index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents/$agentId/index'
@@ -28,6 +30,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/settings/',
+  path: '/settings/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const JobsIndexRoute = JobsIndexRouteImport.update({
   id: '/jobs/',
   path: '/jobs/',
@@ -36,6 +43,11 @@ const JobsIndexRoute = JobsIndexRouteImport.update({
 const AgentsIndexRoute = AgentsIndexRouteImport.update({
   id: '/agents/',
   path: '/agents/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRepositoriesRoute = SettingsRepositoriesRouteImport.update({
+  id: '/settings/repositories',
+  path: '/settings/repositories',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
@@ -63,8 +75,10 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/settings/repositories': typeof SettingsRepositoriesRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/jobs/$jobId': typeof JobsJobIdIndexRoute
@@ -73,8 +87,10 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/settings/repositories': typeof SettingsRepositoriesRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId': typeof AgentsAgentIdIndexRoute
   '/jobs/$jobId': typeof JobsJobIdIndexRoute
@@ -84,8 +100,10 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/settings/repositories': typeof SettingsRepositoriesRoute
   '/agents/': typeof AgentsIndexRoute
   '/jobs/': typeof JobsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/jobs/$jobId/': typeof JobsJobIdIndexRoute
@@ -96,8 +114,10 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/sessions/$sessionId'
+    | '/settings/repositories'
     | '/agents'
     | '/jobs'
+    | '/settings'
     | '/agents/$agentId/edit'
     | '/agents/$agentId'
     | '/jobs/$jobId'
@@ -106,8 +126,10 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/sessions/$sessionId'
+    | '/settings/repositories'
     | '/agents'
     | '/jobs'
+    | '/settings'
     | '/agents/$agentId/edit'
     | '/agents/$agentId'
     | '/jobs/$jobId'
@@ -116,8 +138,10 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/sessions/$sessionId'
+    | '/settings/repositories'
     | '/agents/'
     | '/jobs/'
+    | '/settings/'
     | '/agents/$agentId/edit'
     | '/agents/$agentId/'
     | '/jobs/$jobId/'
@@ -127,8 +151,10 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   MaintenanceRoute: typeof MaintenanceRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
+  SettingsRepositoriesRoute: typeof SettingsRepositoriesRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   JobsIndexRoute: typeof JobsIndexRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
   AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   JobsJobIdIndexRoute: typeof JobsJobIdIndexRoute
@@ -150,6 +176,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/jobs/': {
       id: '/jobs/'
       path: '/jobs'
@@ -162,6 +195,13 @@ declare module '@tanstack/react-router' {
       path: '/agents'
       fullPath: '/agents'
       preLoaderRoute: typeof AgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/repositories': {
+      id: '/settings/repositories'
+      path: '/settings/repositories'
+      fullPath: '/settings/repositories'
+      preLoaderRoute: typeof SettingsRepositoriesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sessions/$sessionId': {
@@ -199,8 +239,10 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   MaintenanceRoute: MaintenanceRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
+  SettingsRepositoriesRoute: SettingsRepositoriesRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   JobsIndexRoute: JobsIndexRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
   AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   JobsJobIdIndexRoute: JobsJobIdIndexRoute,

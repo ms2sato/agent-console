@@ -95,6 +95,8 @@ export interface RepositoriesTable {
   created_at: Generated<string>;
   /** Last update timestamp as ISO 8601 string (has DEFAULT) */
   updated_at: Generated<string>;
+  /** Shell command to run after creating worktrees (added in v4) */
+  setup_command: string | null;
 }
 
 /** Repository row as returned from SELECT queries */

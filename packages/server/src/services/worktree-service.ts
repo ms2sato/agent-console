@@ -1,7 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Worktree } from '@agent-console/shared';
+import type { Worktree, SetupCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('worktree-service');
 import {
   getRemoteUrl,
   parseOrgRepo,
@@ -408,6 +411,75 @@ export class WorktreeService {
     const suffix = generateRandomSuffix(4);
 
     return `wt-${String(nextIndex).padStart(3, '0')}-${suffix}`;
+  }
+
+  /**
+   * Execute a setup command in a worktree directory.
+   * Supports template variables: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
+   * Also supports arithmetic expressions like {{WORKTREE_NUM + 3000}}
+   *
+   * @param command - The command template to execute
+   * @param worktreePath - The worktree directory path (command will run here)
+   * @param vars - Template variables for substitution
+   * @returns Result with success status, output, and any error message
+   */
+  async executeSetupCommand(
+    command: string,
+    worktreePath: string,
+    vars: { worktreeNum: number; branch: string; repo: string }
+  ): Promise<SetupCommandResult> {
+    // Substitute template variables in the command
+    const substitutedCommand = substituteVariables(command, {
+      worktreeNum: vars.worktreeNum,
+      branch: vars.branch,
+      repo: vars.repo,
+      worktreePath,
+    });
+
+    logger.info({ worktreePath, command: substitutedCommand }, 'Executing setup command');
+
+    try {
+      // Execute command using Bun.spawn with shell
+      const proc = Bun.spawn(['sh', '-c', substitutedCommand], {
+        cwd: worktreePath,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...process.env,
+          WORKTREE_NUM: String(vars.worktreeNum),
+          BRANCH: vars.branch,
+          REPO: vars.repo,
+          WORKTREE_PATH: worktreePath,
+        },
+      });
+
+      // Collect output
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+
+      if (exitCode === 0) {
+        logger.info({ worktreePath, exitCode }, 'Setup command completed successfully');
+        return {
+          success: true,
+          output: stdout || undefined,
+        };
+      } else {
+        logger.warn({ worktreePath, exitCode, stderr }, 'Setup command failed');
+        return {
+          success: false,
+          output: stdout || undefined,
+          error: stderr || `Command exited with code ${exitCode}`,
+        };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error({ worktreePath, err: error }, 'Setup command execution error');
+      return {
+        success: false,
+        error: errorMessage,
+      };
+    }
   }
 }
 

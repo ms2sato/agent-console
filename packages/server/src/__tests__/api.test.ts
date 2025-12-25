@@ -905,6 +905,164 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(404);
       });
     });
+
+    describe('PATCH /api/repositories/:id', () => {
+      it('should update repository setupCommand successfully', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        // Register repository first
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+
+        // Verify initially no setupCommand
+        expect(created.setupCommand).toBeUndefined();
+
+        // Update setupCommand
+        const patchRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: 'npm install && npm run build' }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { repository: updated } = (await patchRes.json()) as { repository: Repository };
+        expect(updated.setupCommand).toBe('npm install && npm run build');
+        expect(updated.id).toBe(created.id);
+        expect(updated.path).toBe(created.path);
+      });
+
+      it('should clear setupCommand with empty string', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        // Register repository
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+
+        // Set setupCommand first
+        const setRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: 'npm install' }),
+        });
+        expect(setRes.status).toBe(200);
+        const { repository: withSetup } = (await setRes.json()) as { repository: Repository };
+        expect(withSetup.setupCommand).toBe('npm install');
+
+        // Clear setupCommand with empty string
+        const clearRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: '' }),
+        });
+        expect(clearRes.status).toBe(200);
+
+        const { repository: cleared } = (await clearRes.json()) as { repository: Repository };
+        expect(cleared.setupCommand).toBeNull();
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent-id', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: 'npm install' }),
+        });
+        expect(res.status).toBe(404);
+      });
+
+      it('should accept setupCommand with template variables', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        // Register repository
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+
+        // Set setupCommand with template variables
+        const commandWithTemplates = 'export PORT={{WORKTREE_NUM + 3000}} && npm start';
+        const patchRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: commandWithTemplates }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { repository: updated } = (await patchRes.json()) as { repository: Repository };
+        expect(updated.setupCommand).toBe(commandWithTemplates);
+      });
+
+      it('should return 400 for invalid request body', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        // Register repository
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+
+        // Try to update with invalid body (wrong type for setupCommand)
+        const patchRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: 12345 }), // number instead of string
+        });
+        expect(patchRes.status).toBe(400);
+      });
+
+      it('should preserve remoteUrl in response', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        // Register repository
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+        expect(created.remoteUrl).toBe('git@github.com:owner/test-repo.git');
+
+        // Update setupCommand
+        const patchRes = await app.request(`/api/repositories/${created.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setupCommand: 'npm install' }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { repository: updated } = (await patchRes.json()) as { repository: Repository };
+        // remoteUrl should still be included
+        expect(updated.remoteUrl).toBe('git@github.com:owner/test-repo.git');
+      });
+    });
   });
 
   // ==========================================================================

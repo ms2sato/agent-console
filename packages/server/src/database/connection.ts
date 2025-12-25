@@ -150,6 +150,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 3) {
     await migrateToV3(database);
   }
+
+  if (currentVersion < 4) {
+    await migrateToV4(database);
+  }
 }
 
 /**
@@ -319,6 +323,25 @@ async function migrateToV3(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 3`.execute(database);
 
   logger.info('Migration to v3 completed');
+}
+
+/**
+ * Migration v4: Add setup_command column to repositories table.
+ * This column stores shell commands to run after creating worktrees.
+ */
+async function migrateToV4(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v4: Adding setup_command column to repositories');
+
+  // Add setup_command column to repositories table
+  await database.schema
+    .alterTable('repositories')
+    .addColumn('setup_command', 'text')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 4`.execute(database);
+
+  logger.info('Migration to v4 completed');
 }
 
 /**

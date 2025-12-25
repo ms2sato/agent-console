@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import * as fs from 'fs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
@@ -7,6 +7,35 @@ import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
 const TEST_CONFIG_DIR = '/test/config';
 
 let importCounter = 0;
+
+// Mock Bun.spawn for executeSetupCommand tests
+let mockSpawnResult: {
+  exited: Promise<number>;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+};
+
+const originalBunSpawn = Bun.spawn;
+let spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
+
+// Helper to set mock spawn result
+function setMockSpawnResult(stdout: string, exitCode = 0, stderr = '') {
+  mockSpawnResult = {
+    exited: Promise.resolve(exitCode),
+    stdout: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(stdout));
+        controller.close();
+      },
+    }),
+    stderr: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(stderr));
+        controller.close();
+      },
+    }),
+  };
+}
 
 describe('WorktreeService', () => {
   beforeEach(() => {
@@ -295,6 +324,381 @@ detached
 
       const result = await service.isWorktreeOf('/repo/main', '/other/path');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('executeSetupCommand', () => {
+    beforeEach(() => {
+      // Reset spawn tracking
+      spawnCalls = [];
+
+      // Default mock result (successful command)
+      setMockSpawnResult('');
+
+      // Mock Bun.spawn
+      (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+        spawnCalls.push({ args, options: options || {} });
+        return mockSpawnResult;
+      }) as typeof Bun.spawn;
+    });
+
+    afterAll(() => {
+      // Restore original Bun.spawn
+      (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+    });
+
+    describe('template variable substitution', () => {
+      it('should substitute {{WORKTREE_NUM}} variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo {{WORKTREE_NUM}}',
+          '/test/worktree',
+          { worktreeNum: 5, branch: 'feature-1', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('echo 5');
+      });
+
+      it('should substitute {{BRANCH}} variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'git checkout {{BRANCH}}',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'feature/my-branch', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('git checkout feature/my-branch');
+      });
+
+      it('should substitute {{REPO}} variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo Working on {{REPO}}',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'awesome-project' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('echo Working on awesome-project');
+      });
+
+      it('should substitute {{WORKTREE_PATH}} variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'cd {{WORKTREE_PATH}} && ls',
+          '/home/user/worktrees/wt-001',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('cd /home/user/worktrees/wt-001 && ls');
+      });
+
+      it('should substitute multiple variables in a single command', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo "WT {{WORKTREE_NUM}} for {{REPO}} on {{BRANCH}} at {{WORKTREE_PATH}}"',
+          '/worktrees/wt-003',
+          { worktreeNum: 3, branch: 'fix/bug-123', repo: 'test-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('echo "WT 3 for test-repo on fix/bug-123 at /worktrees/wt-003"');
+      });
+    });
+
+    describe('arithmetic expressions', () => {
+      it('should evaluate {{WORKTREE_NUM + N}} addition', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'export PORT={{WORKTREE_NUM + 3000}}',
+          '/test/worktree',
+          { worktreeNum: 5, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('export PORT=3005');
+      });
+
+      it('should evaluate {{WORKTREE_NUM - N}} subtraction', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo {{WORKTREE_NUM - 2}}',
+          '/test/worktree',
+          { worktreeNum: 10, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('echo 8');
+      });
+
+      it('should evaluate {{WORKTREE_NUM * N}} multiplication', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo {{WORKTREE_NUM * 100}}',
+          '/test/worktree',
+          { worktreeNum: 3, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('echo 300');
+      });
+
+      it('should evaluate {{WORKTREE_NUM / N}} division (floor)', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo {{WORKTREE_NUM / 3}}',
+          '/test/worktree',
+          { worktreeNum: 10, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        // 10 / 3 = 3 (floor)
+        expect(spawnCalls[0].args[2]).toBe('echo 3');
+      });
+
+      it('should handle arithmetic with spaces around operator', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'export PORT={{WORKTREE_NUM   +   8080}}',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[2]).toBe('export PORT=8081');
+      });
+    });
+
+    describe('successful command execution', () => {
+      it('should return success true and stdout output on exit code 0', async () => {
+        setMockSpawnResult('command output here\nsecond line');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.executeSetupCommand(
+          'echo "hello"',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('command output here\nsecond line');
+        expect(result.error).toBeUndefined();
+      });
+
+      it('should return undefined output when stdout is empty', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.executeSetupCommand(
+          'silent-command',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBeUndefined();
+        expect(result.error).toBeUndefined();
+      });
+    });
+
+    describe('failed command execution', () => {
+      it('should return success false and stderr on non-zero exit code', async () => {
+        setMockSpawnResult('partial output', 1, 'command not found');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.executeSetupCommand(
+          'invalid-command',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.output).toBe('partial output');
+        expect(result.error).toBe('command not found');
+      });
+
+      it('should include exit code in error when stderr is empty', async () => {
+        setMockSpawnResult('', 127, '');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.executeSetupCommand(
+          'nonexistent-command',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('127');
+      });
+
+      it('should handle various non-zero exit codes', async () => {
+        setMockSpawnResult('', 2, 'permission denied');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.executeSetupCommand(
+          'protected-command',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('permission denied');
+      });
+    });
+
+    describe('environment variable injection', () => {
+      it('should inject WORKTREE_NUM environment variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo $WORKTREE_NUM',
+          '/test/worktree',
+          { worktreeNum: 42, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        const env = spawnCalls[0].options.env as Record<string, string>;
+        expect(env.WORKTREE_NUM).toBe('42');
+      });
+
+      it('should inject BRANCH environment variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo $BRANCH',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'feature/new-feature', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        const env = spawnCalls[0].options.env as Record<string, string>;
+        expect(env.BRANCH).toBe('feature/new-feature');
+      });
+
+      it('should inject REPO environment variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo $REPO',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'test-repository' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        const env = spawnCalls[0].options.env as Record<string, string>;
+        expect(env.REPO).toBe('test-repository');
+      });
+
+      it('should inject WORKTREE_PATH environment variable', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo $WORKTREE_PATH',
+          '/home/user/worktrees/wt-005',
+          { worktreeNum: 5, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        const env = spawnCalls[0].options.env as Record<string, string>;
+        expect(env.WORKTREE_PATH).toBe('/home/user/worktrees/wt-005');
+      });
+
+      it('should preserve existing process environment variables', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'echo $PATH',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        const env = spawnCalls[0].options.env as Record<string, string>;
+        // Should still have PATH from process.env
+        expect(env.PATH).toBeDefined();
+      });
+    });
+
+    describe('command execution context', () => {
+      it('should execute command in worktree directory (cwd)', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'pwd',
+          '/home/user/worktrees/wt-001',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].options.cwd).toBe('/home/user/worktrees/wt-001');
+      });
+
+      it('should execute command via sh -c', async () => {
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        await service.executeSetupCommand(
+          'npm install && npm run build',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args[0]).toBe('sh');
+        expect(spawnCalls[0].args[1]).toBe('-c');
+        expect(spawnCalls[0].args[2]).toBe('npm install && npm run build');
+      });
     });
   });
 });
