@@ -427,7 +427,47 @@ export async function setupWebSocketRoutes(
             return;
           }
 
-          // PTY-based worker message handling
+          // PTY-based worker: Check for request-history message first
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed && typeof parsed === 'object' && parsed.type === 'request-history') {
+              // Handle request-history: send history to client
+              const fromOffset = typeof parsed.fromOffset === 'number' ? parsed.fromOffset : 0;
+
+              sessionManager.getWorkerOutputHistory(sessionId, workerId, fromOffset)
+                .then((historyResult) => {
+                  if (historyResult) {
+                    const historyMsg: WorkerServerMessage = {
+                      type: 'history',
+                      data: historyResult.data,
+                      offset: historyResult.offset
+                    };
+                    ws.send(JSON.stringify(historyMsg));
+                    logger.debug({ sessionId, workerId, offset: historyResult.offset, dataLength: historyResult.data.length }, 'Sent history on request');
+                  } else {
+                    // Fallback to in-memory buffer
+                    const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+                    if (history) {
+                      const historyMsg: WorkerServerMessage = {
+                        type: 'history',
+                        data: history,
+                        offset: 0
+                      };
+                      ws.send(JSON.stringify(historyMsg));
+                      logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
+                    }
+                  }
+                })
+                .catch((err) => {
+                  logger.error({ sessionId, workerId, err }, 'Error sending history on request');
+                });
+              return;
+            }
+          } catch {
+            // Not JSON or invalid - fall through to regular handler
+          }
+
+          // PTY-based worker message handling (input, resize, image)
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose() {

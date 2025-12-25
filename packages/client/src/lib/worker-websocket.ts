@@ -399,22 +399,14 @@ export function connect(
       return false;
     }
 
-    // If connection is open but callbacks don't match, it means component remounted
-    // Close the existing connection and create a new one to get fresh history
+    // If connection is open, update callbacks and request fresh history
+    // This avoids unnecessary connection churn when component remounts
     if (existing.ws.readyState === WebSocket.OPEN) {
-      // Remove event handlers to prevent reconnection attempts
-      existing.ws.onopen = null;
-      existing.ws.onmessage = null;
-      existing.ws.onerror = null;
-      existing.ws.onclose = null;
-      // Close the connection
-      existing.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
-      // Clear retry timeout if any
-      if (existing.retryTimeout) {
-        clearTimeout(existing.retryTimeout);
-        existing.retryTimeout = null;
-      }
-      // Fall through to create new connection
+      // Update callbacks for the new component instance
+      existing.callbacks = callbacks;
+      // Request fresh history from server (maintains connection, avoiding reconnection overhead)
+      existing.ws.send(JSON.stringify({ type: 'request-history' }));
+      return false;
     }
     // If socket is closing, abandon it and create new one
     if (existing.ws.readyState === WebSocket.CLOSING) {

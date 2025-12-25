@@ -91,6 +91,13 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
       }
       return { type: 'image', data: msg.data, mimeType: msg.mimeType };
 
+    case 'request-history':
+      // fromOffset is optional
+      if (msg.fromOffset !== undefined && typeof msg.fromOffset !== 'number') {
+        return null;
+      }
+      return { type: 'request-history', fromOffset: msg.fromOffset as number | undefined };
+
     default:
       return null;
   }
