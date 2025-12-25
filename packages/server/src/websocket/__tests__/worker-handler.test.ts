@@ -95,6 +95,17 @@ describe('Worker Handler', () => {
       expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
       expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
     });
+
+    it('should handle request-history message', () => {
+      const message = JSON.stringify({ type: 'request-history' });
+      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+
+      // request-history is handled in routes.ts, not in worker-handler
+      // This test verifies that the message passes validation without error
+      // Should not call any methods (not processed by worker-handler)
+      expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+      expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
+    });
   });
 
   describe('getExtensionFromMimeType (via image handling)', () => {

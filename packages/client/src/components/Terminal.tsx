@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import * as workerWs from '../lib/worker-websocket.js';
@@ -23,8 +22,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const serializeAddonRef = useRef<SerializeAddon | null>(null);
-  const hasRestoredSnapshotRef = useRef(false);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
@@ -38,54 +35,43 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current?.write(data);
   }, []);
 
-  const handleHistory = useCallback((data: string, offset?: number) => {
+  const handleHistory = useCallback((data: string) => {
     const terminal = terminalRef.current;
-    if (!terminal) return;
-
-    // Store the offset for future visibility-based reconnection
-    if (offset !== undefined) {
-      workerWs.storeHistoryOffset(sessionId, workerId, offset);
+    if (!terminal) {
+      return;
     }
 
-    // Only consume snapshot on first history message after reconnect
-    if (!hasRestoredSnapshotRef.current) {
-      const snapshot = workerWs.consumeSnapshot(sessionId, workerId);
-      if (snapshot) {
-        // Only set the flag after successfully consuming snapshot
-        hasRestoredSnapshotRef.current = true;
-        clearAndWrite(terminal, () => {
-          return new Promise((resolve, reject) => {
-            try {
-              if (data) {
-                terminal.write(snapshot);
-                terminal.write(data, resolve);
-              } else {
-                terminal.write(snapshot, resolve);
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }).catch((e) => console.error('[Terminal] Failed to restore snapshot:', e));
-        return;
+    if (!data) return;
+
+    // Check if user was at bottom before clearing
+    let wasAtBottom = true;
+    try {
+      const buffer = terminal.buffer.active;
+      wasAtBottom = buffer.viewportY + terminal.rows >= buffer.length;
+    } catch {
+      // Terminal may not be fully initialized
+    }
+
+    // Clear and write history (clearAndWrite preserves scroll position)
+    clearAndWrite(terminal, () => {
+      return new Promise((resolve, reject) => {
+        try {
+          terminal.write(data, resolve);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).then(() => {
+      // If was at bottom, scroll to bottom (clearAndWrite restores position, but we want bottom)
+      if (wasAtBottom) {
+        try {
+          terminalRef.current?.scrollToBottom();
+        } catch {
+          // Terminal may be disposed
+        }
       }
-      // If no snapshot available, mark as restored to avoid re-checking
-      hasRestoredSnapshotRef.current = true;
-    }
-
-    // Normal history handling (no snapshot)
-    if (data) {
-      clearAndWrite(terminal, () => {
-        return new Promise((resolve, reject) => {
-          try {
-            terminal.write(data, resolve);
-          } catch (e) {
-            reject(e);
-          }
-        });
-      }).catch((e) => console.error('[Terminal] Failed to write history:', e));
-    }
-  }, [sessionId, workerId]);
+    }).catch((e) => console.error('[Terminal] Failed to write history:', e));
+  }, []);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -140,15 +126,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
     terminal.loadAddon(webLinksAddon);
 
-    // Enable terminal serialization for snapshot/restore on visibility change
-    const serializeAddon = new SerializeAddon();
-    terminal.loadAddon(serializeAddon);
-
     terminal.open(container);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
-    serializeAddonRef.current = serializeAddon;
 
     // Delay fit to ensure container has dimensions
     const fitTerminal = () => {
@@ -162,7 +143,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
 
     // Initial fit with delay
-    requestAnimationFrame(fitTerminal);
+    const rafId = requestAnimationFrame(fitTerminal);
 
     // Handle terminal input
     terminal.onData((data) => {
@@ -225,9 +206,23 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     window.addEventListener('resize', handleResize);
 
     return () => {
+      cancelAnimationFrame(rafId);
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
-      terminal.dispose();
+      // Delay disposal to allow any pending xterm.js operations to complete
+      // This prevents "Cannot read properties of undefined (reading 'dimensions')" errors
+      // from xterm.js internal code trying to access disposed terminal
+      setTimeout(() => {
+        // Null out refs just before disposal to allow callbacks to write to terminal
+        // until the last moment (important for React Strict Mode double-render)
+        if (terminalRef.current === terminal) {
+          terminalRef.current = null;
+        }
+        if (fitAddonRef.current === fitAddon) {
+          fitAddonRef.current = null;
+        }
+        terminal.dispose();
+      }, 0);
     };
   }, [sendInput, sendResize, sendImage]);
 
@@ -239,46 +234,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [connected, sendResize]);
 
-  // Register snapshot callback with worker-websocket for visibility-based serialization
-  // This ensures snapshot is captured BEFORE WebSocket is closed (fixes race condition)
+  // Clean up visibility tracking on unmount to prevent stale reconnection
   useEffect(() => {
-    const snapshotCallback = () => {
-      const serializeAddon = serializeAddonRef.current;
-      if (serializeAddon) {
-        try {
-          const snapshot = serializeAddon.serialize();
-          if (snapshot && snapshot.length > 0) {
-            workerWs.storeSnapshot(sessionId, workerId, snapshot);
-          }
-        } catch (error) {
-          console.error('[Terminal] Failed to serialize snapshot:', error);
-        }
-      }
-    };
-
-    workerWs.registerSnapshotCallback(sessionId, workerId, snapshotCallback);
-
     return () => {
-      workerWs.unregisterSnapshotCallback(sessionId, workerId);
-      // Clear visibility tracking on unmount to prevent stale reconnection
       workerWs.clearVisibilityTracking(sessionId, workerId);
     };
   }, [sessionId, workerId]);
-
-  // Handle visibility change to reset the snapshot restore flag when page becomes visible
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        // Reset the flag so the next history message can potentially use a snapshot
-        hasRestoredSnapshotRef.current = false;
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
 
   const statusColor =
     workerError ? 'bg-red-500' :

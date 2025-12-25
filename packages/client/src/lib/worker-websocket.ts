@@ -20,6 +20,7 @@ import {
   type AgentActivityState,
   type GitDiffData,
   type GitDiffTarget,
+  type WorkerErrorCode,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
 
@@ -94,6 +95,8 @@ interface WorkerConnection {
   // Reconnection state
   retryCount: number;
   retryTimeout: ReturnType<typeof setTimeout> | null;
+  // History request debounce
+  historyRequestTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
 }
@@ -102,10 +105,10 @@ interface WorkerConnection {
 export interface TerminalWorkerCallbacks {
   type: 'terminal' | 'agent';
   onOutput: (data: string) => void;
-  onHistory: (data: string, offset?: number) => void;
+  onHistory: (data: string) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivity?: (state: AgentActivityState) => void;
-  onError?: (message: string, code?: string) => void;
+  onError?: (message: string, code?: WorkerErrorCode) => void;
 }
 
 // Callbacks for git-diff workers
@@ -136,75 +139,8 @@ interface VisibilityDisconnectedInfo {
   callbacks: WorkerCallbacks;
   sessionId: string;
   workerId: string;
-  historyOffset?: number;  // last known offset for incremental sync
 }
 const visibilityDisconnectedCallbacks = new Map<string, VisibilityDisconnectedInfo>();
-
-// Snapshot storage for terminal state (xterm.js serialized state)
-const terminalSnapshots = new Map<string, string>();
-
-// History offset storage for incremental sync
-const historyOffsets = new Map<string, number>();
-
-// Snapshot callbacks for terminals to register their serialize function
-// These are called BEFORE WebSocket is closed on visibility change
-type SnapshotCallback = () => void;
-const snapshotCallbacks = new Map<string, SnapshotCallback>();
-
-/**
- * Store xterm.js snapshot before hiding page.
- */
-export function storeSnapshot(sessionId: string, workerId: string, snapshot: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  terminalSnapshots.set(key, snapshot);
-}
-
-/**
- * Get and delete snapshot (one-time use).
- */
-export function consumeSnapshot(sessionId: string, workerId: string): string | undefined {
-  const key = getConnectionKey(sessionId, workerId);
-  const snapshot = terminalSnapshots.get(key);
-  if (snapshot !== undefined) {
-    terminalSnapshots.delete(key);
-  }
-  return snapshot;
-}
-
-/**
- * Store last offset from history message for incremental sync.
- */
-export function storeHistoryOffset(sessionId: string, workerId: string, offset: number): void {
-  const key = getConnectionKey(sessionId, workerId);
-  historyOffsets.set(key, offset);
-}
-
-/**
- * Get stored offset for reconnection.
- */
-export function getStoredHistoryOffset(sessionId: string, workerId: string): number | undefined {
-  const key = getConnectionKey(sessionId, workerId);
-  return historyOffsets.get(key);
-}
-
-/**
- * Register a snapshot callback for a worker.
- * This callback will be called synchronously BEFORE WebSocket is closed on visibility change.
- * Terminal components should register their serialize function here.
- */
-export function registerSnapshotCallback(sessionId: string, workerId: string, callback: SnapshotCallback): void {
-  const key = getConnectionKey(sessionId, workerId);
-  snapshotCallbacks.set(key, callback);
-}
-
-/**
- * Unregister snapshot callback for a worker.
- * Call this when Terminal component unmounts.
- */
-export function unregisterSnapshotCallback(sessionId: string, workerId: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  snapshotCallbacks.delete(key);
-}
 
 /**
  * Generate a unique key for a worker connection.
@@ -260,9 +196,8 @@ function scheduleReconnect(key: string): void {
 
 /**
  * Internal reconnect function that preserves connection state.
- * @param fromOffset - Optional offset for incremental history sync (visibility-based reconnection)
  */
-function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbacks, fromOffset?: number): void {
+function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbacks): void {
   const key = getConnectionKey(sessionId, workerId);
   const existingConn = connections.get(key);
 
@@ -286,7 +221,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     oldWs.close();
   }
 
-  const wsUrl = getWorkerWsUrl(sessionId, workerId, fromOffset);
+  const wsUrl = getWorkerWsUrl(sessionId, workerId);
   const ws = new WebSocket(wsUrl);
 
   const initialState: WorkerConnectionState = {
@@ -300,6 +235,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     callbacks,
     retryCount,
     retryTimeout: null,
+    historyRequestTimeout: null,
     sessionId,
     workerId,
   };
@@ -313,21 +249,14 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
 /**
  * Handle incoming WebSocket message for terminal/agent workers.
  */
-function handleTerminalMessage(key: string, msg: WorkerServerMessage, callbacks: TerminalWorkerCallbacks): void {
+function handleTerminalMessage(msg: WorkerServerMessage, callbacks: TerminalWorkerCallbacks): void {
   switch (msg.type) {
     case 'output':
       callbacks.onOutput(msg.data);
       break;
-    case 'history': {
-      // Extract offset if present (may be added by server for incremental sync)
-      const offset = (msg as { offset?: number }).offset;
-      // Store the offset for future visibility-based reconnection
-      if (offset !== undefined) {
-        historyOffsets.set(key, offset);
-      }
-      callbacks.onHistory(msg.data, offset);
+    case 'history':
+      callbacks.onHistory(msg.data);
       break;
-    }
     case 'exit':
       callbacks.onExit(msg.exitCode, msg.signal);
       break;
@@ -393,7 +322,7 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
           console.error('[WorkerWS] Invalid worker message type:', parsed);
           return;
         }
-        handleTerminalMessage(key, parsed, currentCallbacks);
+        handleTerminalMessage(parsed, currentCallbacks);
       }
     } catch (e) {
       console.error('[WorkerWS] Failed to parse message:', e);
@@ -447,8 +376,35 @@ export function connect(
   // Check existing connection
   const existing = connections.get(key);
   if (existing) {
-    // Skip if already connecting or connected
-    if (existing.ws.readyState === WebSocket.CONNECTING || existing.ws.readyState === WebSocket.OPEN) {
+    // Skip if already connecting
+    if (existing.ws.readyState === WebSocket.CONNECTING) {
+      // Connection is still being established - just update callbacks
+      existing.callbacks = callbacks;
+      return false;
+    }
+
+    // If connection is open, update callbacks and request fresh history
+    // This avoids unnecessary connection churn when component remounts
+    if (existing.ws.readyState === WebSocket.OPEN) {
+      // Update callbacks for the new component instance
+      existing.callbacks = callbacks;
+
+      // Debounce history requests to prevent rapid duplicate requests
+      // Clear any pending history request
+      if (existing.historyRequestTimeout) {
+        clearTimeout(existing.historyRequestTimeout);
+      }
+
+      // Request fresh history from server after debounce delay
+      const HISTORY_REQUEST_DEBOUNCE_MS = 100;
+      existing.historyRequestTimeout = setTimeout(() => {
+        existing.historyRequestTimeout = null;
+        // Check if connection is still open before sending
+        if (existing.ws.readyState === WebSocket.OPEN) {
+          existing.ws.send(JSON.stringify({ type: 'request-history' }));
+        }
+      }, HISTORY_REQUEST_DEBOUNCE_MS);
+
       return false;
     }
     // If socket is closing, abandon it and create new one
@@ -474,6 +430,7 @@ export function connect(
     callbacks,
     retryCount: 0,
     retryTimeout: null,
+    historyRequestTimeout: null,
     sessionId,
     workerId,
   };
@@ -500,14 +457,17 @@ export function disconnect(sessionId: string, workerId: string): void {
       clearTimeout(conn.retryTimeout);
       conn.retryTimeout = null;
     }
+    // Cancel any pending history request
+    if (conn.historyRequestTimeout) {
+      clearTimeout(conn.historyRequestTimeout);
+      conn.historyRequestTimeout = null;
+    }
     if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
       conn.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
     }
     // Clear visibility tracking data
     visibilityDisconnectedKeys.delete(key);
     visibilityDisconnectedCallbacks.delete(key);
-    terminalSnapshots.delete(key);
-    historyOffsets.delete(key);
     connections.delete(key);
   }
 }
@@ -630,14 +590,17 @@ export function disconnectSession(sessionId: string): void {
         clearTimeout(conn.retryTimeout);
         conn.retryTimeout = null;
       }
+      // Cancel any pending history request
+      if (conn.historyRequestTimeout) {
+        clearTimeout(conn.historyRequestTimeout);
+        conn.historyRequestTimeout = null;
+      }
       if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
         conn.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
       }
       // Clear visibility tracking data
       visibilityDisconnectedKeys.delete(key);
       visibilityDisconnectedCallbacks.delete(key);
-      terminalSnapshots.delete(key);
-      historyOffsets.delete(key);
       connections.delete(key);
     }
   }
@@ -648,32 +611,16 @@ export function disconnectSession(sessionId: string): void {
 /**
  * Handle page visibility change.
  * Disconnects all worker WebSockets when page is hidden (to save resources).
- * Reconnects with incremental sync when page becomes visible.
+ * Reconnects with full history when page becomes visible.
  */
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
-    // CRITICAL: Call snapshot callbacks FIRST, before closing any WebSockets
-    // This ensures Terminal components can serialize their state before disconnection
-    for (const [key] of connections.entries()) {
-      const snapshotCallback = snapshotCallbacks.get(key);
-      if (snapshotCallback) {
-        try {
-          snapshotCallback();
-        } catch (error) {
-          console.error(`[WorkerWS] Snapshot callback failed for ${key}:`, error);
-        }
-      }
-    }
-
     // Store connection info and disconnect all workers
     for (const [key, conn] of connections.entries()) {
-      // Store connection info for reconnection
-      const offset = historyOffsets.get(key);
       visibilityDisconnectedCallbacks.set(key, {
         callbacks: conn.callbacks,
         sessionId: conn.sessionId,
         workerId: conn.workerId,
-        historyOffset: offset,
       });
       visibilityDisconnectedKeys.add(key);
 
@@ -716,8 +663,8 @@ function handleVisibilityChange(): void {
         continue;
       }
 
-      console.log(`[WorkerWS] Page visible, reconnecting ${key} with offset ${info.historyOffset ?? 'none'}`);
-      reconnect(info.sessionId, info.workerId, info.callbacks, info.historyOffset);
+      console.log(`[WorkerWS] Page visible, reconnecting ${key}`);
+      reconnect(info.sessionId, info.workerId, info.callbacks);
     }
   }
 }
@@ -728,15 +675,6 @@ if (typeof document !== 'undefined') {
 }
 
 /**
- * Check if a worker was disconnected due to visibility change.
- * Used by Terminal component to determine if snapshot should be restored.
- */
-export function wasVisibilityDisconnected(sessionId: string, workerId: string): boolean {
-  const key = getConnectionKey(sessionId, workerId);
-  return visibilityDisconnectedCallbacks.has(key);
-}
-
-/**
  * Clear visibility tracking for a specific worker.
  * Call this when Terminal component unmounts to prevent stale reconnection.
  */
@@ -744,9 +682,6 @@ export function clearVisibilityTracking(sessionId: string, workerId: string): vo
   const key = getConnectionKey(sessionId, workerId);
   visibilityDisconnectedKeys.delete(key);
   visibilityDisconnectedCallbacks.delete(key);
-  terminalSnapshots.delete(key);
-  historyOffsets.delete(key);
-  snapshotCallbacks.delete(key);
 }
 
 /**
@@ -759,6 +694,10 @@ export function _reset(): void {
     if (conn.retryTimeout) {
       clearTimeout(conn.retryTimeout);
     }
+    // Cancel any pending history request
+    if (conn.historyRequestTimeout) {
+      clearTimeout(conn.historyRequestTimeout);
+    }
     if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
       conn.ws.close();
     }
@@ -767,7 +706,4 @@ export function _reset(): void {
   stateListeners.clear();
   visibilityDisconnectedKeys.clear();
   visibilityDisconnectedCallbacks.clear();
-  terminalSnapshots.clear();
-  historyOffsets.clear();
-  snapshotCallbacks.clear();
 }

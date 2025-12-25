@@ -91,6 +91,9 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
       }
       return { type: 'image', data: msg.data, mimeType: msg.mimeType };
 
+    case 'request-history':
+      return { type: 'request-history' };
+
     default:
       return null;
   }

@@ -8,6 +8,7 @@ import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { DiffIcon } from '../../components/Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
+import { useAppWsEvent } from '../../hooks/useAppWs';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
 
 export const Route = createFileRoute('/sessions/$sessionId')({
@@ -166,6 +167,23 @@ function TerminalPage() {
   const handleActivityChange = useCallback((newState: AgentActivityState) => {
     setActivityState(newState);
   }, []);
+
+  // Track active tab for app-websocket activity filtering
+  const activeTabIdRef = useRef<string | null>(null);
+  activeTabIdRef.current = activeTabId;
+
+  // Subscribe to app-websocket for real-time activity state updates
+  // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
+  const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, state: AgentActivityState) => {
+    // Only process activity events for the current session and active worker
+    if (eventSessionId === sessionId && workerId === activeTabIdRef.current) {
+      setActivityState(state);
+    }
+  }, [sessionId]);
+
+  useAppWsEvent({
+    onWorkerActivity: handleWorkerActivity,
+  });
 
   // Update page title and favicon based on state
   useEffect(() => {

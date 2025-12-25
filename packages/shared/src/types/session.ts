@@ -65,7 +65,8 @@ export interface CreateWorkerResponse {
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'image'; data: string; mimeType: string };
+  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'request-history' };
 
 /**
  * Valid message types for WorkerServerMessage.
@@ -82,18 +83,19 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
 export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
 
 /**
- * Error codes for worker activation failures.
+ * Error codes for worker errors.
  */
 export type WorkerErrorCode =
-  | 'PATH_NOT_FOUND'      // Session path no longer exists
-  | 'AGENT_NOT_FOUND'     // Agent definition deleted
-  | 'ACTIVATION_FAILED'   // PTY spawn failed
-  | 'WORKER_NOT_FOUND';   // Worker doesn't exist in session
+  | 'PATH_NOT_FOUND'        // Session path no longer exists
+  | 'AGENT_NOT_FOUND'       // Agent definition deleted
+  | 'ACTIVATION_FAILED'     // PTY spawn failed
+  | 'WORKER_NOT_FOUND'      // Worker doesn't exist in session
+  | 'HISTORY_LOAD_FAILED';  // History retrieval failed (timeout or error)
 
 export type WorkerServerMessage =
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number; signal: string | null }
-  | { type: 'history'; data: string; offset?: number }  // offset: current file position for incremental sync
+  | { type: 'history'; data: string }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode };
 
