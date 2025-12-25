@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash .claude/review-queue/queue-manager.sh:*)",
+      "Bash(.claude/review-queue/queue-manager.sh:*)"
+    ]
+  }
+}

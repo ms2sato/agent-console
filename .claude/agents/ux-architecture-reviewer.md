@@ -1,7 +1,7 @@
 ---
 name: ux-architecture-reviewer
 description: Review UX architecture for state consistency and edge case handling. Use when implementing features involving persistence, state synchronization, WebSocket/REST API contracts, or session/worker lifecycle changes.
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, Bash
 model: sonnet
 skills: frontend-standards, backend-standards
 ---
