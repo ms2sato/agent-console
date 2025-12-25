@@ -174,7 +174,7 @@ export class RepositoryManager {
     const repoDir = getRepositoryDir(orgRepo);
 
     // Clean up entire repository directory via job queue
-    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
   }
 
   getRepository(id: string): Repository | undefined {

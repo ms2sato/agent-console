@@ -200,11 +200,11 @@ export class SessionManager {
    * Used by deleteWorker and other cleanup operations.
    * @throws Error if jobQueue is not available
    */
-  private cleanupWorkerOutput(sessionId: string, workerId: string): void {
+  private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for worker output cleanup. Ensure initializeSessionManager() was called with jobQueue.');
     }
-    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }
 
   /**
@@ -407,7 +407,7 @@ export class SessionManager {
       for (const sessionId of orphanSessionIds) {
         await this.sessionRepository.delete(sessionId);
         // Delete output files for orphan session via job queue
-        this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
+        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId });
         logger.info({ sessionId }, 'Removed orphan session from persistence');
       }
     }
@@ -512,7 +512,7 @@ export class SessionManager {
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for session cleanup. Ensure initializeSessionManager() was called with jobQueue.');
     }
-    this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
     this.sessions.delete(id);
     await this.sessionRepository.delete(id);
@@ -721,10 +721,10 @@ export class SessionManager {
     if (worker.type === 'agent') {
       if (worker.pty) worker.pty.kill();
       if (worker.activityDetector) worker.activityDetector.dispose();
-      this.cleanupWorkerOutput(sessionId, workerId);
+      await this.cleanupWorkerOutput(sessionId, workerId);
     } else if (worker.type === 'terminal') {
       if (worker.pty) worker.pty.kill();
-      this.cleanupWorkerOutput(sessionId, workerId);
+      await this.cleanupWorkerOutput(sessionId, workerId);
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);

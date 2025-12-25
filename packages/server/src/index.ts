@@ -29,13 +29,23 @@ async function shutdown(): Promise<void> {
 }
 
 // Global error handlers to log crashes before process exits
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', async (error) => {
   logger.fatal({ pid: process.pid, err: error }, 'Uncaught Exception');
+  try {
+    await shutdown();
+  } catch (shutdownError) {
+    logger.error({ err: shutdownError }, 'Error during shutdown after uncaught exception');
+  }
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', async (reason, promise) => {
   logger.fatal({ pid: process.pid, reason, promise }, 'Unhandled Rejection');
+  try {
+    await shutdown();
+  } catch (shutdownError) {
+    logger.error({ err: shutdownError }, 'Error during shutdown after unhandled rejection');
+  }
   process.exit(1);
 });
 
