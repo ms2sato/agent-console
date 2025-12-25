@@ -8,7 +8,10 @@ import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { initializeDatabase, closeDatabase } from './database/connection.js';
 import { getConfigDir } from './lib/config.js';
-import { getJobQueue, registerJobHandlers, resetJobQueue, type JobQueue } from './jobs/index.js';
+import { initializeJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
+import { initializeSessionManager } from './services/session-manager.js';
+import { initializeRepositoryManager } from './services/repository-manager.js';
+import { createSessionRepository } from './repositories/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -16,6 +19,14 @@ const logger = createLogger('server');
 
 // Log server PID on startup for debugging
 logger.info({ pid: process.pid }, 'Server process starting');
+
+/**
+ * Graceful shutdown: stop job queue and close database.
+ */
+async function shutdown(): Promise<void> {
+  await resetJobQueue();
+  await closeDatabase();
+}
 
 // Global error handlers to log crashes before process exits
 process.on('uncaughtException', (error) => {
@@ -31,15 +42,13 @@ process.on('unhandledRejection', (reason, promise) => {
 // Log when server receives termination signals
 process.on('SIGTERM', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGTERM');
-  await resetJobQueue();
-  await closeDatabase();
+  await shutdown();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   logger.info({ pid: process.pid }, 'Server received SIGINT');
-  await resetJobQueue();
-  await closeDatabase();
+  await shutdown();
   process.exit(0);
 });
 
@@ -86,9 +95,8 @@ try {
 }
 
 // Initialize job queue after database initialization
-let jobQueue: JobQueue;
+const jobQueue = initializeJobQueue();
 try {
-  jobQueue = getJobQueue();
   registerJobHandlers(jobQueue);
   await jobQueue.start();
   logger.info('JobQueue initialized and started');
@@ -97,11 +105,15 @@ try {
   process.exit(1);
 }
 
-// Setup WebSocket routes AFTER database initialization but BEFORE SPA fallback
-// This ensures SessionManager uses the properly initialized SQLite repository
-// and WebSocket routes are not caught by the catch-all SPA handler
-// Pass jobQueue explicitly to ensure SessionManager/RepositoryManager have it set
-await setupWebSocketRoutes(app, upgradeWebSocket, jobQueue);
+// Initialize services with explicit dependencies
+const sessionRepository = await createSessionRepository();
+await initializeSessionManager({ sessionRepository, jobQueue });
+await initializeRepositoryManager({ jobQueue });
+logger.info('Services initialized');
+
+// Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
+// WebSocket routes are not caught by the catch-all SPA handler
+await setupWebSocketRoutes(app, upgradeWebSocket);
 
 // Static file serving (production only)
 // NOTE: Must be registered AFTER WebSocket routes to avoid catching /ws/* paths

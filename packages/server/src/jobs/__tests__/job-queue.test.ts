@@ -1,18 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { sql } from 'kysely';
 import { JobQueue } from '../job-queue.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import type { Database } from '../../database/schema.js';
+import type { Kysely } from 'kysely';
 
 describe('JobQueue', () => {
   let jobQueue: JobQueue;
+  let db: Kysely<Database>;
 
-  beforeEach(() => {
-    // Use in-memory SQLite database for tests
-    // This avoids conflicts with memfs mocks from other tests
-    jobQueue = new JobQueue(':memory:');
+  beforeEach(async () => {
+    // Initialize database with migrations (creates jobs table via migration v3)
+    await initializeDatabase(':memory:');
+    db = getDatabase();
+    jobQueue = new JobQueue(db);
   });
 
   afterEach(async () => {
     await jobQueue.stop();
-    jobQueue.close();
+    await closeDatabase();
   });
 
   // ===========================================================================
@@ -20,9 +26,9 @@ describe('JobQueue', () => {
   // ===========================================================================
 
   describe('enqueue', () => {
-    it('should add job with pending status', () => {
-      const id = jobQueue.enqueue('test:job', { foo: 'bar' });
-      const job = jobQueue.getJob(id);
+    it('should add job with pending status', async () => {
+      const id = await jobQueue.enqueue('test:job', { foo: 'bar' });
+      const job = await jobQueue.getJob(id);
 
       expect(job).not.toBeNull();
       expect(job?.status).toBe('pending');
@@ -30,44 +36,44 @@ describe('JobQueue', () => {
       expect(JSON.parse(job?.payload ?? '{}')).toEqual({ foo: 'bar' });
     });
 
-    it('should generate unique job IDs', () => {
-      const id1 = jobQueue.enqueue('test:job', { n: 1 });
-      const id2 = jobQueue.enqueue('test:job', { n: 2 });
+    it('should generate unique job IDs', async () => {
+      const id1 = await jobQueue.enqueue('test:job', { n: 1 });
+      const id2 = await jobQueue.enqueue('test:job', { n: 2 });
 
       expect(id1).not.toBe(id2);
     });
 
-    it('should respect priority option', () => {
-      const lowId = jobQueue.enqueue('test:job', {}, { priority: 0 });
-      const highId = jobQueue.enqueue('test:job', {}, { priority: 10 });
+    it('should respect priority option', async () => {
+      const lowId = await jobQueue.enqueue('test:job', {}, { priority: 0 });
+      const highId = await jobQueue.enqueue('test:job', {}, { priority: 10 });
 
-      const lowJob = jobQueue.getJob(lowId);
-      const highJob = jobQueue.getJob(highId);
+      const lowJob = await jobQueue.getJob(lowId);
+      const highJob = await jobQueue.getJob(highId);
 
       expect(lowJob?.priority).toBe(0);
       expect(highJob?.priority).toBe(10);
     });
 
-    it('should respect maxAttempts option', () => {
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
-      const job = jobQueue.getJob(id);
+    it('should respect maxAttempts option', async () => {
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
+      const job = await jobQueue.getJob(id);
 
       expect(job?.max_attempts).toBe(3);
     });
 
-    it('should set default maxAttempts to 5', () => {
-      const id = jobQueue.enqueue('test:job', {});
-      const job = jobQueue.getJob(id);
+    it('should set default maxAttempts to 5', async () => {
+      const id = await jobQueue.enqueue('test:job', {});
+      const job = await jobQueue.getJob(id);
 
       expect(job?.max_attempts).toBe(5);
     });
 
-    it('should set created_at timestamp', () => {
+    it('should set created_at timestamp', async () => {
       const before = Date.now();
-      const id = jobQueue.enqueue('test:job', {});
+      const id = await jobQueue.enqueue('test:job', {});
       const after = Date.now();
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.created_at).toBeGreaterThanOrEqual(before);
       expect(job?.created_at).toBeLessThanOrEqual(after);
     });
@@ -84,7 +90,7 @@ describe('JobQueue', () => {
         processed = true;
       });
 
-      jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
       await jobQueue.start();
 
       // Wait for processing
@@ -99,7 +105,7 @@ describe('JobQueue', () => {
         receivedPayload = payload;
       });
 
-      jobQueue.enqueue('test:job', { value: 42 });
+      await jobQueue.enqueue('test:job', { value: 42 });
       await jobQueue.start();
 
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -112,12 +118,12 @@ describe('JobQueue', () => {
         // Success
       });
 
-      const id = jobQueue.enqueue('test:job', {});
+      const id = await jobQueue.enqueue('test:job', {});
       await jobQueue.start();
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('completed');
       expect(job?.completed_at).not.toBeNull();
     });
@@ -128,9 +134,9 @@ describe('JobQueue', () => {
         processed.push(payload.n);
       });
 
-      jobQueue.enqueue('test:job', { n: 1 });
-      jobQueue.enqueue('test:job', { n: 2 });
-      jobQueue.enqueue('test:job', { n: 3 });
+      await jobQueue.enqueue('test:job', { n: 1 });
+      await jobQueue.enqueue('test:job', { n: 2 });
+      await jobQueue.enqueue('test:job', { n: 3 });
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -139,10 +145,9 @@ describe('JobQueue', () => {
     });
 
     it('should process higher priority jobs first', async () => {
-      // Close the default queue and create one with concurrency 1
+      // Create a new queue with concurrency 1
       await jobQueue.stop();
-      jobQueue.close();
-      jobQueue = new JobQueue(':memory:', { concurrency: 1 });
+      jobQueue = new JobQueue(db, { concurrency: 1 });
 
       const processed: number[] = [];
       jobQueue.registerHandler<{ n: number }>('test:job', async (payload) => {
@@ -150,9 +155,9 @@ describe('JobQueue', () => {
       });
 
       // Enqueue low priority first
-      jobQueue.enqueue('test:job', { n: 1 }, { priority: 0 });
-      jobQueue.enqueue('test:job', { n: 2 }, { priority: 10 }); // High priority
-      jobQueue.enqueue('test:job', { n: 3 }, { priority: 5 }); // Medium priority
+      await jobQueue.enqueue('test:job', { n: 1 }, { priority: 0 });
+      await jobQueue.enqueue('test:job', { n: 2 }, { priority: 10 }); // High priority
+      await jobQueue.enqueue('test:job', { n: 3 }, { priority: 5 }); // Medium priority
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -164,10 +169,9 @@ describe('JobQueue', () => {
     });
 
     it('should respect concurrency limit', async () => {
-      // Close the default queue and create one with concurrency 2
+      // Create a new queue with concurrency 2
       await jobQueue.stop();
-      jobQueue.close();
-      jobQueue = new JobQueue(':memory:', { concurrency: 2 });
+      jobQueue = new JobQueue(db, { concurrency: 2 });
 
       let concurrent = 0;
       let maxConcurrent = 0;
@@ -179,10 +183,10 @@ describe('JobQueue', () => {
         concurrent--;
       });
 
-      jobQueue.enqueue('test:job', {});
-      jobQueue.enqueue('test:job', {});
-      jobQueue.enqueue('test:job', {});
-      jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -205,14 +209,14 @@ describe('JobQueue', () => {
         }
       });
 
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
       // Wait for initial attempt and retry
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
       expect(attempts).toBe(2);
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('completed');
     });
 
@@ -221,12 +225,12 @@ describe('JobQueue', () => {
         throw new Error('Test error message');
       });
 
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
       await jobQueue.start();
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.last_error).toBe('Test error message');
     });
 
@@ -237,14 +241,14 @@ describe('JobQueue', () => {
         throw new Error('Persistent failure');
       });
 
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 2 });
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 2 });
       await jobQueue.start();
 
       // Wait for all attempts
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       expect(attempts).toBe(2);
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.attempts).toBe(2);
     });
@@ -261,7 +265,7 @@ describe('JobQueue', () => {
         }
       });
 
-      jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
+      await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
       // Wait for retries (1s + 2s = 3s, plus some buffer)
@@ -288,14 +292,13 @@ describe('JobQueue', () => {
   describe('crash recovery', () => {
     it('should recover processing jobs on start', async () => {
       // Create a job and manually set it to processing (simulating a crash)
-      const id = jobQueue.enqueue('test:job', {});
+      const id = await jobQueue.enqueue('test:job', {});
 
       // Simulate crash by directly updating the database
-      const testAPI = jobQueue.__testOnly!;
-      testAPI.db.run('UPDATE jobs SET status = ? WHERE id = ?', ['processing', id]);
+      await sql`UPDATE jobs SET status = 'processing' WHERE id = ${id}`.execute(db);
 
       // Verify it's in processing state
-      let job = jobQueue.getJob(id);
+      let job = await jobQueue.getJob(id);
       expect(job?.status).toBe('processing');
 
       // Register handler and start (which should recover)
@@ -308,7 +311,7 @@ describe('JobQueue', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Job should have been recovered and processed
-      job = jobQueue.getJob(id);
+      job = await jobQueue.getJob(id);
       expect(job?.status).toBe('completed');
       expect(processed).toBe(true);
     });
@@ -319,106 +322,106 @@ describe('JobQueue', () => {
   // ===========================================================================
 
   describe('getJobs', () => {
-    it('should return all jobs', () => {
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type2', {});
-      jobQueue.enqueue('type1', {});
+    it('should return all jobs', async () => {
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type2', {});
+      await jobQueue.enqueue('type1', {});
 
-      const jobs = jobQueue.getJobs();
+      const jobs = await jobQueue.getJobs();
       expect(jobs.length).toBe(3);
     });
 
     it('should filter by status', async () => {
       jobQueue.registerHandler('test:job', async () => {});
 
-      jobQueue.enqueue('test:job', {});
-      jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const completed = jobQueue.getJobs({ status: 'completed' });
+      const completed = await jobQueue.getJobs({ status: 'completed' });
       expect(completed.length).toBe(2);
 
-      const pending = jobQueue.getJobs({ status: 'pending' });
+      const pending = await jobQueue.getJobs({ status: 'pending' });
       expect(pending.length).toBe(0);
     });
 
-    it('should filter by type', () => {
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type2', {});
-      jobQueue.enqueue('type1', {});
+    it('should filter by type', async () => {
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type2', {});
+      await jobQueue.enqueue('type1', {});
 
-      const type1Jobs = jobQueue.getJobs({ type: 'type1' });
+      const type1Jobs = await jobQueue.getJobs({ type: 'type1' });
       expect(type1Jobs.length).toBe(2);
 
-      const type2Jobs = jobQueue.getJobs({ type: 'type2' });
+      const type2Jobs = await jobQueue.getJobs({ type: 'type2' });
       expect(type2Jobs.length).toBe(1);
     });
 
-    it('should respect limit and offset', () => {
-      jobQueue.enqueue('test:job', { n: 1 });
-      jobQueue.enqueue('test:job', { n: 2 });
-      jobQueue.enqueue('test:job', { n: 3 });
+    it('should respect limit and offset', async () => {
+      await jobQueue.enqueue('test:job', { n: 1 });
+      await jobQueue.enqueue('test:job', { n: 2 });
+      await jobQueue.enqueue('test:job', { n: 3 });
 
-      const limited = jobQueue.getJobs({ limit: 2 });
+      const limited = await jobQueue.getJobs({ limit: 2 });
       expect(limited.length).toBe(2);
 
-      const offset = jobQueue.getJobs({ limit: 2, offset: 1 });
+      const offset = await jobQueue.getJobs({ limit: 2, offset: 1 });
       expect(offset.length).toBe(2);
     });
   });
 
   describe('getJob', () => {
-    it('should return job by id', () => {
-      const id = jobQueue.enqueue('test:job', { value: 123 });
-      const job = jobQueue.getJob(id);
+    it('should return job by id', async () => {
+      const id = await jobQueue.enqueue('test:job', { value: 123 });
+      const job = await jobQueue.getJob(id);
 
       expect(job).not.toBeNull();
       expect(job?.id).toBe(id);
     });
 
-    it('should return null for non-existent id', () => {
-      const job = jobQueue.getJob('non-existent-id');
+    it('should return null for non-existent id', async () => {
+      const job = await jobQueue.getJob('non-existent-id');
       expect(job).toBeNull();
     });
   });
 
   describe('countJobs', () => {
-    it('should return total count of all jobs', () => {
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type2', {});
-      jobQueue.enqueue('type1', {});
+    it('should return total count of all jobs', async () => {
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type2', {});
+      await jobQueue.enqueue('type1', {});
 
-      const count = jobQueue.countJobs();
+      const count = await jobQueue.countJobs();
       expect(count).toBe(3);
     });
 
     it('should filter by status', async () => {
       jobQueue.registerHandler('test:job', async () => {});
 
-      jobQueue.enqueue('test:job', {});
-      jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const completedCount = jobQueue.countJobs({ status: 'completed' });
+      const completedCount = await jobQueue.countJobs({ status: 'completed' });
       expect(completedCount).toBe(2);
 
-      const pendingCount = jobQueue.countJobs({ status: 'pending' });
+      const pendingCount = await jobQueue.countJobs({ status: 'pending' });
       expect(pendingCount).toBe(0);
     });
 
-    it('should filter by type', () => {
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type2', {});
-      jobQueue.enqueue('type1', {});
+    it('should filter by type', async () => {
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type2', {});
+      await jobQueue.enqueue('type1', {});
 
-      const type1Count = jobQueue.countJobs({ type: 'type1' });
+      const type1Count = await jobQueue.countJobs({ type: 'type1' });
       expect(type1Count).toBe(2);
 
-      const type2Count = jobQueue.countJobs({ type: 'type2' });
+      const type2Count = await jobQueue.countJobs({ type: 'type2' });
       expect(type2Count).toBe(1);
     });
 
@@ -428,53 +431,53 @@ describe('JobQueue', () => {
         throw new Error('Always fails');
       });
 
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type1', {});
-      jobQueue.enqueue('type2', {}, { maxAttempts: 1 });
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type1', {});
+      await jobQueue.enqueue('type2', {}, { maxAttempts: 1 });
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const completedType1 = jobQueue.countJobs({ status: 'completed', type: 'type1' });
+      const completedType1 = await jobQueue.countJobs({ status: 'completed', type: 'type1' });
       expect(completedType1).toBe(2);
 
-      const stalledType2 = jobQueue.countJobs({ status: 'stalled', type: 'type2' });
+      const stalledType2 = await jobQueue.countJobs({ status: 'stalled', type: 'type2' });
       expect(stalledType2).toBe(1);
     });
 
-    it('should return zero for empty queue', () => {
-      const count = jobQueue.countJobs();
+    it('should return zero for empty queue', async () => {
+      const count = await jobQueue.countJobs();
       expect(count).toBe(0);
     });
   });
 
   describe('getStats', () => {
     it('should return correct counts', async () => {
-      // Create handler that fails once
-      let failCount = 0;
-      jobQueue.registerHandler('test:job', async () => {
-        failCount++;
-        if (failCount <= 2) {
-          throw new Error('Fail');
-        }
+      // Use separate handlers for jobs that should stall vs succeed
+      // This avoids race conditions with shared state
+      jobQueue.registerHandler('test:stall', async () => {
+        throw new Error('Always fails');
+      });
+      jobQueue.registerHandler('test:succeed', async () => {
+        // Succeeds
       });
 
       // Create jobs with different outcomes
-      jobQueue.enqueue('test:job', {}, { maxAttempts: 1 }); // Will stall
-      jobQueue.enqueue('test:job', {}, { maxAttempts: 1 }); // Will stall
-      jobQueue.enqueue('test:job', {}); // Will succeed after 2 fails
+      await jobQueue.enqueue('test:stall', {}, { maxAttempts: 1 }); // Will stall
+      await jobQueue.enqueue('test:stall', {}, { maxAttempts: 1 }); // Will stall
+      await jobQueue.enqueue('test:succeed', {}); // Will succeed
 
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 200));
 
-      const stats = jobQueue.getStats();
+      const stats = await jobQueue.getStats();
       expect(stats.stalled).toBe(2);
       expect(stats.completed).toBe(1);
       expect(stats.processing).toBe(0);
     });
 
-    it('should return zeros for empty queue', () => {
-      const stats = jobQueue.getStats();
+    it('should return zeros for empty queue', async () => {
+      const stats = await jobQueue.getStats();
       expect(stats).toEqual({
         pending: 0,
         processing: 0,
@@ -490,47 +493,47 @@ describe('JobQueue', () => {
         throw new Error('Always fails');
       });
 
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify it's stalled
-      let job = jobQueue.getJob(id);
+      let job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
 
       // Stop the queue before retrying to prevent immediate processing
       await jobQueue.stop();
 
       // Retry it
-      const success = jobQueue.retryJob(id);
+      const success = await jobQueue.retryJob(id);
       expect(success).toBe(true);
 
-      job = jobQueue.getJob(id);
+      job = await jobQueue.getJob(id);
       expect(job?.status).toBe('pending');
       expect(job?.attempts).toBe(0);
       expect(job?.last_error).toBeNull();
     });
 
-    it('should return false for non-stalled job', () => {
-      const id = jobQueue.enqueue('test:job', {});
-      const success = jobQueue.retryJob(id);
+    it('should return false for non-stalled job', async () => {
+      const id = await jobQueue.enqueue('test:job', {});
+      const success = await jobQueue.retryJob(id);
       expect(success).toBe(false);
     });
 
-    it('should return false for non-existent job', () => {
-      const success = jobQueue.retryJob('non-existent');
+    it('should return false for non-existent job', async () => {
+      const success = await jobQueue.retryJob('non-existent');
       expect(success).toBe(false);
     });
   });
 
   describe('cancelJob', () => {
-    it('should remove pending job', () => {
-      const id = jobQueue.enqueue('test:job', {});
+    it('should remove pending job', async () => {
+      const id = await jobQueue.enqueue('test:job', {});
 
-      const success = jobQueue.cancelJob(id);
+      const success = await jobQueue.cancelJob(id);
       expect(success).toBe(true);
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job).toBeNull();
     });
 
@@ -539,28 +542,28 @@ describe('JobQueue', () => {
         throw new Error('Fail');
       });
 
-      const id = jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const success = jobQueue.cancelJob(id);
+      const success = await jobQueue.cancelJob(id);
       expect(success).toBe(true);
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job).toBeNull();
     });
 
     it('should not cancel completed job', async () => {
       jobQueue.registerHandler('test:job', async () => {});
 
-      const id = jobQueue.enqueue('test:job', {});
+      const id = await jobQueue.enqueue('test:job', {});
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const success = jobQueue.cancelJob(id);
+      const success = await jobQueue.cancelJob(id);
       expect(success).toBe(false);
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job).not.toBeNull();
       expect(job?.status).toBe('completed');
     });
@@ -575,31 +578,31 @@ describe('JobQueue', () => {
         await handlerPromise; // Block until we allow completion
       });
 
-      const id = jobQueue.enqueue('test:job', {});
+      const id = await jobQueue.enqueue('test:job', {});
       await jobQueue.start();
 
       // Wait for job to start processing
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('processing');
 
       // Try to cancel while processing
-      const success = jobQueue.cancelJob(id);
+      const success = await jobQueue.cancelJob(id);
       expect(success).toBe(false);
 
       // Verify job still exists
-      expect(jobQueue.getJob(id)).not.toBeNull();
+      expect(await jobQueue.getJob(id)).not.toBeNull();
 
       // Complete the job
       resolveHandler!();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      expect(jobQueue.getJob(id)?.status).toBe('completed');
+      expect((await jobQueue.getJob(id))?.status).toBe('completed');
     });
 
-    it('should return false for non-existent job', () => {
-      const success = jobQueue.cancelJob('non-existent');
+    it('should return false for non-existent job', async () => {
+      const success = await jobQueue.cancelJob('non-existent');
       expect(success).toBe(false);
     });
   });
@@ -615,7 +618,7 @@ describe('JobQueue', () => {
         handled = true;
       });
 
-      jobQueue.enqueue('custom:type', {});
+      await jobQueue.enqueue('custom:type', {});
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -623,11 +626,11 @@ describe('JobQueue', () => {
     });
 
     it('should fail job with unregistered handler', async () => {
-      const id = jobQueue.enqueue('unknown:type', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('unknown:type', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toContain('No handler registered');
     });
@@ -639,10 +642,9 @@ describe('JobQueue', () => {
 
   describe('concurrent job claiming', () => {
     it('should handle concurrent job claiming safely', async () => {
-      // Close the default queue and create one with higher concurrency
+      // Create a new queue with higher concurrency
       await jobQueue.stop();
-      jobQueue.close();
-      jobQueue = new JobQueue(':memory:', { concurrency: 10 });
+      jobQueue = new JobQueue(db, { concurrency: 10 });
 
       const processedJobs: string[] = [];
       jobQueue.registerHandler<{ id: string }>('test:job', async (payload) => {
@@ -652,11 +654,11 @@ describe('JobQueue', () => {
       });
 
       // Create 3 jobs
-      const job1 = jobQueue.enqueue('test:job', { id: 'job1' });
-      const job2 = jobQueue.enqueue('test:job', { id: 'job2' });
-      const job3 = jobQueue.enqueue('test:job', { id: 'job3' });
+      const job1 = await jobQueue.enqueue('test:job', { id: 'job1' });
+      const job2 = await jobQueue.enqueue('test:job', { id: 'job2' });
+      const job3 = await jobQueue.enqueue('test:job', { id: 'job3' });
 
-      // Use Promise.all to start the queue, which will claim jobs concurrently
+      // Start the queue, which will claim jobs concurrently
       await jobQueue.start();
 
       // Wait for all jobs to complete
@@ -669,32 +671,27 @@ describe('JobQueue', () => {
       expect(processedJobs).toContain('job3');
 
       // Verify all jobs are completed
-      expect(jobQueue.getJob(job1)?.status).toBe('completed');
-      expect(jobQueue.getJob(job2)?.status).toBe('completed');
-      expect(jobQueue.getJob(job3)?.status).toBe('completed');
+      expect((await jobQueue.getJob(job1))?.status).toBe('completed');
+      expect((await jobQueue.getJob(job2))?.status).toBe('completed');
+      expect((await jobQueue.getJob(job3))?.status).toBe('completed');
     });
 
     it('should not allow duplicate claims when claimNextJob is called concurrently', async () => {
-      // Close the default queue and create a fresh one
+      // Create a fresh queue
       await jobQueue.stop();
-      jobQueue.close();
-      jobQueue = new JobQueue(':memory:', { concurrency: 1 });
+      jobQueue = new JobQueue(db, { concurrency: 1 });
 
       // Create 3 jobs
-      jobQueue.enqueue('test:job', { id: 1 });
-      jobQueue.enqueue('test:job', { id: 2 });
-      jobQueue.enqueue('test:job', { id: 3 });
+      await jobQueue.enqueue('test:job', { id: 1 });
+      await jobQueue.enqueue('test:job', { id: 2 });
+      await jobQueue.enqueue('test:job', { id: 3 });
 
       // Access private method for testing atomicity
       const testAPI = jobQueue.__testOnly!;
       const claimNextJob = testAPI.claimNextJob;
 
       // Call claimNextJob concurrently using Promise.all
-      const claims = await Promise.all([
-        Promise.resolve(claimNextJob()),
-        Promise.resolve(claimNextJob()),
-        Promise.resolve(claimNextJob()),
-      ]);
+      const claims = await Promise.all([claimNextJob(), claimNextJob(), claimNextJob()]);
 
       // Each claim should return a unique job (no duplicates)
       const claimedIds = claims.filter((c) => c !== null).map((c) => c!.id);
@@ -711,11 +708,10 @@ describe('JobQueue', () => {
   describe('invalid payload handling', () => {
     it('should handle invalid JSON payload', async () => {
       // Create a job with valid JSON first
-      const id = jobQueue.enqueue('test:job', { valid: true }, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('test:job', { valid: true }, { maxAttempts: 1 });
 
       // Directly update the database with invalid JSON
-      const testAPI = jobQueue.__testOnly!;
-      testAPI.db.run('UPDATE jobs SET payload = ? WHERE id = ?', ['not valid json {{{', id]);
+      await sql`UPDATE jobs SET payload = 'not valid json {{{' WHERE id = ${id}`.execute(db);
 
       jobQueue.registerHandler('test:job', async () => {
         // This should not be called because parsing will fail
@@ -724,7 +720,7 @@ describe('JobQueue', () => {
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toContain('JSON');
     });
@@ -740,11 +736,11 @@ describe('JobQueue', () => {
         throw 'This is a string error';
       });
 
-      const id = jobQueue.enqueue('throws-string', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('throws-string', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toContain('This is a string error');
     });
@@ -754,11 +750,11 @@ describe('JobQueue', () => {
         throw undefined;
       });
 
-      const id = jobQueue.enqueue('throws-undefined', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('throws-undefined', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toBe('undefined');
     });
@@ -768,11 +764,11 @@ describe('JobQueue', () => {
         throw null;
       });
 
-      const id = jobQueue.enqueue('throws-null', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('throws-null', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       expect(job?.last_error).toBe('null');
     });
@@ -782,11 +778,11 @@ describe('JobQueue', () => {
         throw { code: 'ERR_TEST', message: 'test object error' };
       });
 
-      const id = jobQueue.enqueue('throws-object', {}, { maxAttempts: 1 });
+      const id = await jobQueue.enqueue('throws-object', {}, { maxAttempts: 1 });
       await jobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const job = jobQueue.getJob(id);
+      const job = await jobQueue.getJob(id);
       expect(job?.status).toBe('stalled');
       // Object.toString() is used via String()
       expect(job?.last_error).not.toBeNull();
@@ -847,20 +843,20 @@ describe('JobQueue', () => {
       });
 
       // Create a job that will fail once and be scheduled for retry
-      const id = jobQueue.enqueue('retry-job', {}, { maxAttempts: 3 });
+      const id = await jobQueue.enqueue('retry-job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
       // Wait for initial failure and retry scheduling
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify job is pending (waiting for retry)
-      let job = jobQueue.getJob(id);
+      let job = await jobQueue.getJob(id);
       expect(job?.status).toBe('pending');
       expect(job?.attempts).toBe(1);
       expect(attempts).toBe(1);
 
       // Cancel the job while it's waiting for retry
-      const canceled = jobQueue.cancelJob(id);
+      const canceled = await jobQueue.cancelJob(id);
       expect(canceled).toBe(true);
 
       // Wait past the retry time (default backoff is 1s for first retry)
@@ -870,7 +866,7 @@ describe('JobQueue', () => {
       expect(attempts).toBe(1);
 
       // Verify job is deleted
-      job = jobQueue.getJob(id);
+      job = await jobQueue.getJob(id);
       expect(job).toBeNull();
     });
 
@@ -881,7 +877,7 @@ describe('JobQueue', () => {
         throw new Error('Always fails');
       });
 
-      const id = jobQueue.enqueue('retry-job', {}, { maxAttempts: 5 });
+      const id = await jobQueue.enqueue('retry-job', {}, { maxAttempts: 5 });
       await jobQueue.start();
 
       // Wait for initial failure
@@ -894,7 +890,7 @@ describe('JobQueue', () => {
       expect(testAPI.retryTimers.has(id)).toBe(true);
 
       // Cancel the job
-      jobQueue.cancelJob(id);
+      await jobQueue.cancelJob(id);
 
       // Verify timer is cleared
       expect(testAPI.retryTimers.has(id)).toBe(false);
@@ -915,7 +911,7 @@ describe('JobQueue', () => {
       await jobQueue.start();
       await jobQueue.stop();
 
-      jobQueue.enqueue('test:job', {});
+      await jobQueue.enqueue('test:job', {});
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(processed).toBe(false);

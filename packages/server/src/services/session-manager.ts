@@ -39,8 +39,8 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
-import { createSessionRepository, JsonSessionRepository } from '../repositories/index.js';
-import { JOB_TYPES, isJobQueueInitialized, getJobQueue, type JobQueue } from '../jobs/index.js';
+import { JsonSessionRepository } from '../repositories/index.js';
+import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('session-manager');
 
@@ -189,7 +189,7 @@ export class SessionManager {
 
   /**
    * Set the job queue for background task processing.
-   * Can be called after construction to inject the job queue.
+   * @internal For testing only. In production, pass jobQueue to create() or getSessionManager().
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
@@ -202,7 +202,7 @@ export class SessionManager {
    */
   private cleanupWorkerOutput(sessionId: string, workerId: string): void {
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for worker output cleanup. Ensure setJobQueue() is called before cleanup operations.');
+      throw new Error('JobQueue not available for worker output cleanup. Ensure initializeSessionManager() was called with jobQueue.');
     }
     this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }
@@ -510,7 +510,7 @@ export class SessionManager {
 
     // Delete all output files for this session via job queue
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for session cleanup. Ensure setJobQueue() is called before cleanup operations.');
+      throw new Error('JobQueue not available for session cleanup. Ensure initializeSessionManager() was called with jobQueue.');
     }
     this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
@@ -1555,48 +1555,47 @@ export class SessionManager {
   }
 }
 
-// Create singleton with lazy initialization
+// Singleton instance
 let sessionManagerInstance: SessionManager | null = null;
-let sessionManagerPromise: Promise<SessionManager> | null = null;
 
-export async function getSessionManager(): Promise<SessionManager> {
+/**
+ * Initialize the SessionManager singleton.
+ * Must be called once at application startup before getSessionManager().
+ * @param options.sessionRepository - Repository for session persistence
+ * @param options.jobQueue - JobQueue for background cleanup tasks
+ */
+export async function initializeSessionManager(options: {
+  sessionRepository: SessionRepository;
+  jobQueue: JobQueue;
+}): Promise<void> {
   if (sessionManagerInstance) {
-    return sessionManagerInstance;
+    throw new Error('SessionManager already initialized');
   }
-
-  if (sessionManagerPromise) {
-    return sessionManagerPromise;
-  }
-
-  sessionManagerPromise = (async () => {
-    // Use createSessionRepository() to auto-select SQLite or JSON based on environment
-    const sessionRepository = await createSessionRepository();
-    // Pass jobQueue during creation if available, ensuring it's set before initialize()
-    const jobQueue = isJobQueueInitialized() ? getJobQueue() : null;
-    const manager = await SessionManager.create({ sessionRepository, jobQueue });
-    sessionManagerInstance = manager;
-
-    return manager;
-  })().catch((error) => {
-    sessionManagerPromise = null; // Allow retry on next call
-    throw error;
-  });
-
-  return sessionManagerPromise;
+  sessionManagerInstance = await SessionManager.create(options);
 }
 
-// For testing: reset the singleton
+/**
+ * Get the SessionManager singleton.
+ * @throws Error if initializeSessionManager() has not been called
+ */
+export function getSessionManager(): SessionManager {
+  if (!sessionManagerInstance) {
+    throw new Error('SessionManager not initialized. Call initializeSessionManager() first.');
+  }
+  return sessionManagerInstance;
+}
+
+/**
+ * Check if SessionManager has been initialized.
+ */
+export function isSessionManagerInitialized(): boolean {
+  return sessionManagerInstance !== null;
+}
+
+/**
+ * Reset the singleton for testing.
+ * @internal For testing only.
+ */
 export function resetSessionManager(): void {
   sessionManagerInstance = null;
-  sessionManagerPromise = null;
 }
-
-// @deprecated - Use getSessionManager() instead
-// This proxy throws an error to catch any remaining usages that need to be migrated
-export const sessionManager: SessionManager = new Proxy({} as SessionManager, {
-  get(_target, prop) {
-    throw new Error(
-      `sessionManager.${String(prop)} is deprecated. Use getSessionManager() instead.`
-    );
-  },
-});

@@ -8,7 +8,7 @@ import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
-import { getConfigDir } from '../lib/config.js';
+import { getConfigDir, getDbPath } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
 import { addDatetime } from './schema-helpers.js';
@@ -77,7 +77,7 @@ export async function initializeDatabase(dbPath?: string): Promise<Kysely<Databa
  */
 async function doInitializeDatabase(customDbPath?: string): Promise<Kysely<Database>> {
   const isInMemory = customDbPath === ':memory:';
-  const dbPath = customDbPath ?? path.join(getConfigDir(), 'data.db');
+  const dbPath = customDbPath ?? getDbPath();
 
   // Ensure config directory exists (skip for in-memory database)
   if (!isInMemory) {
@@ -328,11 +328,9 @@ async function migrateToV3(database: Kysely<Database>): Promise<void> {
  * @returns Promise that resolves to true if database file exists
  */
 export async function databaseExists(): Promise<boolean> {
-  const configDir = getConfigDir();
-  const dbPath = path.join(configDir, 'data.db');
   // Use Bun.file().exists() for reliable file existence check
   // This bypasses any fs module mocks that might be active in tests
-  return Bun.file(dbPath).exists();
+  return Bun.file(getDbPath()).exists();
 }
 
 /**
@@ -344,8 +342,7 @@ export async function databaseExists(): Promise<boolean> {
  * states where some data is in SQLite and some remains in JSON.
  */
 export async function migrateFromJson(database: Kysely<Database>): Promise<void> {
-  const configDir = getConfigDir();
-  const dbPath = path.join(configDir, 'data.db');
+  const dbPath = getDbPath();
 
   try {
     await migrateSessionsFromJson(database);

@@ -18,7 +18,12 @@ export {
   type JobQueueTestAPI,
 } from './job-queue.js';
 
-export { getJobQueue, resetJobQueue, isJobQueueInitialized } from './job-queue-instance.js';
+export {
+  initializeJobQueue,
+  getJobQueue,
+  resetJobQueue,
+  isJobQueueInitialized,
+} from './job-queue-instance.js';
 export { registerJobHandlers } from './handlers.js';
 export {
   JOB_TYPES,

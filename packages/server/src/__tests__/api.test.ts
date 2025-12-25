@@ -50,8 +50,9 @@ mock.module('open', () => ({
 // This avoids mock.module which applies globally and affects other test files.
 
 // Import singleton reset functions to ensure fresh state between tests
-import { resetRepositoryManager, getRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager, getSessionManager } from '../services/session-manager.js';
+import { resetRepositoryManager, initializeRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager, initializeSessionManager } from '../services/session-manager.js';
+import { createSessionRepository } from '../repositories/index.js';
 import { resetAgentManager } from '../services/agent-manager.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 import { JobQueue, resetJobQueue } from '../jobs/index.js';
@@ -101,9 +102,8 @@ describe('API Routes Integration', () => {
     resetRepositoryManager();
     resetAgentManager();
 
-    // Create a test JobQueue with in-memory database
-    // The JobQueue will create its own schema since it uses a separate :memory: database
-    testJobQueue = new JobQueue(':memory:');
+    // Create a test JobQueue with the shared database connection
+    testJobQueue = new JobQueue(getDatabase());
 
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
@@ -142,7 +142,6 @@ describe('API Routes Integration', () => {
     // Clean up test JobQueue
     if (testJobQueue) {
       await testJobQueue.stop();
-      testJobQueue.close();
       testJobQueue = null;
     }
     await closeDatabase();
@@ -171,13 +170,12 @@ describe('API Routes Integration', () => {
     const { api } = await import(`../routes/api.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-    // Inject the test JobQueue into the managers
+    // Initialize managers with test JobQueue
     // This ensures cleanup operations have a valid jobQueue
     if (testJobQueue) {
-      const sessionManager = await getSessionManager();
-      sessionManager.setJobQueue(testJobQueue);
-      const repositoryManager = await getRepositoryManager();
-      repositoryManager.setJobQueue(testJobQueue);
+      const sessionRepository = await createSessionRepository();
+      await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+      await initializeRepositoryManager({ jobQueue: testJobQueue });
     }
 
     const app = new Hono();

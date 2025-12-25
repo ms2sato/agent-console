@@ -6,8 +6,9 @@ import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import { JobQueue } from '../../jobs/index.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
-import { resetSessionManager } from '../session-manager.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { resetSessionManager, initializeSessionManager } from '../session-manager.js';
+import { createSessionRepository } from '../../repositories/index.js';
 
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
@@ -74,6 +75,13 @@ describe('RepositoryManager', () => {
     // Reset session manager singleton (needed for unregisterRepository check)
     resetSessionManager();
 
+    // Create a test JobQueue with the shared database connection
+    testJobQueue = new JobQueue(getDatabase());
+
+    // Initialize session manager singleton (needed for unregisterRepository check)
+    const sessionRepository = await createSessionRepository();
+    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+
     // Reset process mock
     resetProcessMock();
     mockProcess.markAlive(process.pid);
@@ -84,16 +92,12 @@ describe('RepositoryManager', () => {
 
     // Create fresh mock repository for each test
     mockRepository = new InMemoryRepositoryRepository();
-
-    // Create a test JobQueue with in-memory database
-    testJobQueue = new JobQueue(':memory:');
   });
 
   afterEach(async () => {
     // Clean up test JobQueue
     if (testJobQueue) {
       await testJobQueue.stop();
-      testJobQueue.close();
       testJobQueue = null;
     }
     await closeDatabase();

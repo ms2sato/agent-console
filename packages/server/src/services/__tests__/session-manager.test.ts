@@ -4,7 +4,7 @@ import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-co
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/index.js';
 
 // Test config directory
@@ -32,8 +32,8 @@ describe('SessionManager', () => {
     // Initialize in-memory database (bypasses native file operations)
     await initializeDatabase(':memory:');
 
-    // Create a test JobQueue with in-memory database
-    testJobQueue = new JobQueue(':memory:');
+    // Create a test JobQueue with the shared database connection
+    testJobQueue = new JobQueue(getDatabase());
 
     // Reset process mock and mark current process as alive
     // This ensures sessions created with serverPid=process.pid are not cleaned up
@@ -48,7 +48,6 @@ describe('SessionManager', () => {
     // Clean up test JobQueue
     if (testJobQueue) {
       await testJobQueue.stop();
-      testJobQueue.close();
       testJobQueue = null;
     }
     await closeDatabase();

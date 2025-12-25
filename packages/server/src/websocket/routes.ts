@@ -6,7 +6,6 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
-import type { JobQueue } from '../jobs/index.js';
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext } from 'hono/ws';
 import { getSessionManager } from '../services/session-manager.js';
@@ -70,14 +69,10 @@ type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
 export async function setupWebSocketRoutes(
   app: Hono,
-  upgradeWebSocket: UpgradeWebSocketFn,
-  jobQueue: JobQueue
+  upgradeWebSocket: UpgradeWebSocketFn
 ) {
-  // Get properly initialized SessionManager (with SQLite repository)
-  const sessionManager = await getSessionManager();
-  // Explicitly inject jobQueue to ensure it's available for cleanup operations
-  // This fixes the race condition where SessionManager may be created before JobQueue
-  sessionManager.setJobQueue(jobQueue);
+  // Get properly initialized SessionManager (with SQLite repository and JobQueue)
+  const sessionManager = getSessionManager();
 
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
@@ -126,9 +121,7 @@ export async function setupWebSocketRoutes(
   });
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
-  const repositoryManager = await getRepositoryManager();
-  // Explicitly inject jobQueue to ensure it's available for cleanup operations
-  repositoryManager.setJobQueue(jobQueue);
+  const repositoryManager = getRepositoryManager();
   repositoryManager.setLifecycleCallbacks({
     onRepositoryCreated: (repository) => {
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
@@ -148,8 +141,8 @@ export async function setupWebSocketRoutes(
       const agentManager = await getAgentManager();
       return agentManager.getAllAgents();
     },
-    getAllRepositories: async () => {
-      const repositoryManager = await getRepositoryManager();
+    getAllRepositories: () => {
+      const repositoryManager = getRepositoryManager();
       return repositoryManager.getAllRepositories();
     },
     logger,
@@ -179,8 +172,10 @@ export async function setupWebSocketRoutes(
               ws.send(JSON.stringify(agentsSyncMsg));
               logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
             }),
-            getRepositoryManager().then((repositoryManager) => {
-              const allRepositories = repositoryManager.getAllRepositories();
+            // getRepositoryManager is sync, wrap in Promise.resolve for consistency
+            Promise.resolve().then(() => {
+              const repoManager = getRepositoryManager();
+              const allRepositories = repoManager.getAllRepositories();
               const repositoriesSyncMsg: AppServerMessage = {
                 type: 'repositories-sync',
                 repositories: allRepositories,

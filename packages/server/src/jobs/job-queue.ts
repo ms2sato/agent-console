@@ -6,15 +6,17 @@
  * successful or max attempts reached.
  *
  * Features:
- * - SQLite persistence via bun:sqlite
+ * - SQLite persistence via Kysely
  * - Event-driven processing (no polling)
  * - Exponential backoff retry
  * - Concurrency control
  * - Management API for viewing/retrying/canceling jobs
  */
-import { Database } from 'bun:sqlite';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
+import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('job-queue');
@@ -119,8 +121,7 @@ export interface JobQueueOptions {
  * Only available when NODE_ENV === 'test'.
  */
 export interface JobQueueTestAPI {
-  db: Database;
-  claimNextJob(): JobRecord | null;
+  claimNextJob(): Promise<JobRecord | null>;
   calculateBackoff(attempts: number): number;
   retryTimers: Map<string, Timer>;
 }
@@ -137,7 +138,7 @@ export interface JobQueueTestAPI {
  * For distributed job processing, consider external job queue systems like BullMQ.
  */
 export class JobQueue {
-  private db: Database;
+  private db: Kysely<Database>;
   private handlers = new Map<string, JobHandler>();
   private emitter = new EventEmitter();
   private processing = 0;
@@ -153,62 +154,10 @@ export class JobQueue {
   private readonly defaultMaxAttempts = 5;
   private readonly defaultConcurrency = 4;
 
-  constructor(dbPath: string, options?: JobQueueOptions) {
-    this.db = new Database(dbPath);
+  constructor(db: Kysely<Database>, options?: JobQueueOptions) {
+    this.db = db;
     this.concurrency = options?.concurrency ?? this.defaultConcurrency;
-    // Schema is now managed by the main database migration system (connection.ts)
-    // Verify schema exists to catch misconfiguration early
-    this.verifySchema();
-    logger.info({ dbPath, concurrency: this.concurrency }, 'JobQueue initialized');
-  }
-
-  /**
-   * Verify that the jobs table exists, creating it if necessary.
-   * The schema is normally created by the migration system in connection.ts.
-   * This method provides a fallback for cases where:
-   * - Tests use in-memory databases
-   * - The database was created before the migration was added
-   *
-   * If the schema needs to be created here, a warning is logged to indicate
-   * potential misconfiguration in production scenarios.
-   */
-  private verifySchema(): void {
-    const result = this.db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
-    ).get() as { name: string } | null;
-
-    if (!result) {
-      logger.warn('Jobs table not found, creating schema. This is expected in tests but may indicate misconfiguration in production.');
-      this.createSchema();
-    }
-  }
-
-  /**
-   * Create the jobs table schema.
-   * Used as a fallback when the migration system hasn't created the table.
-   */
-  private createSchema(): void {
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        priority INTEGER NOT NULL DEFAULT 0,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 5,
-        next_retry_at INTEGER NOT NULL,
-        last_error TEXT,
-        created_at INTEGER NOT NULL,
-        started_at INTEGER,
-        completed_at INTEGER
-      )
-    `);
-    this.db.run(
-      `CREATE INDEX IF NOT EXISTS idx_jobs_pending ON jobs(status, priority DESC, next_retry_at)`
-    );
-    this.db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)`);
-    this.db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type)`);
+    logger.info({ concurrency: this.concurrency }, 'JobQueue initialized');
   }
 
   // ===========================================================================
@@ -232,25 +181,27 @@ export class JobQueue {
    * @param options - Optional enqueue options
    * @returns The job ID
    */
-  enqueue(type: string, payload: unknown, options?: EnqueueOptions): string {
+  async enqueue(type: string, payload: unknown, options?: EnqueueOptions): Promise<string> {
     const id = randomUUID();
     const now = Date.now();
 
-    this.db.run(
-      `
-      INSERT INTO jobs (id, type, payload, priority, max_attempts, next_retry_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
+    await this.db
+      .insertInto('jobs')
+      .values({
         id,
         type,
-        JSON.stringify(payload),
-        options?.priority ?? 0,
-        options?.maxAttempts ?? this.defaultMaxAttempts,
-        now,
-        now,
-      ]
-    );
+        payload: JSON.stringify(payload),
+        status: JOB_STATUS.PENDING,
+        priority: options?.priority ?? 0,
+        attempts: 0,
+        max_attempts: options?.maxAttempts ?? this.defaultMaxAttempts,
+        next_retry_at: now,
+        last_error: null,
+        created_at: now,
+        started_at: null,
+        completed_at: null,
+      })
+      .execute();
 
     logger.info({ jobId: id, type, priority: options?.priority ?? 0 }, 'Job enqueued');
     this.emitter.emit('job:added');
@@ -270,17 +221,17 @@ export class JobQueue {
     this.running = true;
 
     // Recover jobs that were processing when server crashed
-    const recovered = this.db.run(
-      `
-      UPDATE jobs
-      SET status = 'pending', next_retry_at = ?
-      WHERE status = 'processing'
-    `,
-      [Date.now()]
-    );
+    const result = await this.db
+      .updateTable('jobs')
+      .set({
+        status: JOB_STATUS.PENDING,
+        next_retry_at: Date.now(),
+      })
+      .where('status', '=', JOB_STATUS.PROCESSING)
+      .executeTakeFirst();
 
-    if (recovered.changes > 0) {
-      logger.info({ count: recovered.changes }, 'Recovered crashed jobs');
+    if (result.numUpdatedRows > 0n) {
+      logger.info({ count: Number(result.numUpdatedRows) }, 'Recovered crashed jobs');
     }
 
     // Set up event listeners
@@ -288,7 +239,7 @@ export class JobQueue {
     this.emitter.on('job:completed', () => this.tryProcess());
 
     // Schedule retries for pending jobs with future next_retry_at
-    this.scheduleAllRetries();
+    await this.scheduleAllRetries();
 
     // Start processing immediately available jobs
     this.tryProcess();
@@ -317,15 +268,6 @@ export class JobQueue {
     logger.info('JobQueue stopped');
   }
 
-  /**
-   * Close the database connection.
-   * Should be called during server shutdown after stop().
-   */
-  close(): void {
-    this.db.close();
-    logger.info('JobQueue database closed');
-  }
-
   // ===========================================================================
   // Management API
   // ===========================================================================
@@ -333,78 +275,73 @@ export class JobQueue {
   /**
    * Get a list of jobs with optional filtering.
    */
-  getJobs(options?: GetJobsOptions): JobRecord[] {
-    let sql = 'SELECT * FROM jobs WHERE 1=1';
-    const params: (string | number)[] = [];
+  async getJobs(options?: GetJobsOptions): Promise<JobRecord[]> {
+    let query = this.db.selectFrom('jobs').selectAll();
 
     if (options?.status) {
-      sql += ' AND status = ?';
-      params.push(options.status);
+      query = query.where('status', '=', options.status);
     }
     if (options?.type) {
-      sql += ' AND type = ?';
-      params.push(options.type);
+      query = query.where('type', '=', options.type);
     }
 
-    sql += ' ORDER BY created_at DESC';
+    query = query.orderBy('created_at', 'desc');
 
     // Apply limit. When offset is provided without limit, use a default of 50
-    // to prevent unbounded query results
     const effectiveLimit = options?.limit ?? (options?.offset !== undefined ? 50 : undefined);
     if (effectiveLimit !== undefined) {
-      sql += ' LIMIT ?';
-      params.push(effectiveLimit);
+      query = query.limit(effectiveLimit);
     }
     if (options?.offset) {
-      sql += ' OFFSET ?';
-      params.push(options.offset);
+      query = query.offset(options.offset);
     }
 
-    return this.db.query(sql).all(...params) as JobRecord[];
+    const rows = await query.execute();
+    return rows as JobRecord[];
   }
 
   /**
    * Count jobs with optional filtering.
    * Used for pagination total count.
    */
-  countJobs(options?: Pick<GetJobsOptions, 'status' | 'type'>): number {
-    let sql = 'SELECT COUNT(*) as count FROM jobs WHERE 1=1';
-    const params: string[] = [];
+  async countJobs(options?: Pick<GetJobsOptions, 'status' | 'type'>): Promise<number> {
+    let query = this.db.selectFrom('jobs').select(this.db.fn.count<number>('id').as('count'));
 
     if (options?.status) {
-      sql += ' AND status = ?';
-      params.push(options.status);
+      query = query.where('status', '=', options.status);
     }
     if (options?.type) {
-      sql += ' AND type = ?';
-      params.push(options.type);
+      query = query.where('type', '=', options.type);
     }
 
-    const result = this.db.query(sql).get(...params) as { count: number };
-    return result.count;
+    const result = await query.executeTakeFirst();
+    return result?.count ?? 0;
   }
 
   /**
    * Get a single job by ID.
    */
-  getJob(id: string): JobRecord | null {
-    return this.db.query('SELECT * FROM jobs WHERE id = ?').get(id) as JobRecord | null;
+  async getJob(id: string): Promise<JobRecord | null> {
+    const row = await this.db
+      .selectFrom('jobs')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return (row as JobRecord) ?? null;
   }
 
   /**
    * Get job statistics by status.
    */
-  getStats(): JobStats {
-    const result = this.db
-      .query(
-        `
-      SELECT status, COUNT(*) as count FROM jobs GROUP BY status
-    `
-      )
-      .all() as { status: string; count: number }[];
+  async getStats(): Promise<JobStats> {
+    const rows = await this.db
+      .selectFrom('jobs')
+      .select(['status', this.db.fn.count<number>('id').as('count')])
+      .groupBy('status')
+      .execute();
 
     const stats: JobStats = { pending: 0, processing: 0, completed: 0, stalled: 0 };
-    for (const row of result) {
+    for (const row of rows) {
       if (row.status in stats) {
         stats[row.status as keyof JobStats] = row.count;
       }
@@ -417,17 +354,20 @@ export class JobQueue {
    * Resets the job to pending status with zero attempts.
    * @returns true if job was found and retried, false otherwise
    */
-  retryJob(id: string): boolean {
-    const result = this.db.run(
-      `
-      UPDATE jobs
-      SET status = 'pending', attempts = 0, next_retry_at = ?, last_error = NULL
-      WHERE id = ? AND status = 'stalled'
-    `,
-      [Date.now(), id]
-    );
+  async retryJob(id: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('jobs')
+      .set({
+        status: JOB_STATUS.PENDING,
+        attempts: 0,
+        next_retry_at: Date.now(),
+        last_error: null,
+      })
+      .where('id', '=', id)
+      .where('status', '=', JOB_STATUS.STALLED)
+      .executeTakeFirst();
 
-    if (result.changes > 0) {
+    if (result.numUpdatedRows > 0n) {
       logger.info({ jobId: id }, 'Job manually retried');
       this.emitter.emit('job:added');
       return true;
@@ -439,15 +379,14 @@ export class JobQueue {
    * Cancel a pending or stalled job.
    * @returns true if job was found and canceled, false otherwise
    */
-  cancelJob(id: string): boolean {
-    const result = this.db.run(
-      `
-      DELETE FROM jobs WHERE id = ? AND status IN ('pending', 'stalled')
-    `,
-      [id]
-    );
+  async cancelJob(id: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('jobs')
+      .where('id', '=', id)
+      .where('status', 'in', [JOB_STATUS.PENDING, JOB_STATUS.STALLED])
+      .executeTakeFirst();
 
-    if (result.changes > 0) {
+    if (result.numDeletedRows > 0n) {
       // Clear any retry timer for this job
       const timer = this.retryTimers.get(id);
       if (timer) {
@@ -472,43 +411,46 @@ export class JobQueue {
       return;
     }
 
-    while (this.processing < this.concurrency) {
-      const job = this.claimNextJob();
-      if (!job) break;
+    const processNext = async () => {
+      while (this.processing < this.concurrency && this.running) {
+        const job = await this.claimNextJob();
+        if (!job) break;
 
-      this.processing++;
-      this.processJob(job).finally(() => {
-        this.processing--;
-        this.emitter.emit('job:completed');
-      });
-    }
+        this.processing++;
+        this.processJob(job).finally(() => {
+          this.processing--;
+          this.emitter.emit('job:completed');
+        });
+      }
+    };
+
+    processNext().catch((err) => {
+      logger.error({ err }, 'Error in tryProcess');
+    });
   }
 
   /**
    * Claim the next available job for processing.
    * Uses a single UPDATE with RETURNING to atomically find and claim a job.
    */
-  private claimNextJob(): JobRecord | null {
+  private async claimNextJob(): Promise<JobRecord | null> {
     const now = Date.now();
 
     // Atomically find and claim the next available job in a single statement
-    const job = this.db
-      .query(
-        `
+    // Using raw SQL for UPDATE ... RETURNING with subquery
+    const result = await sql<JobRecord>`
       UPDATE jobs
-      SET status = 'processing', started_at = ?
+      SET status = ${JOB_STATUS.PROCESSING}, started_at = ${now}
       WHERE id = (
         SELECT id FROM jobs
-        WHERE status = 'pending' AND next_retry_at <= ?
+        WHERE status = ${JOB_STATUS.PENDING} AND next_retry_at <= ${now}
         ORDER BY priority DESC, next_retry_at ASC
         LIMIT 1
       )
       RETURNING *
-    `
-      )
-      .get(now, now) as JobRecord | null;
+    `.execute(this.db);
 
-    return job;
+    return result.rows[0] ?? null;
   }
 
   /**
@@ -518,7 +460,7 @@ export class JobQueue {
     const handler = this.handlers.get(job.type);
 
     if (!handler) {
-      this.handleFailure(job, new Error(`No handler registered for job type: ${job.type}`));
+      await this.handleFailure(job, new Error(`No handler registered for job type: ${job.type}`));
       return;
     }
 
@@ -526,32 +468,32 @@ export class JobQueue {
       const payload = JSON.parse(job.payload);
       logger.debug({ jobId: job.id, type: job.type }, 'Processing job');
       await handler(payload);
-      this.markCompleted(job.id);
+      await this.markCompleted(job.id);
       logger.info({ jobId: job.id, type: job.type }, 'Job completed');
     } catch (error) {
-      this.handleFailure(job, error instanceof Error ? error : new Error(String(error)));
+      await this.handleFailure(job, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   /**
    * Mark a job as completed.
    */
-  private markCompleted(id: string): void {
-    this.db.run(
-      `
-      UPDATE jobs
-      SET status = 'completed', completed_at = ?
-      WHERE id = ?
-    `,
-      [Date.now(), id]
-    );
+  private async markCompleted(id: string): Promise<void> {
+    await this.db
+      .updateTable('jobs')
+      .set({
+        status: JOB_STATUS.COMPLETED,
+        completed_at: Date.now(),
+      })
+      .where('id', '=', id)
+      .execute();
   }
 
   /**
    * Handle a job failure.
    * Either schedules a retry or marks the job as stalled.
    */
-  private handleFailure(job: JobRecord, error: Error): void {
+  private async handleFailure(job: JobRecord, error: Error): Promise<void> {
     const attempts = job.attempts + 1;
     const now = Date.now();
 
@@ -562,28 +504,31 @@ export class JobQueue {
 
     if (attempts >= job.max_attempts) {
       // Max attempts reached - mark as stalled
-      this.db.run(
-        `
-        UPDATE jobs
-        SET status = 'stalled', attempts = ?, last_error = ?
-        WHERE id = ?
-      `,
-        [attempts, error.message, job.id]
-      );
+      await this.db
+        .updateTable('jobs')
+        .set({
+          status: JOB_STATUS.STALLED,
+          attempts,
+          last_error: error.message,
+        })
+        .where('id', '=', job.id)
+        .execute();
       logger.error({ jobId: job.id, type: job.type, attempts }, 'Job stalled after max attempts');
     } else {
       // Schedule retry with exponential backoff
       const backoff = this.calculateBackoff(attempts);
       const nextRetryAt = now + backoff;
 
-      this.db.run(
-        `
-        UPDATE jobs
-        SET status = 'pending', attempts = ?, next_retry_at = ?, last_error = ?
-        WHERE id = ?
-      `,
-        [attempts, nextRetryAt, error.message, job.id]
-      );
+      await this.db
+        .updateTable('jobs')
+        .set({
+          status: JOB_STATUS.PENDING,
+          attempts,
+          next_retry_at: nextRetryAt,
+          last_error: error.message,
+        })
+        .where('id', '=', job.id)
+        .execute();
 
       this.scheduleRetry(job.id, backoff);
       logger.debug(
@@ -624,16 +569,14 @@ export class JobQueue {
    * Schedule retries for all pending jobs with future next_retry_at.
    * Called on startup to resume processing after server restart.
    */
-  private scheduleAllRetries(): void {
+  private async scheduleAllRetries(): Promise<void> {
     const now = Date.now();
-    const pendingJobs = this.db
-      .query(
-        `
-      SELECT id, next_retry_at FROM jobs
-      WHERE status = 'pending' AND next_retry_at > ?
-    `
-      )
-      .all(now) as { id: string; next_retry_at: number }[];
+    const pendingJobs = await this.db
+      .selectFrom('jobs')
+      .select(['id', 'next_retry_at'])
+      .where('status', '=', JOB_STATUS.PENDING)
+      .where('next_retry_at', '>', now)
+      .execute();
 
     for (const job of pendingJobs) {
       this.scheduleRetry(job.id, job.next_retry_at - now);
@@ -654,7 +597,6 @@ export class JobQueue {
    */
   get __testOnly(): JobQueueTestAPI {
     return {
-      db: this.db,
       claimNextJob: this.claimNextJob.bind(this),
       calculateBackoff: this.calculateBackoff.bind(this),
       retryTimers: this.retryTimers,

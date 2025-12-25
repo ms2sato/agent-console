@@ -9,6 +9,7 @@ export interface Database {
   workers: WorkersTable;
   repositories: RepositoriesTable;
   agents: AgentsTable;
+  jobs: JobsTable;
 }
 
 /**
@@ -136,3 +137,41 @@ export type AgentRow = Selectable<AgentsTable>;
 export type NewAgent = Insertable<AgentsTable>;
 /** Agent data for UPDATE queries */
 export type AgentUpdate = Updateable<AgentsTable>;
+
+/**
+ * Jobs table schema.
+ * Stores background job queue entries for async task processing.
+ */
+export interface JobsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Job type identifier (e.g., 'cleanup:session-outputs') */
+  type: string;
+  /** JSON-serialized job payload */
+  payload: string;
+  /** Job status: pending, processing, completed, stalled */
+  status: string;
+  /** Priority (higher = processed first). Default: 0 */
+  priority: number;
+  /** Number of processing attempts. Default: 0 */
+  attempts: number;
+  /** Maximum retry attempts before marking as stalled. Default: 5 */
+  max_attempts: number;
+  /** Unix timestamp (ms) when the job can next be processed */
+  next_retry_at: number;
+  /** Last error message if job failed */
+  last_error: string | null;
+  /** Unix timestamp (ms) when job was created */
+  created_at: number;
+  /** Unix timestamp (ms) when job started processing */
+  started_at: number | null;
+  /** Unix timestamp (ms) when job completed */
+  completed_at: number | null;
+}
+
+/** Job row as returned from SELECT queries */
+export type JobRow = Selectable<JobsTable>;
+/** Job data for INSERT queries */
+export type NewJob = Insertable<JobsTable>;
+/** Job data for UPDATE queries */
+export type JobUpdate = Updateable<JobsTable>;

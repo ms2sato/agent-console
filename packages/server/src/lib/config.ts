@@ -28,6 +28,14 @@ export function getRepositoryDir(orgRepo: string): string {
 }
 
 /**
+ * Get the path to the SQLite database file.
+ * Structure: ~/.agent-console/data.db
+ */
+export function getDbPath(): string {
+  return path.join(getConfigDir(), 'data.db');
+}
+
+/**
  * Get the current server's PID for session ownership tracking.
  */
 export function getServerPid(): number {

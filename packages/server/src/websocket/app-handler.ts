@@ -30,7 +30,7 @@ export interface AppHandlerDependencies {
   getAllSessions: () => Session[];
   getWorkerActivityState: (sessionId: string, workerId: string) => AgentActivityState | undefined;
   getAllAgents: () => Promise<AgentDefinition[]>;
-  getAllRepositories: () => Promise<Repository[]>;
+  getAllRepositories: () => Repository[];
   logger: {
     debug: (obj: object, msg: string) => void;
     warn: (obj: object, msg: string) => void;
@@ -106,12 +106,12 @@ export async function sendAgentsSync(
 /**
  * Send repositories-sync message to a specific client.
  */
-export async function sendRepositoriesSync(
+export function sendRepositoriesSync(
   ws: WSContext,
   deps: Pick<AppHandlerDependencies, 'getAllRepositories' | 'logger'>
-): Promise<void> {
+): void {
   try {
-    const repositories = await deps.getAllRepositories();
+    const repositories = deps.getAllRepositories();
     const syncMsg: AppServerMessage = {
       type: 'repositories-sync',
       repositories,

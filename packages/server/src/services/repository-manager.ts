@@ -8,7 +8,7 @@ import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
-import { JOB_TYPES, isJobQueueInitialized, getJobQueue, type JobQueue } from '../jobs/index.js';
+import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 import { getSessionManager } from './session-manager.js';
 
 const logger = createLogger('repository-manager');
@@ -57,7 +57,7 @@ export class RepositoryManager {
 
   /**
    * Set the job queue for background task processing.
-   * Can be called after construction to inject the job queue.
+   * @internal For testing only. In production, pass jobQueue to initializeRepositoryManager().
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
@@ -138,7 +138,7 @@ export class RepositoryManager {
     if (!repo) return false;
 
     // Check if any active sessions are using this repository
-    const sessionManager = await getSessionManager();
+    const sessionManager = getSessionManager();
     const activeSessions = sessionManager.getSessionsUsingRepository(id);
     if (activeSessions.length > 0) {
       throw new Error(
@@ -167,7 +167,7 @@ export class RepositoryManager {
    */
   private async cleanupRepositoryData(repoPath: string): Promise<void> {
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for repository cleanup. Ensure setJobQueue() is called before cleanup operations.');
+      throw new Error('JobQueue not available for repository cleanup. Ensure initializeRepositoryManager() was called with jobQueue.');
     }
 
     const orgRepo = await getOrgRepoFromPath(repoPath);
@@ -196,40 +196,47 @@ export class RepositoryManager {
   }
 }
 
-// Singleton with lazy async initialization
+// Singleton instance
 let repositoryManagerInstance: RepositoryManager | null = null;
-let initializationPromise: Promise<RepositoryManager> | null = null;
 
-export async function getRepositoryManager(): Promise<RepositoryManager> {
+/**
+ * Initialize the RepositoryManager singleton.
+ * Must be called once at application startup before getRepositoryManager().
+ * @param options.jobQueue - JobQueue for background cleanup tasks
+ * @param options.repository - Optional custom repository implementation
+ */
+export async function initializeRepositoryManager(options: {
+  jobQueue: JobQueue;
+  repository?: RepositoryRepository;
+}): Promise<void> {
   if (repositoryManagerInstance) {
-    return repositoryManagerInstance;
+    throw new Error('RepositoryManager already initialized');
   }
-
-  if (initializationPromise) {
-    return initializationPromise;
-  }
-
-  initializationPromise = RepositoryManager.create()
-    .then((manager) => {
-      repositoryManagerInstance = manager;
-
-      // Inject job queue if initialized
-      if (isJobQueueInitialized()) {
-        manager.setJobQueue(getJobQueue());
-      }
-
-      return manager;
-    })
-    .catch((error) => {
-      initializationPromise = null; // Allow retry on next call
-      throw error;
-    });
-
-  return initializationPromise;
+  repositoryManagerInstance = await RepositoryManager.create(options);
 }
 
-// For testing: reset the singleton
+/**
+ * Get the RepositoryManager singleton.
+ * @throws Error if initializeRepositoryManager() has not been called
+ */
+export function getRepositoryManager(): RepositoryManager {
+  if (!repositoryManagerInstance) {
+    throw new Error('RepositoryManager not initialized. Call initializeRepositoryManager() first.');
+  }
+  return repositoryManagerInstance;
+}
+
+/**
+ * Check if RepositoryManager has been initialized.
+ */
+export function isRepositoryManagerInitialized(): boolean {
+  return repositoryManagerInstance !== null;
+}
+
+/**
+ * Reset the singleton for testing.
+ * @internal For testing only.
+ */
 export function resetRepositoryManager(): void {
   repositoryManagerInstance = null;
-  initializationPromise = null;
 }

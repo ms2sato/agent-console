@@ -1,32 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
-import { JobQueue } from '../../jobs/job-queue.js';
-
-// Create test JobQueue instance with in-memory SQLite
-let testJobQueue: JobQueue;
-
-// Mock the job-queue-instance module to return our test instance
-mock.module('../../jobs/job-queue-instance.js', () => ({
-  getJobQueue: () => testJobQueue,
-  resetJobQueue: async () => {
-    if (testJobQueue) {
-      await testJobQueue.stop();
-      testJobQueue.close();
-    }
-  },
-  isJobQueueInitialized: () => testJobQueue !== undefined,
-}));
-
-// Import after mocking
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { initializeJobQueue, resetJobQueue, type JobQueue } from '../../jobs/index.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
 
 describe('Jobs API', () => {
   let app: Hono;
+  let testJobQueue: JobQueue;
 
   beforeEach(async () => {
-    // Create fresh in-memory JobQueue for each test
-    testJobQueue = new JobQueue(':memory:');
+    // Initialize in-memory database first
+    await initializeDatabase(':memory:');
+
+    // Initialize the singleton job queue
+    testJobQueue = initializeJobQueue();
 
     // Create Hono app with error handler
     app = new Hono();
@@ -35,10 +23,8 @@ describe('Jobs API', () => {
   });
 
   afterEach(async () => {
-    if (testJobQueue) {
-      await testJobQueue.stop();
-      testJobQueue.close();
-    }
+    await resetJobQueue();
+    await closeDatabase();
   });
 
   // ===========================================================================
@@ -56,7 +42,7 @@ describe('Jobs API', () => {
     });
 
     it('should return job list with correct format (camelCase)', async () => {
-      const jobId = testJobQueue.enqueue('test:type', { foo: 'bar' }, { priority: 5, maxAttempts: 3 });
+      const jobId = await testJobQueue.enqueue('test:type', { foo: 'bar' }, { priority: 5, maxAttempts: 3 });
 
       const res = await app.request('/api/jobs');
       expect(res.status).toBe(200);
@@ -97,8 +83,8 @@ describe('Jobs API', () => {
     it('should filter by status', async () => {
       // Create jobs and complete them
       testJobQueue.registerHandler('test:type', async () => {});
-      testJobQueue.enqueue('test:type', { n: 1 });
-      testJobQueue.enqueue('test:type', { n: 2 });
+      await testJobQueue.enqueue('test:type', { n: 1 });
+      await testJobQueue.enqueue('test:type', { n: 2 });
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -107,7 +93,7 @@ describe('Jobs API', () => {
       await testJobQueue.stop();
 
       // Enqueue a new pending job (won't be processed since queue is stopped)
-      testJobQueue.enqueue('test:type', { n: 3 });
+      await testJobQueue.enqueue('test:type', { n: 3 });
 
       const completedRes = await app.request('/api/jobs?status=completed');
       expect(completedRes.status).toBe(200);
@@ -123,9 +109,9 @@ describe('Jobs API', () => {
     });
 
     it('should filter by type', async () => {
-      testJobQueue.enqueue('type:a', { n: 1 });
-      testJobQueue.enqueue('type:b', { n: 2 });
-      testJobQueue.enqueue('type:a', { n: 3 });
+      await testJobQueue.enqueue('type:a', { n: 1 });
+      await testJobQueue.enqueue('type:b', { n: 2 });
+      await testJobQueue.enqueue('type:a', { n: 3 });
 
       const typeARes = await app.request('/api/jobs?type=type:a');
       expect(typeARes.status).toBe(200);
@@ -143,7 +129,7 @@ describe('Jobs API', () => {
     it('should respect limit and offset pagination', async () => {
       // Create 5 jobs
       for (let i = 0; i < 5; i++) {
-        testJobQueue.enqueue('test:type', { n: i });
+        await testJobQueue.enqueue('test:type', { n: i });
       }
 
       // Get first 2
@@ -163,8 +149,8 @@ describe('Jobs API', () => {
 
     it('should return correct total count with filters', async () => {
       testJobQueue.registerHandler('type:complete', async () => {});
-      testJobQueue.enqueue('type:complete', {});
-      testJobQueue.enqueue('type:pending', {});
+      await testJobQueue.enqueue('type:complete', {});
+      await testJobQueue.enqueue('type:pending', {});
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -235,10 +221,10 @@ describe('Jobs API', () => {
       });
 
       // Create jobs
-      testJobQueue.enqueue('succeed', {}); // Will complete
-      testJobQueue.enqueue('succeed', {}); // Will complete
-      testJobQueue.enqueue('fail', {}, { maxAttempts: 1 }); // Will stall
-      testJobQueue.enqueue('fail', {}, { maxAttempts: 1 }); // Will stall
+      await testJobQueue.enqueue('succeed', {}); // Will complete
+      await testJobQueue.enqueue('succeed', {}); // Will complete
+      await testJobQueue.enqueue('fail', {}, { maxAttempts: 1 }); // Will stall
+      await testJobQueue.enqueue('fail', {}, { maxAttempts: 1 }); // Will stall
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -259,7 +245,7 @@ describe('Jobs API', () => {
 
   describe('GET /api/jobs/:id', () => {
     it('should return job with parsed payload', async () => {
-      const jobId = testJobQueue.enqueue('test:type', { nested: { value: 123 } });
+      const jobId = await testJobQueue.enqueue('test:type', { nested: { value: 123 } });
 
       const res = await app.request(`/api/jobs/${jobId}`);
       expect(res.status).toBe(200);
@@ -297,13 +283,13 @@ describe('Jobs API', () => {
       });
 
       // Create job that will stall
-      const jobId = testJobQueue.enqueue('fail', {}, { maxAttempts: 1 });
+      const jobId = await testJobQueue.enqueue('fail', {}, { maxAttempts: 1 });
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify it's stalled
-      let job = testJobQueue.getJob(jobId);
+      let job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('stalled');
 
       // Stop processing before retrying
@@ -317,7 +303,7 @@ describe('Jobs API', () => {
       expect(body.success).toBe(true);
 
       // Verify it's pending again
-      job = testJobQueue.getJob(jobId);
+      job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('pending');
       expect(job?.attempts).toBe(0);
     });
@@ -331,7 +317,7 @@ describe('Jobs API', () => {
     });
 
     it('should return 400 for pending job', async () => {
-      const jobId = testJobQueue.enqueue('test:type', {});
+      const jobId = await testJobQueue.enqueue('test:type', {});
 
       const res = await app.request(`/api/jobs/${jobId}/retry`, { method: 'POST' });
       expect(res.status).toBe(400);
@@ -351,14 +337,14 @@ describe('Jobs API', () => {
         await handlerPromise;
       });
 
-      const jobId = testJobQueue.enqueue('slow', {});
+      const jobId = await testJobQueue.enqueue('slow', {});
       await testJobQueue.start();
 
       // Wait a bit for processing to start
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Verify it's processing
-      const job = testJobQueue.getJob(jobId);
+      const job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('processing');
 
       // Try to retry
@@ -374,13 +360,13 @@ describe('Jobs API', () => {
 
     it('should return 400 for completed job', async () => {
       testJobQueue.registerHandler('test:type', async () => {});
-      const jobId = testJobQueue.enqueue('test:type', {});
+      const jobId = await testJobQueue.enqueue('test:type', {});
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify it's completed
-      const job = testJobQueue.getJob(jobId);
+      const job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('completed');
 
       const res = await app.request(`/api/jobs/${jobId}/retry`, { method: 'POST' });
@@ -397,7 +383,7 @@ describe('Jobs API', () => {
 
   describe('DELETE /api/jobs/:id', () => {
     it('should cancel a pending job', async () => {
-      const jobId = testJobQueue.enqueue('test:type', {});
+      const jobId = await testJobQueue.enqueue('test:type', {});
 
       const res = await app.request(`/api/jobs/${jobId}`, { method: 'DELETE' });
       expect(res.status).toBe(200);
@@ -406,7 +392,7 @@ describe('Jobs API', () => {
       expect(body.success).toBe(true);
 
       // Verify job is deleted
-      const job = testJobQueue.getJob(jobId);
+      const job = await testJobQueue.getJob(jobId);
       expect(job).toBeNull();
     });
 
@@ -416,13 +402,13 @@ describe('Jobs API', () => {
         throw new Error('Always fails');
       });
 
-      const jobId = testJobQueue.enqueue('fail', {}, { maxAttempts: 1 });
+      const jobId = await testJobQueue.enqueue('fail', {}, { maxAttempts: 1 });
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify it's stalled
-      let job = testJobQueue.getJob(jobId);
+      let job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('stalled');
 
       // Cancel it
@@ -433,7 +419,7 @@ describe('Jobs API', () => {
       expect(body.success).toBe(true);
 
       // Verify job is deleted
-      job = testJobQueue.getJob(jobId);
+      job = await testJobQueue.getJob(jobId);
       expect(job).toBeNull();
     });
 
@@ -456,14 +442,14 @@ describe('Jobs API', () => {
         await handlerPromise;
       });
 
-      const jobId = testJobQueue.enqueue('slow', {});
+      const jobId = await testJobQueue.enqueue('slow', {});
       await testJobQueue.start();
 
       // Wait a bit for processing to start
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Verify it's processing
-      const job = testJobQueue.getJob(jobId);
+      const job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('processing');
 
       // Try to delete
@@ -479,13 +465,13 @@ describe('Jobs API', () => {
 
     it('should return 400 for completed job', async () => {
       testJobQueue.registerHandler('test:type', async () => {});
-      const jobId = testJobQueue.enqueue('test:type', {});
+      const jobId = await testJobQueue.enqueue('test:type', {});
 
       await testJobQueue.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Verify it's completed
-      const job = testJobQueue.getJob(jobId);
+      const job = await testJobQueue.getJob(jobId);
       expect(job?.status).toBe('completed');
 
       const res = await app.request(`/api/jobs/${jobId}`, { method: 'DELETE' });
@@ -493,6 +479,73 @@ describe('Jobs API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('pending or stalled');
+    });
+
+    it('should handle job status changing during cancel attempt (TOCTOU)', async () => {
+      // This test verifies the atomic cancel pattern handles race conditions:
+      // The job status may change between the cancel attempt and the error check
+      let jobStarted = false;
+      let allowCompletion: () => void;
+      const completionPromise = new Promise<void>((resolve) => {
+        allowCompletion = resolve;
+      });
+
+      testJobQueue.registerHandler('slow', async () => {
+        jobStarted = true;
+        await completionPromise;
+      });
+
+      const jobId = await testJobQueue.enqueue('slow', {});
+      await testJobQueue.start();
+
+      // Wait for job to start processing
+      while (!jobStarted) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // Complete the job - this simulates a race where job finishes
+      // while we're about to cancel
+      allowCompletion!();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Job should now be completed
+      const job = await testJobQueue.getJob(jobId);
+      expect(job?.status).toBe('completed');
+
+      // Attempt to cancel (will fail because job is completed)
+      const res = await app.request(`/api/jobs/${jobId}`, { method: 'DELETE' });
+      expect(res.status).toBe(400);
+
+      const body = (await res.json()) as { error: string };
+      // Should indicate wrong status, not "job not found"
+      expect(body.error).toContain('pending or stalled');
+    });
+  });
+
+  // ===========================================================================
+  // TOCTOU Race Condition Tests
+  // ===========================================================================
+
+  describe('TOCTOU handling', () => {
+    it('should return accurate error when retry fails due to status change', async () => {
+      // Create a job that will complete while we verify the error handling
+      testJobQueue.registerHandler('test:type', async () => {});
+
+      const jobId = await testJobQueue.enqueue('test:type', {});
+      await testJobQueue.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Job should now be completed (not stalled)
+      const job = await testJobQueue.getJob(jobId);
+      expect(job?.status).toBe('completed');
+
+      // Retry should fail with correct error message
+      const res = await app.request(`/api/jobs/${jobId}/retry`, { method: 'POST' });
+      expect(res.status).toBe(400);
+
+      const body = (await res.json()) as { error: string };
+      // Should indicate "only stalled can be retried", not "job not found"
+      expect(body.error).toContain('stalled');
     });
   });
 });
