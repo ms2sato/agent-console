@@ -287,7 +287,7 @@ export async function setupWebSocketRoutes(
           },
         });
 
-        // Send full history on initial connection with timeout protection
+        // Send history on initial connection with timeout protection and line limit
         const INITIAL_HISTORY_TIMEOUT_MS = 15000; // 15s for initial connection (may be large file/slow disk)
         const timeoutPromise = new Promise<null>((_, reject) => {
           setTimeout(() => reject(new Error('Initial history request timeout')), INITIAL_HISTORY_TIMEOUT_MS);
@@ -295,7 +295,12 @@ export async function setupWebSocketRoutes(
 
         try {
           const historyResult = await Promise.race([
-            sessionManager.getWorkerOutputHistory(sessionId, workerId, 0),
+            sessionManager.getWorkerOutputHistory(
+              sessionId,
+              workerId,
+              0,
+              serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES
+            ),
             timeoutPromise
           ]);
 
@@ -448,7 +453,7 @@ export async function setupWebSocketRoutes(
           try {
             const parsed = JSON.parse(data);
             if (parsed && typeof parsed === 'object' && parsed.type === 'request-history') {
-              // Handle request-history: send full history to client with timeout
+              // Handle request-history: send history to client with timeout and line limit
               const HISTORY_REQUEST_TIMEOUT_MS = 5000;
 
               const timeoutPromise = new Promise<null>((_, reject) => {
@@ -456,7 +461,12 @@ export async function setupWebSocketRoutes(
               });
 
               Promise.race([
-                sessionManager.getWorkerOutputHistory(sessionId, workerId, 0),
+                sessionManager.getWorkerOutputHistory(
+                  sessionId,
+                  workerId,
+                  0,
+                  serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES
+                ),
                 timeoutPromise
               ])
                 .then((historyResult) => {

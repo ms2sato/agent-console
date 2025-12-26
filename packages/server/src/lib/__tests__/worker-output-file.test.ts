@@ -23,6 +23,9 @@ mock.module('../server-config.js', () => ({
     WORKER_OUTPUT_FILE_MAX_SIZE: TEST_WORKER_OUTPUT_FILE_MAX_SIZE,
     WORKER_OUTPUT_FLUSH_INTERVAL: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
     WORKER_OUTPUT_FLUSH_THRESHOLD: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
+    // New config values - disable compression for backward compatibility testing
+    WORKER_OUTPUT_INITIAL_HISTORY_LINES: 5000,
+    WORKER_OUTPUT_USE_COMPRESSION: false,
   },
 }));
 
@@ -732,6 +735,92 @@ describe('WorkerOutputFileManager', () => {
 
       // Should contain both the large data and additional data
       expect(content).toContain('additional');
+    });
+  });
+
+  describe('readLastNLines', () => {
+    it('should return last N lines from file', async () => {
+      const filePath = manager.getOutputFilePath('session-lines', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-lines`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2\nline3\nline4\nline5');
+
+      const result = await manager.readLastNLines('session-lines', 'worker-1', 3);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('line3\nline4\nline5');
+      // Offset should be full file size
+      expect(result!.offset).toBe(29);
+    });
+
+    it('should return all lines if file has fewer than maxLines', async () => {
+      const filePath = manager.getOutputFilePath('session-lines-2', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-lines-2`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2');
+
+      const result = await manager.readLastNLines('session-lines-2', 'worker-1', 10);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('line1\nline2');
+    });
+
+    it('should handle CRLF line endings', async () => {
+      const filePath = manager.getOutputFilePath('session-crlf', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-crlf`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\r\nline2\r\nline3\r\nline4');
+
+      const result = await manager.readLastNLines('session-crlf', 'worker-1', 2);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('line3\r\nline4');
+    });
+
+    it('should handle empty lines in count', async () => {
+      const filePath = manager.getOutputFilePath('session-empty', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-empty`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\n\nline3\nline4');
+
+      const result = await manager.readLastNLines('session-empty', 'worker-1', 3);
+
+      expect(result).not.toBeNull();
+      // Empty line counts as a line
+      expect(result!.data).toBe('\nline3\nline4');
+    });
+
+    it('should return null for non-existent file with no buffer', async () => {
+      const result = await manager.readLastNLines('nonexistent', 'worker-1', 5);
+      expect(result).toBeNull();
+    });
+
+    it('should apply line limit to pending buffer', async () => {
+      manager.bufferOutput('session-buffer-lines', 'worker-1', 'line1\nline2\nline3\nline4');
+
+      const result = await manager.readLastNLines('session-buffer-lines', 'worker-1', 2);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('line3\nline4');
+    });
+
+    it('should return 0 lines when maxLines is 0', async () => {
+      const filePath = manager.getOutputFilePath('session-zero', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-zero`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2');
+
+      const result = await manager.readLastNLines('session-zero', 'worker-1', 0);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('');
+    });
+
+    it('should preserve newline at end of content', async () => {
+      const filePath = manager.getOutputFilePath('session-trailing', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-trailing`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2\nline3\n');
+
+      const result = await manager.readLastNLines('session-trailing', 'worker-1', 2);
+
+      expect(result).not.toBeNull();
+      // Last 2 lines: "line3" and empty line after last \n
+      expect(result!.data).toBe('line3\n');
     });
   });
 });
