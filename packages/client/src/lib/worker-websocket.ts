@@ -303,24 +303,10 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     updateState(key, { connected: true });
     if (callbacks.type === 'git-diff') {
       updateState(key, { diffLoading: true });
-    } else {
-      // Request history for terminal/agent workers on connection
-      // Use debounce to prevent duplicate requests during React Strict Mode double render
-      const currentConn = connections.get(key);
-      if (currentConn) {
-        // Clear any pending history request
-        if (currentConn.historyRequestTimeout) {
-          clearTimeout(currentConn.historyRequestTimeout);
-        }
-        const HISTORY_REQUEST_DEBOUNCE_MS = 100;
-        currentConn.historyRequestTimeout = setTimeout(() => {
-          currentConn.historyRequestTimeout = null;
-          if (currentConn.ws.readyState === WebSocket.OPEN) {
-            currentConn.ws.send(JSON.stringify({ type: 'request-history' }));
-          }
-        }, HISTORY_REQUEST_DEBOUNCE_MS);
-      }
     }
+    // Note: Do NOT send request-history here on initial connection.
+    // The server automatically sends history when a client connects.
+    // Tab switch (remount with existing OPEN connection) handles history request in connect().
     console.log(`[WorkerWS] Connected: ${key}`);
   };
 

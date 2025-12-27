@@ -217,8 +217,8 @@ describe('Terminal history handling integration', () => {
     });
   });
 
-  describe('debounced history request', () => {
-    it('should request history with debounce on connection open', async () => {
+  describe('history request behavior', () => {
+    it('should NOT request history on initial connection (server sends automatically)', async () => {
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
         onOutput: () => {},
@@ -231,6 +231,42 @@ describe('Terminal history handling integration', () => {
 
       // Simulate connection open
       ws?.simulateOpen();
+
+      // Wait for potential debounce
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // request-history should NOT be sent on initial connection
+      // because the server automatically sends history when a client connects
+      expect(ws?.send).not.toHaveBeenCalled();
+    });
+
+    it('should request history with debounce on tab switch (remount with existing OPEN connection)', async () => {
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: () => {},
+        onHistory: () => {},
+        onExit: () => {},
+      };
+
+      // Initial connection
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Wait for initial setup
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // Clear mock to track subsequent calls
+      ws?.send.mockClear();
+
+      // Simulate tab switch: connect() is called again with existing OPEN connection
+      const newCallbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: () => {},
+        onHistory: () => {},
+        onExit: () => {},
+      };
+      workerWs.connect('session-1', 'worker-1', newCallbacks);
 
       // History request should not be immediate (debounced)
       expect(ws?.send).not.toHaveBeenCalled();
@@ -238,11 +274,11 @@ describe('Terminal history handling integration', () => {
       // Wait for debounce
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Now history should be requested
+      // Now history should be requested (tab switch case)
       expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
     });
 
-    it('should deduplicate rapid history requests', async () => {
+    it('should deduplicate rapid history requests on tab switch', async () => {
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
         onOutput: () => {},
@@ -250,20 +286,26 @@ describe('Terminal history handling integration', () => {
         onExit: () => {},
       };
 
+      // Initial connection
       workerWs.connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
-
-      // Simulate connection open
       ws?.simulateOpen();
 
-      // Simulate rapid reconnect (component remount in React Strict Mode)
-      // This would trigger another onopen if we created a new connection
-      // But since we're reusing the same connection, the debounce should prevent duplicates
+      // Wait for initial setup
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // Clear mock to track subsequent calls
+      ws?.send.mockClear();
+
+      // Simulate rapid tab switches (like React Strict Mode double render)
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      workerWs.connect('session-1', 'worker-1', callbacks);
 
       // Wait for debounce
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Should only have one history request
+      // Should only have one history request (debounced)
       const sendCalls = (ws?.send as ReturnType<typeof spyOn>).mock.calls as unknown[][];
       const historyRequests = sendCalls.filter(
         (call: unknown[]) => JSON.parse(call[0] as string).type === 'request-history'

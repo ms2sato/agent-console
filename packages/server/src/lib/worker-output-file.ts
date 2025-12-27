@@ -90,6 +90,41 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Initialize an empty output file for a worker.
+   * Call this immediately when creating a new worker to ensure history file exists.
+   * This prevents race conditions where WebSocket connects before any output is buffered.
+   */
+  async initializeWorkerOutput(sessionId: string, workerId: string): Promise<void> {
+    const filePath = this.getOutputFilePath(sessionId, workerId);
+
+    try {
+      // Ensure directory exists
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+      // Check if file already exists (e.g., from previous run)
+      const actualFile = await this.getActualFilePath(sessionId, workerId);
+      if (actualFile) {
+        // File already exists, no need to initialize
+        return;
+      }
+
+      // Create empty file based on compression setting
+      if (serverConfig.WORKER_OUTPUT_USE_COMPRESSION) {
+        // Write empty gzip file
+        const emptyCompressed = gzipSync(Buffer.from('', 'utf-8'));
+        await fs.writeFile(filePath, emptyCompressed);
+      } else {
+        // Write empty file
+        await fs.writeFile(filePath, '', 'utf-8');
+      }
+
+      logger.debug({ sessionId, workerId, filePath }, 'Initialized empty worker output file');
+    } catch (error) {
+      logger.error({ sessionId, workerId, err: error }, 'Failed to initialize worker output file');
+    }
+  }
+
+  /**
    * Buffer output data for periodic flushing to file.
    * Flushes immediately if buffer exceeds threshold.
    */
@@ -243,13 +278,13 @@ export class WorkerOutputFileManager {
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param fromOffset If specified, read only data after this offset (for incremental sync)
-   * @returns History data and current offset, or null if file doesn't exist
+   * @returns History data and current offset (returns empty history if file doesn't exist)
    */
   async readHistoryWithOffset(
     sessionId: string,
     workerId: string,
     fromOffset?: number
-  ): Promise<HistoryReadResult | null> {
+  ): Promise<HistoryReadResult> {
     try {
       // Find the actual file (compressed or legacy uncompressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
@@ -264,7 +299,9 @@ export class WorkerOutputFileManager {
           const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
           return { data: pending.buffer, offset: byteLength };
         }
-        return null;
+        // No file and no pending buffer - return empty history
+        // This is a valid state for newly created workers
+        return { data: '', offset: 0 };
       }
 
       // Read the file and decompress if necessary
@@ -304,10 +341,12 @@ export class WorkerOutputFileManager {
           const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
           return { data: pending.buffer, offset: byteLength };
         }
-        return null;
+        // No file and no pending buffer - return empty history
+        return { data: '', offset: 0 };
       }
       logger.error({ sessionId, workerId, err: error }, 'Failed to read output file');
-      return null;
+      // Return empty history on error to avoid breaking the client
+      return { data: '', offset: 0 };
     }
   }
 
@@ -316,13 +355,13 @@ export class WorkerOutputFileManager {
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param maxLines Maximum number of lines to return (from the end)
-   * @returns History data and current offset, or null if file doesn't exist
+   * @returns History data and current offset (returns empty history if file doesn't exist)
    */
   async readLastNLines(
     sessionId: string,
     workerId: string,
     maxLines: number
-  ): Promise<HistoryReadResult | null> {
+  ): Promise<HistoryReadResult> {
     try {
       // Find the actual file (compressed or legacy uncompressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
@@ -337,7 +376,9 @@ export class WorkerOutputFileManager {
           const trimmedData = this.getLastNLines(pending.buffer, maxLines);
           return { data: trimmedData, offset: byteLength };
         }
-        return null;
+        // No file and no pending buffer - return empty history
+        // This is a valid state for newly created workers
+        return { data: '', offset: 0 };
       }
 
       // Read the file and decompress if necessary
@@ -367,10 +408,12 @@ export class WorkerOutputFileManager {
           const trimmedData = this.getLastNLines(pending.buffer, maxLines);
           return { data: trimmedData, offset: byteLength };
         }
-        return null;
+        // No file and no pending buffer - return empty history
+        return { data: '', offset: 0 };
       }
       logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for last N lines');
-      return null;
+      // Return empty history on error to avoid breaking the client
+      return { data: '', offset: 0 };
     }
   }
 
