@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn, jest } from 'bun:test';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import {
   connect,
@@ -256,6 +256,103 @@ describe('worker-websocket', () => {
         'Worker not found',
         'WORKER_NOT_FOUND'
       );
+    });
+  });
+
+  describe('request-history message behavior', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should NOT send request-history on initial WebSocket connection', () => {
+      // This test verifies that when a new WebSocket connection is established,
+      // the client does NOT send request-history message.
+      // The server automatically sends history on new connection, so client request is redundant.
+      const callbacks = createTerminalCallbacks();
+
+      // Create a new connection (no existing connection)
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      expect(ws).toBeDefined();
+
+      // Simulate WebSocket connection opening
+      ws?.simulateOpen();
+
+      // Advance timers to process any debounced requests
+      jest.advanceTimersByTime(200);
+
+      // request-history should NOT be sent on initial connection
+      // because the server automatically sends history when a client connects
+      expect(ws?.send).not.toHaveBeenCalledWith(
+        JSON.stringify({ type: 'request-history' })
+      );
+    });
+
+    it('should send request-history on tab switch (remount with existing OPEN connection)', () => {
+      // This test verifies that when a component remounts to an existing OPEN connection
+      // (e.g., tab switch), the client sends request-history to refresh the terminal.
+      const callbacks = createTerminalCallbacks();
+
+      // Create initial connection and establish it
+      connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Clear the mock to track subsequent calls
+      ws?.send.mockClear();
+
+      // Advance past initial debounce (if any message was queued)
+      jest.advanceTimersByTime(200);
+      ws?.send.mockClear();
+
+      // Simulate tab switch: connect() is called again with the existing OPEN connection
+      const newCallbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', newCallbacks);
+
+      // Advance timers to process debounced history request
+      jest.advanceTimersByTime(200);
+
+      // request-history SHOULD be sent on tab switch
+      expect(ws?.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: 'request-history' })
+      );
+    });
+
+    it('should debounce multiple rapid connect calls to prevent duplicate history requests', () => {
+      // This test verifies that rapid connect() calls (e.g., React Strict Mode double render)
+      // result in only one request-history message
+      const callbacks = createTerminalCallbacks();
+
+      // Create initial connection and establish it
+      connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Clear mock and advance past initial setup
+      ws?.send.mockClear();
+      jest.advanceTimersByTime(200);
+      ws?.send.mockClear();
+
+      // Simulate rapid connect() calls (like React Strict Mode)
+      connect('session-1', 'worker-1', createTerminalCallbacks());
+      connect('session-1', 'worker-1', createTerminalCallbacks());
+      connect('session-1', 'worker-1', createTerminalCallbacks());
+
+      // Advance timers to process debounced request
+      jest.advanceTimersByTime(200);
+
+      // Only one request-history should be sent (debounced)
+      // Cast to unknown[] to access call arguments (mock typing limitation)
+      const calls = ws?.send.mock.calls as unknown as unknown[][];
+      const requestHistoryCalls = calls?.filter(
+        (call) => call[0] === JSON.stringify({ type: 'request-history' })
+      );
+      expect(requestHistoryCalls?.length).toBe(1);
     });
   });
 });

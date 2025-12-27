@@ -198,9 +198,12 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.offset).toBe(11);
     });
 
-    it('should return null for non-existent file', async () => {
+    it('should return empty history for non-existent file', async () => {
       const result = await manager.readHistoryWithOffset('nonexistent', 'worker-1');
-      expect(result).toBeNull();
+      // Returns empty history instead of null to support newly created workers
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('');
+      expect(result!.offset).toBe(0);
     });
 
     it('should return pending buffer when file does not exist', async () => {
@@ -786,9 +789,12 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.data).toBe('\nline3\nline4');
     });
 
-    it('should return null for non-existent file with no buffer', async () => {
+    it('should return empty history for non-existent file with no buffer', async () => {
       const result = await manager.readLastNLines('nonexistent', 'worker-1', 5);
-      expect(result).toBeNull();
+      // Returns empty history instead of null to support newly created workers
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('');
+      expect(result!.offset).toBe(0);
     });
 
     it('should apply line limit to pending buffer', async () => {

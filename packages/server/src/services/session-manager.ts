@@ -641,6 +641,13 @@ export class SessionManager {
     }
 
     session.workers.set(workerId, worker);
+
+    // Initialize output file immediately for PTY workers (agent/terminal)
+    // This prevents race conditions where WebSocket connects before any output is buffered
+    if (request.type === 'agent' || request.type === 'terminal') {
+      await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId);
+    }
+
     await this.persistSession(session);
 
     logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
