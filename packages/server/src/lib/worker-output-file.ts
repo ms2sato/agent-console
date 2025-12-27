@@ -1,9 +1,11 @@
 /**
  * File-based output persistence for terminal workers.
  * Supports large output history (up to 10MB) with incremental sync.
+ * Optionally uses gzip compression to reduce disk usage.
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { gzipSync, gunzipSync } from 'bun';
 import { getConfigDir } from './config.js';
 import { serverConfig } from './server-config.js';
 import { createLogger } from './logger.js';
@@ -38,10 +40,46 @@ export class WorkerOutputFileManager {
 
   /**
    * Get the output file path for a worker.
-   * Structure: ${AGENT_CONSOLE_HOME}/outputs/${sessionId}/${workerId}.log
+   * Structure: ${AGENT_CONSOLE_HOME}/outputs/${sessionId}/${workerId}.log[.gz]
+   * Returns .log.gz if compression is enabled, .log otherwise.
    */
   getOutputFilePath(sessionId: string, workerId: string): string {
-    return path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log`);
+    const extension = serverConfig.WORKER_OUTPUT_USE_COMPRESSION ? '.log.gz' : '.log';
+    return path.join(getConfigDir(), 'outputs', sessionId, `${workerId}${extension}`);
+  }
+
+  /**
+   * Check if a file exists at the given path.
+   */
+  private async fileExists(filePath: string): Promise<boolean> {
+    try {
+      await fs.stat(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get the actual file path for a worker, checking for legacy files.
+   * Returns { path, isCompressed } where isCompressed indicates the file format.
+   * Returns null if no file exists.
+   */
+  private async getActualFilePath(sessionId: string, workerId: string): Promise<{ path: string; isCompressed: boolean } | null> {
+    const compressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log.gz`);
+    const uncompressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log`);
+
+    // Check compressed file first (preferred)
+    if (await this.fileExists(compressedPath)) {
+      return { path: compressedPath, isCompressed: true };
+    }
+
+    // Check legacy uncompressed file
+    if (await this.fileExists(uncompressedPath)) {
+      return { path: uncompressedPath, isCompressed: false };
+    }
+
+    return null;
   }
 
   /**
@@ -87,6 +125,7 @@ export class WorkerOutputFileManager {
   /**
    * Flush buffered output to file.
    * Also enforces max file size by truncating from the beginning.
+   * Handles both compressed and uncompressed files.
    */
   private async flushBuffer(sessionId: string, workerId: string): Promise<void> {
     const key = this.getKey(sessionId, workerId);
@@ -105,18 +144,47 @@ export class WorkerOutputFileManager {
     pending.buffer = '';
 
     const filePath = this.getOutputFilePath(sessionId, workerId);
+    const useCompression = serverConfig.WORKER_OUTPUT_USE_COMPRESSION;
 
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
-      // Append data to file
-      await fs.appendFile(filePath, dataToWrite, 'utf-8');
+      if (useCompression) {
+        // For compressed files, we need to read, decompress, append, and recompress
+        let existingContent = '';
+        const actualFile = await this.getActualFilePath(sessionId, workerId);
 
-      // Check file size and truncate if necessary
-      const stats = await fs.stat(filePath);
-      if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
-        await this.truncateFile(filePath, stats.size);
+        if (actualFile) {
+          const rawBuffer = await fs.readFile(actualFile.path);
+          if (actualFile.isCompressed) {
+            const decompressed = gunzipSync(rawBuffer);
+            existingContent = new TextDecoder('utf-8').decode(decompressed);
+          } else {
+            existingContent = rawBuffer.toString('utf-8');
+            // Migrate from uncompressed to compressed: delete the old file after reading
+            await fs.unlink(actualFile.path).catch(() => {});
+          }
+        }
+
+        const combinedContent = existingContent + dataToWrite;
+        const compressedData = gzipSync(Buffer.from(combinedContent, 'utf-8'));
+        await fs.writeFile(filePath, compressedData);
+
+        // Check uncompressed size and truncate if necessary
+        const uncompressedSize = Buffer.byteLength(combinedContent, 'utf-8');
+        if (uncompressedSize > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
+          await this.truncateFile(filePath, uncompressedSize, true);
+        }
+      } else {
+        // Uncompressed: simple append
+        await fs.appendFile(filePath, dataToWrite, 'utf-8');
+
+        // Check file size and truncate if necessary
+        const stats = await fs.stat(filePath);
+        if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
+          await this.truncateFile(filePath, stats.size, false);
+        }
       }
     } catch (error) {
       logger.error({ sessionId, workerId, err: error }, 'Failed to flush output to file');
@@ -126,13 +194,25 @@ export class WorkerOutputFileManager {
   /**
    * Truncate file from the beginning to stay within max size.
    * Keeps the most recent data and ensures UTF-8 boundary safety.
+   * @param filePath Path to the file
+   * @param currentSize Current uncompressed size of the content
+   * @param isCompressed Whether the file is gzip compressed
    */
-  private async truncateFile(filePath: string, currentSize: number): Promise<void> {
+  private async truncateFile(filePath: string, currentSize: number, isCompressed: boolean): Promise<void> {
     const maxSize = serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE;
     const targetSize = Math.floor(maxSize * 0.8); // Truncate to 80% to avoid frequent truncation
 
     try {
-      const buffer = await fs.readFile(filePath);
+      let buffer: Buffer;
+
+      if (isCompressed) {
+        // Decompress first
+        const compressedBuffer = await fs.readFile(filePath);
+        buffer = Buffer.from(gunzipSync(compressedBuffer));
+      } else {
+        buffer = await fs.readFile(filePath);
+      }
+
       let slicePoint = currentSize - targetSize;
 
       // Find safe UTF-8 boundary (skip continuation bytes: 0b10xxxxxx)
@@ -143,8 +223,16 @@ export class WorkerOutputFileManager {
       }
 
       const trimmedBuffer = buffer.slice(slicePoint);
-      await fs.writeFile(filePath, trimmedBuffer);
-      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length }, 'Truncated output file');
+
+      if (isCompressed) {
+        // Recompress and write
+        const recompressed = gzipSync(trimmedBuffer);
+        await fs.writeFile(filePath, recompressed);
+      } else {
+        await fs.writeFile(filePath, trimmedBuffer);
+      }
+
+      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length, isCompressed }, 'Truncated output file');
     } catch (error) {
       logger.error({ filePath, err: error }, 'Failed to truncate output file');
     }
@@ -162,11 +250,33 @@ export class WorkerOutputFileManager {
     workerId: string,
     fromOffset?: number
   ): Promise<HistoryReadResult | null> {
-    const filePath = this.getOutputFilePath(sessionId, workerId);
-
     try {
-      // Read as Buffer for accurate byte operations (handles multi-byte UTF-8 correctly)
-      const buffer = await fs.readFile(filePath);
+      // Find the actual file (compressed or legacy uncompressed)
+      const actualFile = await this.getActualFilePath(sessionId, workerId);
+
+      if (!actualFile) {
+        // No file exists, check pending buffer
+        const key = this.getKey(sessionId, workerId);
+        const pending = this.pendingFlushes.get(key);
+        if (pending && pending.buffer.length > 0) {
+          // Return pending buffer as data with byte offset (not character count)
+          // File offsets are measured in bytes, so we must use byte length for consistency
+          const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
+          return { data: pending.buffer, offset: byteLength };
+        }
+        return null;
+      }
+
+      // Read the file and decompress if necessary
+      const rawBuffer = await fs.readFile(actualFile.path);
+      let buffer: Buffer;
+
+      if (actualFile.isCompressed) {
+        buffer = Buffer.from(gunzipSync(rawBuffer));
+      } else {
+        buffer = rawBuffer;
+      }
+
       const currentOffset = buffer.length;
 
       // If fromOffset is specified and equals or exceeds current size, no new data
@@ -202,20 +312,144 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Read the last N lines from output history.
+   * @param sessionId Session ID
+   * @param workerId Worker ID
+   * @param maxLines Maximum number of lines to return (from the end)
+   * @returns History data and current offset, or null if file doesn't exist
+   */
+  async readLastNLines(
+    sessionId: string,
+    workerId: string,
+    maxLines: number
+  ): Promise<HistoryReadResult | null> {
+    try {
+      // Find the actual file (compressed or legacy uncompressed)
+      const actualFile = await this.getActualFilePath(sessionId, workerId);
+
+      if (!actualFile) {
+        // No file exists, check pending buffer
+        const key = this.getKey(sessionId, workerId);
+        const pending = this.pendingFlushes.get(key);
+        if (pending && pending.buffer.length > 0) {
+          // Apply line limit to pending buffer
+          const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
+          const trimmedData = this.getLastNLines(pending.buffer, maxLines);
+          return { data: trimmedData, offset: byteLength };
+        }
+        return null;
+      }
+
+      // Read the file and decompress if necessary
+      const rawBuffer = await fs.readFile(actualFile.path);
+      let buffer: Buffer;
+
+      if (actualFile.isCompressed) {
+        buffer = Buffer.from(gunzipSync(rawBuffer));
+      } else {
+        buffer = rawBuffer;
+      }
+
+      // The offset is always the full file size (uncompressed), not the truncated data size
+      const currentOffset = buffer.length;
+      const fullContent = buffer.toString('utf-8');
+
+      // Get last N lines
+      const trimmedData = this.getLastNLines(fullContent, maxLines);
+
+      return { data: trimmedData, offset: currentOffset };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        const key = this.getKey(sessionId, workerId);
+        const pending = this.pendingFlushes.get(key);
+        if (pending && pending.buffer.length > 0) {
+          const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
+          const trimmedData = this.getLastNLines(pending.buffer, maxLines);
+          return { data: trimmedData, offset: byteLength };
+        }
+        return null;
+      }
+      logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for last N lines');
+      return null;
+    }
+  }
+
+  /**
+   * Get the last N lines from a string.
+   * Handles both \n and \r\n line endings.
+   * Empty lines are preserved in the count.
+   */
+  private getLastNLines(content: string, maxLines: number): string {
+    if (maxLines <= 0) {
+      return '';
+    }
+
+    // Split by newlines, handling both \n and \r\n
+    // Use a regex that captures line endings to preserve them
+    const lines = content.split(/(\r?\n)/);
+
+    // The split includes separators, so we need to reconstruct
+    // Each pair of [content, separator] represents one line
+    // Example: "a\nb\nc" -> ["a", "\n", "b", "\n", "c"]
+    // We want to count actual lines, not elements
+
+    // Count actual lines (content elements at even indices)
+    let lineCount = 0;
+    for (let i = 0; i < lines.length; i += 2) {
+      lineCount++;
+    }
+
+    if (lineCount <= maxLines) {
+      return content;
+    }
+
+    // Calculate how many lines to skip
+    const linesToSkip = lineCount - maxLines;
+
+    // Find the starting position after skipping lines
+    let currentLine = 0;
+    let startIndex = 0;
+
+    for (let i = 0; i < lines.length && currentLine < linesToSkip; i += 2) {
+      // Skip the content
+      startIndex += lines[i].length;
+      // Skip the separator if it exists
+      if (i + 1 < lines.length) {
+        startIndex += lines[i + 1].length;
+      }
+      currentLine++;
+    }
+
+    return content.slice(startIndex);
+  }
+
+  /**
    * Get current file offset without reading content.
    * Flushes any pending buffer first to ensure accurate offset.
    * Returns 0 if file doesn't exist.
+   * Note: For compressed files, returns the uncompressed size.
    */
   async getCurrentOffset(sessionId: string, workerId: string): Promise<number> {
     // Flush any pending buffer first to ensure accurate offset
     // This prevents race conditions where offset is read before buffer is flushed
     await this.flushBuffer(sessionId, workerId);
 
-    const filePath = this.getOutputFilePath(sessionId, workerId);
-
     try {
-      const stats = await fs.stat(filePath);
-      return stats.size;  // No pending buffer to add since we just flushed
+      const actualFile = await this.getActualFilePath(sessionId, workerId);
+      if (!actualFile) {
+        return 0;
+      }
+
+      if (actualFile.isCompressed) {
+        // For compressed files, we need to decompress to get the actual uncompressed size
+        const compressedBuffer = await fs.readFile(actualFile.path);
+        const decompressed = gunzipSync(compressedBuffer);
+        return decompressed.length;
+      } else {
+        // For uncompressed files, file size equals content size
+        const stats = await fs.stat(actualFile.path);
+        return stats.size;
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return 0;
@@ -227,6 +461,7 @@ export class WorkerOutputFileManager {
 
   /**
    * Delete output file for a worker.
+   * Handles both compressed (.log.gz) and uncompressed (.log) files.
    */
   async deleteWorkerOutput(sessionId: string, workerId: string): Promise<void> {
     // Clear any pending flush
@@ -239,16 +474,29 @@ export class WorkerOutputFileManager {
       this.pendingFlushes.delete(key);
     }
 
-    const filePath = this.getOutputFilePath(sessionId, workerId);
+    // Delete both possible file formats
+    const compressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log.gz`);
+    const uncompressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log`);
 
-    try {
-      await fs.unlink(filePath);
-      logger.debug({ sessionId, workerId }, 'Deleted worker output file');
-    } catch (error) {
-      // Ignore if file doesn't exist
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.error({ sessionId, workerId, err: error }, 'Failed to delete worker output file');
+    const deleteFile = async (filePath: string): Promise<boolean> => {
+      try {
+        await fs.unlink(filePath);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.error({ sessionId, workerId, filePath, err: error }, 'Failed to delete worker output file');
+        }
+        return false;
       }
+    };
+
+    const [deletedCompressed, deletedUncompressed] = await Promise.all([
+      deleteFile(compressedPath),
+      deleteFile(uncompressedPath),
+    ]);
+
+    if (deletedCompressed || deletedUncompressed) {
+      logger.debug({ sessionId, workerId }, 'Deleted worker output file');
     }
   }
 

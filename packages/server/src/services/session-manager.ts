@@ -1144,15 +1144,22 @@ export class SessionManager {
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param fromOffset If specified, return only data after this offset
+   * @param maxLines If specified and fromOffset is 0 or undefined, limit to last N lines
    * @returns History data and current offset, or null if not available
    */
   async getWorkerOutputHistory(
     sessionId: string,
     workerId: string,
-    fromOffset?: number
+    fromOffset?: number,
+    maxLines?: number
   ): Promise<HistoryReadResult | null> {
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return null;
+
+    // Use line-limited read for initial connection (fromOffset is 0 or undefined)
+    if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
+      return workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines);
+    }
 
     return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, fromOffset);
   }

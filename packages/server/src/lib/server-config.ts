@@ -41,6 +41,18 @@ export const serverConfig = {
    * Default: 64KB (64 * 1024 bytes)
    */
   WORKER_OUTPUT_FLUSH_THRESHOLD: parseInt(process.env.WORKER_OUTPUT_FLUSH_THRESHOLD || String(64 * 1024), 10),
+  /**
+   * Maximum number of lines to load on initial connection.
+   * Full history is still saved, but only the most recent N lines are sent on connection.
+   * Default: 5000 lines (approximately 500KB-1MB)
+   */
+  WORKER_OUTPUT_INITIAL_HISTORY_LINES: parseInt(process.env.WORKER_OUTPUT_INITIAL_HISTORY_LINES || '5000', 10),
+  /**
+   * Enable gzip compression for worker output files.
+   * Reduces disk usage and transfer size by 60-80%.
+   * Default: true
+   */
+  WORKER_OUTPUT_USE_COMPRESSION: process.env.WORKER_OUTPUT_USE_COMPRESSION !== 'false',
 } as const;
 
 /**
