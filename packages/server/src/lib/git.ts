@@ -200,6 +200,26 @@ export async function getDefaultBranch(cwd: string): Promise<string | null> {
 }
 
 /**
+ * Refresh the default branch reference from remote origin.
+ * This updates the local refs/remotes/origin/HEAD to match the remote's default branch.
+ *
+ * @returns The updated default branch name
+ * @throws GitError if the command fails (e.g., network error, no remote)
+ */
+export async function refreshDefaultBranch(cwd: string): Promise<string> {
+  // Update the remote HEAD reference
+  await git(['remote', 'set-head', 'origin', '-a'], cwd);
+
+  // Now get the updated default branch
+  const defaultBranch = await getDefaultBranch(cwd);
+  if (!defaultBranch) {
+    throw new GitError('Could not determine default branch after refresh', -1, 'No default branch found');
+  }
+
+  return defaultBranch;
+}
+
+/**
  * Rename a branch.
  */
 export async function renameBranch(oldName: string, newName: string, cwd: string): Promise<void> {

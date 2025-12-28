@@ -12,7 +12,7 @@ import type {
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
 import { MockPty } from './utils/mock-pty.js';
-import { mockGit } from './utils/mock-git-helper.js';
+import { mockGit, GitError } from './utils/mock-git-helper.js';
 
 // Set up test config directory BEFORE any service imports to ensure
 // services use the test config path when their modules are loaded
@@ -81,6 +81,7 @@ branch refs/heads/main
   mockGit.listLocalBranches.mockImplementation(() => Promise.resolve(['main', 'develop', 'feature-1']));
   mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main', 'origin/develop']));
   mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+  mockGit.refreshDefaultBranch.mockImplementation(() => Promise.resolve('main'));
   mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/test-repo.git'));
   mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
   mockGit.renameBranch.mockImplementation(() => Promise.resolve());
@@ -128,6 +129,7 @@ describe('API Routes Integration', () => {
     mockGit.listLocalBranches.mockReset();
     mockGit.listRemoteBranches.mockReset();
     mockGit.getDefaultBranch.mockReset();
+    mockGit.refreshDefaultBranch.mockReset();
     mockGit.getRemoteUrl.mockReset();
     mockGit.getCurrentBranch.mockReset();
     mockGit.renameBranch.mockReset();
@@ -1127,6 +1129,51 @@ describe('API Routes Integration', () => {
         expect(body.local).toContain('main');
         expect(body.remote).toContain('origin/main');
         expect(body.defaultBranch).toBe('main');
+      });
+    });
+
+    describe('POST /api/repositories/:id/refresh-default-branch', () => {
+      it('should refresh and return the default branch', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock refreshDefaultBranch to return 'develop' (simulating remote changed)
+        mockGit.refreshDefaultBranch.mockImplementationOnce(() => Promise.resolve('develop'));
+
+        const res = await app.request(`/api/repositories/${repo.id}/refresh-default-branch`, {
+          method: 'POST',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { defaultBranch: string };
+        expect(body.defaultBranch).toBe('develop');
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/refresh-default-branch', {
+          method: 'POST',
+        });
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 400 when git command fails', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock refreshDefaultBranch to reject with GitError (simulating network error)
+        mockGit.refreshDefaultBranch.mockImplementationOnce(() =>
+          Promise.reject(new GitError('git remote set-head failed: network error', 128, 'fatal: unable to access'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/refresh-default-branch`, {
+          method: 'POST',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Failed to refresh default branch');
       });
     });
 

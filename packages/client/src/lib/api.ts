@@ -19,6 +19,7 @@ import type {
   JobStatus,
   JobType,
   SetupCommandResult,
+  RefreshDefaultBranchResponse,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -524,4 +525,19 @@ export async function cancelJob(jobId: string): Promise<void> {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to cancel job');
   }
+}
+
+// ===========================================================================
+// Repository Default Branch
+// ===========================================================================
+
+export async function refreshDefaultBranch(repositoryId: string): Promise<RefreshDefaultBranchResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/refresh-default-branch`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to refresh default branch');
+  }
+  return res.json();
 }

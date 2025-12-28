@@ -704,6 +704,29 @@ api.get('/repositories/:id/branches', async (c) => {
   return c.json(branches);
 });
 
+// Refresh default branch from remote for a repository
+api.post('/repositories/:id/refresh-default-branch', async (c) => {
+  const repoId = c.req.param('id');
+  const repositoryManager = getRepositoryManager();
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  try {
+    const defaultBranch = await worktreeService.refreshDefaultBranch(repo.path);
+    return c.json({ defaultBranch });
+  } catch (error) {
+    // Handle git-specific errors (network issues, no remote, etc.)
+    // Use name check for compatibility with mocked GitError in tests
+    if (error instanceof Error && error.name === 'GitError') {
+      throw new ValidationError(`Failed to refresh default branch: ${error.message}`);
+    }
+    throw error;
+  }
+});
+
 // Get all agents
 api.get('/agents', async (c) => {
   const agentManager = await getAgentManager();

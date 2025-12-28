@@ -47,6 +47,7 @@ export const mockGit = {
   listRemoteBranches: mock(() => Promise.resolve(['origin/main'])) as Mock<AsyncStringArrayFn>,
   listAllBranches: mock(() => Promise.resolve(['main'])) as Mock<AsyncStringArrayFn>,
   getDefaultBranch: mock(() => Promise.resolve('main')) as Mock<AsyncStringNullFn>,
+  refreshDefaultBranch: mock(() => Promise.resolve('main')) as Mock<AsyncStringFn>,
   renameBranch: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
 
   // Remote operations
@@ -97,6 +98,7 @@ export function resetGitMocks(): void {
   mockGit.listRemoteBranches.mockReset();
   mockGit.listAllBranches.mockReset();
   mockGit.getDefaultBranch.mockReset();
+  mockGit.refreshDefaultBranch.mockReset();
   mockGit.renameBranch.mockReset();
   mockGit.getRemoteUrl.mockReset();
   mockGit.listWorktrees.mockReset();
@@ -122,6 +124,7 @@ export function resetGitMocks(): void {
   mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main']));
   mockGit.listAllBranches.mockImplementation(() => Promise.resolve(['main']));
   mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+  mockGit.refreshDefaultBranch.mockImplementation(() => Promise.resolve('main'));
   mockGit.renameBranch.mockImplementation(() => Promise.resolve());
   mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/repo.git'));
   mockGit.listWorktrees.mockImplementation(() => Promise.resolve(''));
