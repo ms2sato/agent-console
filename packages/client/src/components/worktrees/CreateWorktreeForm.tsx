@@ -1,13 +1,14 @@
 import { useId, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
+import { useMutation } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { AgentSelector } from '../AgentSelector';
-import { FormOverlay } from '../ui/Spinner';
+import { FormOverlay, Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
 import type { CreateWorktreeRequest, GitHubIssueSummary } from '@agent-console/shared';
-import { fetchGitHubIssue } from '../../lib/api';
+import { fetchGitHubIssue, refreshDefaultBranch } from '../../lib/api';
 import {
   Dialog,
   DialogContent,
@@ -66,6 +67,18 @@ export function CreateWorktreeForm({
     isLoading: boolean;
     issue: GitHubIssueSummary | null;
   }>({ isLoading: false, issue: null });
+
+  // Local state for refreshed default branch (overrides prop when set)
+  const [refreshedDefaultBranch, setRefreshedDefaultBranch] = useState<string | null>(null);
+  const effectiveDefaultBranch = refreshedDefaultBranch ?? defaultBranch;
+
+  // Mutation to refresh default branch from remote
+  const refreshDefaultBranchMutation = useMutation({
+    mutationFn: () => refreshDefaultBranch(repositoryId),
+    onSuccess: (data) => {
+      setRefreshedDefaultBranch(data.defaultBranch);
+    },
+  });
 
   const buildIssuePrompt = (issue: GitHubIssueSummary) => {
     const body = issue.body.trim();
@@ -238,11 +251,39 @@ export function CreateWorktreeForm({
           {/* Base branch input (only for new branches) */}
           {branchNameMode !== 'existing' && (
             <FormField error={errors.baseBranch}>
-              <Input
-                {...register('baseBranch')}
-                placeholder={`Base branch (default: ${defaultBranch})`}
-                error={errors.baseBranch}
-              />
+              <div className="flex gap-2">
+                <Input
+                  {...register('baseBranch')}
+                  placeholder={`Base branch (default: ${effectiveDefaultBranch})`}
+                  error={errors.baseBranch}
+                  className="flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => refreshDefaultBranchMutation.mutate()}
+                  disabled={refreshDefaultBranchMutation.isPending}
+                  className="btn bg-slate-600 hover:bg-slate-500 text-sm shrink-0"
+                  title="Refresh default branch from remote"
+                >
+                  {refreshDefaultBranchMutation.isPending ? (
+                    <Spinner size="sm" />
+                  ) : (
+                    'Refresh'
+                  )}
+                </button>
+              </div>
+              {refreshDefaultBranchMutation.isError && (
+                <p className="text-xs text-red-400 mt-1">
+                  {refreshDefaultBranchMutation.error instanceof Error
+                    ? refreshDefaultBranchMutation.error.message
+                    : 'Failed to refresh default branch'}
+                </p>
+              )}
+              {refreshedDefaultBranch && !refreshDefaultBranchMutation.isError && (
+                <p className="text-xs text-green-400 mt-1">
+                  Default branch updated to: {refreshedDefaultBranch}
+                </p>
+              )}
             </FormField>
           )}
 

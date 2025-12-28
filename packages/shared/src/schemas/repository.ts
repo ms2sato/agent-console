@@ -126,6 +126,13 @@ export const UpdateRepositoryRequestSchema = v.object({
   setupCommand: v.optional(v.pipe(v.string(), v.trim())),
 });
 
+/**
+ * Schema for the response of refreshing a repository's default branch
+ */
+export const RefreshDefaultBranchResponseSchema = v.object({
+  defaultBranch: v.string(),
+});
+
 // Inferred types from schemas
 export type CreateRepositoryRequest = v.InferOutput<typeof CreateRepositoryRequestSchema>;
 export type CreateWorktreePromptRequest = v.InferOutput<typeof CreateWorktreePromptRequestSchema>;
@@ -136,3 +143,4 @@ export type DeleteWorktreeRequest = v.InferOutput<typeof DeleteWorktreeRequestSc
 export type UpdateRepositoryRequest = v.InferOutput<typeof UpdateRepositoryRequestSchema>;
 export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;
 export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;
+export type RefreshDefaultBranchResponse = v.InferOutput<typeof RefreshDefaultBranchResponseSchema>;

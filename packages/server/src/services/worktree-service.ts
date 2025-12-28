@@ -14,6 +14,7 @@ import {
   listLocalBranches,
   listRemoteBranches,
   getDefaultBranch as gitGetDefaultBranch,
+  refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
 } from '../lib/git.js';
 
@@ -383,6 +384,17 @@ export class WorktreeService {
    */
   async getDefaultBranch(repoPath: string): Promise<string | null> {
     return gitGetDefaultBranch(repoPath);
+  }
+
+  /**
+   * Refresh the default branch reference from remote origin.
+   * This updates the local refs/remotes/origin/HEAD to match the remote's default branch.
+   *
+   * @returns The updated default branch name
+   * @throws GitError if the command fails (e.g., network error, no remote)
+   */
+  async refreshDefaultBranch(repoPath: string): Promise<string> {
+    return gitRefreshDefaultBranch(repoPath);
   }
 
   /**
