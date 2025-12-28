@@ -130,7 +130,7 @@ export const UpdateRepositoryRequestSchema = v.object({
  * Schema for the response of refreshing a repository's default branch
  */
 export const RefreshDefaultBranchResponseSchema = v.object({
-  defaultBranch: v.string(),
+  defaultBranch: v.pipe(v.string(), v.minLength(1, 'Default branch name is required')),
 });
 
 // Inferred types from schemas

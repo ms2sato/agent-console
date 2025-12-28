@@ -19,6 +19,7 @@ import type {
   JobStatus,
   JobType,
   SetupCommandResult,
+  RefreshDefaultBranchResponse,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -529,10 +530,6 @@ export async function cancelJob(jobId: string): Promise<void> {
 // ===========================================================================
 // Repository Default Branch
 // ===========================================================================
-
-export interface RefreshDefaultBranchResponse {
-  defaultBranch: string;
-}
 
 export async function refreshDefaultBranch(repositoryId: string): Promise<RefreshDefaultBranchResponse> {
   const res = await fetch(`${API_BASE}/repositories/${repositoryId}/refresh-default-branch`, {

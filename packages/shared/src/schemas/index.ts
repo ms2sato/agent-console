@@ -59,6 +59,7 @@ export {
   UpdateRepositoryRequestSchema,
   FetchGitHubIssueRequestSchema,
   GitHubIssueSummarySchema,
+  RefreshDefaultBranchResponseSchema,
   type CreateRepositoryRequest,
   type CreateWorktreePromptRequest,
   type CreateWorktreeCustomRequest,
@@ -68,6 +69,7 @@ export {
   type UpdateRepositoryRequest,
   type FetchGitHubIssueRequest,
   type GitHubIssueSummary,
+  type RefreshDefaultBranchResponse,
 } from './repository.js';
 
 // System schemas
