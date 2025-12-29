@@ -24,9 +24,17 @@ function createErrorResponse(errorMessage: string, status = 400) {
   } as unknown as Response;
 }
 
+// Default PR link response (no PR exists)
+const prLinkResponse = createMockResponse({
+  prUrl: null,
+  branchName: 'test-branch',
+  orgRepo: 'org/repo',
+});
+
 describe('SessionSettings', () => {
   let originalFetch: typeof fetch;
-  let mockFetch: ReturnType<typeof mock<() => Promise<Response>>>;
+  let mockFetch: ReturnType<typeof mock<(url: string) => Promise<Response>>>;
+  let deleteWorktreeResponses: Response[];
 
   const defaultProps = {
     sessionId: 'test-session-id',
@@ -40,7 +48,25 @@ describe('SessionSettings', () => {
   beforeEach(() => {
     // Save and replace fetch before each test
     originalFetch = globalThis.fetch;
-    mockFetch = mock(() => Promise.resolve(new Response()));
+    deleteWorktreeResponses = [];
+
+    // Create a mock that handles different endpoints
+    mockFetch = mock((url: string) => {
+      // Always return PR link response for pr-link endpoint
+      if (url.includes('/pr-link')) {
+        return Promise.resolve(prLinkResponse);
+      }
+      // For delete worktree, return from the queue
+      if (url.includes('/worktrees/')) {
+        const response = deleteWorktreeResponses.shift();
+        if (response) {
+          return Promise.resolve(response);
+        }
+      }
+      // Default response
+      return Promise.resolve(new Response());
+    });
+
     globalThis.fetch = mockFetch as unknown as typeof fetch;
     defaultProps.onBranchChange.mockClear();
     defaultProps.onSessionRestart.mockClear();
@@ -85,8 +111,8 @@ describe('SessionSettings', () => {
 
   describe('handleDeleteWorktree', () => {
     it('should call deleteWorktree and navigate on success', async () => {
-      // Mock successful delete
-      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+      // Setup: successful delete response
+      deleteWorktreeResponses.push(createMockResponse({ success: true }));
 
       const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
@@ -107,9 +133,8 @@ describe('SessionSettings', () => {
     });
 
     it('should show Force Delete option when deleteWorktree fails with untracked files error', async () => {
-      mockFetch.mockResolvedValue(
-        createErrorResponse('Worktree contains untracked files')
-      );
+      // Setup: error response with untracked files
+      deleteWorktreeResponses.push(createErrorResponse('Worktree contains untracked files'));
 
       const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
@@ -126,10 +151,11 @@ describe('SessionSettings', () => {
     });
 
     it('should call deleteWorktree with force=true when Force Delete is clicked', async () => {
-      // First call fails with untracked files error, second succeeds
-      mockFetch
-        .mockResolvedValueOnce(createErrorResponse('Worktree contains untracked files'))
-        .mockResolvedValueOnce(createMockResponse({ success: true }));
+      // Setup: first call fails with untracked files error, second succeeds
+      deleteWorktreeResponses.push(
+        createErrorResponse('Worktree contains untracked files'),
+        createMockResponse({ success: true })
+      );
 
       const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
 
@@ -160,7 +186,8 @@ describe('SessionSettings', () => {
     });
 
     it('should show generic error when deleteWorktree fails with non-untracked error', async () => {
-      mockFetch.mockResolvedValue(createErrorResponse('Permission denied'));
+      // Setup: error response (not untracked files)
+      deleteWorktreeResponses.push(createErrorResponse('Permission denied'));
 
       await renderWithRouter(<SessionSettings {...defaultProps} />);
 
