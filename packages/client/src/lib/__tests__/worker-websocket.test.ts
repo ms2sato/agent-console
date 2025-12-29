@@ -51,7 +51,10 @@ describe('worker-websocket', () => {
     onError: mock(() => {}),
   });
 
-  describe('visibility-based reconnection', () => {
+  // DISABLED: Visibility-based reconnection is currently disabled to avoid performance overhead.
+  // The event listener registration in worker-websocket.ts is commented out.
+  // These tests are skipped until the feature is re-enabled.
+  describe.skip('visibility-based reconnection', () => {
     let originalVisibilityState: PropertyDescriptor | undefined;
 
     beforeEach(() => {
