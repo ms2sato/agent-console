@@ -644,8 +644,11 @@ export function disconnectSession(sessionId: string): void {
  * Handle page visibility change.
  * Disconnects all worker WebSockets when page is hidden (to save resources).
  * Reconnects with full history when page becomes visible.
+ *
+ * NOTE: This function is currently disabled. See the event listener registration below.
  */
-function handleVisibilityChange(): void {
+// @ts-expect-error: Function intentionally unused - kept for potential re-enablement
+function _handleVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
     // Store connection info and disconnect all workers
     for (const [key, conn] of connections.entries()) {
@@ -703,7 +706,11 @@ function handleVisibilityChange(): void {
 
 // Register visibility change listener once
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', handleVisibilityChange);
+  // DISABLED: Preserve terminal history and avoid reconnection overhead
+  // Visibility disconnection was causing performance issues when switching browser tabs.
+  // Terminal history is preserved in xterm.js memory, so reconnection is unnecessary.
+  // To re-enable, uncomment and rename _handleVisibilityChange back to handleVisibilityChange:
+  // document.addEventListener('visibilitychange', _handleVisibilityChange);
 }
 
 /**
