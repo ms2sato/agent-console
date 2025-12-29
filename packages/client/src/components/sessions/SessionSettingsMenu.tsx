@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   SettingsIcon,
   EditIcon,
@@ -7,24 +8,35 @@ import {
   CopyIcon,
   TrashIcon,
   DocumentIcon,
+  ExternalLinkIcon,
 } from '../Icons';
-import { openPath } from '../../lib/api';
+import { openPath, fetchSessionPrLink } from '../../lib/api';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'view-initial-prompt';
 
 export interface SessionSettingsMenuProps {
+  sessionId: string;
   worktreePath: string;
   initialPrompt?: string;
   onMenuAction: (action: MenuAction) => void;
 }
 
 export function SessionSettingsMenu({
+  sessionId,
   worktreePath,
   initialPrompt,
   onMenuAction,
 }: SessionSettingsMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+
+  // Fetch PR link when menu opens
+  const { data: prLinkData, isLoading: isPrLinkLoading } = useQuery({
+    queryKey: ['sessionPrLink', sessionId],
+    queryFn: () => fetchSessionPrLink(sessionId),
+    enabled: isMenuOpen,
+    staleTime: 30000, // Cache for 30 seconds
+  });
 
   // Close menu on escape key or clicking outside
   useEffect(() => {
@@ -80,6 +92,13 @@ export function SessionSettingsMenu({
     onMenuAction(action);
   };
 
+  const handleViewPullRequest = () => {
+    if (prLinkData?.prUrl) {
+      window.open(prLinkData.prUrl, '_blank', 'noopener,noreferrer');
+      setIsMenuOpen(false);
+    }
+  };
+
   return (
     <div className="relative" data-settings-menu>
       {/* Settings button */}
@@ -109,6 +128,15 @@ export function SessionSettingsMenu({
               >
                 <DocumentIcon />
                 View Initial Prompt
+              </button>
+            )}
+            {!isPrLinkLoading && prLinkData?.prUrl && (
+              <button
+                onClick={handleViewPullRequest}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
+              >
+                <ExternalLinkIcon />
+                View Pull Request
               </button>
             )}
             <button

@@ -46,6 +46,7 @@ export function SessionSettings({
   return (
     <>
       <SessionSettingsMenu
+        sessionId={sessionId}
         worktreePath={worktreePath}
         initialPrompt={initialPrompt}
         onMenuAction={handleMenuAction}

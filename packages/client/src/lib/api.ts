@@ -541,3 +541,21 @@ export async function refreshDefaultBranch(repositoryId: string): Promise<Refres
   }
   return res.json();
 }
+
+// ===========================================================================
+// Session PR Link
+// ===========================================================================
+
+export interface SessionPrLinkResponse {
+  prUrl: string | null;
+  branchName: string;
+  orgRepo: string | null;
+}
+
+export async function fetchSessionPrLink(sessionId: string): Promise<SessionPrLinkResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/pr-link`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch session PR link: ${res.statusText}`);
+  }
+  return res.json();
+}

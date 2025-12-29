@@ -42,9 +42,10 @@ import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
+import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
-import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
+import { getRemoteUrl, parseOrgRepo, getOrgRepoFromPath } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
 
@@ -266,6 +267,32 @@ api.get('/sessions/:sessionId/commits', async (c) => {
   const { getBranchCommits } = await import('../lib/git.js');
   const commits = await getBranchCommits(baseRef, session.locationPath);
   return c.json({ commits });
+});
+
+// Get PR link for a session (worktree sessions only)
+api.get('/sessions/:sessionId/pr-link', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const sessionManager = getSessionManager();
+  const session = sessionManager.getSession(sessionId);
+
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  if (session.type !== 'worktree') {
+    throw new ValidationError('PR link is only available for worktree sessions');
+  }
+
+  const branchName = session.worktreeId;
+  const orgRepo = await getOrgRepoFromPath(session.locationPath);
+
+  const prUrl = await fetchPullRequestUrl(branchName, session.locationPath);
+
+  return c.json({
+    prUrl,
+    branchName,
+    orgRepo,
+  });
 });
 
 // Create a worker in a session
