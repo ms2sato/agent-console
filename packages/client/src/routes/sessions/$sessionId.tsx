@@ -582,6 +582,7 @@ function TerminalPage() {
                   onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
                   onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
                   hideStatusBar
+                  isVisible={tab.id === activeTabId}
                 />
               )}
             </ErrorBoundary>

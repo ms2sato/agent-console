@@ -18,9 +18,11 @@ export interface TerminalProps {
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   hideStatusBar?: boolean;
+  /** Whether this terminal is currently visible (active tab). When false, scroll polling is paused. */
+  isVisible?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar, isVisible: _isVisible = true }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -309,19 +311,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       subtree: true
     });
 
-    // Polling fallback to detect scroll changes that other methods might miss
-    let lastScrollTop = 0;
-    const scrollCheckInterval = setInterval(() => {
-      const viewport = container.querySelector('.xterm-viewport') as HTMLElement;
-      if (viewport && viewport.scrollTop !== lastScrollTop) {
-        lastScrollTop = viewport.scrollTop;
-        updateScrollButtonVisibility();
-      }
-    }, 100);
-
     return () => {
       cancelAnimationFrame(rafId);
-      clearInterval(scrollCheckInterval);
       viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
