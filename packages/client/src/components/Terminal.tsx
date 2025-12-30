@@ -5,21 +5,10 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import * as workerWs from '../lib/worker-websocket.js';
-import { clearAndWrite } from '../lib/terminal-utils.js';
+import { clearAndWrite, isScrolledToBottom } from '../lib/terminal-utils.js';
 import { calculateHistoryUpdate } from '../lib/terminal-history-utils.js';
 import type { AgentActivityState } from '@agent-console/shared';
-
-/**
- * Check if the terminal is scrolled to the bottom of the buffer.
- */
-function isScrolledToBottom(terminal: XTerm): boolean {
-  const buffer = terminal.buffer.active;
-  // viewportY is the first visible line in the viewport
-  // buffer.length is total lines in the buffer
-  // terminal.rows is the number of visible rows
-  // At bottom when: viewportY + rows >= buffer.length
-  return buffer.viewportY + terminal.rows >= buffer.length;
-}
+import { ChevronDownIcon } from './Icons';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
@@ -38,15 +27,33 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Notify parent of status changes
   useEffect(() => {
     onStatusChange?.(status, exitInfo ?? undefined);
   }, [status, exitInfo, onStatusChange]);
 
-  const handleOutput = useCallback((data: string) => {
-    terminalRef.current?.write(data);
+  const updateScrollButtonVisibility = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      setShowScrollButton(false);
+      return;
+    }
+    const atBottom = isScrolledToBottom(terminal);
+    setShowScrollButton(!atBottom);
   }, []);
+
+  const handleScrollToBottom = useCallback(() => {
+    terminalRef.current?.scrollToBottom();
+    setShowScrollButton(false);
+  }, []);
+
+  const handleOutput = useCallback((data: string) => {
+    terminalRef.current?.write(data, () => {
+      updateScrollButtonVisibility();
+    });
+  }, [updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string) => {
     const terminal = terminalRef.current;
@@ -98,6 +105,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
               console.warn('[Terminal] Failed to restore scroll position:', e);
             }
           }
+          updateScrollButtonVisibility();
         });
       } catch (e) {
         console.error('[Terminal] Failed to write history diff:', e);
@@ -122,10 +130,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
               console.warn('[Terminal] Failed to scroll to bottom:', e);
             }
           }
+          updateScrollButtonVisibility();
         })
         .catch((e) => console.error('[Terminal] Failed to write history:', e));
     }
-  }, [sessionId, workerId]);
+  }, [sessionId, workerId, updateScrollButtonVisibility]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -259,10 +268,68 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     container.addEventListener('paste', handlePaste);
     window.addEventListener('resize', handleResize);
 
+    // Listen for scroll events to update scroll-to-bottom button visibility
+    const scrollDisposable = terminal.onScroll(() => {
+      updateScrollButtonVisibility();
+    });
+
+    // Handle DOM scroll events from any source
+    const handleDOMScroll = () => {
+      updateScrollButtonVisibility();
+    };
+
+    // Use capture phase to catch scroll events from children
+    container.addEventListener('scroll', handleDOMScroll, { capture: true });
+
+    // Listen to scroll events on the xterm viewport element
+    // The viewport is the actual scrollable element within xterm
+    let viewportElement: Element | null = container.querySelector('.xterm-viewport');
+
+    if (viewportElement) {
+      viewportElement.addEventListener('scroll', handleDOMScroll);
+    }
+
+    // Use MutationObserver to detect when .xterm-viewport is added to DOM
+    // This is more reliable than setTimeout because it reacts immediately when the element appears
+    let viewportListenerAdded = !!viewportElement;
+    const viewportObserver = new MutationObserver(() => {
+      if (viewportListenerAdded) return;
+
+      const observedViewportElement = container.querySelector('.xterm-viewport');
+      if (observedViewportElement) {
+        observedViewportElement.addEventListener('scroll', handleDOMScroll);
+        viewportElement = observedViewportElement; // Update reference for cleanup
+        viewportListenerAdded = true;
+        viewportObserver.disconnect(); // Stop observing once found
+      }
+    });
+
+    viewportObserver.observe(container, {
+      childList: true,
+      subtree: true
+    });
+
+    // Polling fallback to detect scroll changes that other methods might miss
+    let lastScrollTop = 0;
+    const scrollCheckInterval = setInterval(() => {
+      const viewport = container.querySelector('.xterm-viewport') as HTMLElement;
+      if (viewport && viewport.scrollTop !== lastScrollTop) {
+        lastScrollTop = viewport.scrollTop;
+        updateScrollButtonVisibility();
+      }
+    }, 100);
+
     return () => {
       cancelAnimationFrame(rafId);
+      clearInterval(scrollCheckInterval);
+      viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
+      container.removeEventListener('scroll', handleDOMScroll, { capture: true });
+      if (viewportElement) {
+        viewportElement.removeEventListener('scroll', handleDOMScroll);
+      }
+      scrollDisposable.dispose();
       // Delay disposal to allow any pending xterm.js operations to complete
       // This prevents "Cannot read properties of undefined (reading 'dimensions')" errors
       // from xterm.js internal code trying to access disposed terminal
@@ -278,7 +345,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         terminal.dispose();
       }, 0);
     };
-  }, [sendInput, sendResize, sendImage]);
+  }, [sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
 
   // Send resize when connection is established
   useEffect(() => {
@@ -334,6 +401,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             </div>
           </div>
         )}
+        {/* Scroll to bottom button */}
+        <button
+          onClick={handleScrollToBottom}
+          className={`absolute bottom-4 right-4 p-2 bg-slate-700 hover:bg-slate-600 rounded-full shadow-lg border border-slate-600 text-gray-300 hover:text-white transition-all duration-200 ${
+            showScrollButton
+              ? 'opacity-100 translate-y-0'
+              : 'opacity-0 translate-y-2 pointer-events-none'
+          }`}
+          aria-label="Scroll to bottom"
+          title="Scroll to bottom"
+        >
+          <ChevronDownIcon className="w-5 h-5" />
+        </button>
       </div>
     </div>
   );
