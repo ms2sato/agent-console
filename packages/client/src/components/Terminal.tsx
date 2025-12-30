@@ -283,7 +283,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Listen to scroll events on the xterm viewport element
     // The viewport is the actual scrollable element within xterm
-    const viewportElement = container.querySelector('.xterm-viewport');
+    let viewportElement: Element | null = container.querySelector('.xterm-viewport');
 
     if (viewportElement) {
       viewportElement.addEventListener('scroll', handleDOMScroll);
@@ -298,6 +298,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const observedViewportElement = container.querySelector('.xterm-viewport');
       if (observedViewportElement) {
         observedViewportElement.addEventListener('scroll', handleDOMScroll);
+        viewportElement = observedViewportElement; // Update reference for cleanup
         viewportListenerAdded = true;
         viewportObserver.disconnect(); // Stop observing once found
       }
@@ -305,16 +306,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     viewportObserver.observe(container, {
       childList: true,
-      subtree: true
-    });
-
-    // MutationObserver to watch for scroll-related attribute changes
-    const mutationObserver = new MutationObserver(() => {
-      updateScrollButtonVisibility();
-    });
-    mutationObserver.observe(container, {
-      attributes: true,
-      attributeFilter: ['scrollTop', 'scrollLeft'],
       subtree: true
     });
 
@@ -332,7 +323,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       cancelAnimationFrame(rafId);
       clearInterval(scrollCheckInterval);
       viewportObserver.disconnect();
-      mutationObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('scroll', handleDOMScroll, { capture: true });
