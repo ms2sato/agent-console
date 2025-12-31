@@ -95,12 +95,21 @@ function setState(partial: Partial<AppWebSocketState>) {
 }
 
 function handleMessage(event: MessageEvent) {
+  const messageStart = performance.now();
+  let messageType: string | undefined;
+
   try {
     const parsed: unknown = JSON.parse(event.data);
     if (!isValidMessage(parsed)) {
       console.error('[WebSocket] Invalid message type:', parsed);
       return;
     }
+    messageType = parsed.type;
+    console.log('[AppWS] Message received:', {
+      type: messageType,
+      time: messageStart
+    });
+
     // Track initial sync reception and clear pending state
     if (parsed.type === 'sessions-sync') {
       syncPending = false;
@@ -113,6 +122,15 @@ function handleMessage(event: MessageEvent) {
       setState({ repositoriesSynced: true });
     }
     messageListeners.forEach(fn => fn(parsed));
+
+    const messageEnd = performance.now();
+    const duration = messageEnd - messageStart;
+    if (duration > 100) { // Log slow messages (>100ms)
+      console.warn('[AppWS] SLOW message handler:', {
+        type: messageType,
+        duration
+      });
+    }
   } catch (e) {
     console.error('[WebSocket] Failed to parse message:', e);
   }

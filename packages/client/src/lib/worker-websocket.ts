@@ -314,6 +314,16 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
   };
 
   ws.onmessage = (event) => {
+    const messageStart = performance.now();
+    const [sessionId, workerId] = key.split(':');
+    const dataLength = typeof event.data === 'string' ? event.data.length : 0;
+    console.log('[WorkerWS] Message received:', {
+      sessionId,
+      workerId,
+      dataLength,
+      time: messageStart
+    });
+
     // Get current callbacks from connection (may be updated via updateCallbacks)
     const currentConn = connections.get(key);
     if (!currentConn) return;
@@ -341,6 +351,17 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
       if (currentCallbacks.type === 'git-diff') {
         updateState(key, { diffError: 'Failed to parse server message', diffLoading: false });
       }
+    }
+
+    const messageEnd = performance.now();
+    const duration = messageEnd - messageStart;
+    if (duration > 100) { // Log slow messages (>100ms)
+      console.warn('[WorkerWS] SLOW message handler:', {
+        sessionId,
+        workerId,
+        duration,
+        dataLength
+      });
     }
   };
 
