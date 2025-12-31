@@ -224,7 +224,7 @@ export async function setupWebSocketRoutes(
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
       // 2. Register callbacks for NEW output (after the offset)
       // 3. Send history UP TO the offset we recorded
-      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
+      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number) {
         logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
 
         // Helper to safely send WebSocket messages with buffering
@@ -293,6 +293,9 @@ export async function setupWebSocketRoutes(
           setTimeout(() => reject(new Error('Initial history request timeout')), INITIAL_HISTORY_TIMEOUT_MS);
         });
 
+        const historyLoadStartTime = performance.now();
+        logger.info({ sessionId, workerId }, 'History loading started');
+
         try {
           const historyResult = await Promise.race([
             sessionManager.getWorkerOutputHistory(
@@ -304,23 +307,53 @@ export async function setupWebSocketRoutes(
             timeoutPromise
           ]);
 
+          const historyLoadEndTime = performance.now();
+          const historyLoadDuration = historyLoadEndTime - historyLoadStartTime;
+          logger.info(
+            { sessionId, workerId, durationMs: historyLoadDuration.toFixed(2) },
+            'History loading completed'
+          );
+
+          const historySendStartTime = performance.now();
+
           if (historyResult) {
             if (historyResult.data) {
               safeSend({ type: 'history', data: historyResult.data });
+              const historySendEndTime = performance.now();
+              const historySendDuration = historySendEndTime - historySendStartTime;
+              logger.info(
+                { sessionId, workerId, durationMs: historySendDuration.toFixed(2), dataLength: historyResult.data.length },
+                'History send completed'
+              );
             }
           } else {
             // Fallback to in-memory buffer if file not available
             const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
             if (history) {
               safeSend({ type: 'history', data: history });
+              const historySendEndTime = performance.now();
+              const historySendDuration = historySendEndTime - historySendStartTime;
+              logger.info(
+                { sessionId, workerId, durationMs: historySendDuration.toFixed(2), dataLength: history.length, source: 'buffer' },
+                'History send completed (from buffer)'
+              );
             }
           }
         } catch (err) {
-          logger.error({ sessionId, workerId, err }, 'Error loading initial history');
+          const historyLoadEndTime = performance.now();
+          const historyLoadDuration = historyLoadEndTime - historyLoadStartTime;
+          logger.error(
+            { sessionId, workerId, err, durationMs: historyLoadDuration.toFixed(2) },
+            'Error loading initial history'
+          );
           // Fallback to in-memory buffer on timeout or error
           const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
           if (history) {
             safeSend({ type: 'history', data: history });
+            logger.info(
+              { sessionId, workerId, dataLength: history.length, source: 'buffer-fallback' },
+              'History send completed (fallback to buffer)'
+            );
           } else {
             // No history available - send error
             safeSend({
@@ -338,6 +371,14 @@ export async function setupWebSocketRoutes(
             safeSend({ type: 'activity', state: activityState });
           }
         }
+
+        // Log total connection time
+        const connectionEndTime = performance.now();
+        const totalConnectionDuration = connectionEndTime - connectionStartTime;
+        logger.info(
+          { sessionId, workerId, workerType, durationMs: totalConnectionDuration.toFixed(2) },
+          'Worker WebSocket connection completed'
+        );
       }
 
       /**
@@ -365,6 +406,9 @@ export async function setupWebSocketRoutes(
 
       return {
         onOpen(_event: unknown, ws: WSContext) {
+          const connectionStartTime = performance.now();
+          logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
+
           const session = sessionManager.getSession(sessionId);
           if (!session) {
             sendErrorAndClose(ws, 'Session not found', 'WORKER_NOT_FOUND');
@@ -410,7 +454,7 @@ export async function setupWebSocketRoutes(
               return;
             }
 
-            await setupPtyWorkerHandlers(ws, restoredWorker.type);
+            await setupPtyWorkerHandlers(ws, restoredWorker.type, connectionStartTime);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);

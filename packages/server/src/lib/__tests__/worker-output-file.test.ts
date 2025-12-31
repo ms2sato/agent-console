@@ -23,9 +23,7 @@ mock.module('../server-config.js', () => ({
     WORKER_OUTPUT_FILE_MAX_SIZE: TEST_WORKER_OUTPUT_FILE_MAX_SIZE,
     WORKER_OUTPUT_FLUSH_INTERVAL: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
     WORKER_OUTPUT_FLUSH_THRESHOLD: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
-    // New config values - disable compression for backward compatibility testing
     WORKER_OUTPUT_INITIAL_HISTORY_LINES: 5000,
-    WORKER_OUTPUT_USE_COMPRESSION: false,
   },
 }));
 

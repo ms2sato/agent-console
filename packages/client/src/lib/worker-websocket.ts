@@ -297,6 +297,9 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCallbacks): void {
   ws.onopen = () => {
     const conn = connections.get(key);
+    const [sessionId, workerId] = key.split(':');
+    console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket connection established (onopen)`);
+
     if (conn) {
       conn.retryCount = 0; // Reset retry count on successful connection
     }
@@ -382,12 +385,15 @@ export function connect(
 ): boolean {
   const key = getConnectionKey(sessionId, workerId);
 
+  console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket connect() called`);
+
   // Check existing connection
   const existing = connections.get(key);
   if (existing) {
     // Skip if already connecting
     if (existing.ws.readyState === WebSocket.CONNECTING) {
       // Connection is still being established - just update callbacks
+      console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket already connecting, updating callbacks only`);
       existing.callbacks = callbacks;
       return false;
     }
@@ -396,6 +402,7 @@ export function connect(
     // This avoids unnecessary connection churn when component remounts
     if (existing.ws.readyState === WebSocket.OPEN) {
       // Update callbacks for the new component instance
+      console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket already open, requesting history`);
       existing.callbacks = callbacks;
 
       // Debounce history requests to prevent rapid duplicate requests
@@ -425,6 +432,7 @@ export function connect(
     }
   }
 
+  console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket creating new WebSocket`);
   const wsUrl = getWorkerWsUrl(sessionId, workerId);
   const ws = new WebSocket(wsUrl);
 

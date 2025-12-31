@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Terminal, type ConnectionStatus } from '../../components/Terminal';
+import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
