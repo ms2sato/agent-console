@@ -174,11 +174,22 @@ function TerminalPage() {
   }, [state]);
 
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
+    console.log('[TerminalPage] handleStatusChange called:', {
+      status,
+      info,
+      time: performance.now(),
+      stack: new Error().stack?.split('\n').slice(2, 5).join('\n')
+    });
     setConnectionStatus(status);
     setExitInfo(info);
   }, []);
 
   const handleActivityChange = useCallback((newState: AgentActivityState) => {
+    console.log('[TerminalPage] handleActivityChange called:', {
+      newState,
+      time: performance.now(),
+      stack: new Error().stack?.split('\n').slice(2, 5).join('\n')
+    });
     setActivityState(newState);
   }, []);
 
@@ -191,6 +202,11 @@ function TerminalPage() {
   const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, state: AgentActivityState) => {
     // Only process activity events for the current session and active worker
     if (eventSessionId === sessionId && workerId === activeTabIdRef.current) {
+      console.log('[TerminalPage] setActivityState from app-ws:', {
+        state,
+        workerId,
+        time: performance.now()
+      });
       setActivityState(state);
     }
   }, [sessionId]);
@@ -273,6 +289,12 @@ function TerminalPage() {
     if (state.type === 'active' && tabs.length === 0) {
       const workers = state.session.workers;
       const newTabs = workersToTabs(workers);
+      console.log('[TerminalPage] setTabs called:', {
+        reason: 'initialize tabs (state became active)',
+        oldCount: tabs.length,
+        newCount: newTabs.length,
+        time: performance.now()
+      });
       setTabs(newTabs);
       // Set active tab to first agent worker if exists, otherwise first tab
       const firstAgent = findFirstAgentWorker(workers);
@@ -295,6 +317,11 @@ function TerminalPage() {
         workerType: 'terminal',
         name: worker.name,
       };
+      console.log('[TerminalPage] setTabs called:', {
+        reason: 'terminal created',
+        newTabId: worker.id,
+        time: performance.now()
+      });
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
     } catch (error) {
@@ -313,6 +340,11 @@ function TerminalPage() {
 
     try {
       await deleteWorker(sessionId, tabId);
+      console.log('[TerminalPage] setTabs called:', {
+        reason: 'worker deleted',
+        deletedTabId: tabId,
+        time: performance.now()
+      });
       setTabs(prev => {
         const newTabs = prev.filter(t => t.id !== tabId);
         // If closing the active tab, switch to first agent or first remaining tab
@@ -374,6 +406,10 @@ function TerminalPage() {
       const updatedSession = await getSession(sessionId);
       if (updatedSession && updatedSession.status === 'active') {
         // Reset tabs to pick up new worker state
+        console.log('[TerminalPage] setTabs called:', {
+          reason: 'restart - reset tabs',
+          time: performance.now()
+        });
         setTabs([]);
         setState({ type: 'active', session: updatedSession });
       } else {
