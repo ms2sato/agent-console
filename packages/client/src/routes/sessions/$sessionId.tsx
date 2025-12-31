@@ -595,7 +595,7 @@ function TerminalPage() {
     <div
       key={tab.id}
       className={`absolute inset-0 flex flex-col ${
-        tab.id === activeTabId ? 'z-10' : 'z-0 invisible'
+        tab.id === activeTabId ? 'z-10' : 'z-0 hidden'
       }`}
     >
       <ErrorBoundary
