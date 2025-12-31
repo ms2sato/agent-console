@@ -68,7 +68,7 @@ export interface TerminalProps {
   isVisible?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar, isVisible: _isVisible = true }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar, isVisible = true }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -76,6 +76,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // Track whether history has been loaded for this terminal (prevents loading on invisible tabs)
+  const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -111,12 +113,25 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     if (!data) return;
 
+    // Lazy loading optimization: defer history loading for invisible tabs
+    // This prevents all tabs from loading history simultaneously on page reload
+    if (!isVisible && !hasLoadedHistory) {
+      // Invisible tab that hasn't loaded history yet: completely ignore
+      // History will be loaded when this tab becomes visible for the first time
+      return;
+    }
+
     // Get lastHistoryData from worker-websocket (persists across tab switches)
     const lastHistoryData = workerWs.getLastHistoryData(sessionId, workerId);
     const update = calculateHistoryUpdate(lastHistoryData, data);
 
     // Update the cached history data in worker-websocket
     workerWs.setLastHistoryData(sessionId, workerId, data);
+
+    // Mark as loaded after first successful history load
+    if (!hasLoadedHistory) {
+      setHasLoadedHistory(true);
+    }
 
     // Check if data is large enough to warrant chunked writing
     const lineCount = (update.newData.match(/\n/g) || []).length;
@@ -215,7 +230,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           .catch((e) => console.error('[Terminal] Failed to write history:', e));
       }
     }
-  }, [sessionId, workerId, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, updateScrollButtonVisibility, isVisible, hasLoadedHistory]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -242,6 +257,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   useEffect(() => {
     setWorkerError(error);
   }, [error]);
+
+  // Request history when tab becomes visible for the first time
+  // This enables lazy loading of history for tabs that weren't initially active
+  useEffect(() => {
+    if (isVisible && !hasLoadedHistory && connected) {
+      // Request history from server when this tab becomes visible for the first time
+      workerWs.requestHistory(sessionId, workerId);
+    }
+  }, [isVisible, hasLoadedHistory, connected, sessionId, workerId]);
 
   // Initialize xterm.js
   useEffect(() => {

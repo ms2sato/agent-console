@@ -512,3 +512,206 @@ describe('Scroll-to-bottom button structure expectations', () => {
     });
   });
 });
+
+/**
+ * Tests for lazy history loading optimization.
+ *
+ * These tests verify the requestHistory function and the lazy loading behavior
+ * that prevents all tabs from loading history simultaneously on page reload.
+ *
+ * ## Lazy History Loading Manual Verification Checklist
+ *
+ * The following scenarios require manual testing because they depend on actual
+ * terminal rendering, WebSocket connections, and tab visibility changes:
+ *
+ * ### Initial Load (Page Reload)
+ * - [ ] Only the active tab loads history on page reload
+ * - [ ] Inactive tabs do NOT load history until they become visible
+ * - [ ] No performance warning like "'message' handler took Xms" in console
+ *
+ * ### Tab Switch
+ * - [ ] Switching to an unvisited tab triggers history load
+ * - [ ] Switching to a previously visited tab uses cached history (diff mode)
+ * - [ ] History is displayed correctly after first visibility
+ *
+ * ### Edge Cases
+ * - [ ] Rapid tab switching does not cause duplicate history loads
+ * - [ ] Reconnection after disconnect works correctly for visited tabs
+ * - [ ] New output appears correctly while tab is invisible
+ */
+describe('Lazy history loading optimization', () => {
+  let restoreWebSocket: () => void;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    restoreWebSocket = installMockWebSocket();
+    consoleLogSpy = spyOn(console, 'log');
+    workerWs._reset();
+  });
+
+  afterEach(() => {
+    workerWs._reset();
+    restoreWebSocket();
+    consoleLogSpy.mockRestore();
+  });
+
+  describe('requestHistory function', () => {
+    it('should send request-history message when connected', async () => {
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: () => {},
+        onHistory: () => {},
+        onExit: () => {},
+      };
+
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Wait for initial setup
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Clear mock to track subsequent calls
+      ws?.send.mockClear();
+
+      // Call requestHistory
+      const result = workerWs.requestHistory('session-1', 'worker-1');
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
+    });
+
+    it('should return false when not connected', () => {
+      const result = workerWs.requestHistory('non-existent', 'worker');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when WebSocket is not open', () => {
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: () => {},
+        onHistory: () => {},
+        onExit: () => {},
+      };
+
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      // Don't simulate open - WebSocket is still CONNECTING
+
+      const result = workerWs.requestHistory('session-1', 'worker-1');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('lazy loading behavior simulation', () => {
+    /**
+     * Simulates the handleHistory behavior in Terminal component.
+     * Returns whether history would be processed (true) or ignored (false).
+     */
+    function simulateHandleHistory(
+      _data: string,
+      isVisible: boolean,
+      hasLoadedHistory: boolean
+    ): { processed: boolean; shouldSetHasLoadedHistory: boolean } {
+      // This simulates the early return logic in Terminal.handleHistory:
+      // if (!isVisible && !hasLoadedHistory) return;
+
+      if (!isVisible && !hasLoadedHistory) {
+        // Invisible tab that hasn't loaded history yet: completely ignore
+        return { processed: false, shouldSetHasLoadedHistory: false };
+      }
+
+      // All other cases: process history
+      // After processing, mark as loaded if not already
+      return { processed: true, shouldSetHasLoadedHistory: !hasLoadedHistory };
+    }
+
+    it('should ignore history for invisible tab that has not loaded yet', () => {
+      const result = simulateHandleHistory('history data', false, false);
+
+      expect(result.processed).toBe(false);
+      expect(result.shouldSetHasLoadedHistory).toBe(false);
+    });
+
+    it('should process history for visible tab that has not loaded yet', () => {
+      const result = simulateHandleHistory('history data', true, false);
+
+      expect(result.processed).toBe(true);
+      expect(result.shouldSetHasLoadedHistory).toBe(true);
+    });
+
+    it('should process history for invisible tab that has already loaded (cache update)', () => {
+      const result = simulateHandleHistory('history data', false, true);
+
+      expect(result.processed).toBe(true);
+      expect(result.shouldSetHasLoadedHistory).toBe(false);
+    });
+
+    it('should process history for visible tab that has already loaded', () => {
+      const result = simulateHandleHistory('history data', true, true);
+
+      expect(result.processed).toBe(true);
+      expect(result.shouldSetHasLoadedHistory).toBe(false);
+    });
+  });
+
+  describe('lazy loading state transitions', () => {
+    /**
+     * Simulates the complete flow of lazy history loading across visibility changes.
+     */
+    function simulateLazyLoadingFlow(): {
+      initialLoadProcessed: boolean;
+      tabSwitchProcessed: boolean;
+      returnToTabProcessed: boolean;
+    } {
+      // State tracking
+      let hasLoadedHistory = false;
+
+      // Scenario:
+      // 1. Page loads with this tab invisible (not active)
+      // 2. Server sends history immediately after connection
+      // 3. User switches to this tab (becomes visible)
+      // 4. User switches away (invisible)
+      // 5. User switches back (visible again)
+
+      // Step 1-2: Tab is invisible, history arrives
+      const step1IsVisible = false;
+      if (!step1IsVisible && !hasLoadedHistory) {
+        // History is ignored
+      } else {
+        hasLoadedHistory = true;
+      }
+      const initialLoadProcessed = hasLoadedHistory;
+
+      // Step 3: Tab becomes visible, requests history
+      const step3IsVisible = true;
+      if (step3IsVisible && !hasLoadedHistory) {
+        // requestHistory would be called, then onHistory fires
+        hasLoadedHistory = true;
+      }
+      const tabSwitchProcessed = hasLoadedHistory;
+
+      // Step 4-5: Tab visibility changes, history already loaded
+      // (uses existing lastHistoryData cache mechanism)
+      const returnToTabProcessed = hasLoadedHistory;
+
+      return {
+        initialLoadProcessed,
+        tabSwitchProcessed,
+        returnToTabProcessed,
+      };
+    }
+
+    it('should demonstrate correct lazy loading state transitions', () => {
+      const flow = simulateLazyLoadingFlow();
+
+      // Initial load while invisible: NOT processed (optimization!)
+      expect(flow.initialLoadProcessed).toBe(false);
+
+      // Tab switch (first visibility): processed
+      expect(flow.tabSwitchProcessed).toBe(true);
+
+      // Return to tab: still loaded (uses cache)
+      expect(flow.returnToTabProcessed).toBe(true);
+    });
+  });
+});

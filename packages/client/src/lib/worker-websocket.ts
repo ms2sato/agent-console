@@ -548,6 +548,15 @@ export function sendImage(sessionId: string, workerId: string, data: string, mim
   return sendTerminalMessage(sessionId, workerId, { type: 'image', data, mimeType });
 }
 
+/**
+ * Request history data from the server.
+ * Used when a previously invisible tab becomes visible for the first time.
+ * @returns true if sent, false if not connected
+ */
+export function requestHistory(sessionId: string, workerId: string): boolean {
+  return sendTerminalMessage(sessionId, workerId, { type: 'request-history' });
+}
+
 // Convenience methods for git-diff workers
 export function refreshDiff(sessionId: string, workerId: string): boolean {
   return sendGitDiffMessage(sessionId, workerId, { type: 'refresh' });
