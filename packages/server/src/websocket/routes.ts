@@ -287,82 +287,8 @@ export async function setupWebSocketRoutes(
           },
         });
 
-        // Send history on initial connection with timeout protection and line limit
-        const INITIAL_HISTORY_TIMEOUT_MS = 15000; // 15s for initial connection (may be large file/slow disk)
-        const timeoutPromise = new Promise<null>((_, reject) => {
-          setTimeout(() => reject(new Error('Initial history request timeout')), INITIAL_HISTORY_TIMEOUT_MS);
-        });
-
-        const historyLoadStartTime = performance.now();
-        logger.info({ sessionId, workerId }, 'History loading started');
-
-        try {
-          const historyResult = await Promise.race([
-            sessionManager.getWorkerOutputHistory(
-              sessionId,
-              workerId,
-              0,
-              serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES
-            ),
-            timeoutPromise
-          ]);
-
-          const historyLoadEndTime = performance.now();
-          const historyLoadDuration = historyLoadEndTime - historyLoadStartTime;
-          logger.info(
-            { sessionId, workerId, durationMs: historyLoadDuration.toFixed(2) },
-            'History loading completed'
-          );
-
-          const historySendStartTime = performance.now();
-
-          if (historyResult) {
-            if (historyResult.data) {
-              safeSend({ type: 'history', data: historyResult.data });
-              const historySendEndTime = performance.now();
-              const historySendDuration = historySendEndTime - historySendStartTime;
-              logger.info(
-                { sessionId, workerId, durationMs: historySendDuration.toFixed(2), dataLength: historyResult.data.length },
-                'History send completed'
-              );
-            }
-          } else {
-            // Fallback to in-memory buffer if file not available
-            const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-            if (history) {
-              safeSend({ type: 'history', data: history });
-              const historySendEndTime = performance.now();
-              const historySendDuration = historySendEndTime - historySendStartTime;
-              logger.info(
-                { sessionId, workerId, durationMs: historySendDuration.toFixed(2), dataLength: history.length, source: 'buffer' },
-                'History send completed (from buffer)'
-              );
-            }
-          }
-        } catch (err) {
-          const historyLoadEndTime = performance.now();
-          const historyLoadDuration = historyLoadEndTime - historyLoadStartTime;
-          logger.error(
-            { sessionId, workerId, err, durationMs: historyLoadDuration.toFixed(2) },
-            'Error loading initial history'
-          );
-          // Fallback to in-memory buffer on timeout or error
-          const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-          if (history) {
-            safeSend({ type: 'history', data: history });
-            logger.info(
-              { sessionId, workerId, dataLength: history.length, source: 'buffer-fallback' },
-              'History send completed (fallback to buffer)'
-            );
-          } else {
-            // No history available - send error
-            safeSend({
-              type: 'error',
-              message: 'Loading terminal history timed out. Try refreshing the page.',
-              code: 'HISTORY_LOAD_FAILED'
-            });
-          }
-        }
+        // History is now sent on-demand via request-history message (Pull model)
+        // Client should send request-history when the tab becomes visible and needs history
 
         // Send current activity state on connection (for agent workers)
         if (workerType === 'agent') {
