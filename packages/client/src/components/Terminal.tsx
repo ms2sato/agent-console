@@ -69,6 +69,14 @@ export interface TerminalProps {
 }
 
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar, isVisible = true }: TerminalProps) {
+  // [PERF-DEBUG] Log when Terminal becomes visible - remove after diagnosis
+  useEffect(() => {
+    if (isVisible) {
+      console.log('[Terminal] Became visible:', workerId, performance.now());
+      performance.mark('terminal-visible');
+    }
+  }, [isVisible, workerId]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -106,6 +114,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string) => {
+    // [PERF-DEBUG] Log handleHistory call - remove after diagnosis
+    console.log('[Terminal] handleHistory called:', {
+      dataLength: data?.length,
+      isVisible,
+      hasLoadedHistory,
+      time: performance.now()
+    });
+    performance.mark('terminal-handleHistory-start');
+
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
@@ -136,6 +153,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Check if data is large enough to warrant chunked writing
     const lineCount = (update.newData.match(/\n/g) || []).length;
     const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
+
+    // [PERF-DEBUG] Log data size - remove after diagnosis
+    console.log('[Terminal] handleHistory processing:', {
+      updateType: update.type,
+      lineCount,
+      isLargeData,
+      newDataLength: update.newData.length,
+      time: performance.now()
+    });
 
     // Handle different update types
     if (update.type === 'diff') {
@@ -303,7 +329,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const fitTerminal = () => {
       if (container.offsetHeight > 0 && container.offsetWidth > 0) {
         try {
+          // [PERF-DEBUG] Measure fit() time - remove after diagnosis
+          const fitStart = performance.now();
+          console.log('[Terminal] fit() start:', fitStart);
           fitAddon.fit();
+          const fitEnd = performance.now();
+          console.log('[Terminal] fit() end:', fitEnd, 'duration:', fitEnd - fitStart, 'ms');
         } catch (e) {
           console.warn('Failed to fit terminal:', e);
         }
@@ -444,7 +475,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   // Send resize when connection is established
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
+      // [PERF-DEBUG] Measure connected fit() time - remove after diagnosis
+      const fitStart = performance.now();
+      console.log('[Terminal] connected fit() start:', fitStart);
       fitAddonRef.current.fit();
+      const fitEnd = performance.now();
+      console.log('[Terminal] connected fit() end:', fitEnd, 'duration:', fitEnd - fitStart, 'ms');
       sendResize(terminalRef.current.cols, terminalRef.current.rows);
     }
   }, [connected, sendResize]);

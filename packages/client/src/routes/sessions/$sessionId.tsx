@@ -491,7 +491,23 @@ function TerminalPage() {
         {tabs.map(tab => (
           <button
             key={tab.id}
-            onClick={() => setActiveTabId(tab.id)}
+            onClick={() => {
+              // [PERF-DEBUG] Performance diagnostic logging - remove after diagnosis
+              console.log('[TabClick] Start:', tab.id, performance.now());
+              performance.mark('tab-click-start');
+              setActiveTabId(tab.id);
+              performance.mark('tab-click-state-set');
+              performance.measure('tab-click-to-state-set', 'tab-click-start', 'tab-click-state-set');
+              const stateSetMeasure = performance.getEntriesByName('tab-click-to-state-set').pop();
+              console.log('[TabClick] setActiveTabId took:', stateSetMeasure?.duration, 'ms');
+              requestAnimationFrame(() => {
+                performance.mark('tab-click-raf');
+                console.log('[TabClick] After RAF:', tab.id, performance.now());
+                performance.measure('tab-click-to-raf', 'tab-click-start', 'tab-click-raf');
+                const rafMeasure = performance.getEntriesByName('tab-click-to-raf').pop();
+                console.log('[TabClick] Total to RAF:', rafMeasure?.duration, 'ms');
+              });
+            }}
             className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
               tab.id === activeTabId
                 ? 'bg-slate-800 text-white'
