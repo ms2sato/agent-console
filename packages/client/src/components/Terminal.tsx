@@ -4,9 +4,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
-import * as workerWs from '../lib/worker-websocket.js';
-import { clearAndWrite, isScrolledToBottom } from '../lib/terminal-utils.js';
-import { calculateHistoryUpdate } from '../lib/terminal-history-utils.js';
+import { clearVisibilityTracking } from '../lib/worker-websocket.js';
+import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
 
@@ -56,6 +55,36 @@ async function writeInChunks(
   }
 }
 
+/**
+ * State for conditional rendering support.
+ * Tracks whether xterm.js is initialized and stores history that arrives before initialization.
+ */
+interface TerminalState {
+  isMounted: boolean;           // Is xterm.js initialized?
+  pendingHistory: string | null; // History that arrived before xterm.js was ready
+}
+
+/**
+ * Write full history to terminal, clearing existing content first.
+ * Uses chunked writing for large data to avoid blocking the main thread.
+ */
+async function writeFullHistory(terminal: XTerm, data: string): Promise<void> {
+  const lineCount = (data.match(/\n/g) || []).length;
+  const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
+
+  terminal.clear();
+
+  if (isLargeData) {
+    await writeInChunks(terminal, data);
+  } else {
+    await new Promise<void>((resolve) => {
+      terminal.write(data, resolve);
+    });
+  }
+
+  terminal.scrollToBottom();
+}
+
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
 export interface TerminalProps {
@@ -64,28 +93,21 @@ export interface TerminalProps {
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   hideStatusBar?: boolean;
-  /** Whether this terminal is currently visible (active tab). When false, scroll polling is paused. */
-  isVisible?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar, isVisible = true }: TerminalProps) {
-  // [PERF-DEBUG] Log when Terminal becomes visible - remove after diagnosis
-  useEffect(() => {
-    if (isVisible) {
-      console.log('[Terminal] Became visible:', workerId, performance.now());
-      performance.mark('terminal-visible');
-    }
-  }, [isVisible, workerId]);
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const stateRef = useRef<TerminalState>({
+    isMounted: false,
+    pendingHistory: null,
+  });
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  // Track whether history has been loaded for this terminal (prevents loading on invisible tabs)
-  const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -114,149 +136,27 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string) => {
-    // [PERF-DEBUG] Log handleHistory call - remove after diagnosis
-    console.log('[Terminal] handleHistory called:', {
-      dataLength: data?.length,
-      isVisible,
-      hasLoadedHistory,
-      time: performance.now()
-    });
-    performance.mark('terminal-handleHistory-start');
+    if (!data) return;
+
+    // xterm.js not ready yet -> store temporarily
+    if (!stateRef.current.isMounted) {
+      stateRef.current.pendingHistory = data;
+      return;
+    }
 
     const terminal = terminalRef.current;
     if (!terminal) {
+      console.warn('[Terminal] isMounted is true but terminalRef is null');
       return;
     }
 
-    if (!data) return;
-
-    // Lazy loading optimization: defer history loading for invisible tabs
-    // This prevents all tabs from loading history simultaneously on page reload
-    if (!isVisible && !hasLoadedHistory) {
-      // Invisible tab that hasn't loaded history yet: completely ignore
-      // History will be loaded when this tab becomes visible for the first time
-      return;
-    }
-
-    // Get lastHistoryData from worker-websocket (persists across tab switches)
-    const lastHistoryData = workerWs.getLastHistoryData(sessionId, workerId);
-    const update = calculateHistoryUpdate(lastHistoryData, data);
-
-    // Update the cached history data in worker-websocket
-    workerWs.setLastHistoryData(sessionId, workerId, data);
-
-    // Mark as loaded after first successful history load
-    if (!hasLoadedHistory) {
-      setHasLoadedHistory(true);
-    }
-
-    // Check if data is large enough to warrant chunked writing
-    const lineCount = (update.newData.match(/\n/g) || []).length;
-    const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
-
-    // [PERF-DEBUG] Log data size - remove after diagnosis
-    console.log('[Terminal] handleHistory processing:', {
-      updateType: update.type,
-      lineCount,
-      isLargeData,
-      newDataLength: update.newData.length,
-      time: performance.now()
-    });
-
-    // Handle different update types
-    if (update.type === 'diff') {
-      // Append-only update (tab switch) - write only the diff
-      if (!update.newData) return; // No new content to write
-
-      // Capture scroll state BEFORE async write
-      // Check if user was at bottom - if so, let natural scroll happen after write
-      let wasAtBottom = false;
-      let scrollPosition = 0;
-      try {
-        wasAtBottom = isScrolledToBottom(terminal);
-        if (!wasAtBottom) {
-          scrollPosition = terminal.buffer.active.viewportY;
-        }
-      } catch (e) {
-        console.warn('[Terminal] Failed to capture scroll position:', e);
-      }
-
-      // Helper to restore scroll position after write completes
-      const restoreScrollPosition = () => {
-        if (!wasAtBottom) {
-          try {
-            const currentTerminal = terminalRef.current;
-            if (currentTerminal) {
-              // Validate scroll position is within valid range
-              const maxScrollPosition = Math.max(0, currentTerminal.buffer.active.length - currentTerminal.rows);
-              const safePosition = Math.min(scrollPosition, maxScrollPosition);
-              currentTerminal.scrollToLine(safePosition);
-            }
-          } catch (e) {
-            console.warn('[Terminal] Failed to restore scroll position:', e);
-          }
-        }
+    // xterm.js is ready -> write full history
+    writeFullHistory(terminal, data)
+      .then(() => {
         updateScrollButtonVisibility();
-      };
-
-      if (isLargeData) {
-        // Large data: write in chunks to avoid blocking main thread
-        console.log(`[Terminal] Writing ${lineCount} lines in chunks`);
-        writeInChunks(terminal, update.newData)
-          .then(restoreScrollPosition)
-          .catch((e) => console.error('[Terminal] Failed to write history chunks:', e));
-      } else {
-        // Small data: write immediately
-        try {
-          terminal.write(update.newData, restoreScrollPosition);
-        } catch (e) {
-          console.error('[Terminal] Failed to write history diff:', e);
-        }
-      }
-    } else {
-      // Initial load or full rewrite - clear and write all data
-      if (isLargeData) {
-        // Large data: write in chunks to avoid blocking main thread
-        console.log(`[Terminal] Loading ${lineCount} lines in chunks`);
-        clearAndWrite(terminal, () => writeInChunks(terminal, update.newData))
-          .then(() => {
-            // Scroll to bottom only on initial load
-            if (update.shouldScrollToBottom) {
-              try {
-                terminalRef.current?.scrollToBottom();
-              } catch (e) {
-                console.warn('[Terminal] Failed to scroll to bottom:', e);
-              }
-            }
-            updateScrollButtonVisibility();
-          })
-          .catch((e) => console.error('[Terminal] Failed to write history:', e));
-      } else {
-        // Small data: write immediately
-        clearAndWrite(terminal, () => {
-          return new Promise((resolve, reject) => {
-            try {
-              terminal.write(update.newData, resolve);
-            } catch (e) {
-              reject(e);
-            }
-          });
-        })
-          .then(() => {
-            // Scroll to bottom only on initial load
-            if (update.shouldScrollToBottom) {
-              try {
-                terminalRef.current?.scrollToBottom();
-              } catch (e) {
-                console.warn('[Terminal] Failed to scroll to bottom:', e);
-              }
-            }
-            updateScrollButtonVisibility();
-          })
-          .catch((e) => console.error('[Terminal] Failed to write history:', e));
-      }
-    }
-  }, [sessionId, workerId, updateScrollButtonVisibility, isVisible, hasLoadedHistory]);
+      })
+      .catch((e) => console.error('[Terminal] Failed to write history:', e));
+  }, [updateScrollButtonVisibility]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -283,15 +183,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   useEffect(() => {
     setWorkerError(error);
   }, [error]);
-
-  // Request history when tab becomes visible for the first time
-  // This enables lazy loading of history for tabs that weren't initially active
-  useEffect(() => {
-    if (isVisible && !hasLoadedHistory && connected) {
-      // Request history from server when this tab becomes visible for the first time
-      workerWs.requestHistory(sessionId, workerId);
-    }
-  }, [isVisible, hasLoadedHistory, connected, sessionId, workerId]);
 
   // Initialize xterm.js
   useEffect(() => {
@@ -325,16 +216,21 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
+    // Mark as mounted for conditional rendering support
+    stateRef.current.isMounted = true;
+
+    // Process stored history if any (handles race condition where history arrives before xterm.js init)
+    if (stateRef.current.pendingHistory) {
+      writeFullHistory(terminal, stateRef.current.pendingHistory)
+        .catch((e) => console.error('[Terminal] Failed to write pending history:', e));
+      stateRef.current.pendingHistory = null;
+    }
+
     // Delay fit to ensure container has dimensions
     const fitTerminal = () => {
       if (container.offsetHeight > 0 && container.offsetWidth > 0) {
         try {
-          // [PERF-DEBUG] Measure fit() time - remove after diagnosis
-          const fitStart = performance.now();
-          console.log('[Terminal] fit() start:', fitStart);
           fitAddon.fit();
-          const fitEnd = performance.now();
-          console.log('[Terminal] fit() end:', fitEnd, 'duration:', fitEnd - fitStart, 'ms');
         } catch (e) {
           console.warn('Failed to fit terminal:', e);
         }
@@ -446,6 +342,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
+      // Reset state for conditional rendering support
+      stateRef.current = { isMounted: false, pendingHistory: null };
+
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
@@ -475,12 +374,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   // Send resize when connection is established
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
-      // [PERF-DEBUG] Measure connected fit() time - remove after diagnosis
-      const fitStart = performance.now();
-      console.log('[Terminal] connected fit() start:', fitStart);
       fitAddonRef.current.fit();
-      const fitEnd = performance.now();
-      console.log('[Terminal] connected fit() end:', fitEnd, 'duration:', fitEnd - fitStart, 'ms');
       sendResize(terminalRef.current.cols, terminalRef.current.rows);
     }
   }, [connected, sendResize]);
@@ -488,7 +382,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   // Clean up visibility tracking on unmount to prevent stale reconnection
   useEffect(() => {
     return () => {
-      workerWs.clearVisibilityTracking(sessionId, workerId);
+      clearVisibilityTracking(sessionId, workerId);
     };
   }, [sessionId, workerId]);
 
@@ -550,25 +444,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 }
 
 /**
- * Memoized Terminal component that prevents unnecessary re-renders for inactive tabs.
+ * Memoized Terminal component that prevents unnecessary re-renders.
+ *
+ * With conditional rendering, Terminal only renders when active, so the main
+ * optimization is to ignore callback reference changes from parent re-renders.
  *
  * Optimization rules:
- * - Both inactive: skip re-render (props change doesn't affect invisible terminal)
- * - Visibility changed: re-render (need to show/hide)
  * - sessionId/workerId changed: re-render (different terminal)
+ * - hideStatusBar changed: re-render (UI change)
  * - Only callback refs changed: skip re-render (avoid re-render from parent)
  */
 export const MemoizedTerminal = React.memo(Terminal, (prevProps, nextProps) => {
-  // Both inactive: skip re-render
-  if (!prevProps.isVisible && !nextProps.isVisible) {
-    return true; // No change (skip re-render)
-  }
-
-  // Visibility changed: need re-render
-  if (prevProps.isVisible !== nextProps.isVisible) {
-    return false; // Changed (re-render)
-  }
-
   // Identity changed: need re-render
   if (
     prevProps.sessionId !== nextProps.sessionId ||

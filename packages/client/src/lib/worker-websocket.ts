@@ -99,8 +99,6 @@ interface WorkerConnection {
   historyRequestTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
-  // Terminal history data for diff calculation (persists across tab switches)
-  lastHistoryData: string;
 }
 
 // Callbacks for terminal/agent workers
@@ -231,9 +229,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     ...(callbacks.type === 'git-diff' ? { diffData: null, diffError: null, diffLoading: true } : {}),
   };
 
-  // Preserve lastHistoryData from existing connection for diff calculation
-  const lastHistoryData = existingConn.lastHistoryData;
-
   const conn: WorkerConnection = {
     ws,
     state: initialState,
@@ -243,7 +238,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     historyRequestTimeout: null,
     sessionId,
     workerId,
-    lastHistoryData,
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -297,8 +291,6 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCallbacks): void {
   ws.onopen = () => {
     const conn = connections.get(key);
-    const [sessionId, workerId] = key.split(':');
-    console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket connection established (onopen)`);
 
     if (conn) {
       conn.retryCount = 0; // Reset retry count on successful connection
@@ -310,20 +302,9 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     // Note: Do NOT send request-history here on initial connection.
     // The server automatically sends history when a client connects.
     // Tab switch (remount with existing OPEN connection) handles history request in connect().
-    console.log(`[WorkerWS] Connected: ${key}`);
   };
 
   ws.onmessage = (event) => {
-    const messageStart = performance.now();
-    const [sessionId, workerId] = key.split(':');
-    const dataLength = typeof event.data === 'string' ? event.data.length : 0;
-    console.log('[WorkerWS] Message received:', {
-      sessionId,
-      workerId,
-      dataLength,
-      time: messageStart
-    });
-
     // Get current callbacks from connection (may be updated via updateCallbacks)
     const currentConn = connections.get(key);
     if (!currentConn) return;
@@ -351,17 +332,6 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
       if (currentCallbacks.type === 'git-diff') {
         updateState(key, { diffError: 'Failed to parse server message', diffLoading: false });
       }
-    }
-
-    const messageEnd = performance.now();
-    const duration = messageEnd - messageStart;
-    if (duration > 100) { // Log slow messages (>100ms)
-      console.warn('[WorkerWS] SLOW message handler:', {
-        sessionId,
-        workerId,
-        duration,
-        dataLength
-      });
     }
   };
 
@@ -406,15 +376,12 @@ export function connect(
 ): boolean {
   const key = getConnectionKey(sessionId, workerId);
 
-  console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket connect() called`);
-
   // Check existing connection
   const existing = connections.get(key);
   if (existing) {
     // Skip if already connecting
     if (existing.ws.readyState === WebSocket.CONNECTING) {
       // Connection is still being established - just update callbacks
-      console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket already connecting, updating callbacks only`);
       existing.callbacks = callbacks;
       return false;
     }
@@ -423,7 +390,6 @@ export function connect(
     // This avoids unnecessary connection churn when component remounts
     if (existing.ws.readyState === WebSocket.OPEN) {
       // Update callbacks for the new component instance
-      console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket already open, requesting history`);
       existing.callbacks = callbacks;
 
       // Debounce history requests to prevent rapid duplicate requests
@@ -453,7 +419,6 @@ export function connect(
     }
   }
 
-  console.log(`[Perf] ${new Date().toISOString()} - ${sessionId}/${workerId} - WorkerWebSocket creating new WebSocket`);
   const wsUrl = getWorkerWsUrl(sessionId, workerId);
   const ws = new WebSocket(wsUrl);
 
@@ -471,7 +436,6 @@ export function connect(
     historyRequestTimeout: null,
     sessionId,
     workerId,
-    lastHistoryData: '',
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -623,28 +587,6 @@ export function isConnected(sessionId: string, workerId: string): boolean {
   const key = getConnectionKey(sessionId, workerId);
   const conn = connections.get(key);
   return conn?.ws.readyState === WebSocket.OPEN;
-}
-
-/**
- * Get the last history data for a worker (for diff calculation).
- * Returns empty string if connection doesn't exist.
- */
-export function getLastHistoryData(sessionId: string, workerId: string): string {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-  return conn?.lastHistoryData ?? '';
-}
-
-/**
- * Set the last history data for a worker (for diff calculation).
- * Call this after processing history to enable accurate diff on next update.
- */
-export function setLastHistoryData(sessionId: string, workerId: string, data: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-  if (conn) {
-    conn.lastHistoryData = data;
-  }
 }
 
 /**

@@ -144,21 +144,7 @@ function TerminalPage() {
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeTabId, setActiveTabIdRaw] = useState<string | null>(null);
-
-  // [PERF-DEBUG] Track setActiveTabId calls
-  const setActiveTabIdCount = useRef(0);
-  const wrappedSetActiveTabId = useCallback((id: string | null) => {
-    setActiveTabIdCount.current++;
-    console.log('[TerminalPage] setActiveTabId called:', {
-      newId: id,
-      oldId: activeTabId,
-      callCount: setActiveTabIdCount.current,
-      time: performance.now()
-    });
-    setActiveTabIdRaw(id);
-  }, [activeTabId]);
-  const setActiveTabId = wrappedSetActiveTabId;
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
   // Local branch name state (can be updated by settings dialog)
   const [branchName, setBranchName] = useState<string>('');
@@ -174,22 +160,11 @@ function TerminalPage() {
   }, [state]);
 
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
-    console.log('[TerminalPage] handleStatusChange called:', {
-      status,
-      info,
-      time: performance.now(),
-      stack: new Error().stack?.split('\n').slice(2, 5).join('\n')
-    });
     setConnectionStatus(status);
     setExitInfo(info);
   }, []);
 
   const handleActivityChange = useCallback((newState: AgentActivityState) => {
-    console.log('[TerminalPage] handleActivityChange called:', {
-      newState,
-      time: performance.now(),
-      stack: new Error().stack?.split('\n').slice(2, 5).join('\n')
-    });
     setActivityState(newState);
   }, []);
 
@@ -202,27 +177,12 @@ function TerminalPage() {
   const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, state: AgentActivityState) => {
     // Only process activity events for the current session and active worker
     if (eventSessionId === sessionId && workerId === activeTabIdRef.current) {
-      console.log('[TerminalPage] setActivityState from app-ws:', {
-        state,
-        workerId,
-        time: performance.now()
-      });
       setActivityState(state);
     }
   }, [sessionId]);
 
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
-  });
-
-  // [PERF-DEBUG] Track render completion via useEffect
-  useEffect(() => {
-    const renderEnd = performance.now();
-    console.log('[TerminalPage] Render complete (useEffect):', {
-      activeTabId,
-      tabCount: tabs.length,
-      time: renderEnd
-    });
   });
 
   // Update page title and favicon based on state
@@ -289,12 +249,6 @@ function TerminalPage() {
     if (state.type === 'active' && tabs.length === 0) {
       const workers = state.session.workers;
       const newTabs = workersToTabs(workers);
-      console.log('[TerminalPage] setTabs called:', {
-        reason: 'initialize tabs (state became active)',
-        oldCount: tabs.length,
-        newCount: newTabs.length,
-        time: performance.now()
-      });
       setTabs(newTabs);
       // Set active tab to first agent worker if exists, otherwise first tab
       const firstAgent = findFirstAgentWorker(workers);
@@ -317,11 +271,6 @@ function TerminalPage() {
         workerType: 'terminal',
         name: worker.name,
       };
-      console.log('[TerminalPage] setTabs called:', {
-        reason: 'terminal created',
-        newTabId: worker.id,
-        time: performance.now()
-      });
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
     } catch (error) {
@@ -340,11 +289,6 @@ function TerminalPage() {
 
     try {
       await deleteWorker(sessionId, tabId);
-      console.log('[TerminalPage] setTabs called:', {
-        reason: 'worker deleted',
-        deletedTabId: tabId,
-        time: performance.now()
-      });
       setTabs(prev => {
         const newTabs = prev.filter(t => t.id !== tabId);
         // If closing the active tab, switch to first agent or first remaining tab
@@ -406,10 +350,6 @@ function TerminalPage() {
       const updatedSession = await getSession(sessionId);
       if (updatedSession && updatedSession.status === 'active') {
         // Reset tabs to pick up new worker state
-        console.log('[TerminalPage] setTabs called:', {
-          reason: 'restart - reset tabs',
-          time: performance.now()
-        });
         setTabs([]);
         setState({ type: 'active', session: updatedSession });
       } else {
@@ -530,40 +470,14 @@ function TerminalPage() {
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
-  // [PERF-DEBUG] Render timing
-  const renderStart = performance.now();
-  console.log('[TerminalPage] Render start:', {
-    activeTabId,
-    tabCount: tabs.length,
-    time: renderStart
-  });
-
-  // [PERF-DEBUG] Tab buttons map timing
-  const buttonsMapStart = performance.now();
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
       onClick={() => {
-        // [PERF-DEBUG] Performance diagnostic logging - remove after diagnosis
-        console.log('[TabClick] Start:', tab.id, performance.now());
-        performance.mark('tab-click-start');
-
         // Use startTransition to mark this update as non-urgent
         // This keeps the UI responsive during the state update
         startTransition(() => {
           setActiveTabId(tab.id);
-        });
-
-        performance.mark('tab-click-state-set');
-        performance.measure('tab-click-to-state-set', 'tab-click-start', 'tab-click-state-set');
-        const stateSetMeasure = performance.getEntriesByName('tab-click-to-state-set').pop();
-        console.log('[TabClick] setActiveTabId took:', stateSetMeasure?.duration, 'ms');
-        requestAnimationFrame(() => {
-          performance.mark('tab-click-raf');
-          console.log('[TabClick] After RAF:', tab.id, performance.now());
-          performance.measure('tab-click-to-raf', 'tab-click-start', 'tab-click-raf');
-          const rafMeasure = performance.getEntriesByName('tab-click-to-raf').pop();
-          console.log('[TabClick] Total to RAF:', rafMeasure?.duration, 'ms');
         });
       }}
       className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
@@ -593,54 +507,41 @@ function TerminalPage() {
       )}
     </button>
   ));
-  console.log('[TerminalPage] Tab buttons map took:', performance.now() - buttonsMapStart, 'ms');
 
-  // [PERF-DEBUG] Tab content map timing
-  const contentMapStart = performance.now();
-  const tabContents = tabs.map(tab => (
+  // Render only the active tab (conditional rendering)
+  // Using key={activeTab.id} ensures Terminal remounts on tab switch
+  const activeTabContent = activeTab ? (
     <div
-      key={tab.id}
-      className={`absolute inset-0 flex flex-col ${
-        tab.id === activeTabId ? 'z-10' : 'z-0 hidden'
-      }`}
+      key={activeTab.id}
+      className="absolute inset-0 flex flex-col"
     >
       <ErrorBoundary
         fallback={(error, resetError) => (
           <WorkerErrorFallback
             error={error}
-            workerType={tab.workerType}
-            workerName={tab.name}
+            workerType={activeTab.workerType}
+            workerName={activeTab.name}
             onRetry={resetError}
           />
         )}
       >
-        {tab.workerType === 'git-diff' ? (
+        {activeTab.workerType === 'git-diff' ? (
           <GitDiffWorkerView
             sessionId={sessionId}
-            workerId={tab.id}
+            workerId={activeTab.id}
           />
         ) : (
           <Terminal
             sessionId={sessionId}
-            workerId={tab.id}
-            onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
-            onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
+            workerId={activeTab.id}
+            onStatusChange={handleStatusChange}
+            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
             hideStatusBar
-            isVisible={tab.id === activeTabId}
           />
         )}
       </ErrorBoundary>
     </div>
-  ));
-  console.log('[TerminalPage] Tab content map took:', performance.now() - contentMapStart, 'ms');
-
-  // [PERF-DEBUG] Log render end (before return)
-  console.log('[TerminalPage] Render JSX creation complete:', {
-    activeTabId,
-    tabCount: tabs.length,
-    totalTime: performance.now() - renderStart,
-    time: performance.now()
-  });
+  ) : null;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -693,9 +594,9 @@ function TerminalPage() {
         )}
       </div>
 
-      {/* Worker panels - render all but only show active */}
+      {/* Worker panel - render only active tab (conditional rendering) */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
-        {tabContents}
+        {activeTabContent}
       </div>
 
       {/* Status bar at bottom */}
