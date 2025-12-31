@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
@@ -547,7 +547,13 @@ function TerminalPage() {
         // [PERF-DEBUG] Performance diagnostic logging - remove after diagnosis
         console.log('[TabClick] Start:', tab.id, performance.now());
         performance.mark('tab-click-start');
-        setActiveTabId(tab.id);
+
+        // Use startTransition to mark this update as non-urgent
+        // This keeps the UI responsive during the state update
+        startTransition(() => {
+          setActiveTabId(tab.id);
+        });
+
         performance.mark('tab-click-state-set');
         performance.measure('tab-click-to-state-set', 'tab-click-start', 'tab-click-state-set');
         const stateSetMeasure = performance.getEntriesByName('tab-click-to-state-set').pop();
