@@ -502,7 +502,7 @@ describe('Lazy history loading optimization', () => {
       const tabSwitchProcessed = hasLoadedHistory;
 
       // Step 4-5: Tab visibility changes, history already loaded
-      // (uses existing lastHistoryData cache mechanism)
+      // History already loaded, no need to re-request on return
       const returnToTabProcessed = hasLoadedHistory;
 
       return {

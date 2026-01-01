@@ -190,7 +190,11 @@ export class WorkerOutputFileManager {
         await fs.writeFile(filePath, combinedContent, 'utf-8');
 
         // Delete the old compressed file
-        await fs.unlink(actualFile.path).catch(() => {});
+        await fs.unlink(actualFile.path).catch((err) => {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            logger.warn({ sessionId, workerId, path: actualFile.path, err }, 'Failed to delete legacy compressed file during migration');
+          }
+        });
 
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
