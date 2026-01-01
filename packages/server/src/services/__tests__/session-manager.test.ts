@@ -152,7 +152,8 @@ describe('SessionManager', () => {
       };
 
       const session = await manager.createSession(request);
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
         onExit: mock(() => {}),
@@ -176,7 +177,8 @@ describe('SessionManager', () => {
       };
 
       const session = await manager.createSession(request);
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData: mock(() => {}),
         onExit,
@@ -199,7 +201,8 @@ describe('SessionManager', () => {
       };
 
       const session = await manager.createSession(request);
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Simulate PTY output
       const pty = ptyFactory.instances[0];
@@ -259,7 +262,8 @@ describe('SessionManager', () => {
       };
 
       const session = await manager.createSession(sessionRequest);
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const result = await manager.deleteWorker(session.id, workerId);
 
@@ -336,7 +340,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const result = manager.writeWorkerInput(session.id, workerId, 'hello');
 
@@ -361,7 +366,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const result = manager.resizeWorker(session.id, workerId, 80, 24);
 
@@ -416,7 +422,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const newOnData = mock(() => {});
       const newOnExit = mock(() => {});
@@ -443,7 +450,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const connectionId = manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
@@ -469,7 +477,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const onData1 = mock(() => {});
       const onData2 = mock(() => {});
@@ -524,7 +533,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       const state = manager.getWorkerActivityState(session.id, workerId);
 
@@ -552,7 +562,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Generate enough output to trigger 'active' state
       const pty = ptyFactory.instances[0];
@@ -715,7 +726,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Generate large output (> 100KB)
       const pty = ptyFactory.instances[0];
@@ -737,7 +749,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Empty string should still be written
       const result = manager.writeWorkerInput(session.id, workerId, '');
@@ -753,7 +766,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
         onExit: mock(() => {}),
@@ -777,7 +791,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
         onExit: mock(() => {}),
@@ -800,7 +815,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData,
         onExit: mock(() => {}),
@@ -838,7 +854,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // PTY count before restore
       const ptyCountBefore = ptyFactory.instances.length;
@@ -861,7 +878,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Get persisted session count before
       const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
@@ -990,7 +1008,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Get original PID from persistence
       const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
@@ -1065,7 +1084,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // PTY count after initial creation
       const ptyCountAfterCreate = ptyFactory.instances.length;
@@ -1089,7 +1109,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // PTY count after initial creation
       const ptyCountAfterCreate = ptyFactory.instances.length;
@@ -1113,7 +1134,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Concurrent calls should not throw (idempotent behavior prevents resource leaks)
       await expect(Promise.all([
@@ -1169,7 +1191,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Simulate server restart and path no longer exists
       mockProcess.markDead(process.pid);
@@ -1232,7 +1255,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
 
       // Simulate server restart but path still exists
       mockProcess.markDead(process.pid);
@@ -1264,7 +1288,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const originalWorkerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const originalWorkerId = agentWorker.id;
 
       const ptyCountBefore = ptyFactory.instances.length;
 
@@ -1287,8 +1312,9 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const originalWorkerId = session.workers[0].id;
-      const originalCreatedAt = session.workers[0].createdAt;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const originalWorkerId = agentWorker.id;
+      const originalCreatedAt = agentWorker.createdAt;
 
       // Wait a bit to ensure time passes
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -1387,7 +1413,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData: throwingCallback,
         onExit: mock(() => {}),
@@ -1409,7 +1436,8 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
       manager.attachWorkerCallbacks(session.id, workerId, {
         onData: mock(() => {}),
         onExit,
@@ -1427,7 +1455,8 @@ describe('SessionManager', () => {
       // Create two sessions
       await manager.createSession({ type: 'quick', locationPath: '/path/1', agentId: 'claude-code' });
       const session2 = await manager.createSession({ type: 'quick', locationPath: '/path/2', agentId: 'claude-code' });
-      const workerId2 = session2.workers[0].id;
+      const agentWorker2 = session2.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId2 = agentWorker2.id;
 
       // First session crashes (signal 11 = SIGSEGV)
       ptyFactory.instances[0].simulateExit(1, 11);

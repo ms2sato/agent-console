@@ -1,14 +1,89 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
-import * as workerWs from '../lib/worker-websocket.js';
-import { clearAndWrite, isScrolledToBottom } from '../lib/terminal-utils.js';
-import { calculateHistoryUpdate } from '../lib/terminal-history-utils.js';
+import { clearVisibilityTracking } from '../lib/worker-websocket.js';
+import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
+
+/** Threshold for large data that should be written in chunks */
+const LARGE_DATA_LINE_THRESHOLD = 1000;
+
+/** Number of lines per chunk when writing large data */
+const CHUNK_SIZE = 50;
+
+/**
+ * Write data to terminal in chunks to avoid blocking the main thread.
+ * Uses requestIdleCallback to write during idle periods.
+ */
+async function writeInChunks(
+  terminal: XTerm,
+  data: string,
+  options: {
+    chunkSize?: number;
+    onProgress?: (written: number, total: number) => void;
+  } = {}
+): Promise<void> {
+  const { chunkSize = CHUNK_SIZE, onProgress } = options;
+
+  // Split by lines to preserve ANSI escape sequences
+  const lines = data.split('\n');
+  const totalLines = lines.length;
+
+  for (let i = 0; i < totalLines; i += chunkSize) {
+    const chunk = lines.slice(i, i + chunkSize).join('\n');
+
+    // Write chunk during idle time
+    await new Promise<void>((resolve) => {
+      const writeChunk = () => {
+        terminal.write(chunk + (i + chunkSize < totalLines ? '\n' : ''), () => {
+          onProgress?.(Math.min(i + chunkSize, totalLines), totalLines);
+          resolve();
+        });
+      };
+
+      // Use requestIdleCallback if available, otherwise requestAnimationFrame
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(writeChunk, { timeout: 50 });
+      } else {
+        requestAnimationFrame(writeChunk);
+      }
+    });
+  }
+}
+
+/**
+ * State for conditional rendering support.
+ * Tracks whether xterm.js is initialized and stores history that arrives before initialization.
+ */
+interface TerminalState {
+  isMounted: boolean;           // Is xterm.js initialized?
+  pendingHistory: string | null; // History that arrived before xterm.js was ready
+}
+
+/**
+ * Write full history to terminal, clearing existing content first.
+ * Uses chunked writing for large data to avoid blocking the main thread.
+ */
+async function writeFullHistory(terminal: XTerm, data: string): Promise<void> {
+  const lineCount = (data.match(/\n/g) || []).length;
+  const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
+
+  terminal.clear();
+
+  if (isLargeData) {
+    await writeInChunks(terminal, data);
+  } else {
+    await new Promise<void>((resolve) => {
+      terminal.write(data, resolve);
+    });
+  }
+
+  terminal.scrollToBottom();
+}
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
@@ -21,9 +96,14 @@ export interface TerminalProps {
 }
 
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const stateRef = useRef<TerminalState>({
+    isMounted: false,
+    pendingHistory: null,
+  });
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
@@ -56,85 +136,26 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string) => {
+    if (!data) return;
+
+    // xterm.js not ready yet -> store temporarily
+    if (!stateRef.current.isMounted) {
+      stateRef.current.pendingHistory = data;
+      return;
+    }
+
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
 
-    if (!data) return;
-
-    // Get lastHistoryData from worker-websocket (persists across tab switches)
-    const lastHistoryData = workerWs.getLastHistoryData(sessionId, workerId);
-    const update = calculateHistoryUpdate(lastHistoryData, data);
-
-    // Update the cached history data in worker-websocket
-    workerWs.setLastHistoryData(sessionId, workerId, data);
-
-    // Handle different update types
-    if (update.type === 'diff') {
-      // Append-only update (tab switch) - write only the diff
-      if (!update.newData) return; // No new content to write
-
-      // Capture scroll state BEFORE async write
-      // Check if user was at bottom - if so, let natural scroll happen after write
-      let wasAtBottom = false;
-      let scrollPosition = 0;
-      try {
-        wasAtBottom = isScrolledToBottom(terminal);
-        if (!wasAtBottom) {
-          scrollPosition = terminal.buffer.active.viewportY;
-        }
-      } catch (e) {
-        console.warn('[Terminal] Failed to capture scroll position:', e);
-      }
-
-      try {
-        terminal.write(update.newData, () => {
-          // Only restore scroll position if user was NOT at bottom
-          // If user was at bottom, let xterm's natural scroll behavior show new content
-          if (!wasAtBottom) {
-            try {
-              const currentTerminal = terminalRef.current;
-              if (currentTerminal) {
-                // Validate scroll position is within valid range
-                const maxScrollPosition = Math.max(0, currentTerminal.buffer.active.length - currentTerminal.rows);
-                const safePosition = Math.min(scrollPosition, maxScrollPosition);
-                currentTerminal.scrollToLine(safePosition);
-              }
-            } catch (e) {
-              console.warn('[Terminal] Failed to restore scroll position:', e);
-            }
-          }
-          updateScrollButtonVisibility();
-        });
-      } catch (e) {
-        console.error('[Terminal] Failed to write history diff:', e);
-      }
-    } else {
-      // Initial load or full rewrite - clear and write all data
-      clearAndWrite(terminal, () => {
-        return new Promise((resolve, reject) => {
-          try {
-            terminal.write(update.newData, resolve);
-          } catch (e) {
-            reject(e);
-          }
-        });
+    // xterm.js is ready -> write full history
+    writeFullHistory(terminal, data)
+      .then(() => {
+        updateScrollButtonVisibility();
       })
-        .then(() => {
-          // Scroll to bottom only on initial load
-          if (update.shouldScrollToBottom) {
-            try {
-              terminalRef.current?.scrollToBottom();
-            } catch (e) {
-              console.warn('[Terminal] Failed to scroll to bottom:', e);
-            }
-          }
-          updateScrollButtonVisibility();
-        })
-        .catch((e) => console.error('[Terminal] Failed to write history:', e));
-    }
-  }, [sessionId, workerId, updateScrollButtonVisibility]);
+      .catch((e) => console.error('[Terminal] Failed to write history:', e));
+  }, [updateScrollButtonVisibility]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -193,6 +214,16 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+
+    // Mark as mounted for conditional rendering support
+    stateRef.current.isMounted = true;
+
+    // Process stored history if any (handles race condition where history arrives before xterm.js init)
+    if (stateRef.current.pendingHistory) {
+      writeFullHistory(terminal, stateRef.current.pendingHistory)
+        .catch((e) => console.error('[Terminal] Failed to write pending history:', e));
+      stateRef.current.pendingHistory = null;
+    }
 
     // Delay fit to ensure container has dimensions
     const fitTerminal = () => {
@@ -309,19 +340,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       subtree: true
     });
 
-    // Polling fallback to detect scroll changes that other methods might miss
-    let lastScrollTop = 0;
-    const scrollCheckInterval = setInterval(() => {
-      const viewport = container.querySelector('.xterm-viewport') as HTMLElement;
-      if (viewport && viewport.scrollTop !== lastScrollTop) {
-        lastScrollTop = viewport.scrollTop;
-        updateScrollButtonVisibility();
-      }
-    }, 100);
-
     return () => {
+      // Reset state for conditional rendering support
+      stateRef.current = { isMounted: false, pendingHistory: null };
+
       cancelAnimationFrame(rafId);
-      clearInterval(scrollCheckInterval);
       viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
       window.removeEventListener('resize', handleResize);
@@ -358,7 +381,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   // Clean up visibility tracking on unmount to prevent stale reconnection
   useEffect(() => {
     return () => {
-      workerWs.clearVisibilityTracking(sessionId, workerId);
+      clearVisibilityTracking(sessionId, workerId);
     };
   }, [sessionId, workerId]);
 
@@ -418,3 +441,33 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     </div>
   );
 }
+
+/**
+ * Memoized Terminal component that prevents unnecessary re-renders.
+ *
+ * With conditional rendering, Terminal only renders when active, so the main
+ * optimization is to ignore callback reference changes from parent re-renders.
+ *
+ * Optimization rules:
+ * - sessionId/workerId changed: re-render (different terminal)
+ * - hideStatusBar changed: re-render (UI change)
+ * - Only callback refs changed: skip re-render (avoid re-render from parent)
+ */
+export const MemoizedTerminal = React.memo(Terminal, (prevProps, nextProps) => {
+  // Identity changed: need re-render
+  if (
+    prevProps.sessionId !== nextProps.sessionId ||
+    prevProps.workerId !== nextProps.workerId
+  ) {
+    return false; // Changed (re-render)
+  }
+
+  // hideStatusBar changed: need re-render
+  if (prevProps.hideStatusBar !== nextProps.hideStatusBar) {
+    return false; // Changed (re-render)
+  }
+
+  // Ignore callback reference changes (onStatusChange, onActivityChange)
+  // These are likely recreated on parent re-render but functionally equivalent
+  return true; // No meaningful change (skip re-render)
+});

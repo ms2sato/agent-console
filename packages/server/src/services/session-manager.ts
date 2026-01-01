@@ -612,23 +612,33 @@ export class SessionManager {
     let worker: InternalWorker;
 
     if (request.type === 'agent') {
-      worker = await this.initializeAgentWorker({
+      // Initialize worker without PTY, then activate PTY
+      const agentWorker = await this.initializeAgentWorker({
         id: workerId,
         name: workerName,
         createdAt,
+        agentId: request.agentId,
+      });
+      await this.activateAgentWorkerPty(agentWorker, {
         sessionId,
         locationPath: session.locationPath,
-        agentId: request.agentId,
+        agentId: agentWorker.agentId,
         continueConversation,
         initialPrompt,
       });
+      worker = agentWorker;
     } else if (request.type === 'terminal') {
-      worker = this.initializeTerminalWorker({
+      // Initialize worker without PTY, then activate PTY
+      const terminalWorker = this.initializeTerminalWorker({
         id: workerId,
         name: workerName,
         createdAt,
+      });
+      this.activateTerminalWorkerPty(terminalWorker, {
+        sessionId,
         locationPath: session.locationPath,
       });
+      worker = terminalWorker;
     } else {
       // git-diff worker (async initialization for base commit calculation)
       worker = await this.initializeGitDiffWorker({
@@ -707,6 +717,7 @@ export class SessionManager {
     } else {
       // terminal worker
       this.activateTerminalWorkerPty(worker, {
+        sessionId,
         locationPath: session.locationPath,
       });
     }
@@ -767,116 +778,62 @@ export class SessionManager {
     return `Terminal ${count + 1}`;
   }
 
+  /**
+   * Initialize an agent worker WITHOUT starting the PTY.
+   * The PTY will be activated later via activateAgentWorkerPty.
+   * This ensures PTY creation logic is only in one place.
+   */
   private async initializeAgentWorker(params: {
     id: string;
     name: string;
     createdAt: string;
-    sessionId: string;
-    locationPath: string;
     agentId: string;
-    continueConversation: boolean;
-    initialPrompt?: string;
   }): Promise<InternalAgentWorker> {
-    const { id, name, createdAt, sessionId, locationPath, agentId, continueConversation, initialPrompt } = params;
+    const { id, name, createdAt, agentId } = params;
 
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
     const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
-    // Select the appropriate template based on whether we're continuing a conversation
-    const template = continueConversation && agent.continueTemplate
-      ? agent.continueTemplate
-      : agent.commandTemplate;
-
-    // Expand the template with prompt and cwd
-    // For continue mode without initial prompt, we don't need to pass prompt
-    const { command, env: templateEnv } = expandTemplate({
-      template,
-      prompt: initialPrompt,
-      cwd: locationPath,
-    });
-
-    // Merge template environment variables with child process environment
-    const processEnv = {
-      ...getChildProcessEnv(),
-      ...templateEnv,
-    };
-
-    // Spawn via shell to execute the expanded template command
-    // The prompt is safely passed via environment variable to prevent injection
-    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', command], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: locationPath,
-      env: processEnv,
-    });
-
-    // Declare worker first - the callback closure captures the variable reference,
-    // not the value, so worker will be defined when the callback executes
-    let worker!: InternalAgentWorker;
-
-    // Create ActivityDetector first (callback executes later, when worker is assigned)
-    const activityDetector = new ActivityDetector({
-      onStateChange: (state) => {
-        worker.activityState = state;
-        // Snapshot callbacks before iteration to avoid concurrent modification issues
-        const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
-        for (const callbacks of callbacksSnapshot) {
-          callbacks.onActivityChange?.(state);
-        }
-        this.globalActivityCallback?.(sessionId, id, state);
-      },
-      activityPatterns: agent.activityPatterns,
-    });
-
-    // Now create the complete worker object with activityDetector
-    worker = {
+    // Create worker without PTY (will be activated later)
+    const worker: InternalAgentWorker = {
       id,
       type: 'agent',
       name,
       createdAt,
       agentId: agent.id,
-      pty: ptyProcess,
+      pty: null,  // PTY will be activated via activateAgentWorkerPty
       outputBuffer: '',
       activityState: 'unknown',
-      activityDetector,
+      activityDetector: null,  // Will be created when PTY is activated
       connectionCallbacks: new Map(),
     };
-
-    this.setupWorkerEventHandlers(worker, sessionId);
 
     return worker;
   }
 
+  /**
+   * Initialize a terminal worker WITHOUT starting the PTY.
+   * The PTY will be activated later via activateTerminalWorkerPty.
+   * This ensures PTY creation logic is only in one place.
+   */
   private initializeTerminalWorker(params: {
     id: string;
     name: string;
     createdAt: string;
-    locationPath: string;
   }): InternalTerminalWorker {
-    const { id, name, createdAt, locationPath } = params;
+    const { id, name, createdAt } = params;
 
-    const shell = process.env.SHELL || '/bin/bash';
-    const ptyProcess = this.ptyProvider.spawn(shell, ['-l'], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: locationPath,
-      env: getChildProcessEnv(),
-    });
-
+    // Create worker without PTY (will be activated later)
     const worker: InternalTerminalWorker = {
       id,
       type: 'terminal',
       name,
       createdAt,
-      pty: ptyProcess,
+      pty: null,  // PTY will be activated via activateTerminalWorkerPty
       outputBuffer: '',
       connectionCallbacks: new Map(),
     };
-
-    this.setupWorkerEventHandlers(worker, null);
 
     return worker;
   }
@@ -992,7 +949,7 @@ export class SessionManager {
    */
   private activateTerminalWorkerPty(
     worker: InternalTerminalWorker,
-    params: { locationPath: string }
+    params: { sessionId: string; locationPath: string }
   ): void {
     // Idempotent: If PTY already active, skip (prevents resource leaks from concurrent activations)
     if (worker.pty !== null) {
@@ -1000,7 +957,7 @@ export class SessionManager {
       return;
     }
 
-    const { locationPath } = params;
+    const { sessionId, locationPath } = params;
 
     const shell = process.env.SHELL || '/bin/bash';
     const ptyProcess = this.ptyProvider.spawn(shell, ['-l'], {
@@ -1014,10 +971,15 @@ export class SessionManager {
     // Mutate the existing worker to add PTY
     worker.pty = ptyProcess;
 
-    this.setupWorkerEventHandlers(worker, null);
+    this.setupWorkerEventHandlers(worker, sessionId);
   }
 
-  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string | null): void {
+  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string): void {
+    // Validate sessionId - it must be a non-empty string
+    if (!sessionId || sessionId.trim() === '') {
+      throw new Error(`Cannot setup event handlers: sessionId is required (got: ${sessionId === '' ? 'empty string' : String(sessionId)})`);
+    }
+
     if (!worker.pty) {
       throw new Error('Cannot setup event handlers: worker.pty is null');
     }
@@ -1028,10 +990,8 @@ export class SessionManager {
         worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
       }
 
-      // Buffer output to file for persistence (if sessionId is available)
-      if (sessionId) {
-        workerOutputFileManager.bufferOutput(sessionId, worker.id, data);
-      }
+      // Buffer output to file for persistence
+      workerOutputFileManager.bufferOutput(sessionId, worker.id, data);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.processOutput(data);
@@ -1203,10 +1163,14 @@ export class SessionManager {
     }
 
     // Create new worker with same ID, preserving original createdAt for tab order
+    // Initialize without PTY, then activate PTY
     const newWorker = await this.initializeAgentWorker({
       id: workerId,
       name: existingWorker.name,
       createdAt: existingWorker.createdAt,
+      agentId: existingWorker.agentId,
+    });
+    await this.activateAgentWorkerPty(newWorker, {
       sessionId,
       locationPath: session.locationPath,
       agentId: existingWorker.agentId,
@@ -1268,6 +1232,7 @@ export class SessionManager {
       });
     } else {
       this.activateTerminalWorkerPty(existingWorker, {
+        sessionId,
         locationPath: session.locationPath,
       });
     }

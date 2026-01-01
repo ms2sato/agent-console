@@ -101,6 +101,7 @@ function handleMessage(event: MessageEvent) {
       console.error('[WebSocket] Invalid message type:', parsed);
       return;
     }
+
     // Track initial sync reception and clear pending state
     if (parsed.type === 'sessions-sync') {
       syncPending = false;

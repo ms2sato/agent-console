@@ -224,7 +224,7 @@ export async function setupWebSocketRoutes(
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
       // 2. Register callbacks for NEW output (after the offset)
       // 3. Send history UP TO the offset we recorded
-      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string) {
+      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number) {
         logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
 
         // Helper to safely send WebSocket messages with buffering
@@ -287,49 +287,8 @@ export async function setupWebSocketRoutes(
           },
         });
 
-        // Send history on initial connection with timeout protection and line limit
-        const INITIAL_HISTORY_TIMEOUT_MS = 15000; // 15s for initial connection (may be large file/slow disk)
-        const timeoutPromise = new Promise<null>((_, reject) => {
-          setTimeout(() => reject(new Error('Initial history request timeout')), INITIAL_HISTORY_TIMEOUT_MS);
-        });
-
-        try {
-          const historyResult = await Promise.race([
-            sessionManager.getWorkerOutputHistory(
-              sessionId,
-              workerId,
-              0,
-              serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES
-            ),
-            timeoutPromise
-          ]);
-
-          if (historyResult) {
-            if (historyResult.data) {
-              safeSend({ type: 'history', data: historyResult.data });
-            }
-          } else {
-            // Fallback to in-memory buffer if file not available
-            const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-            if (history) {
-              safeSend({ type: 'history', data: history });
-            }
-          }
-        } catch (err) {
-          logger.error({ sessionId, workerId, err }, 'Error loading initial history');
-          // Fallback to in-memory buffer on timeout or error
-          const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-          if (history) {
-            safeSend({ type: 'history', data: history });
-          } else {
-            // No history available - send error
-            safeSend({
-              type: 'error',
-              message: 'Loading terminal history timed out. Try refreshing the page.',
-              code: 'HISTORY_LOAD_FAILED'
-            });
-          }
-        }
+        // History is now sent on-demand via request-history message (Pull model)
+        // Client should send request-history when the tab becomes visible and needs history
 
         // Send current activity state on connection (for agent workers)
         if (workerType === 'agent') {
@@ -338,6 +297,14 @@ export async function setupWebSocketRoutes(
             safeSend({ type: 'activity', state: activityState });
           }
         }
+
+        // Log total connection time
+        const connectionEndTime = performance.now();
+        const totalConnectionDuration = connectionEndTime - connectionStartTime;
+        logger.info(
+          { sessionId, workerId, workerType, durationMs: totalConnectionDuration.toFixed(2) },
+          'Worker WebSocket connection completed'
+        );
       }
 
       /**
@@ -365,6 +332,9 @@ export async function setupWebSocketRoutes(
 
       return {
         onOpen(_event: unknown, ws: WSContext) {
+          const connectionStartTime = performance.now();
+          logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
+
           const session = sessionManager.getSession(sessionId);
           if (!session) {
             sendErrorAndClose(ws, 'Session not found', 'WORKER_NOT_FOUND');
@@ -410,7 +380,7 @@ export async function setupWebSocketRoutes(
               return;
             }
 
-            await setupPtyWorkerHandlers(ws, restoredWorker.type);
+            await setupPtyWorkerHandlers(ws, restoredWorker.type, connectionStartTime);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);

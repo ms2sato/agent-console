@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Terminal, type ConnectionStatus } from '../../components/Terminal';
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
+import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
@@ -470,6 +470,79 @@ function TerminalPage() {
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
+  const tabButtons = tabs.map(tab => (
+    <button
+      key={tab.id}
+      onClick={() => {
+        // Use startTransition to mark this update as non-urgent
+        // This keeps the UI responsive during the state update
+        startTransition(() => {
+          setActiveTabId(tab.id);
+        });
+      }}
+      className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
+        tab.id === activeTabId
+          ? 'bg-slate-800 text-white'
+          : 'text-gray-400'
+      }`}
+    >
+      {tab.workerType === 'git-diff' ? (
+        <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
+      ) : (
+        <span className={`inline-block w-2 h-2 rounded-full ${
+          tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
+        }`} />
+      )}
+      {tab.name}
+      {tab.workerType === 'terminal' && (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            closeTab(tab.id);
+          }}
+          className="ml-1 text-gray-500 hover:text-white cursor-pointer"
+        >
+          x
+        </span>
+      )}
+    </button>
+  ));
+
+  // Render only the active tab (conditional rendering)
+  // Using key={activeTab.id} ensures Terminal remounts on tab switch
+  const activeTabContent = activeTab ? (
+    <div
+      key={activeTab.id}
+      className="absolute inset-0 flex flex-col"
+    >
+      <ErrorBoundary
+        fallback={(error, resetError) => (
+          <WorkerErrorFallback
+            error={error}
+            workerType={activeTab.workerType}
+            workerName={activeTab.name}
+            onRetry={resetError}
+          />
+        )}
+      >
+        {activeTab.workerType === 'git-diff' ? (
+          <GitDiffWorkerView
+            sessionId={sessionId}
+            workerId={activeTab.id}
+          />
+        ) : (
+          <Terminal
+            sessionId={sessionId}
+            workerId={activeTab.id}
+            onStatusChange={handleStatusChange}
+            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            hideStatusBar
+          />
+        )}
+      </ErrorBoundary>
+    </div>
+  ) : null;
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Header with tabs */}
@@ -488,37 +561,7 @@ function TerminalPage() {
           </div>
         )}
         {/* Tabs */}
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTabId(tab.id)}
-            className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
-              tab.id === activeTabId
-                ? 'bg-slate-800 text-white'
-                : 'text-gray-400'
-            }`}
-          >
-            {tab.workerType === 'git-diff' ? (
-              <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
-            ) : (
-              <span className={`inline-block w-2 h-2 rounded-full ${
-                tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
-              }`} />
-            )}
-            {tab.name}
-            {tab.workerType === 'terminal' && (
-              <span
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.id);
-                }}
-                className="ml-1 text-gray-500 hover:text-white cursor-pointer"
-              >
-                x
-              </span>
-            )}
-          </button>
-        ))}
+        {tabButtons}
         <button
           onClick={addTerminalTab}
           className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-800"
@@ -551,42 +594,9 @@ function TerminalPage() {
         )}
       </div>
 
-      {/* Worker panels - render all but only show active */}
+      {/* Worker panel - render only active tab (conditional rendering) */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
-        {tabs.map(tab => (
-          <div
-            key={tab.id}
-            className={`absolute inset-0 flex flex-col ${
-              tab.id === activeTabId ? 'z-10' : 'z-0 invisible'
-            }`}
-          >
-            <ErrorBoundary
-              fallback={(error, resetError) => (
-                <WorkerErrorFallback
-                  error={error}
-                  workerType={tab.workerType}
-                  workerName={tab.name}
-                  onRetry={resetError}
-                />
-              )}
-            >
-              {tab.workerType === 'git-diff' ? (
-                <GitDiffWorkerView
-                  sessionId={sessionId}
-                  workerId={tab.id}
-                />
-              ) : (
-                <Terminal
-                  sessionId={sessionId}
-                  workerId={tab.id}
-                  onStatusChange={tab.id === activeTabId ? handleStatusChange : undefined}
-                  onActivityChange={tab.workerType === 'agent' ? handleActivityChange : undefined}
-                  hideStatusBar
-                />
-              )}
-            </ErrorBoundary>
-          </div>
-        ))}
+        {activeTabContent}
       </div>
 
       {/* Status bar at bottom */}

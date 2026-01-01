@@ -99,8 +99,6 @@ interface WorkerConnection {
   historyRequestTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
-  // Terminal history data for diff calculation (persists across tab switches)
-  lastHistoryData: string;
 }
 
 // Callbacks for terminal/agent workers
@@ -231,9 +229,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     ...(callbacks.type === 'git-diff' ? { diffData: null, diffError: null, diffLoading: true } : {}),
   };
 
-  // Preserve lastHistoryData from existing connection for diff calculation
-  const lastHistoryData = existingConn.lastHistoryData;
-
   const conn: WorkerConnection = {
     ws,
     state: initialState,
@@ -243,7 +238,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     historyRequestTimeout: null,
     sessionId,
     workerId,
-    lastHistoryData,
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -297,6 +291,7 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCallbacks): void {
   ws.onopen = () => {
     const conn = connections.get(key);
+
     if (conn) {
       conn.retryCount = 0; // Reset retry count on successful connection
     }
@@ -304,10 +299,17 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     if (callbacks.type === 'git-diff') {
       updateState(key, { diffLoading: true });
     }
-    // Note: Do NOT send request-history here on initial connection.
-    // The server automatically sends history when a client connects.
-    // Tab switch (remount with existing OPEN connection) handles history request in connect().
-    console.log(`[WorkerWS] Connected: ${key}`);
+
+    // Request history after connection is established (debounced)
+    // This covers both initial page load and reconnection scenarios
+    if (callbacks.type === 'terminal' || callbacks.type === 'agent') {
+      const HISTORY_REQUEST_DEBOUNCE_MS = 100;
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'request-history' }));
+        }
+      }, HISTORY_REQUEST_DEBOUNCE_MS);
+    }
   };
 
   ws.onmessage = (event) => {
@@ -442,7 +444,6 @@ export function connect(
     historyRequestTimeout: null,
     sessionId,
     workerId,
-    lastHistoryData: '',
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -540,6 +541,15 @@ export function sendImage(sessionId: string, workerId: string, data: string, mim
   return sendTerminalMessage(sessionId, workerId, { type: 'image', data, mimeType });
 }
 
+/**
+ * Request history data from the server.
+ * Used when a previously invisible tab becomes visible for the first time.
+ * @returns true if sent, false if not connected
+ */
+export function requestHistory(sessionId: string, workerId: string): boolean {
+  return sendTerminalMessage(sessionId, workerId, { type: 'request-history' });
+}
+
 // Convenience methods for git-diff workers
 export function refreshDiff(sessionId: string, workerId: string): boolean {
   return sendGitDiffMessage(sessionId, workerId, { type: 'refresh' });
@@ -585,28 +595,6 @@ export function isConnected(sessionId: string, workerId: string): boolean {
   const key = getConnectionKey(sessionId, workerId);
   const conn = connections.get(key);
   return conn?.ws.readyState === WebSocket.OPEN;
-}
-
-/**
- * Get the last history data for a worker (for diff calculation).
- * Returns empty string if connection doesn't exist.
- */
-export function getLastHistoryData(sessionId: string, workerId: string): string {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-  return conn?.lastHistoryData ?? '';
-}
-
-/**
- * Set the last history data for a worker (for diff calculation).
- * Call this after processing history to enable accurate diff on next update.
- */
-export function setLastHistoryData(sessionId: string, workerId: string, data: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-  if (conn) {
-    conn.lastHistoryData = data;
-  }
 }
 
 /**

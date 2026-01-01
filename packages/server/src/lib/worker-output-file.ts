@@ -1,11 +1,10 @@
 /**
  * File-based output persistence for terminal workers.
  * Supports large output history (up to 10MB) with incremental sync.
- * Optionally uses gzip compression to reduce disk usage.
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { gzipSync, gunzipSync } from 'bun';
+import { gunzipSync } from 'bun';
 import { getConfigDir } from './config.js';
 import { serverConfig } from './server-config.js';
 import { createLogger } from './logger.js';
@@ -40,12 +39,10 @@ export class WorkerOutputFileManager {
 
   /**
    * Get the output file path for a worker.
-   * Structure: ${AGENT_CONSOLE_HOME}/outputs/${sessionId}/${workerId}.log[.gz]
-   * Returns .log.gz if compression is enabled, .log otherwise.
+   * Structure: ${AGENT_CONSOLE_HOME}/outputs/${sessionId}/${workerId}.log
    */
   getOutputFilePath(sessionId: string, workerId: string): string {
-    const extension = serverConfig.WORKER_OUTPUT_USE_COMPRESSION ? '.log.gz' : '.log';
-    return path.join(getConfigDir(), 'outputs', sessionId, `${workerId}${extension}`);
+    return path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log`);
   }
 
   /**
@@ -61,22 +58,24 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Get the actual file path for a worker, checking for legacy files.
+   * Get the actual file path for a worker, checking for legacy compressed files.
    * Returns { path, isCompressed } where isCompressed indicates the file format.
    * Returns null if no file exists.
+   *
+   * Note: Legacy .log.gz files are still supported for reading (migration compatibility).
    */
   private async getActualFilePath(sessionId: string, workerId: string): Promise<{ path: string; isCompressed: boolean } | null> {
-    const compressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log.gz`);
     const uncompressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log`);
+    const compressedPath = path.join(getConfigDir(), 'outputs', sessionId, `${workerId}.log.gz`);
 
-    // Check compressed file first (preferred)
-    if (await this.fileExists(compressedPath)) {
-      return { path: compressedPath, isCompressed: true };
-    }
-
-    // Check legacy uncompressed file
+    // Check uncompressed file first (current format)
     if (await this.fileExists(uncompressedPath)) {
       return { path: uncompressedPath, isCompressed: false };
+    }
+
+    // Check legacy compressed file
+    if (await this.fileExists(compressedPath)) {
+      return { path: compressedPath, isCompressed: true };
     }
 
     return null;
@@ -108,15 +107,8 @@ export class WorkerOutputFileManager {
         return;
       }
 
-      // Create empty file based on compression setting
-      if (serverConfig.WORKER_OUTPUT_USE_COMPRESSION) {
-        // Write empty gzip file
-        const emptyCompressed = gzipSync(Buffer.from('', 'utf-8'));
-        await fs.writeFile(filePath, emptyCompressed);
-      } else {
-        // Write empty file
-        await fs.writeFile(filePath, '', 'utf-8');
-      }
+      // Create empty file
+      await fs.writeFile(filePath, '', 'utf-8');
 
       logger.debug({ sessionId, workerId, filePath }, 'Initialized empty worker output file');
     } catch (error) {
@@ -160,7 +152,8 @@ export class WorkerOutputFileManager {
   /**
    * Flush buffered output to file.
    * Also enforces max file size by truncating from the beginning.
-   * Handles both compressed and uncompressed files.
+   *
+   * Note: Legacy .log.gz files are migrated to .log on first write.
    */
   private async flushBuffer(sessionId: string, workerId: string): Promise<void> {
     const key = this.getKey(sessionId, workerId);
@@ -179,46 +172,43 @@ export class WorkerOutputFileManager {
     pending.buffer = '';
 
     const filePath = this.getOutputFilePath(sessionId, workerId);
-    const useCompression = serverConfig.WORKER_OUTPUT_USE_COMPRESSION;
 
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
-      if (useCompression) {
-        // For compressed files, we need to read, decompress, append, and recompress
-        let existingContent = '';
-        const actualFile = await this.getActualFilePath(sessionId, workerId);
+      // Check if we need to migrate from legacy compressed file
+      const actualFile = await this.getActualFilePath(sessionId, workerId);
+      if (actualFile?.isCompressed) {
+        // Migrate from compressed to uncompressed
+        const rawBuffer = await fs.readFile(actualFile.path);
+        const decompressed = gunzipSync(rawBuffer);
+        const existingContent = new TextDecoder('utf-8').decode(decompressed);
 
-        if (actualFile) {
-          const rawBuffer = await fs.readFile(actualFile.path);
-          if (actualFile.isCompressed) {
-            const decompressed = gunzipSync(rawBuffer);
-            existingContent = new TextDecoder('utf-8').decode(decompressed);
-          } else {
-            existingContent = rawBuffer.toString('utf-8');
-            // Migrate from uncompressed to compressed: delete the old file after reading
-            await fs.unlink(actualFile.path).catch(() => {});
-          }
-        }
-
+        // Write combined content to new uncompressed file
         const combinedContent = existingContent + dataToWrite;
-        const compressedData = gzipSync(Buffer.from(combinedContent, 'utf-8'));
-        await fs.writeFile(filePath, compressedData);
+        await fs.writeFile(filePath, combinedContent, 'utf-8');
 
-        // Check uncompressed size and truncate if necessary
-        const uncompressedSize = Buffer.byteLength(combinedContent, 'utf-8');
-        if (uncompressedSize > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
-          await this.truncateFile(filePath, uncompressedSize, true);
+        // Delete the old compressed file
+        await fs.unlink(actualFile.path).catch((err) => {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            logger.warn({ sessionId, workerId, path: actualFile.path, err }, 'Failed to delete legacy compressed file during migration');
+          }
+        });
+
+        // Check file size and truncate if necessary
+        const stats = await fs.stat(filePath);
+        if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
+          await this.truncateFile(filePath, stats.size);
         }
       } else {
-        // Uncompressed: simple append
+        // Simple append to uncompressed file
         await fs.appendFile(filePath, dataToWrite, 'utf-8');
 
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
         if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
-          await this.truncateFile(filePath, stats.size, false);
+          await this.truncateFile(filePath, stats.size);
         }
       }
     } catch (error) {
@@ -230,23 +220,14 @@ export class WorkerOutputFileManager {
    * Truncate file from the beginning to stay within max size.
    * Keeps the most recent data and ensures UTF-8 boundary safety.
    * @param filePath Path to the file
-   * @param currentSize Current uncompressed size of the content
-   * @param isCompressed Whether the file is gzip compressed
+   * @param currentSize Current size of the file
    */
-  private async truncateFile(filePath: string, currentSize: number, isCompressed: boolean): Promise<void> {
+  private async truncateFile(filePath: string, currentSize: number): Promise<void> {
     const maxSize = serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE;
     const targetSize = Math.floor(maxSize * 0.8); // Truncate to 80% to avoid frequent truncation
 
     try {
-      let buffer: Buffer;
-
-      if (isCompressed) {
-        // Decompress first
-        const compressedBuffer = await fs.readFile(filePath);
-        buffer = Buffer.from(gunzipSync(compressedBuffer));
-      } else {
-        buffer = await fs.readFile(filePath);
-      }
+      const buffer = await fs.readFile(filePath);
 
       let slicePoint = currentSize - targetSize;
 
@@ -259,15 +240,9 @@ export class WorkerOutputFileManager {
 
       const trimmedBuffer = buffer.slice(slicePoint);
 
-      if (isCompressed) {
-        // Recompress and write
-        const recompressed = gzipSync(trimmedBuffer);
-        await fs.writeFile(filePath, recompressed);
-      } else {
-        await fs.writeFile(filePath, trimmedBuffer);
-      }
+      await fs.writeFile(filePath, trimmedBuffer);
 
-      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length, isCompressed }, 'Truncated output file');
+      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length }, 'Truncated output file');
     } catch (error) {
       logger.error({ filePath, err: error }, 'Failed to truncate output file');
     }
@@ -275,6 +250,7 @@ export class WorkerOutputFileManager {
 
   /**
    * Read output history from file.
+   * Supports legacy .log.gz files for backward compatibility.
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param fromOffset If specified, read only data after this offset (for incremental sync)
@@ -286,7 +262,7 @@ export class WorkerOutputFileManager {
     fromOffset?: number
   ): Promise<HistoryReadResult> {
     try {
-      // Find the actual file (compressed or legacy uncompressed)
+      // Find the actual file (uncompressed or legacy compressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
 
       if (!actualFile) {
@@ -304,15 +280,11 @@ export class WorkerOutputFileManager {
         return { data: '', offset: 0 };
       }
 
-      // Read the file and decompress if necessary
+      // Read the file and decompress if legacy compressed file
       const rawBuffer = await fs.readFile(actualFile.path);
-      let buffer: Buffer;
-
-      if (actualFile.isCompressed) {
-        buffer = Buffer.from(gunzipSync(rawBuffer));
-      } else {
-        buffer = rawBuffer;
-      }
+      const buffer = actualFile.isCompressed
+        ? Buffer.from(gunzipSync(rawBuffer))
+        : rawBuffer;
 
       const currentOffset = buffer.length;
 
@@ -352,6 +324,7 @@ export class WorkerOutputFileManager {
 
   /**
    * Read the last N lines from output history.
+   * Supports legacy .log.gz files for backward compatibility.
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param maxLines Maximum number of lines to return (from the end)
@@ -363,7 +336,7 @@ export class WorkerOutputFileManager {
     maxLines: number
   ): Promise<HistoryReadResult> {
     try {
-      // Find the actual file (compressed or legacy uncompressed)
+      // Find the actual file (uncompressed or legacy compressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
 
       if (!actualFile) {
@@ -381,17 +354,13 @@ export class WorkerOutputFileManager {
         return { data: '', offset: 0 };
       }
 
-      // Read the file and decompress if necessary
+      // Read the file and decompress if legacy compressed file
       const rawBuffer = await fs.readFile(actualFile.path);
-      let buffer: Buffer;
+      const buffer = actualFile.isCompressed
+        ? Buffer.from(gunzipSync(rawBuffer))
+        : rawBuffer;
 
-      if (actualFile.isCompressed) {
-        buffer = Buffer.from(gunzipSync(rawBuffer));
-      } else {
-        buffer = rawBuffer;
-      }
-
-      // The offset is always the full file size (uncompressed), not the truncated data size
+      // The offset is always the full content size, not the truncated data size
       const currentOffset = buffer.length;
       const fullContent = buffer.toString('utf-8');
 
@@ -470,7 +439,7 @@ export class WorkerOutputFileManager {
    * Get current file offset without reading content.
    * Flushes any pending buffer first to ensure accurate offset.
    * Returns 0 if file doesn't exist.
-   * Note: For compressed files, returns the uncompressed size.
+   * Supports legacy .log.gz files for backward compatibility.
    */
   async getCurrentOffset(sessionId: string, workerId: string): Promise<number> {
     // Flush any pending buffer first to ensure accurate offset
@@ -484,7 +453,7 @@ export class WorkerOutputFileManager {
       }
 
       if (actualFile.isCompressed) {
-        // For compressed files, we need to decompress to get the actual uncompressed size
+        // For legacy compressed files, decompress to get the actual content size
         const compressedBuffer = await fs.readFile(actualFile.path);
         const decompressed = gunzipSync(compressedBuffer);
         return decompressed.length;
@@ -504,7 +473,7 @@ export class WorkerOutputFileManager {
 
   /**
    * Delete output file for a worker.
-   * Handles both compressed (.log.gz) and uncompressed (.log) files.
+   * Also deletes legacy .log.gz files if present.
    */
   async deleteWorkerOutput(sessionId: string, workerId: string): Promise<void> {
     // Clear any pending flush
