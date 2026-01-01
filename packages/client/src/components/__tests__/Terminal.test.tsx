@@ -64,7 +64,7 @@ describe('Terminal history handling integration', () => {
   });
 
   describe('history request behavior', () => {
-    it('should NOT request history on initial connection (server sends automatically)', async () => {
+    it('should request history on initial connection (debounced)', async () => {
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
         onOutput: () => {},
@@ -78,12 +78,14 @@ describe('Terminal history handling integration', () => {
       // Simulate connection open
       ws?.simulateOpen();
 
-      // Wait for potential debounce
+      // request-history should NOT be sent immediately
+      expect(ws?.send).not.toHaveBeenCalled();
+
+      // Wait for debounce delay
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // request-history should NOT be sent on initial connection
-      // because the server automatically sends history when a client connects
-      expect(ws?.send).not.toHaveBeenCalled();
+      // request-history SHOULD be sent after debounce
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
     });
 
     it('should request history with debounce on tab switch (remount with existing OPEN connection)', async () => {

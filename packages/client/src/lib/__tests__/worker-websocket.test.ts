@@ -271,10 +271,9 @@ describe('worker-websocket', () => {
       jest.useRealTimers();
     });
 
-    it('should NOT send request-history on initial WebSocket connection', () => {
+    it('should send request-history on initial WebSocket connection (debounced)', () => {
       // This test verifies that when a new WebSocket connection is established,
-      // the client does NOT send request-history message.
-      // The server automatically sends history on new connection, so client request is redundant.
+      // the client sends request-history message after a debounce delay.
       const callbacks = createTerminalCallbacks();
 
       // Create a new connection (no existing connection)
@@ -286,12 +285,16 @@ describe('worker-websocket', () => {
       // Simulate WebSocket connection opening
       ws?.simulateOpen();
 
-      // Advance timers to process any debounced requests
+      // request-history should NOT be sent immediately
+      expect(ws?.send).not.toHaveBeenCalledWith(
+        JSON.stringify({ type: 'request-history' })
+      );
+
+      // Advance timers to process debounced request
       jest.advanceTimersByTime(200);
 
-      // request-history should NOT be sent on initial connection
-      // because the server automatically sends history when a client connects
-      expect(ws?.send).not.toHaveBeenCalledWith(
+      // request-history SHOULD be sent after debounce
+      expect(ws?.send).toHaveBeenCalledWith(
         JSON.stringify({ type: 'request-history' })
       );
     });

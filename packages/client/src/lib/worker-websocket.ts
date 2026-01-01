@@ -299,9 +299,17 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     if (callbacks.type === 'git-diff') {
       updateState(key, { diffLoading: true });
     }
-    // Note: Do NOT send request-history here on initial connection.
-    // The server automatically sends history when a client connects.
-    // Tab switch (remount with existing OPEN connection) handles history request in connect().
+
+    // Request history after connection is established (debounced)
+    // This covers both initial page load and reconnection scenarios
+    if (callbacks.type === 'terminal' || callbacks.type === 'agent') {
+      const HISTORY_REQUEST_DEBOUNCE_MS = 100;
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'request-history' }));
+        }
+      }, HISTORY_REQUEST_DEBOUNCE_MS);
+    }
   };
 
   ws.onmessage = (event) => {
