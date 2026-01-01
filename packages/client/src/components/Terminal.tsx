@@ -146,7 +146,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     const terminal = terminalRef.current;
     if (!terminal) {
-      console.warn('[Terminal] isMounted is true but terminalRef is null');
       return;
     }
 
