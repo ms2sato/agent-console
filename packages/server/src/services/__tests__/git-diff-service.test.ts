@@ -88,6 +88,27 @@ describe('GitDiffService', () => {
       expect(result.summary.files.find(f => f.path === 'new-file.ts')?.status).toBe('untracked');
     });
 
+    it('should handle multiple untracked files (processed in parallel)', async () => {
+      // This test verifies that multiple untracked files are all included in the result.
+      // The parallel processing optimization should not affect the final output.
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('');
+      mockGit.getStatusPorcelain.mockResolvedValue('?? file-a.ts\n?? file-b.ts\n?? file-c.ts');
+      mockGit.getUntrackedFiles.mockResolvedValue(['file-a.ts', 'file-b.ts', 'file-c.ts']);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      // All three untracked files should be included
+      expect(result.summary.files).toHaveLength(3);
+      expect(result.summary.files.map(f => f.path)).toEqual(['file-a.ts', 'file-b.ts', 'file-c.ts']);
+
+      // All should be marked as untracked with unstaged state
+      for (const file of result.summary.files) {
+        expect(file.status).toBe('untracked');
+        expect(file.stageState).toBe('unstaged');
+      }
+    });
+
     it('should handle empty diff gracefully', async () => {
       mockGit.getDiff.mockResolvedValue('');
       mockGit.getDiffNumstat.mockResolvedValue('');

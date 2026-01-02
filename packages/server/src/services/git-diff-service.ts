@@ -401,28 +401,32 @@ export async function getDiffData(
     // Add untracked files with their diff content
     // Note: untracked files are in statusMap (from git status --porcelain with ?? status)
     // but NOT in fileStats (from git diff --numstat), so we only check fileStats
-    const untrackedDiffs: string[] = [];
-    for (const path of untrackedFiles) {
-      if (!fileStats.has(path)) {
-        // Generate diff for this untracked file
+    // Process untracked files in parallel to avoid blocking
+    const untrackedFilesToProcess = untrackedFiles.filter(path => !fileStats.has(path));
+    const untrackedResults = await Promise.all(
+      untrackedFilesToProcess.map(async (path) => {
         const { diff, lineCount, isBinary } = await generateUntrackedFileDiff(path, repoPath);
+        return { path, diff, lineCount, isBinary };
+      })
+    );
 
-        files.push({
-          path,
-          status: 'untracked',
-          stageState: 'unstaged',
-          additions: lineCount,
-          deletions: 0,
-          isBinary,
-        });
+    const untrackedDiffs: string[] = [];
+    for (const { path, diff, lineCount, isBinary } of untrackedResults) {
+      files.push({
+        path,
+        status: 'untracked',
+        stageState: 'unstaged',
+        additions: lineCount,
+        deletions: 0,
+        isBinary,
+      });
 
-        // Update totals
-        totalAdditions += lineCount;
+      // Update totals
+      totalAdditions += lineCount;
 
-        // Collect diff for appending to rawDiff
-        if (diff) {
-          untrackedDiffs.push(diff);
-        }
+      // Collect diff for appending to rawDiff
+      if (diff) {
+        untrackedDiffs.push(diff);
       }
     }
 
