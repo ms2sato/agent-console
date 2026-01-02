@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { getChildProcessEnv } from '../env-filter.js';
+import { getChildProcessEnv, getUnsetEnvPrefix, BLOCKED_ENV_VARS } from '../env-filter.js';
 
 describe('env-filter', () => {
   const originalEnv = process.env;
@@ -15,38 +15,38 @@ describe('env-filter', () => {
   });
 
   describe('getChildProcessEnv', () => {
-    it('should set NODE_ENV to empty string to override Bun.Terminal inheritance', () => {
+    it('should exclude NODE_ENV from child process env', () => {
       process.env.NODE_ENV = 'production';
       process.env.HOME = '/home/test';
 
       const childEnv = getChildProcessEnv();
 
-      // Bun.Terminal merges env with parent, so we set to empty string to override
-      expect(childEnv.NODE_ENV).toBe('');
+      // bun-pty only passes env we provide - blocked vars are simply excluded
+      expect('NODE_ENV' in childEnv).toBe(false);
       expect(childEnv.HOME).toBe('/home/test');
     });
 
-    it('should set PORT to empty string to override Bun.Terminal inheritance', () => {
+    it('should exclude PORT from child process env', () => {
       process.env.PORT = '3000';
       process.env.PATH = '/usr/bin';
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.PORT).toBe('');
+      expect('PORT' in childEnv).toBe(false);
       expect(childEnv.PATH).toBe('/usr/bin');
     });
 
-    it('should set HOST to empty string to override Bun.Terminal inheritance', () => {
+    it('should exclude HOST from child process env', () => {
       process.env.HOST = '0.0.0.0';
       process.env.USER = 'testuser';
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.HOST).toBe('');
+      expect('HOST' in childEnv).toBe(false);
       expect(childEnv.USER).toBe('testuser');
     });
 
-    it('should set all blocked variables to empty string', () => {
+    it('should exclude all blocked variables from child process env', () => {
       process.env.NODE_ENV = 'production';
       process.env.PORT = '6340';
       process.env.HOST = 'localhost';
@@ -55,9 +55,9 @@ describe('env-filter', () => {
 
       const childEnv = getChildProcessEnv();
 
-      expect(childEnv.NODE_ENV).toBe('');
-      expect(childEnv.PORT).toBe('');
-      expect(childEnv.HOST).toBe('');
+      expect('NODE_ENV' in childEnv).toBe(false);
+      expect('PORT' in childEnv).toBe(false);
+      expect('HOST' in childEnv).toBe(false);
       expect(childEnv.HOME).toBe('/home/test');
       expect(childEnv.SHELL).toBe('/bin/zsh');
     });
@@ -95,6 +95,46 @@ describe('env-filter', () => {
       const childEnv = getChildProcessEnv();
 
       expect(childEnv.TERM).toBe('xterm-256color');
+    });
+  });
+
+  describe('getUnsetEnvPrefix', () => {
+    it('should return unset command with all blocked variables', () => {
+      const prefix = getUnsetEnvPrefix();
+
+      // Verify it starts with "unset " and ends with "; "
+      expect(prefix.startsWith('unset ')).toBe(true);
+      expect(prefix.endsWith('; ')).toBe(true);
+
+      // Verify all blocked vars are included
+      for (const varName of BLOCKED_ENV_VARS) {
+        expect(prefix).toContain(varName);
+      }
+    });
+
+    it('should include all blocked env vars in the unset command', () => {
+      const prefix = getUnsetEnvPrefix();
+
+      // Parse the variables from the unset command
+      const varsPart = prefix.slice('unset '.length, -'; '.length);
+      const unsetVars = varsPart.split(' ');
+
+      // Should have the same number of variables as BLOCKED_ENV_VARS
+      expect(unsetVars.length).toBe(BLOCKED_ENV_VARS.length);
+
+      // Each blocked var should be in the unset command
+      for (const blockedVar of BLOCKED_ENV_VARS) {
+        expect(unsetVars).toContain(blockedVar);
+      }
+    });
+
+    it('should produce a valid shell command format', () => {
+      const prefix = getUnsetEnvPrefix();
+
+      // The format should be "unset VAR1 VAR2 VAR3; "
+      // This regex validates the format
+      const validFormat = /^unset [A-Z_]+( [A-Z_]+)*; $/;
+      expect(validFormat.test(prefix)).toBe(true);
     });
   });
 });

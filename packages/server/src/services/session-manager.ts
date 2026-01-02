@@ -21,7 +21,7 @@ import type {
 } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
-import { getChildProcessEnv } from './env-filter.js';
+import { getChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
@@ -915,7 +915,9 @@ export class SessionManager {
       ...templateEnv,
     };
 
-    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', command], {
+    // Use unset prefix to remove blocked env vars that bun-pty inherits from parent
+    const unsetPrefix = getUnsetEnvPrefix();
+    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', unsetPrefix + command], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -959,8 +961,10 @@ export class SessionManager {
 
     const { sessionId, locationPath } = params;
 
+    // Use unset prefix to remove blocked env vars that bun-pty inherits from parent
+    const unsetPrefix = getUnsetEnvPrefix();
     const shell = process.env.SHELL || '/bin/bash';
-    const ptyProcess = this.ptyProvider.spawn(shell, ['-l'], {
+    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', `${unsetPrefix}exec ${shell} -l`], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
