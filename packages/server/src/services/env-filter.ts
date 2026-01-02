@@ -10,9 +10,10 @@ export const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
  * Filter environment variables for child PTY processes.
  * Removes server-specific variables that could interfere with child behavior.
  *
- * Note: bun-pty only passes the env we explicitly provide - it does NOT merge
- * with the parent process environment. Therefore, BLOCKED_ENV_VARS are simply
- * excluded from the returned object (not passed to the child process at all).
+ * Note: bun-pty merges parent process env with the provided env option,
+ * so excluding variables here alone is NOT sufficient to prevent inheritance.
+ * The actual removal is done via shell `unset` commands (see getUnsetEnvPrefix).
+ * This function still excludes blocked vars to avoid explicitly passing them.
  */
 export function getChildProcessEnv(): Record<string, string> {
   const env: Record<string, string> = {};

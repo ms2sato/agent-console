@@ -21,7 +21,7 @@ describe('env-filter', () => {
 
       const childEnv = getChildProcessEnv();
 
-      // bun-pty only passes env we provide - blocked vars are simply excluded
+      // Blocked vars are excluded from env object (actual removal via unset prefix)
       expect('NODE_ENV' in childEnv).toBe(false);
       expect(childEnv.HOME).toBe('/home/test');
     });
