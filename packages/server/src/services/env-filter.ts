@@ -4,7 +4,7 @@ import { SERVER_ONLY_ENV_VARS } from '../lib/server-config.js';
  * Environment variables that should NOT be passed to child PTY processes.
  * Auto-generated from server-config.ts to ensure single source of truth.
  */
-export const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
+const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
 
 /**
  * Filter environment variables for child PTY processes.

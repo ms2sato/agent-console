@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { getChildProcessEnv, getUnsetEnvPrefix, BLOCKED_ENV_VARS } from '../env-filter.js';
+import { getChildProcessEnv, getUnsetEnvPrefix } from '../env-filter.js';
+import { SERVER_ONLY_ENV_VARS } from '../../lib/server-config.js';
 
 describe('env-filter', () => {
   const originalEnv = process.env;
@@ -107,7 +108,7 @@ describe('env-filter', () => {
       expect(prefix.endsWith('; ')).toBe(true);
 
       // Verify all blocked vars are included
-      for (const varName of BLOCKED_ENV_VARS) {
+      for (const varName of SERVER_ONLY_ENV_VARS) {
         expect(prefix).toContain(varName);
       }
     });
@@ -119,11 +120,11 @@ describe('env-filter', () => {
       const varsPart = prefix.slice('unset '.length, -'; '.length);
       const unsetVars = varsPart.split(' ');
 
-      // Should have the same number of variables as BLOCKED_ENV_VARS
-      expect(unsetVars.length).toBe(BLOCKED_ENV_VARS.length);
+      // Should have the same number of variables as SERVER_ONLY_ENV_VARS
+      expect(unsetVars.length).toBe(SERVER_ONLY_ENV_VARS.length);
 
       // Each blocked var should be in the unset command
-      for (const blockedVar of BLOCKED_ENV_VARS) {
+      for (const blockedVar of SERVER_ONLY_ENV_VARS) {
         expect(unsetVars).toContain(blockedVar);
       }
     });
