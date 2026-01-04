@@ -129,18 +129,24 @@ worker.pty.onData((data) => {
 
 ```typescript
 // In routes.ts
-if (fromOffset !== undefined && fromOffset > 0) {
-  // Incremental sync: read only new data
+// If fromOffset > 0, we're doing incremental sync (no line limit)
+// If fromOffset === 0, we're doing initial load (apply line limit)
+const maxLines = fromOffset === 0 ? serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES : undefined;
+
+if (fromOffset > 0) {
+  // Incremental sync: read only new data (no line limit)
   history = await sessionManager.getWorkerOutputHistory(
     sessionId, workerId, fromOffset
   );
 } else {
-  // Full sync: read everything
+  // Full sync: read with optional line limit for initial load
   history = await sessionManager.getWorkerOutputHistory(
-    sessionId, workerId
+    sessionId, workerId, 0, maxLines
   );
 }
 ```
+
+**Note**: Initial history load (`fromOffset === 0`) applies a line limit to avoid sending huge amounts of data. Incremental sync (`fromOffset > 0`) has no limit since it only fetches new data.
 
 ### Output File Reading with Offset
 
@@ -149,23 +155,23 @@ if (fromOffset !== undefined && fromOffset > 0) {
 async readHistoryWithOffset(
   sessionId: string,
   workerId: string,
-  fromOffset: number
-): Promise<{ data: string; currentOffset: number }> {
-  const filePath = this.getOutputFilePath(sessionId, workerId);
-  const stats = await stat(filePath);
+  fromOffset?: number
+): Promise<{ data: string; offset: number }> {
+  const buffer = await fs.readFile(filePath);
+  const currentOffset = buffer.length;
 
-  if (fromOffset >= stats.size) {
+  if (fromOffset !== undefined && fromOffset >= currentOffset) {
     // No new data
-    return { data: '', currentOffset: stats.size };
+    return { data: '', offset: currentOffset };
   }
 
-  // Read from offset to end
-  const fd = await open(filePath, 'r');
-  const buffer = Buffer.alloc(stats.size - fromOffset);
-  await fd.read(buffer, 0, buffer.length, fromOffset);
-  await fd.close();
+  if (fromOffset !== undefined && fromOffset > 0) {
+    // Slice at byte level, then decode to UTF-8
+    const dataBuffer = buffer.slice(fromOffset);
+    return { data: dataBuffer.toString('utf-8'), offset: currentOffset };
+  }
 
-  return { data: buffer.toString('utf-8'), currentOffset: stats.size };
+  return { data: buffer.toString('utf-8'), offset: currentOffset };
 }
 ```
 
