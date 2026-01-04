@@ -229,13 +229,14 @@ export async function setupWebSocketRoutes(
 
         // Helper to safely send WebSocket messages with buffering
         let outputBuffer = '';
+        let lastOffset: number = 0;
         let flushTimer: ReturnType<typeof setTimeout> | null = null;
         const FLUSH_INTERVAL = 50; // ms
 
         const flushBuffer = () => {
           if (outputBuffer.length > 0) {
             try {
-              ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
+              ws.send(JSON.stringify({ type: 'output', data: outputBuffer, offset: lastOffset }));
             } catch (error) {
               logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
             }
@@ -254,6 +255,7 @@ export async function setupWebSocketRoutes(
           if (msg.type === 'output') {
             // Buffer output messages
             outputBuffer += msg.data;
+            lastOffset = msg.offset;
 
             // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
             if (outputBuffer.length >= serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD) {
