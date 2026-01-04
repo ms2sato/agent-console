@@ -163,7 +163,8 @@ describe('SessionManager', () => {
       const pty = ptyFactory.instances[0];
       pty.simulateData('Hello World');
 
-      expect(onData).toHaveBeenCalledWith('Hello World');
+      // onData is called with (data, offset) where offset is the cumulative byte offset
+      expect(onData).toHaveBeenCalledWith('Hello World', expect.any(Number));
     });
 
     it('should call onExit callback when PTY exits', async () => {
@@ -438,7 +439,8 @@ describe('SessionManager', () => {
 
       // Verify new callbacks are used
       ptyFactory.instances[0].simulateData('new data');
-      expect(newOnData).toHaveBeenCalledWith('new data');
+      // onData is called with (data, offset) where offset is the cumulative byte offset
+      expect(newOnData).toHaveBeenCalledWith('new data', expect.any(Number));
     });
 
     it('should detach callbacks by connection ID', async () => {
@@ -498,10 +500,10 @@ describe('SessionManager', () => {
       expect(connId2).not.toBeNull();
       expect(connId1).not.toBe(connId2);
 
-      // Data should trigger both callbacks
+      // Data should trigger both callbacks (with offset as second argument)
       ptyFactory.instances[0].simulateData('shared data');
-      expect(onData1).toHaveBeenCalledWith('shared data');
-      expect(onData2).toHaveBeenCalledWith('shared data');
+      expect(onData1).toHaveBeenCalledWith('shared data', expect.any(Number));
+      expect(onData2).toHaveBeenCalledWith('shared data', expect.any(Number));
 
       // Detaching one should not affect the other
       manager.detachWorkerCallbacks(session.id, workerId, connId1!);
@@ -510,7 +512,7 @@ describe('SessionManager', () => {
 
       ptyFactory.instances[0].simulateData('after detach 1');
       expect(onData1).not.toHaveBeenCalled();
-      expect(onData2).toHaveBeenCalledWith('after detach 1');
+      expect(onData2).toHaveBeenCalledWith('after detach 1', expect.any(Number));
     });
 
     it('should return null for non-existent session', async () => {
@@ -778,7 +780,8 @@ describe('SessionManager', () => {
       const binaryLike = 'Hello\x00World\x1b[0m';
       pty.simulateData(binaryLike);
 
-      expect(onData).toHaveBeenCalledWith(binaryLike);
+      // onData is called with (data, offset) where offset is the cumulative byte offset
+      expect(onData).toHaveBeenCalledWith(binaryLike, expect.any(Number));
       expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(binaryLike);
     });
 
@@ -802,7 +805,8 @@ describe('SessionManager', () => {
       const unicode = '日本語テスト 🎉 émoji';
       pty.simulateData(unicode);
 
-      expect(onData).toHaveBeenCalledWith(unicode);
+      // onData is called with (data, offset) where offset is the cumulative byte offset
+      expect(onData).toHaveBeenCalledWith(unicode, expect.any(Number));
       expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(unicode);
     });
 

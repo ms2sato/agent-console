@@ -161,6 +161,7 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 - **Session/Worker lifecycle:** Server creates, manages, and destroys sessions and workers. Client only displays what server provides.
 - **State synchronization:** Client receives state updates via WebSocket and renders accordingly. No client-side state that contradicts server.
 - **User actions:** Client sends user intent to server (e.g., "create session"), server executes and broadcasts result.
+- **Terminal caching:** Client caches terminal state in IndexedDB for UX optimization (instant tab switching), but always syncs with server to get updates since the cached offset. Cache is a performance optimization, not a source of truth.
 
 ## Key Technical Details
 
@@ -169,6 +170,7 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 - Resize events must be propagated to PTY
 - Output buffering enables reconnection without losing history
 - Activity detection: Parses agent output to determine state (active/idle/asking)
+- Terminal state caching: IndexedDB stores terminal state for instant restore on tab switch (see [terminal-state-sync.md](docs/design/terminal-state-sync.md))
 
 ## WebSocket Message Protocol
 

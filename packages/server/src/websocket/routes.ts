@@ -229,13 +229,14 @@ export async function setupWebSocketRoutes(
 
         // Helper to safely send WebSocket messages with buffering
         let outputBuffer = '';
+        let lastOffset: number = 0;
         let flushTimer: ReturnType<typeof setTimeout> | null = null;
         const FLUSH_INTERVAL = 50; // ms
 
         const flushBuffer = () => {
           if (outputBuffer.length > 0) {
             try {
-              ws.send(JSON.stringify({ type: 'output', data: outputBuffer }));
+              ws.send(JSON.stringify({ type: 'output', data: outputBuffer, offset: lastOffset }));
             } catch (error) {
               logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
             }
@@ -254,6 +255,7 @@ export async function setupWebSocketRoutes(
           if (msg.type === 'output') {
             // Buffer output messages
             outputBuffer += msg.data;
+            lastOffset = msg.offset;
 
             // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
             if (outputBuffer.length >= serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD) {
@@ -276,8 +278,8 @@ export async function setupWebSocketRoutes(
 
         // Register callbacks for new output
         connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
-          onData: (data) => {
-            safeSend({ type: 'output', data });
+          onData: (data, offset) => {
+            safeSend({ type: 'output', data, offset });
           },
           onExit: (exitCode, signal) => {
             safeSend({ type: 'exit', exitCode, signal });
@@ -425,17 +427,23 @@ export async function setupWebSocketRoutes(
             if (parsed && typeof parsed === 'object' && parsed.type === 'request-history') {
               // Handle request-history: send history to client with timeout and line limit
               const HISTORY_REQUEST_TIMEOUT_MS = 5000;
+              // Extract fromOffset from the request (optional, defaults to 0)
+              const fromOffset = typeof parsed.fromOffset === 'number' ? parsed.fromOffset : 0;
 
               const timeoutPromise = new Promise<null>((_, reject) => {
                 setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
               });
 
+              // If fromOffset > 0, we're doing incremental sync (no line limit)
+              // If fromOffset === 0, we're doing initial load (apply line limit)
+              const maxLines = fromOffset === 0 ? serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES : undefined;
+
               Promise.race([
                 sessionManager.getWorkerOutputHistory(
                   sessionId,
                   workerId,
-                  0,
-                  serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES
+                  fromOffset,
+                  maxLines
                 ),
                 timeoutPromise
               ])
@@ -444,45 +452,76 @@ export async function setupWebSocketRoutes(
                     const historyMsg: WorkerServerMessage = {
                       type: 'history',
                       data: historyResult.data,
+                      offset: historyResult.offset,
                     };
                     ws.send(JSON.stringify(historyMsg));
-                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length }, 'Sent history on request');
+                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, fromOffset }, 'Sent history on request');
                   } else {
-                    // Fallback to in-memory buffer
-                    const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-                    if (history) {
+                    // Fallback to in-memory buffer (only for initial load)
+                    if (fromOffset === 0) {
+                      const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+                      if (history) {
+                        const historyMsg: WorkerServerMessage = {
+                          type: 'history',
+                          data: history,
+                          offset: Buffer.byteLength(history, 'utf-8'),
+                        };
+                        ws.send(JSON.stringify(historyMsg));
+                        logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
+                      } else {
+                        // No history available - send empty history with offset 0
+                        const historyMsg: WorkerServerMessage = {
+                          type: 'history',
+                          data: '',
+                          offset: 0,
+                        };
+                        ws.send(JSON.stringify(historyMsg));
+                        logger.debug({ sessionId, workerId }, 'Sent empty history on request');
+                      }
+                    } else {
+                      // Incremental sync with no new data - send empty with current offset
                       const historyMsg: WorkerServerMessage = {
                         type: 'history',
-                        data: history,
+                        data: '',
+                        offset: fromOffset,
                       };
                       ws.send(JSON.stringify(historyMsg));
-                      logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
-                    } else {
-                      // No history available - send error
-                      const errorMsg: WorkerServerMessage = {
-                        type: 'error',
-                        message: 'Terminal history not available. The session may have been recently created.',
-                        code: 'HISTORY_LOAD_FAILED'
-                      };
-                      ws.send(JSON.stringify(errorMsg));
-                      logger.warn({ sessionId, workerId }, 'No history available for request-history');
+                      logger.debug({ sessionId, workerId, fromOffset }, 'Sent empty incremental history on request');
                     }
                   }
                 })
                 .catch((err) => {
-                  logger.error({ sessionId, workerId, err }, 'Error sending history on request');
-                  // Send error to client
-                  try {
-                    const errorMsg: WorkerServerMessage = {
-                      type: 'error',
-                      message: err.message === 'History request timeout'
-                        ? 'Loading terminal history timed out. Try switching to another worker and back, or refresh the page.'
-                        : 'Failed to load terminal history. Try switching workers or refreshing.',
-                      code: 'HISTORY_LOAD_FAILED'
-                    };
-                    ws.send(JSON.stringify(errorMsg));
-                  } catch {
-                    // Connection may be closed
+                  const isTimeout = err.message === 'History request timeout';
+
+                  if (isTimeout) {
+                    // Timeout is not a fatal error - worker is still operational.
+                    // Send empty history with timedOut flag so client can decide how to proceed.
+                    // Client can show a warning toast but continue using the terminal.
+                    logger.warn({ sessionId, workerId }, 'History request timed out, sending empty history with timeout flag');
+                    try {
+                      const historyMsg: WorkerServerMessage = {
+                        type: 'history',
+                        data: '',
+                        offset: fromOffset,
+                        timedOut: true,
+                      };
+                      ws.send(JSON.stringify(historyMsg));
+                    } catch {
+                      // Connection may be closed
+                    }
+                  } else {
+                    // Non-timeout errors are actual failures
+                    logger.error({ sessionId, workerId, err }, 'Error sending history on request');
+                    try {
+                      const errorMsg: WorkerServerMessage = {
+                        type: 'error',
+                        message: 'Failed to load terminal history. Try switching workers or refreshing.',
+                        code: 'HISTORY_LOAD_FAILED'
+                      };
+                      ws.send(JSON.stringify(errorMsg));
+                    } catch {
+                      // Connection may be closed
+                    }
                   }
                 });
               return;

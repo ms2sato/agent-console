@@ -64,11 +64,15 @@ describe('Terminal history handling integration', () => {
   });
 
   describe('history request behavior', () => {
-    it('should request history on initial connection (debounced)', async () => {
+    it('should NOT request history automatically via worker-websocket connect()', async () => {
+      // This test verifies that worker-websocket.connect() does NOT automatically
+      // send request-history. History requests are now the responsibility of
+      // Terminal.tsx, which calls requestHistory() explicitly with the appropriate
+      // fromOffset based on cache state.
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
         onExit: () => {},
       };
 
@@ -78,87 +82,75 @@ describe('Terminal history handling integration', () => {
       // Simulate connection open
       ws?.simulateOpen();
 
-      // request-history should NOT be sent immediately
-      expect(ws?.send).not.toHaveBeenCalled();
+      // Wait a bit to ensure no automatic request is sent
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-      // Wait for debounce delay
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      // request-history SHOULD be sent after debounce
-      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
-    });
-
-    it('should request history with debounce on tab switch (remount with existing OPEN connection)', async () => {
-      const callbacks: workerWs.TerminalWorkerCallbacks = {
-        type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
-        onExit: () => {},
-      };
-
-      // Initial connection
-      workerWs.connect('session-1', 'worker-1', callbacks);
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Wait for initial setup
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      // Clear mock to track subsequent calls
-      ws?.send.mockClear();
-
-      // Simulate tab switch: connect() is called again with existing OPEN connection
-      const newCallbacks: workerWs.TerminalWorkerCallbacks = {
-        type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
-        onExit: () => {},
-      };
-      workerWs.connect('session-1', 'worker-1', newCallbacks);
-
-      // History request should not be immediate (debounced)
-      expect(ws?.send).not.toHaveBeenCalled();
-
-      // Wait for debounce
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      // Now history should be requested (tab switch case)
-      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
-    });
-
-    it('should deduplicate rapid history requests on tab switch', async () => {
-      const callbacks: workerWs.TerminalWorkerCallbacks = {
-        type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
-        onExit: () => {},
-      };
-
-      // Initial connection
-      workerWs.connect('session-1', 'worker-1', callbacks);
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Wait for initial setup
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      // Clear mock to track subsequent calls
-      ws?.send.mockClear();
-
-      // Simulate rapid tab switches (like React Strict Mode double render)
-      workerWs.connect('session-1', 'worker-1', callbacks);
-      workerWs.connect('session-1', 'worker-1', callbacks);
-      workerWs.connect('session-1', 'worker-1', callbacks);
-
-      // Wait for debounce
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      // Should only have one history request (debounced)
+      // request-history should NOT be sent automatically by worker-websocket
       const sendCalls = (ws?.send as ReturnType<typeof spyOn>).mock.calls as unknown[][];
       const historyRequests = sendCalls.filter(
-        (call: unknown[]) => JSON.parse(call[0] as string).type === 'request-history'
+        (call: unknown[]) => {
+          try {
+            return JSON.parse(call[0] as string).type === 'request-history';
+          } catch {
+            return false;
+          }
+        }
       );
-      expect(historyRequests.length).toBe(1);
+      expect(historyRequests.length).toBe(0);
+    });
+
+    it('should allow explicit history request via requestHistory()', async () => {
+      // This test verifies that requestHistory() can be called explicitly
+      // to request history with a specific fromOffset.
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
+        onExit: () => {},
+      };
+
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Wait for connection to be established
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Clear mock to track requestHistory call
+      ws?.send.mockClear();
+
+      // Explicitly request history (simulating what Terminal.tsx does)
+      const result = workerWs.requestHistory('session-1', 'worker-1', 0);
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history', fromOffset: 0 }));
+    });
+
+    it('should allow explicit history request with fromOffset for incremental sync', async () => {
+      // This test verifies that requestHistory() can request incremental history
+      // from a specific offset (used when Terminal has cached state).
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
+        onExit: () => {},
+      };
+
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Wait for connection to be established
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Clear mock to track requestHistory call
+      ws?.send.mockClear();
+
+      // Request history from a specific offset (simulating cache restoration)
+      const result = workerWs.requestHistory('session-1', 'worker-1', 5678);
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history', fromOffset: 5678 }));
     });
   });
 });
@@ -370,8 +362,8 @@ describe('Lazy history loading optimization', () => {
     it('should send request-history message when connected', async () => {
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
         onExit: () => {},
       };
 
@@ -389,7 +381,7 @@ describe('Lazy history loading optimization', () => {
       const result = workerWs.requestHistory('session-1', 'worker-1');
 
       expect(result).toBe(true);
-      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history' }));
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history', fromOffset: 0 }));
     });
 
     it('should return false when not connected', () => {
@@ -400,8 +392,8 @@ describe('Lazy history loading optimization', () => {
     it('should return false when WebSocket is not open', () => {
       const callbacks: workerWs.TerminalWorkerCallbacks = {
         type: 'terminal',
-        onOutput: () => {},
-        onHistory: () => {},
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
         onExit: () => {},
       };
 
@@ -410,6 +402,31 @@ describe('Lazy history loading optimization', () => {
 
       const result = workerWs.requestHistory('session-1', 'worker-1');
       expect(result).toBe(false);
+    });
+
+    it('should send request-history with fromOffset when specified', async () => {
+      const callbacks: workerWs.TerminalWorkerCallbacks = {
+        type: 'terminal',
+        onOutput: (_data: string, _offset: number) => {},
+        onHistory: (_data: string, _offset: number) => {},
+        onExit: () => {},
+      };
+
+      workerWs.connect('session-1', 'worker-1', callbacks);
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Wait for initial setup
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Clear mock to track subsequent calls
+      ws?.send.mockClear();
+
+      // Call requestHistory with fromOffset
+      const result = workerWs.requestHistory('session-1', 'worker-1', 1234);
+
+      expect(result).toBe(true);
+      expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'request-history', fromOffset: 1234 }));
     });
   });
 

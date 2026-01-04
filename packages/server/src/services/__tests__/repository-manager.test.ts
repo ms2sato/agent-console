@@ -4,66 +4,19 @@ import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import type { RepositoryRepository, RepositoryUpdates } from '../../repositories/repository-repository.js';
 import { JobQueue } from '../../jobs/index.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetSessionManager, initializeSessionManager } from '../session-manager.js';
-import { createSessionRepository } from '../../repositories/index.js';
+import { createSessionRepository, SqliteRepositoryRepository } from '../../repositories/index.js';
 
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
-
-/**
- * In-memory mock implementation of RepositoryRepository for testing.
- */
-class InMemoryRepositoryRepository implements RepositoryRepository {
-  private repositories = new Map<string, Repository>();
-
-  async findAll(): Promise<Repository[]> {
-    return Array.from(this.repositories.values());
-  }
-
-  async findById(id: string): Promise<Repository | null> {
-    return this.repositories.get(id) ?? null;
-  }
-
-  async findByPath(path: string): Promise<Repository | null> {
-    for (const repo of this.repositories.values()) {
-      if (repo.path === path) return repo;
-    }
-    return null;
-  }
-
-  async save(repository: Repository): Promise<void> {
-    this.repositories.set(repository.id, repository);
-  }
-
-  async update(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
-    const repo = this.repositories.get(id);
-    if (!repo) return null;
-    const updated = { ...repo, ...updates };
-    this.repositories.set(id, updated);
-    return updated;
-  }
-
-  async delete(id: string): Promise<void> {
-    this.repositories.delete(id);
-  }
-
-  // Test helper to pre-populate data
-  setRepositories(repos: Repository[]): void {
-    this.repositories.clear();
-    for (const repo of repos) {
-      this.repositories.set(repo.id, repo);
-    }
-  }
-}
 
 describe('RepositoryManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
   const TEST_REPO_DIR = '/test/repo';
   let importCounter = 0;
-  let mockRepository: InMemoryRepositoryRepository;
+  let repositoryRepository: SqliteRepositoryRepository;
 
   beforeEach(async () => {
     // Close any existing database connection first
@@ -98,8 +51,9 @@ describe('RepositoryManager', () => {
     mockGit.getOrgRepoFromPath.mockReset();
     mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('test-org/repo'));
 
-    // Create fresh mock repository for each test
-    mockRepository = new InMemoryRepositoryRepository();
+    // Create production repository backed by in-memory SQLite
+    // This tests the actual production code path instead of a mock
+    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
   });
 
   afterEach(async () => {
@@ -112,13 +66,14 @@ describe('RepositoryManager', () => {
     cleanupMemfs();
   });
 
-  // Helper to get fresh RepositoryManager instance with the mock repository
+  // Helper to get fresh RepositoryManager instance with the production repository
   async function getRepositoryManager(preloadedRepos: Repository[] = []) {
     // Pre-populate the repository before creating the manager
-    mockRepository.setRepositories(preloadedRepos);
+    // Use actual SQLite repository (backed by in-memory database)
+    await Promise.all(preloadedRepos.map(repo => repositoryRepository.save(repo)));
     const module = await import(`../repository-manager.js?v=${++importCounter}`);
     return module.RepositoryManager.create({
-      repository: mockRepository,
+      repository: repositoryRepository,
       jobQueue: testJobQueue,
     });
   }
@@ -169,8 +124,8 @@ describe('RepositoryManager', () => {
 
       await manager.registerRepository(TEST_REPO_DIR);
 
-      // Check persisted data in the mock repository
-      const savedRepos = await mockRepository.findAll();
+      // Check persisted data in the SQLite repository
+      const savedRepos = await repositoryRepository.findAll();
       expect(savedRepos.length).toBe(1);
       expect(savedRepos[0].path).toBe(TEST_REPO_DIR);
     });
@@ -200,8 +155,8 @@ describe('RepositoryManager', () => {
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await manager.unregisterRepository(repo.id);
 
-      // Check persisted data in the mock repository
-      const savedRepos = await mockRepository.findAll();
+      // Check persisted data in the SQLite repository
+      const savedRepos = await repositoryRepository.findAll();
       expect(savedRepos.length).toBe(0);
     });
   });
