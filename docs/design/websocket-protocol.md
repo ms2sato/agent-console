@@ -65,35 +65,43 @@ Per-worker WebSocket for terminal I/O.
 | `input` | `{ data: string }` | Terminal input |
 | `resize` | `{ cols: number, rows: number }` | Terminal resize |
 | `image` | `{ data: string, mimeType: string }` | Image data (base64) |
-| `request-history` | (none) | Request full terminal history (sent when component remounts with existing connection) |
+| `request-history` | `{ fromOffset?: number }` | Request terminal history. If `fromOffset` is provided, returns only data after that byte offset (incremental sync). |
 
 ### Server → Client Messages
 
 | Type | Payload | Description |
 |------|---------|-------------|
-| `output` | `{ data: string }` | PTY output |
+| `output` | `{ data: string, offset: number }` | PTY output with current byte offset |
 | `exit` | `{ exitCode: number, signal: string \| null }` | Process exit |
-| `history` | `{ data: string }` | Full terminal output history |
+| `history` | `{ data: string, offset: number, timedOut?: boolean }` | Terminal output history with current offset. `timedOut: true` if history load timed out (client can continue without full history). |
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
-| `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., history request timeout, worker not found) |
+| `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., worker not found) |
 
 ### History Request Behavior
 
-When a Terminal component remounts while the WebSocket connection is still open (e.g., navigating away and back), the client sends `request-history` to request the full terminal output history without reconnecting.
+When a Terminal component mounts, it requests terminal history to display previous output.
+
+**Incremental Sync (Offset-based):**
+- Client caches terminal state in IndexedDB with the last known `offset`
+- On mount, client restores cached state and sends `request-history` with `fromOffset`
+- Server returns only data after that offset (incremental sync)
+- This eliminates flicker when switching between worker tabs
+
+**Full History Request:**
+- If no cache exists or cache is invalid, client sends `request-history` without `fromOffset`
+- Server returns full history from the beginning
 
 **Timeout Protection:**
 - Server-side timeout: 5 seconds
-- If history retrieval takes too long, server sends `error` message with code `ACTIVATION_FAILED`
-
-**Debouncing:**
-- Client-side debounce: 100ms
-- Prevents duplicate requests during rapid component remounts (e.g., React Strict Mode double-render)
-- Only the last request within the debounce window is sent
+- If history retrieval times out, server sends `history` with `timedOut: true` and empty data
+- Client can continue using the terminal without full history (graceful degradation)
 
 **Fallback Behavior:**
-- Primary: Read from persistent file storage
+- Primary: Read from persistent file storage with offset support
 - Fallback: Use in-memory buffer if file not available
-- Error: Send `error` message if neither source is available
+- Timeout: Send `history` with `timedOut: true` (not an error)
+
+See [terminal-state-sync.md](./terminal-state-sync.md) for detailed architecture.
 
 ## Reconnection Strategy
 
