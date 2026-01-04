@@ -472,6 +472,42 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Reset output file for a worker (clear content and start fresh).
+   * Used when restarting a worker to prevent offset mismatch with client cache.
+   * Clears pending buffers and creates an empty file.
+   */
+  async resetWorkerOutput(sessionId: string, workerId: string): Promise<void> {
+    // Clear any pending flush
+    const key = this.getKey(sessionId, workerId);
+    const pending = this.pendingFlushes.get(key);
+    if (pending) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+      this.pendingFlushes.delete(key);
+    }
+
+    const filePath = this.getOutputFilePath(sessionId, workerId);
+
+    try {
+      // Ensure directory exists
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+      // Delete any existing files (both compressed and uncompressed)
+      const compressedPath = path.join(path.dirname(filePath), `${workerId}.log.gz`);
+      await fs.unlink(compressedPath).catch(() => { /* Ignore if doesn't exist */ });
+      await fs.unlink(filePath).catch(() => { /* Ignore if doesn't exist */ });
+
+      // Create empty file
+      await fs.writeFile(filePath, '', 'utf-8');
+
+      logger.debug({ sessionId, workerId, filePath }, 'Reset worker output file');
+    } catch (error) {
+      logger.error({ sessionId, workerId, err: error }, 'Failed to reset worker output file');
+    }
+  }
+
+  /**
    * Delete output file for a worker.
    * Also deletes legacy .log.gz files if present.
    */

@@ -53,7 +53,7 @@ interface InternalWorkerBase {
 
 // Callback set for a single WebSocket connection
 interface ConnectionCallbacks {
-  onData: (data: string) => void;
+  onData: (data: string, offset: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivityChange?: (state: AgentActivityState) => void;
 }
@@ -64,6 +64,7 @@ interface ConnectionCallbacks {
 interface InternalPtyWorkerBase extends InternalWorkerBase {
   pty: PtyInstance | null;  // null = not yet activated after server restart
   outputBuffer: string;
+  outputOffset: number;  // Current output offset in bytes (for incremental sync)
   // Map of connection ID to callbacks - supports multiple simultaneous connections
   connectionCallbacks: Map<string, ConnectionCallbacks>;
 }
@@ -112,7 +113,7 @@ interface InternalQuickSession extends InternalSessionBase {
 type InternalSession = InternalWorktreeSession | InternalQuickSession;
 
 interface WorkerCallbacks {
-  onData: (data: string) => void;
+  onData: (data: string, offset: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivityChange?: (state: AgentActivityState) => void;
 }
@@ -804,6 +805,7 @@ export class SessionManager {
       agentId: agent.id,
       pty: null,  // PTY will be activated via activateAgentWorkerPty
       outputBuffer: '',
+      outputOffset: 0,  // Will be updated when output is received
       activityState: 'unknown',
       activityDetector: null,  // Will be created when PTY is activated
       connectionCallbacks: new Map(),
@@ -832,6 +834,7 @@ export class SessionManager {
       createdAt,
       pty: null,  // PTY will be activated via activateTerminalWorkerPty
       outputBuffer: '',
+      outputOffset: 0,  // Will be updated when output is received
       connectionCallbacks: new Map(),
     };
 
@@ -994,6 +997,9 @@ export class SessionManager {
         worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
       }
 
+      // Update output offset (byte-based for incremental sync)
+      worker.outputOffset += Buffer.byteLength(data, 'utf-8');
+
       // Buffer output to file for persistence
       workerOutputFileManager.bufferOutput(sessionId, worker.id, data);
 
@@ -1004,7 +1010,7 @@ export class SessionManager {
       // Snapshot callbacks before iteration to avoid concurrent modification issues
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
       for (const callbacks of callbacksSnapshot) {
-        callbacks.onData(data);
+        callbacks.onData(data, worker.outputOffset);
       }
     });
 
@@ -1165,6 +1171,12 @@ export class SessionManager {
     if (existingWorker.activityDetector) {
       existingWorker.activityDetector.dispose();
     }
+
+    // Reset the output file to prevent offset mismatch with client cache.
+    // When worker restarts, the PTY produces new output from offset 0,
+    // but the client cache may have a stale offset from the old session.
+    // Resetting the file ensures both server and client start fresh.
+    await workerOutputFileManager.resetWorkerOutput(sessionId, workerId);
 
     // Create new worker with same ID, preserving original createdAt for tab order
     // Initialize without PTY, then activate PTY
@@ -1501,6 +1513,7 @@ export class SessionManager {
           createdAt: pw.createdAt,
           pty: null,  // Will be activated on WebSocket connection
           outputBuffer: '',
+          outputOffset: 0,  // Will be synced from file when PTY is activated
           connectionCallbacks: new Map(),
           activityState: 'unknown',
           activityDetector: null,  // Will be created when PTY is activated
@@ -1514,6 +1527,7 @@ export class SessionManager {
           createdAt: pw.createdAt,
           pty: null,  // Will be activated on WebSocket connection
           outputBuffer: '',
+          outputOffset: 0,  // Will be synced from file when PTY is activated
           connectionCallbacks: new Map(),
         };
         workers.set(pw.id, worker);

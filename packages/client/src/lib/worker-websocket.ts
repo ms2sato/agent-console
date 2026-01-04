@@ -104,8 +104,8 @@ interface WorkerConnection {
 // Callbacks for terminal/agent workers
 export interface TerminalWorkerCallbacks {
   type: 'terminal' | 'agent';
-  onOutput: (data: string) => void;
-  onHistory: (data: string) => void;
+  onOutput: (data: string, offset: number) => void;
+  onHistory: (data: string, offset: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivity?: (state: AgentActivityState) => void;
   onError?: (message: string, code?: WorkerErrorCode) => void;
@@ -252,10 +252,10 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
 function handleTerminalMessage(msg: WorkerServerMessage, callbacks: TerminalWorkerCallbacks): void {
   switch (msg.type) {
     case 'output':
-      callbacks.onOutput(msg.data);
+      callbacks.onOutput(msg.data, msg.offset);
       break;
     case 'history':
-      callbacks.onHistory(msg.data);
+      callbacks.onHistory(msg.data, msg.offset);
       break;
     case 'exit':
       callbacks.onExit(msg.exitCode, msg.signal);
@@ -266,6 +266,12 @@ function handleTerminalMessage(msg: WorkerServerMessage, callbacks: TerminalWork
     case 'error':
       callbacks.onError?.(msg.message, msg.code);
       break;
+    default: {
+      // Exhaustive check: TypeScript will error if a new message type is added
+      // but not handled in this switch statement
+      const _exhaustive: never = msg;
+      console.error('[WorkerWS] Unknown terminal message type:', _exhaustive);
+    }
   }
 }
 
@@ -282,6 +288,12 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
       updateState(key, { diffData: null, diffError: msg.error, diffLoading: false });
       callbacks.onDiffError?.(msg.error);
       break;
+    default: {
+      // Exhaustive check: TypeScript will error if a new message type is added
+      // but not handled in this switch statement
+      const _exhaustive: never = msg;
+      console.error('[WorkerWS] Unknown git-diff message type:', _exhaustive);
+    }
   }
 }
 
@@ -300,16 +312,9 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
       updateState(key, { diffLoading: true });
     }
 
-    // Request history after connection is established (debounced)
-    // This covers both initial page load and reconnection scenarios
-    if (callbacks.type === 'terminal' || callbacks.type === 'agent') {
-      const HISTORY_REQUEST_DEBOUNCE_MS = 100;
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'request-history' }));
-        }
-      }, HISTORY_REQUEST_DEBOUNCE_MS);
-    }
+    // Note: History request is NOT sent automatically here.
+    // Terminal.tsx is responsible for requesting history with the appropriate fromOffset
+    // (either 0 for fresh load, or cached.offset for incremental sync after cache restoration).
   };
 
   ws.onmessage = (event) => {
@@ -394,27 +399,19 @@ export function connect(
       return false;
     }
 
-    // If connection is open, update callbacks and request fresh history
+    // If connection is open, update callbacks and return
     // This avoids unnecessary connection churn when component remounts
+    // Note: History request is NOT sent automatically here.
+    // Terminal.tsx is responsible for requesting history with the appropriate fromOffset.
     if (existing.ws.readyState === WebSocket.OPEN) {
       // Update callbacks for the new component instance
       existing.callbacks = callbacks;
 
-      // Debounce history requests to prevent rapid duplicate requests
-      // Clear any pending history request
+      // Clear any pending history request timeout (no longer used but kept for safety)
       if (existing.historyRequestTimeout) {
         clearTimeout(existing.historyRequestTimeout);
-      }
-
-      // Request fresh history from server after debounce delay
-      const HISTORY_REQUEST_DEBOUNCE_MS = 100;
-      existing.historyRequestTimeout = setTimeout(() => {
         existing.historyRequestTimeout = null;
-        // Check if connection is still open before sending
-        if (existing.ws.readyState === WebSocket.OPEN) {
-          existing.ws.send(JSON.stringify({ type: 'request-history' }));
-        }
-      }, HISTORY_REQUEST_DEBOUNCE_MS);
+      }
 
       return false;
     }
@@ -544,10 +541,14 @@ export function sendImage(sessionId: string, workerId: string, data: string, mim
 /**
  * Request history data from the server.
  * Used when a previously invisible tab becomes visible for the first time.
+ * @param fromOffset If specified, request only data after this offset (incremental sync)
  * @returns true if sent, false if not connected
  */
-export function requestHistory(sessionId: string, workerId: string): boolean {
-  return sendTerminalMessage(sessionId, workerId, { type: 'request-history' });
+export function requestHistory(sessionId: string, workerId: string, fromOffset?: number): boolean {
+  return sendTerminalMessage(sessionId, workerId, {
+    type: 'request-history',
+    fromOffset: fromOffset ?? 0
+  });
 }
 
 // Convenience methods for git-diff workers

@@ -93,10 +93,10 @@ describe('useTerminalWebSocket', () => {
     });
 
     act(() => {
-      ws?.simulateMessage(JSON.stringify({ type: 'output', data: 'hello' }));
+      ws?.simulateMessage(JSON.stringify({ type: 'output', data: 'hello', offset: 1234 }));
     });
 
-    expect(options.onOutput).toHaveBeenCalledWith('hello');
+    expect(options.onOutput).toHaveBeenCalledWith('hello', 1234);
   });
 
   it('should call onHistory when receiving history message', async () => {
@@ -111,11 +111,11 @@ describe('useTerminalWebSocket', () => {
     });
 
     act(() => {
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data' }));
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data', offset: 5678 }));
     });
 
-    // onHistory is called with just data (offset was removed in simplification)
-    expect(options.onHistory).toHaveBeenCalledWith('history data');
+    // onHistory is called with data and offset
+    expect(options.onHistory).toHaveBeenCalledWith('history data', 5678);
   });
 
   it('should call onExit when receiving exit message', async () => {
@@ -297,10 +297,10 @@ describe('useTerminalWebSocket', () => {
 
     // New callback should be called
     act(() => {
-      firstWs?.simulateMessage(JSON.stringify({ type: 'output', data: 'test' }));
+      firstWs?.simulateMessage(JSON.stringify({ type: 'output', data: 'test', offset: 100 }));
     });
 
     expect(options1.onOutput).not.toHaveBeenCalled();
-    expect(options2.onOutput).toHaveBeenCalledWith('test');
+    expect(options2.onOutput).toHaveBeenCalledWith('test', 100);
   });
 });

@@ -2,10 +2,12 @@ import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
-import { clearVisibilityTracking } from '../lib/worker-websocket.js';
+import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
+import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
 
@@ -62,6 +64,11 @@ async function writeInChunks(
 interface TerminalState {
   isMounted: boolean;           // Is xterm.js initialized?
   pendingHistory: string | null; // History that arrived before xterm.js was ready
+  restoredFromCache: boolean;   // Was the terminal restored from cache? (skip server history if true)
+  waitingForDiff: boolean;      // Are we waiting for a diff response after cache restoration?
+  cachedOffset: number;         // The offset from the cached state (for diff requests)
+  historyRequested: boolean;    // Has history been requested? (prevent duplicate requests)
+  currentWorkerId: string;      // Current worker ID for race condition detection
 }
 
 /**
@@ -100,10 +107,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const serializeAddonRef = useRef<SerializeAddon | null>(null);
   const stateRef = useRef<TerminalState>({
     isMounted: false,
     pendingHistory: null,
+    restoredFromCache: false,
+    waitingForDiff: false,
+    cachedOffset: 0,
+    historyRequested: false,
+    currentWorkerId: workerId,
   });
+  const offsetRef = useRef<number>(0);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
@@ -129,13 +143,52 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     setShowScrollButton(false);
   }, []);
 
-  const handleOutput = useCallback((data: string) => {
+  const handleOutput = useCallback((data: string, offset: number) => {
+    offsetRef.current = offset;
     terminalRef.current?.write(data, () => {
       updateScrollButtonVisibility();
     });
   }, [updateScrollButtonVisibility]);
 
-  const handleHistory = useCallback((data: string) => {
+  const handleHistory = useCallback((data: string, offset: number) => {
+    // Update offset
+    offsetRef.current = offset;
+
+    // Handle history response based on whether we restored from cache
+    if (stateRef.current.waitingForDiff) {
+      stateRef.current.waitingForDiff = false;
+
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
+      }
+
+      if (stateRef.current.restoredFromCache) {
+        // Restored from cache - append diff data (do NOT clear terminal)
+        if (data) {
+          terminal.write(data, () => {
+            updateScrollButtonVisibility();
+          });
+        }
+      } else if (!stateRef.current.restoredFromCache) {
+        // No cache - write full history (explicit check for clarity)
+        if (data) {
+          writeFullHistory(terminal, data)
+            .then(() => {
+              updateScrollButtonVisibility();
+            })
+            .catch((e) => console.error('[Terminal] Failed to write history:', e));
+        }
+      }
+      return;
+    }
+
+    // Skip server history if we already restored from cache and not waiting for diff
+    // This prevents the flickering caused by clearing and rewriting content
+    if (stateRef.current.restoredFromCache) {
+      return;
+    }
+
     if (!data) return;
 
     // xterm.js not ready yet -> store temporarily
@@ -164,6 +217,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleConnectionChange = useCallback((connected: boolean) => {
     setStatus(connected ? 'connected' : 'disconnected');
+    // Reset history request flags on disconnect so next reconnect can request history
+    // Without this, if connection fails before history response, terminal stays blank forever
+    if (!connected) {
+      stateRef.current.historyRequested = false;
+      stateRef.current.waitingForDiff = false;
+    }
   }, []);
 
   const handleActivity = useCallback((state: AgentActivityState) => {
@@ -177,6 +236,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onConnectionChange: handleConnectionChange,
     onActivity: handleActivity,
   });
+
+  // Keep a ref to the latest connected value for use in async callbacks
+  const connectedRef = useRef(connected);
+  useEffect(() => {
+    connectedRef.current = connected;
+  }, [connected]);
 
   // Sync error from hook to local state
   useEffect(() => {
@@ -210,20 +275,92 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
     terminal.loadAddon(webLinksAddon);
 
+    // Enable serialization for terminal state caching
+    const serializeAddon = new SerializeAddon();
+    terminal.loadAddon(serializeAddon);
+
     terminal.open(container);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    serializeAddonRef.current = serializeAddon;
 
     // Mark as mounted for conditional rendering support
     stateRef.current.isMounted = true;
+    // Store current worker ID for race condition detection
+    stateRef.current.currentWorkerId = workerId;
 
-    // Process stored history if any (handles race condition where history arrives before xterm.js init)
-    if (stateRef.current.pendingHistory) {
-      writeFullHistory(terminal, stateRef.current.pendingHistory)
-        .catch((e) => console.error('[Terminal] Failed to write pending history:', e));
-      stateRef.current.pendingHistory = null;
-    }
+    // Try to restore terminal state from cache before processing server history
+    // This eliminates flickering when switching between workers
+    loadTerminalState(sessionId, workerId)
+      .then((cached) => {
+        // Race condition check: abort if component unmounted or worker changed
+        if (!stateRef.current.isMounted) {
+          return;
+        }
+        if (stateRef.current.currentWorkerId !== workerId) {
+          return;
+        }
+        // Skip if history was already requested (React Strict Mode double-mount)
+        if (stateRef.current.historyRequested) {
+          return;
+        }
+        // Use terminalRef.current instead of captured terminal variable
+        // to handle React Strict Mode double-mounting
+        const currentTerminal = terminalRef.current;
+        if (cached && cached.data && currentTerminal) {
+          // Restore cached terminal state
+          currentTerminal.write(cached.data, () => {
+            updateScrollButtonVisibility();
+          });
+          // Store the cached offset for diff request
+          stateRef.current.cachedOffset = cached.offset;
+          offsetRef.current = cached.offset;
+          // Mark as restored to skip full server history (we'll request diff instead)
+          stateRef.current.restoredFromCache = true;
+          // Request diff: if already connected, send now; otherwise useEffect will handle it
+          // Use connectedRef.current to get the latest connected value
+          // Set waitingForDiff so handleHistory knows to process the response
+          stateRef.current.waitingForDiff = true;
+          if (connectedRef.current) {
+            stateRef.current.historyRequested = true;
+            requestHistory(sessionId, workerId, cached.offset);
+          }
+        } else {
+          // No cache - request full history from server (fromOffset: 0)
+          stateRef.current.cachedOffset = 0;
+          // Request history: if already connected, send now; otherwise useEffect will handle it
+          // Use connectedRef.current to get the latest connected value
+          // Set waitingForDiff so handleHistory knows to process the response
+          stateRef.current.waitingForDiff = true;
+          if (connectedRef.current) {
+            stateRef.current.historyRequested = true;
+            requestHistory(sessionId, workerId, 0);
+          }
+        }
+      })
+      .catch((e) => {
+        console.warn('[Terminal] Failed to load cached state:', e);
+        // Race condition check: abort if component unmounted or worker changed
+        if (!stateRef.current.isMounted) {
+          return;
+        }
+        if (stateRef.current.currentWorkerId !== workerId) {
+          return;
+        }
+        // Skip if history was already requested
+        if (stateRef.current.historyRequested) {
+          return;
+        }
+        // Fallback: request full history from server
+        stateRef.current.cachedOffset = 0;
+        // Set waitingForDiff so handleHistory knows to process the response
+        stateRef.current.waitingForDiff = true;
+        if (connectedRef.current) {
+          stateRef.current.historyRequested = true;
+          requestHistory(sessionId, workerId, 0);
+        }
+      });
 
     // Delay fit to ensure container has dimensions
     const fitTerminal = () => {
@@ -341,8 +478,24 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
+      // Save terminal state to cache before unmounting
+      // This enables instant restoration when switching back to this worker
+      try {
+        const serializedData = serializeAddon.serialize();
+        saveTerminalState(sessionId, workerId, {
+          data: serializedData,
+          savedAt: Date.now(),
+          cols: terminal.cols,
+          rows: terminal.rows,
+          offset: offsetRef.current,
+        }).catch((e) => console.warn('[Terminal] Failed to save terminal state:', e));
+      } catch (e) {
+        console.warn('[Terminal] Failed to serialize terminal state:', e);
+      }
+
       // Reset state for conditional rendering support
-      stateRef.current = { isMounted: false, pendingHistory: null };
+      stateRef.current = { isMounted: false, pendingHistory: null, restoredFromCache: false, waitingForDiff: false, cachedOffset: 0, historyRequested: false, currentWorkerId: '' };
+      offsetRef.current = 0;
 
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
@@ -365,10 +518,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         if (fitAddonRef.current === fitAddon) {
           fitAddonRef.current = null;
         }
+        if (serializeAddonRef.current === serializeAddon) {
+          serializeAddonRef.current = null;
+        }
         terminal.dispose();
       }, 0);
     };
-  }, [sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
 
   // Send resize when connection is established
   useEffect(() => {
@@ -377,6 +533,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       sendResize(terminalRef.current.cols, terminalRef.current.rows);
     }
   }, [connected, sendResize]);
+
+  // Request history when connection is established and we're waiting for it
+  // This handles both: diff after cache restoration, and full history when no cache
+  useEffect(() => {
+    if (connected && stateRef.current.waitingForDiff && !stateRef.current.historyRequested) {
+      // Request history with the appropriate offset
+      // - cachedOffset > 0: diff request after cache restoration
+      // - cachedOffset = 0: full history request (no cache)
+      stateRef.current.historyRequested = true;
+      stateRef.current.waitingForDiff = false;
+      requestHistory(sessionId, workerId, stateRef.current.cachedOffset);
+    }
+  }, [connected, sessionId, workerId]);
 
   // Clean up visibility tracking on unmount to prevent stale reconnection
   useEffect(() => {

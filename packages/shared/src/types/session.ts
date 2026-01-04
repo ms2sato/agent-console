@@ -67,7 +67,7 @@ export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'image'; data: string; mimeType: string }
-  | { type: 'request-history' };
+  | { type: 'request-history'; fromOffset?: number };
 
 /**
  * Valid message types for WorkerServerMessage.
@@ -94,9 +94,9 @@ export type WorkerErrorCode =
   | 'HISTORY_LOAD_FAILED';  // History retrieval failed (timeout or error)
 
 export type WorkerServerMessage =
-  | { type: 'output'; data: string }
+  | { type: 'output'; data: string; offset: number }
   | { type: 'exit'; exitCode: number; signal: string | null }
-  | { type: 'history'; data: string }
+  | { type: 'history'; data: string; offset: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode };
 
