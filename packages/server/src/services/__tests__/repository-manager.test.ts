@@ -70,9 +70,7 @@ describe('RepositoryManager', () => {
   async function getRepositoryManager(preloadedRepos: Repository[] = []) {
     // Pre-populate the repository before creating the manager
     // Use actual SQLite repository (backed by in-memory database)
-    for (const repo of preloadedRepos) {
-      await repositoryRepository.save(repo);
-    }
+    await Promise.all(preloadedRepos.map(repo => repositoryRepository.save(repo)));
     const module = await import(`../repository-manager.js?v=${++importCounter}`);
     return module.RepositoryManager.create({
       repository: repositoryRepository,

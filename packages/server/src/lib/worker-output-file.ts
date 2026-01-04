@@ -495,8 +495,16 @@ export class WorkerOutputFileManager {
 
       // Delete any existing files (both compressed and uncompressed)
       const compressedPath = path.join(path.dirname(filePath), `${workerId}.log.gz`);
-      await fs.unlink(compressedPath).catch(() => { /* Ignore if doesn't exist */ });
-      await fs.unlink(filePath).catch(() => { /* Ignore if doesn't exist */ });
+      await fs.unlink(compressedPath).catch((err) => {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.warn({ sessionId, workerId, path: compressedPath, err }, 'Failed to delete compressed file during reset');
+        }
+      });
+      await fs.unlink(filePath).catch((err) => {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.warn({ sessionId, workerId, path: filePath, err }, 'Failed to delete output file during reset');
+        }
+      });
 
       // Create empty file
       await fs.writeFile(filePath, '', 'utf-8');
