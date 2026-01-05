@@ -11,52 +11,6 @@ import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cach
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
 
-/** Threshold for large data that should be written in chunks */
-const LARGE_DATA_LINE_THRESHOLD = 1000;
-
-/** Number of lines per chunk when writing large data */
-const CHUNK_SIZE = 50;
-
-/**
- * Write data to terminal in chunks to avoid blocking the main thread.
- * Uses requestIdleCallback to write during idle periods.
- */
-async function writeInChunks(
-  terminal: XTerm,
-  data: string,
-  options: {
-    chunkSize?: number;
-    onProgress?: (written: number, total: number) => void;
-  } = {}
-): Promise<void> {
-  const { chunkSize = CHUNK_SIZE, onProgress } = options;
-
-  // Split by lines to preserve ANSI escape sequences
-  const lines = data.split('\n');
-  const totalLines = lines.length;
-
-  for (let i = 0; i < totalLines; i += chunkSize) {
-    const chunk = lines.slice(i, i + chunkSize).join('\n');
-
-    // Write chunk during idle time
-    await new Promise<void>((resolve) => {
-      const writeChunk = () => {
-        terminal.write(chunk + (i + chunkSize < totalLines ? '\n' : ''), () => {
-          onProgress?.(Math.min(i + chunkSize, totalLines), totalLines);
-          resolve();
-        });
-      };
-
-      // Use requestIdleCallback if available, otherwise requestAnimationFrame
-      if ('requestIdleCallback' in window) {
-        requestIdleCallback(writeChunk, { timeout: 50 });
-      } else {
-        requestAnimationFrame(writeChunk);
-      }
-    });
-  }
-}
-
 /**
  * State for conditional rendering support.
  * Tracks whether xterm.js is initialized and stores history that arrives before initialization.
@@ -73,21 +27,14 @@ interface TerminalState {
 
 /**
  * Write full history to terminal, clearing existing content first.
- * Uses chunked writing for large data to avoid blocking the main thread.
+ * xterm.js internally handles buffering, so direct write is safe for any data size.
  */
 async function writeFullHistory(terminal: XTerm, data: string): Promise<void> {
-  const lineCount = (data.match(/\n/g) || []).length;
-  const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
-
   terminal.clear();
 
-  if (isLargeData) {
-    await writeInChunks(terminal, data);
-  } else {
-    await new Promise<void>((resolve) => {
-      terminal.write(data, resolve);
-    });
-  }
+  await new Promise<void>((resolve) => {
+    terminal.write(data, resolve);
+  });
 
   terminal.scrollToBottom();
 }
