@@ -7,55 +7,10 @@ import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
+import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
-
-/** Threshold for large data that should be written in chunks */
-const LARGE_DATA_LINE_THRESHOLD = 1000;
-
-/** Number of lines per chunk when writing large data */
-const CHUNK_SIZE = 50;
-
-/**
- * Write data to terminal in chunks to avoid blocking the main thread.
- * Uses requestIdleCallback to write during idle periods.
- */
-async function writeInChunks(
-  terminal: XTerm,
-  data: string,
-  options: {
-    chunkSize?: number;
-    onProgress?: (written: number, total: number) => void;
-  } = {}
-): Promise<void> {
-  const { chunkSize = CHUNK_SIZE, onProgress } = options;
-
-  // Split by lines to preserve ANSI escape sequences
-  const lines = data.split('\n');
-  const totalLines = lines.length;
-
-  for (let i = 0; i < totalLines; i += chunkSize) {
-    const chunk = lines.slice(i, i + chunkSize).join('\n');
-
-    // Write chunk during idle time
-    await new Promise<void>((resolve) => {
-      const writeChunk = () => {
-        terminal.write(chunk + (i + chunkSize < totalLines ? '\n' : ''), () => {
-          onProgress?.(Math.min(i + chunkSize, totalLines), totalLines);
-          resolve();
-        });
-      };
-
-      // Use requestIdleCallback if available, otherwise requestAnimationFrame
-      if ('requestIdleCallback' in window) {
-        requestIdleCallback(writeChunk, { timeout: 50 });
-      } else {
-        requestAnimationFrame(writeChunk);
-      }
-    });
-  }
-}
 
 /**
  * State for conditional rendering support.
@@ -69,27 +24,6 @@ interface TerminalState {
   cachedOffset: number;         // The offset from the cached state (for diff requests)
   historyRequested: boolean;    // Has history been requested? (prevent duplicate requests)
   currentWorkerId: string;      // Current worker ID for race condition detection
-}
-
-/**
- * Write full history to terminal, clearing existing content first.
- * Uses chunked writing for large data to avoid blocking the main thread.
- */
-async function writeFullHistory(terminal: XTerm, data: string): Promise<void> {
-  const lineCount = (data.match(/\n/g) || []).length;
-  const isLargeData = lineCount > LARGE_DATA_LINE_THRESHOLD;
-
-  terminal.clear();
-
-  if (isLargeData) {
-    await writeInChunks(terminal, data);
-  } else {
-    await new Promise<void>((resolve) => {
-      terminal.write(data, resolve);
-    });
-  }
-
-  terminal.scrollToBottom();
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
@@ -171,7 +105,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           });
         }
       } else if (!stateRef.current.restoredFromCache) {
-        // No cache - write full history (explicit check for clarity)
+        // No cache - write full history (explicit check for safety)
         if (data) {
           writeFullHistory(terminal, data)
             .then(() => {
@@ -542,7 +476,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // - cachedOffset > 0: diff request after cache restoration
       // - cachedOffset = 0: full history request (no cache)
       stateRef.current.historyRequested = true;
-      stateRef.current.waitingForDiff = false;
+      // Note: waitingForDiff remains true so handleHistory processes the response correctly
       requestHistory(sessionId, workerId, stateRef.current.cachedOffset);
     }
   }, [connected, sessionId, workerId]);
