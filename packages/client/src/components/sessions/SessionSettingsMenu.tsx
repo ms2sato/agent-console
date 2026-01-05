@@ -10,6 +10,7 @@ import {
   DocumentIcon,
   ExternalLinkIcon,
 } from '../Icons';
+import { Spinner } from '../ui/Spinner';
 import { openPath, fetchSessionPrLink } from '../../lib/api';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'view-initial-prompt';
@@ -130,15 +131,14 @@ export function SessionSettingsMenu({
                 View Initial Prompt
               </button>
             )}
-            {!isPrLinkLoading && prLinkData?.prUrl && (
-              <button
-                onClick={handleViewPullRequest}
-                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
-              >
-                <ExternalLinkIcon />
-                View Pull Request
-              </button>
-            )}
+            <button
+              onClick={handleViewPullRequest}
+              disabled={isPrLinkLoading || !prLinkData?.prUrl}
+              className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-300"
+            >
+              {isPrLinkLoading ? <Spinner size="sm" /> : <ExternalLinkIcon />}
+              View Pull Request
+            </button>
             <button
               onClick={() => handleMenuAction('restart')}
               className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
