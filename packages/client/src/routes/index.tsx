@@ -648,14 +648,14 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
 
-  const startSessionMutation = useMutation({
+  const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       navigate({ to: '/sessions/$sessionId', params: { sessionId: data.session.id } });
     },
     onError: (error: Error) => {
-      showError('Start Session Failed', error.message);
+      showError('Restore Failed', error.message);
     },
   });
 
@@ -677,12 +677,13 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     },
   });
 
-  const handleStartSession = () => {
-    startSessionMutation.mutate({
+  const handleRestoreSession = () => {
+    restoreSessionMutation.mutate({
       type: 'worktree',
       repositoryId: worktree.repositoryId,
       worktreeId: worktree.branch,
       locationPath: worktree.path,
+      continueConversation: true,
     });
   };
 
@@ -738,11 +739,11 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           </Link>
         ) : (
           <button
-            onClick={handleStartSession}
-            disabled={startSessionMutation.isPending}
+            onClick={handleRestoreSession}
+            disabled={restoreSessionMutation.isPending}
             className="btn btn-primary text-xs"
           >
-            {startSessionMutation.isPending ? 'Starting...' : 'Start Session'}
+            {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
           </button>
         )}
         {!worktree.isMain && (
