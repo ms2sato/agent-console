@@ -126,6 +126,7 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
 function DashboardPage() {
   const queryClient = useQueryClient();
   const [showAddRepo, setShowAddRepo] = useState(false);
+  const [showAddSession, setShowAddSession] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
   // Sessions from WebSocket (source of truth)
@@ -420,6 +421,19 @@ function DashboardPage() {
     await registerMutation.mutateAsync(data.path);
   };
 
+  const createSessionMutation = useMutation({
+    mutationFn: createSession,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setShowAddSession(false);
+      window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
+    },
+  });
+
+  const handleStartSession = async (data: CreateQuickSessionRequest) => {
+    await createSessionMutation.mutateAsync(data);
+  };
+
   // Show loading state until first WebSocket sync
   if (!sessionsSynced) {
     return (
@@ -439,12 +453,20 @@ function DashboardPage() {
       <div className="py-6 px-6">
         <div className="flex items-center justify-between mb-5">
           <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <button
-            onClick={() => setShowAddRepo(true)}
-            className="btn btn-primary text-sm"
-          >
-            + Add Repository
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowAddSession(true)}
+              className="btn text-sm bg-slate-700 hover:bg-slate-600"
+            >
+              + Quick Start
+            </button>
+            <button
+              onClick={() => setShowAddRepo(true)}
+              className="btn btn-primary text-sm"
+            >
+              + Add Repository
+            </button>
+          </div>
         </div>
 
       {showAddRepo && (
@@ -452,6 +474,14 @@ function DashboardPage() {
           isPending={registerMutation.isPending}
           onSubmit={handleAddRepo}
           onCancel={() => setShowAddRepo(false)}
+        />
+      )}
+
+      {showAddSession && (
+        <QuickSessionForm
+          isPending={createSessionMutation.isPending}
+          onSubmit={handleStartSession}
+          onCancel={() => setShowAddSession(false)}
         />
       )}
 
@@ -788,43 +818,11 @@ interface QuickSessionsSectionProps {
 }
 
 function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
-  const queryClient = useQueryClient();
-  const [showAddSession, setShowAddSession] = useState(false);
-
-  const createSessionMutation = useMutation({
-    mutationFn: createSession,
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      setShowAddSession(false);
-      window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
-    },
-  });
-
-  const handleStartSession = async (data: CreateQuickSessionRequest) => {
-    await createSessionMutation.mutateAsync(data);
-  };
-
   return (
     <div className="mt-8">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-medium text-gray-400">Quick Sessions</h2>
-        <button
-          onClick={() => setShowAddSession(true)}
-          className="btn text-sm bg-slate-700 hover:bg-slate-600"
-        >
-          + Quick Start
-        </button>
-      </div>
+      <h2 className="text-lg font-medium text-gray-400 mb-4">Quick Sessions</h2>
 
-      {showAddSession && (
-        <QuickSessionForm
-          isPending={createSessionMutation.isPending}
-          onSubmit={handleStartSession}
-          onCancel={() => setShowAddSession(false)}
-        />
-      )}
-
-      {sessions.length === 0 && !showAddSession && (
+      {sessions.length === 0 && (
         <p className="text-sm text-gray-500">
           Start a Claude session in any directory without setting up a worktree.
         </p>
