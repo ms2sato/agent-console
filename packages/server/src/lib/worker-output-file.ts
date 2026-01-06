@@ -262,18 +262,21 @@ export class WorkerOutputFileManager {
     fromOffset?: number
   ): Promise<HistoryReadResult> {
     try {
+      // Get pending buffer for this worker
+      const key = this.getKey(sessionId, workerId);
+      const pending = this.pendingFlushes.get(key);
+      const pendingBuffer = pending?.buffer || '';
+      const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
+
       // Find the actual file (uncompressed or legacy compressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
 
       if (!actualFile) {
-        // No file exists, check pending buffer
-        const key = this.getKey(sessionId, workerId);
-        const pending = this.pendingFlushes.get(key);
-        if (pending && pending.buffer.length > 0) {
+        // No file exists, return only pending buffer
+        if (pendingByteLength > 0) {
           // Return pending buffer as data with byte offset (not character count)
           // File offsets are measured in bytes, so we must use byte length for consistency
-          const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
-          return { data: pending.buffer, offset: byteLength };
+          return { data: pendingBuffer, offset: pendingByteLength };
         }
         // No file and no pending buffer - return empty history
         // This is a valid state for newly created workers
@@ -286,21 +289,34 @@ export class WorkerOutputFileManager {
         ? Buffer.from(gunzipSync(rawBuffer))
         : rawBuffer;
 
-      const currentOffset = buffer.length;
+      const fileSize = buffer.length;
+      const totalOffset = fileSize + pendingByteLength;
 
-      // If fromOffset is specified and equals or exceeds current size, no new data
-      if (fromOffset !== undefined && fromOffset >= currentOffset) {
-        return { data: '', offset: currentOffset };
-      }
-
-      // If fromOffset specified, return only data after that offset
+      // Handle offset-based reads (incremental sync)
       if (fromOffset !== undefined && fromOffset > 0) {
-        // Slice at byte level, then decode to UTF-8
+        if (fromOffset >= totalOffset) {
+          // Offset equals or exceeds total size, no new data
+          return { data: '', offset: totalOffset };
+        }
+
+        if (fromOffset >= fileSize) {
+          // Offset is within the pending buffer range
+          // Calculate how many bytes into the pending buffer to skip
+          const pendingSkipBytes = fromOffset - fileSize;
+          // We need to slice the pending buffer at byte boundary
+          const pendingBufferAsBuffer = Buffer.from(pendingBuffer, 'utf-8');
+          const remainingPendingBuffer = pendingBufferAsBuffer.slice(pendingSkipBytes);
+          return { data: remainingPendingBuffer.toString('utf-8'), offset: totalOffset };
+        }
+
+        // Offset is within the file, return file data from offset + full pending buffer
         const dataBuffer = buffer.slice(fromOffset);
-        return { data: dataBuffer.toString('utf-8'), offset: currentOffset };
+        const fileData = dataBuffer.toString('utf-8');
+        return { data: fileData + pendingBuffer, offset: totalOffset };
       }
 
-      return { data: buffer.toString('utf-8'), offset: currentOffset };
+      // Initial load (fromOffset=0 or undefined), return full file content + pending buffer
+      return { data: buffer.toString('utf-8') + pendingBuffer, offset: totalOffset };
     } catch (error) {
       // File doesn't exist or read error
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
