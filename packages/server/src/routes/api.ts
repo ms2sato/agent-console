@@ -45,7 +45,7 @@ import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
-import { getRemoteUrl, parseOrgRepo, getOrgRepoFromPath } from '../lib/git.js';
+import { getRemoteUrl, parseOrgRepo, getOrgRepoFromPath, fetchRemote, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
 
@@ -578,6 +578,9 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   let effectiveTitle: string | undefined = title;
   let branchNameFallback: BranchNameFallback | undefined;
 
+  // Extract useRemote flag (only available for 'prompt' and 'custom' modes)
+  const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote === true;
+
   // Get the agent for branch name generation (if prompt mode)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
   const agentManager = await getAgentManager();
@@ -616,9 +619,30 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
       branch = body.branch!;
       baseBranch = undefined;
       break;
+    default: {
+      // Exhaustiveness check - compile error if new mode is added
+      const _exhaustive: never = mode;
+      throw new Error(`Unhandled branch mode: ${_exhaustive}`);
+    }
   }
 
-  const result = await worktreeService.createWorktree(repo.path, branch, baseBranch);
+  // If useRemote is true, fetch the remote branch first to ensure it's up-to-date,
+  // then prefix baseBranch with origin/ to branch from remote
+  let effectiveUseRemote = useRemote;
+  if (useRemote && baseBranch) {
+    try {
+      // Fetch to ensure origin/<baseBranch> is up-to-date
+      await fetchRemote(baseBranch, repo.path);
+    } catch (error) {
+      // If fetch fails, fall back to local branch
+      logger.warn({ repoId, baseBranch, error: error instanceof Error ? error.message : String(error) },
+        'Failed to fetch remote branch, falling back to local');
+      effectiveUseRemote = false;
+    }
+  }
+  const effectiveBaseBranch = effectiveUseRemote && baseBranch ? `origin/${baseBranch}` : baseBranch;
+
+  const result = await worktreeService.createWorktree(repo.path, branch, effectiveBaseBranch);
 
   if (result.error) {
     throw new ValidationError(result.error);
@@ -657,7 +681,17 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
     });
   }
 
-  return c.json({ worktree, session, branchNameFallback, setupCommandResult }, 201);
+  // Report if fetch failed and we fell back to local branch
+  const fetchFailed = useRemote && !effectiveUseRemote;
+
+  return c.json({
+    worktree,
+    session,
+    branchNameFallback,
+    setupCommandResult,
+    fetchFailed: fetchFailed || undefined,  // Only include if true
+    fetchError: fetchFailed ? 'Failed to fetch remote branch, created from local branch instead' : undefined,
+  }, 201);
 });
 
 // Delete a worktree
@@ -749,6 +783,59 @@ api.post('/repositories/:id/refresh-default-branch', async (c) => {
     // Use name check for compatibility with mocked GitError in tests
     if (error instanceof Error && error.name === 'GitError') {
       throw new ValidationError(`Failed to refresh default branch: ${error.message}`);
+    }
+    throw error;
+  }
+});
+
+// Get remote branch status (how far behind/ahead local is from remote)
+api.get('/repositories/:id/branches/:branch/remote-status', async (c) => {
+  const repoId = c.req.param('id');
+  const branch = c.req.param('branch');
+  const repositoryManager = getRepositoryManager();
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  try {
+    // First fetch the specific branch to get latest remote state
+    await fetchRemote(branch, repo.path);
+
+    // Then count commits behind and ahead
+    const [behind, ahead] = await Promise.all([
+      getCommitsBehind(branch, repo.path),
+      getCommitsAhead(branch, repo.path),
+    ]);
+
+    return c.json({ behind, ahead });
+  } catch (error) {
+    // Handle git-specific errors (network issues, branch doesn't exist, etc.)
+    if (error instanceof GitError) {
+      throw new ValidationError(`Failed to get remote status: ${error.message}`);
+    }
+    throw error;
+  }
+});
+
+// Fetch all remote branches for a repository
+api.post('/repositories/:id/fetch', async (c) => {
+  const repoId = c.req.param('id');
+  const repositoryManager = getRepositoryManager();
+  const repo = repositoryManager.getRepository(repoId);
+
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  try {
+    await fetchAllRemote(repo.path);
+    return c.json({ success: true });
+  } catch (error) {
+    // Handle git-specific errors (network issues, no remote, etc.)
+    if (error instanceof GitError) {
+      throw new ValidationError(`Failed to fetch remote: ${error.message}`);
     }
     throw error;
   }

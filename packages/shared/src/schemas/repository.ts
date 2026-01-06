@@ -58,6 +58,7 @@ export const CreateWorktreePromptRequestSchema = v.object({
     v.minLength(1, 'Initial prompt is required for prompt mode')
   ),
   baseBranch: OptionalBranchSchema,
+  useRemote: v.optional(v.boolean()), // If true, branch from origin/<base> instead of local <base>
 });
 
 /**
@@ -68,6 +69,7 @@ export const CreateWorktreeCustomRequestSchema = v.object({
   mode: v.literal('custom'),
   branch: RequiredBranchSchema,
   baseBranch: OptionalBranchSchema,
+  useRemote: v.optional(v.boolean()), // If true, branch from origin/<base> instead of local <base>
 });
 
 /**
@@ -134,6 +136,14 @@ export const RefreshDefaultBranchResponseSchema = v.object({
   defaultBranch: v.pipe(v.string(), v.minLength(1, 'Default branch name is required')),
 });
 
+/**
+ * Schema for remote branch status response
+ */
+export const RemoteBranchStatusSchema = v.object({
+  behind: v.number(),
+  ahead: v.number(),
+});
+
 // Inferred types from schemas
 export type CreateRepositoryRequest = v.InferOutput<typeof CreateRepositoryRequestSchema>;
 export type CreateWorktreePromptRequest = v.InferOutput<typeof CreateWorktreePromptRequestSchema>;
@@ -145,3 +155,4 @@ export type UpdateRepositoryRequest = v.InferOutput<typeof UpdateRepositoryReque
 export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;
 export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;
 export type RefreshDefaultBranchResponse = v.InferOutput<typeof RefreshDefaultBranchResponseSchema>;
+export type RemoteBranchStatus = v.InferOutput<typeof RemoteBranchStatusSchema>;

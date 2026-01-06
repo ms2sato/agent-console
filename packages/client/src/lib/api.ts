@@ -20,6 +20,7 @@ import type {
   JobType,
   SetupCommandResult,
   RefreshDefaultBranchResponse,
+  RemoteBranchStatus,
 } from '@agent-console/shared';
 
 const API_BASE = '/api';
@@ -259,6 +260,10 @@ export interface CreateWorktreeResponse {
   branchNameFallback?: BranchNameFallback;
   /** Present when a setup command was configured and executed */
   setupCommandResult?: SetupCommandResult;
+  /** True when useRemote was requested but fetch failed, falling back to local branch */
+  fetchFailed?: boolean;
+  /** Error message when fetchFailed is true */
+  fetchError?: string;
 }
 
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {
@@ -579,6 +584,24 @@ export async function fetchServerId(): Promise<ServerIdResponse> {
   const res = await fetch(`${API_BASE}/server/id`);
   if (!res.ok) {
     throw new Error(`Failed to fetch server ID: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+// ===========================================================================
+// Remote Branch Status
+// ===========================================================================
+
+export async function getRemoteBranchStatus(
+  repositoryId: string,
+  branch: string
+): Promise<RemoteBranchStatus> {
+  const res = await fetch(
+    `${API_BASE}/repositories/${repositoryId}/branches/${encodeURIComponent(branch)}/remote-status`
+  );
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to get remote branch status');
   }
   return res.json();
 }
