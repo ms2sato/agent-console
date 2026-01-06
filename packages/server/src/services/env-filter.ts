@@ -7,6 +7,28 @@ import { SERVER_ONLY_ENV_VARS } from '../lib/server-config.js';
 const BLOCKED_ENV_VARS: readonly string[] = SERVER_ONLY_ENV_VARS;
 
 /**
+ * Environment variables that should NOT be overridden by repository config.
+ * These are either:
+ * - Security-sensitive (could be used for code injection)
+ * - System-critical (could break the shell environment)
+ */
+const PROTECTED_ENV_VARS: readonly string[] = [
+  // Security-sensitive: could be used for code injection
+  'LD_PRELOAD',           // Linux: preload shared library
+  'LD_LIBRARY_PATH',      // Linux: library search path
+  'DYLD_INSERT_LIBRARIES', // macOS: preload dynamic library
+  'DYLD_LIBRARY_PATH',    // macOS: library search path
+  'DYLD_FRAMEWORK_PATH',  // macOS: framework search path
+  // System-critical: could break the shell environment
+  'PATH',                 // Command search path
+  'HOME',                 // User home directory
+  'USER',                 // Current user name
+  'SHELL',                // Default shell
+  'TERM',                 // Terminal type (we explicitly set this)
+  'COLORTERM',            // Color terminal support (we explicitly set this)
+];
+
+/**
  * Filter environment variables for child PTY processes.
  * Removes server-specific variables that could interfere with child behavior.
  *
@@ -45,4 +67,24 @@ export function getUnsetEnvPrefix(): string {
     return '';
   }
   return `unset ${BLOCKED_ENV_VARS.join(' ')}; `;
+}
+
+/**
+ * Filter repository environment variables to remove protected/dangerous variables.
+ * This prevents repository configs from overriding security-sensitive variables
+ * like LD_PRELOAD, PATH, HOME, etc.
+ *
+ * @param envVars - Environment variables from repository config
+ * @returns Filtered environment variables with protected vars removed
+ */
+export function filterRepositoryEnvVars(envVars: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(envVars)) {
+    if (!PROTECTED_ENV_VARS.includes(key)) {
+      filtered[key] = value;
+    }
+  }
+
+  return filtered;
 }

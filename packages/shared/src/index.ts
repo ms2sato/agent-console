@@ -13,6 +13,7 @@ export interface Repository {
   createdAt: string;    // Creation date (ISO 8601)
   remoteUrl?: string;   // Git remote URL for origin (if available)
   setupCommand?: string | null; // Shell command to run after creating worktrees
+  envVars?: string | null; // Environment variables in .env format (applied to workers)
 }
 
 /**

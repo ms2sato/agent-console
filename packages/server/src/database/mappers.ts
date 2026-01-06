@@ -262,6 +262,7 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     created_at: repository.createdAt,
     updated_at: now,
     setup_command: repository.setupCommand ?? null,
+    env_vars: repository.envVars ?? null,
   };
 }
 
@@ -278,6 +279,7 @@ export function toRepository(row: RepositoryRow): Repository {
     path: row.path,
     createdAt: row.created_at,
     setupCommand: row.setup_command ?? null,
+    envVars: row.env_vars ?? null,
   };
 }
 

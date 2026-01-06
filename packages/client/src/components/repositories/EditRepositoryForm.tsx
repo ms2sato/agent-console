@@ -8,9 +8,15 @@ import { updateRepository, type UpdateRepositoryRequest } from '../../lib/api';
 import { FormField, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
 
-// Form data schema - setup command is optional, can be empty
+// Form data schema - setup command and env vars are optional, can be empty
 const EditRepositoryFormSchema = v.object({
   setupCommand: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim()
+    )
+  ),
+  envVars: v.optional(
     v.pipe(
       v.string(),
       v.trim()
@@ -21,7 +27,7 @@ const EditRepositoryFormSchema = v.object({
 type EditRepositoryFormData = v.InferOutput<typeof EditRepositoryFormSchema>;
 
 export interface EditRepositoryFormProps {
-  repository: Repository & { setupCommand?: string | null };
+  repository: Repository & { setupCommand?: string | null; envVars?: string | null };
   onSuccess: () => void;
   onCancel: () => void;
 }
@@ -38,6 +44,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     resolver: valibotResolver(EditRepositoryFormSchema),
     defaultValues: {
       setupCommand: repository.setupCommand ?? '',
+      envVars: repository.envVars ?? '',
     },
     mode: 'onBlur',
   });
@@ -56,7 +63,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
         if (!old) return old;
         return {
           repositories: old.repositories.map((r) =>
-            r.id === repository.id ? { ...r, setupCommand: data.setupCommand } : r
+            r.id === repository.id ? { ...r, setupCommand: data.setupCommand, envVars: data.envVars } : r
           ),
         };
       });
@@ -80,7 +87,8 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     setError(null);
     // Convert empty string to null for the API
     const setupCommand = data.setupCommand?.trim() || null;
-    updateMutation.mutate({ setupCommand });
+    const envVars = data.envVars?.trim() || null;
+    updateMutation.mutate({ setupCommand, envVars });
   };
 
   return (
@@ -108,6 +116,19 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository name</li>
               <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_PATH}}'}</code> - Full path to the worktree</li>
             </ul>
+          </FormField>
+
+          <FormField label="Environment Variables (optional)" error={errors.envVars}>
+            <Textarea
+              {...register('envVars')}
+              placeholder={"# .env format\nAPI_KEY=your_api_key\nDEBUG=true"}
+              rows={5}
+              className="font-mono text-sm"
+              error={errors.envVars}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Set environment variables for all workers in this repository. Use .env format (KEY=value, one per line).
+            </p>
           </FormField>
 
           {error && (

@@ -154,6 +154,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 4) {
     await migrateToV4(database);
   }
+
+  if (currentVersion < 5) {
+    await migrateToV5(database);
+  }
 }
 
 /**
@@ -342,6 +346,25 @@ async function migrateToV4(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 4`.execute(database);
 
   logger.info('Migration to v4 completed');
+}
+
+/**
+ * Migration v5: Add env_vars column to repositories table.
+ * This column stores environment variables in .env format to apply to workers.
+ */
+async function migrateToV5(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v5: Adding env_vars column to repositories');
+
+  // Add env_vars column to repositories table
+  await database.schema
+    .alterTable('repositories')
+    .addColumn('env_vars', 'text')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 5`.execute(database);
+
+  logger.info('Migration to v5 completed');
 }
 
 /**
