@@ -476,6 +476,7 @@ describe('mappers', () => {
         created_at: '2024-02-20T14:00:00.000Z',
         updated_at: '2024-02-20T14:00:00.000Z',
         setup_command: null,
+        env_vars: null,
       };
 
       const repository = toRepository(row);
@@ -485,6 +486,7 @@ describe('mappers', () => {
       expect(repository.path).toBe('/opt/repos/another-project');
       expect(repository.createdAt).toBe('2024-02-20T14:00:00.000Z');
       expect(repository.setupCommand).toBeNull();
+      expect(repository.envVars).toBeNull();
     });
 
     it('should handle created_at correctly', () => {
@@ -495,6 +497,7 @@ describe('mappers', () => {
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
+        env_vars: null,
       };
 
       const repository = toRepository(row);
@@ -511,11 +514,28 @@ describe('mappers', () => {
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: 'npm install',
+        env_vars: null,
       };
 
       const repository = toRepository(row);
 
       expect(repository.setupCommand).toBe('npm install');
+    });
+
+    it('should map env_vars to envVars', () => {
+      const row: RepositoryRow = {
+        id: 'repo-5',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        env_vars: 'FOO=bar\nBAZ=qux',
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.envVars).toBe('FOO=bar\nBAZ=qux');
     });
   });
 

@@ -219,6 +219,7 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
 
 export interface UpdateRepositoryRequest {
   setupCommand?: string | null;
+  envVars?: string | null;
 }
 
 export interface UpdateRepositoryResponse {

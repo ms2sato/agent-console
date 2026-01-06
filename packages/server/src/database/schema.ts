@@ -97,6 +97,8 @@ export interface RepositoriesTable {
   updated_at: Generated<string>;
   /** Shell command to run after creating worktrees (added in v4) */
   setup_command: string | null;
+  /** Environment variables in .env format to apply to workers (added in v5) */
+  env_vars: string | null;
 }
 
 /** Repository row as returned from SELECT queries */

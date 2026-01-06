@@ -21,7 +21,9 @@ import type {
 } from './persistence-service.js';
 import { ActivityDetector } from './activity-detector.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
-import { getChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
+import { getChildProcessEnv, getUnsetEnvPrefix, filterRepositoryEnvVars } from './env-filter.js';
+import { getRepositoryManager, isRepositoryManagerInitialized } from './repository-manager.js';
+import { parseEnvVars } from '../lib/env-parser.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { bunPtyProvider, type PtyProvider, type PtyInstance } from '../lib/pty-provider.js';
@@ -913,8 +915,12 @@ export class SessionManager {
       cwd: locationPath,
     });
 
+    // Get repository env vars for worktree sessions
+    const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+
     const processEnv = {
       ...getChildProcessEnv(),
+      ...repositoryEnvVars,
       ...templateEnv,
     };
 
@@ -964,6 +970,14 @@ export class SessionManager {
 
     const { sessionId, locationPath } = params;
 
+    // Get repository env vars for worktree sessions
+    const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+
+    const processEnv = {
+      ...getChildProcessEnv(),
+      ...repositoryEnvVars,
+    };
+
     // Use unset prefix to remove blocked env vars that bun-pty inherits from parent
     const unsetPrefix = getUnsetEnvPrefix();
     const shell = process.env.SHELL || '/bin/bash';
@@ -972,7 +986,7 @@ export class SessionManager {
       cols: 120,
       rows: 30,
       cwd: locationPath,
-      env: getChildProcessEnv(),
+      env: processEnv,
     });
 
     // Mutate the existing worker to add PTY
@@ -1370,6 +1384,43 @@ export class SessionManager {
     newBranch: string
   ): Promise<{ success: boolean; branch?: string; error?: string }> {
     return this.updateSessionMetadata(sessionId, { branch: newBranch });
+  }
+
+  /**
+   * Get parsed environment variables from the repository associated with a session.
+   * Returns an empty object if:
+   * - Session is not a worktree session (quick sessions have no repository)
+   * - RepositoryManager is not initialized
+   * - Repository is not found
+   * - Repository has no envVars configured
+   *
+   * @param sessionId - Session ID to get repository env vars for
+   * @returns Parsed environment variables as key-value pairs
+   */
+  private getRepositoryEnvVars(sessionId: string): Record<string, string> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {};
+    }
+
+    // Only worktree sessions have an associated repository
+    if (session.type !== 'worktree') {
+      return {};
+    }
+
+    // Check if RepositoryManager is available (edge case: early startup)
+    if (!isRepositoryManagerInitialized()) {
+      return {};
+    }
+
+    const repository = getRepositoryManager().getRepository(session.repositoryId);
+    if (!repository) {
+      return {};
+    }
+
+    // Parse and filter repository env vars to remove protected/dangerous variables
+    const parsedEnvVars = parseEnvVars(repository.envVars);
+    return filterRepositoryEnvVars(parsedEnvVars);
   }
 
   private async persistSession(session: InternalSession): Promise<void> {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { getChildProcessEnv, getUnsetEnvPrefix } from '../env-filter.js';
+import { getChildProcessEnv, getUnsetEnvPrefix, filterRepositoryEnvVars } from '../env-filter.js';
 import { SERVER_ONLY_ENV_VARS } from '../../lib/server-config.js';
 
 describe('env-filter', () => {
@@ -136,6 +136,109 @@ describe('env-filter', () => {
       // This regex validates the format
       const validFormat = /^unset [A-Z_]+( [A-Z_]+)*; $/;
       expect(validFormat.test(prefix)).toBe(true);
+    });
+  });
+
+  describe('filterRepositoryEnvVars', () => {
+    it('should pass through normal environment variables', () => {
+      const input = {
+        API_KEY: 'test-key',
+        DEBUG: 'true',
+        CUSTOM_VAR: 'custom-value',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual(input);
+    });
+
+    it('should filter out PATH', () => {
+      const input = {
+        PATH: '/malicious/path',
+        API_KEY: 'test-key',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({ API_KEY: 'test-key' });
+    });
+
+    it('should filter out HOME', () => {
+      const input = {
+        HOME: '/fake/home',
+        API_KEY: 'test-key',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({ API_KEY: 'test-key' });
+    });
+
+    it('should filter out LD_PRELOAD (security-sensitive)', () => {
+      const input = {
+        LD_PRELOAD: '/malicious/lib.so',
+        API_KEY: 'test-key',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({ API_KEY: 'test-key' });
+    });
+
+    it('should filter out DYLD_INSERT_LIBRARIES (macOS security-sensitive)', () => {
+      const input = {
+        DYLD_INSERT_LIBRARIES: '/malicious/lib.dylib',
+        API_KEY: 'test-key',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({ API_KEY: 'test-key' });
+    });
+
+    it('should filter out all protected variables', () => {
+      const input = {
+        // Security-sensitive
+        LD_PRELOAD: '/malicious/lib.so',
+        LD_LIBRARY_PATH: '/malicious/path',
+        DYLD_INSERT_LIBRARIES: '/malicious/lib.dylib',
+        DYLD_LIBRARY_PATH: '/malicious/path',
+        DYLD_FRAMEWORK_PATH: '/malicious/path',
+        // System-critical
+        PATH: '/malicious/path',
+        HOME: '/fake/home',
+        USER: 'fake-user',
+        SHELL: '/malicious/shell',
+        TERM: 'dumb',
+        COLORTERM: 'false',
+        // Should be kept
+        API_KEY: 'test-key',
+        DEBUG: 'true',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({
+        API_KEY: 'test-key',
+        DEBUG: 'true',
+      });
+    });
+
+    it('should return empty object for empty input', () => {
+      const result = filterRepositoryEnvVars({});
+
+      expect(result).toEqual({});
+    });
+
+    it('should return empty object if all vars are protected', () => {
+      const input = {
+        PATH: '/malicious/path',
+        HOME: '/fake/home',
+      };
+
+      const result = filterRepositoryEnvVars(input);
+
+      expect(result).toEqual({});
     });
   });
 });

@@ -46,12 +46,14 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         created_at: repository.createdAt,
         updated_at: now,
         setup_command: repository.setupCommand ?? null,
+        env_vars: repository.envVars ?? null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
           name: repository.name,
           path: repository.path,
           setup_command: repository.setupCommand ?? null,
+          env_vars: repository.envVars ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
         })
@@ -72,6 +74,11 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     if (updates.setupCommand !== undefined) {
       // Convert empty string to null for database storage
       updateData.setup_command = updates.setupCommand === '' ? null : updates.setupCommand;
+    }
+
+    if (updates.envVars !== undefined) {
+      // Convert empty string to null for database storage
+      updateData.env_vars = updates.envVars === '' ? null : updates.envVars;
     }
 
     const result = await this.db
