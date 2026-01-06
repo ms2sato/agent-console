@@ -441,4 +441,323 @@ describe('CreateWorktreeForm', () => {
       expect((promptRadio as HTMLInputElement).disabled).toBe(true);
     });
   });
+
+  describe('remote branch status', () => {
+    it('should show loading state while checking remote status', async () => {
+      // Make the remote status fetch hang to observe loading state
+      let resolveRemoteStatus: (value: Response) => void;
+      const remoteStatusPromise = new Promise<Response>((resolve) => {
+        resolveRemoteStatus = resolve;
+      });
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return remoteStatusPromise;
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load first
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Loading state should be visible
+      expect(screen.getByText('Checking remote status...')).toBeTruthy();
+
+      // Clean up: resolve the pending promise
+      resolveRemoteStatus!(createMockResponse({ behind: 0, ahead: 0 }));
+    });
+
+    it('should show warning message when base branch is behind remote', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 3, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for warning message to appear
+      await waitFor(() => {
+        expect(screen.getByText(/⚠️ 3 commits behind origin\/main/)).toBeTruthy();
+      });
+    });
+
+    it('should not show warning when base branch is up to date', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load and remote status check to complete
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Wait for loading to disappear
+      await waitFor(() => {
+        expect(screen.queryByText('Checking remote status...')).toBeNull();
+      });
+
+      // No warning message should be visible
+      expect(screen.queryByText(/commits? behind/)).toBeNull();
+    });
+
+    it('should show "Fetch & Create" button when behind', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 2, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for "Fetch & Create" button to appear
+      await waitFor(() => {
+        expect(screen.getByText('Fetch & Create')).toBeTruthy();
+      });
+    });
+
+    it('should not show "Fetch & Create" button when up to date', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Wait for loading to disappear
+      await waitFor(() => {
+        expect(screen.queryByText('Checking remote status...')).toBeNull();
+      });
+
+      // "Fetch & Create" button should not be visible
+      expect(screen.queryByText('Fetch & Create')).toBeNull();
+    });
+
+    it('should submit form with useRemote: true when clicking "Fetch & Create"', async () => {
+      const user = userEvent.setup();
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 1, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      const { props } = renderCreateWorktreeForm();
+
+      // Wait for agents and "Fetch & Create" button to appear
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+        expect(screen.getByText('Fetch & Create')).toBeTruthy();
+      });
+
+      // Fill in initial prompt (required for prompt mode)
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Add feature');
+
+      // Click "Fetch & Create" button
+      const fetchAndCreateButton = screen.getByText('Fetch & Create');
+      await user.click(fetchAndCreateButton);
+
+      // Verify onSubmit was called with useRemote: true
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        mode: 'prompt',
+        initialPrompt: 'Add feature',
+        useRemote: true,
+      });
+    });
+
+    it('should show error message when remote status check fails', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'Network error' }),
+          } as Response);
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for error message to appear
+      await waitFor(() => {
+        expect(screen.getByText('Could not check remote status (will use local branch)')).toBeTruthy();
+      });
+    });
+
+    it('should refetch remote status when base branch changes', async () => {
+      const user = userEvent.setup();
+      const remoteStatusCalls: string[] = [];
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          // Track which branch was requested
+          remoteStatusCalls.push(url);
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for initial remote status check
+      await waitFor(() => {
+        expect(remoteStatusCalls.length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Initial call should be for 'main' (the default branch)
+      expect(remoteStatusCalls.some(url => url.includes('/branches/main/remote-status'))).toBe(true);
+
+      const initialCallCount = remoteStatusCalls.length;
+
+      // Change base branch
+      const baseBranchInput = screen.getByPlaceholderText(/Base branch/);
+      await user.type(baseBranchInput, 'develop');
+
+      // Blur to trigger the change
+      await act(async () => {
+        baseBranchInput.blur();
+      });
+
+      // Wait for new remote status check
+      await waitFor(() => {
+        expect(remoteStatusCalls.length).toBeGreaterThan(initialCallCount);
+      });
+
+      // Should have called for 'develop' branch
+      expect(remoteStatusCalls.some(url => url.includes('/branches/develop/remote-status'))).toBe(true);
+    });
+
+    it('should not fetch remote status in existing branch mode', async () => {
+      const user = userEvent.setup();
+      const remoteStatusCalls: string[] = [];
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          remoteStatusCalls.push(url);
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Wait for initial check to complete
+      await waitFor(() => {
+        expect(screen.queryByText('Checking remote status...')).toBeNull();
+      });
+
+      const callCountBeforeSwitch = remoteStatusCalls.length;
+
+      // Switch to existing branch mode
+      const existingRadio = screen.getByLabelText(/Use existing branch/);
+      await user.click(existingRadio);
+
+      // Remote status should not be fetched in existing mode
+      // Wait a bit to ensure no new calls are made
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // No loading indicator should be shown
+      expect(screen.queryByText('Checking remote status...')).toBeNull();
+
+      // No new calls should have been made
+      expect(remoteStatusCalls.length).toBe(callCountBeforeSwitch);
+    });
+
+    it('should use singular form for 1 commit behind', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 1, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for warning message with singular form
+      await waitFor(() => {
+        expect(screen.getByText(/⚠️ 1 commit behind origin\/main/)).toBeTruthy();
+      });
+    });
+  });
 });

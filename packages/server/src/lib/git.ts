@@ -441,6 +441,55 @@ export interface CommitInfo {
   date: string;
 }
 
+// ============================================================
+// Remote Operations
+// ============================================================
+
+/**
+ * Fetch a specific branch from remote origin.
+ */
+export async function fetchRemote(branch: string, cwd: string): Promise<void> {
+  await git(['fetch', 'origin', branch], cwd);
+}
+
+/**
+ * Fetch all branches from remote origin.
+ */
+export async function fetchAllRemote(cwd: string): Promise<void> {
+  await git(['fetch', 'origin'], cwd);
+}
+
+/**
+ * Get how many commits the local branch is behind the remote branch.
+ * Returns 0 if up to date, positive number if behind.
+ */
+export async function getCommitsBehind(branch: string, cwd: string): Promise<number> {
+  try {
+    // Count commits in origin/branch that are not in local branch
+    const output = await git(['rev-list', '--count', `${branch}..origin/${branch}`], cwd);
+    return parseInt(output, 10);
+  } catch {
+    return 0; // If the comparison fails, assume up to date
+  }
+}
+
+/**
+ * Get how many commits the local branch is ahead of the remote branch.
+ */
+export async function getCommitsAhead(branch: string, cwd: string): Promise<number> {
+  try {
+    // Count commits in local branch that are not in origin/branch
+    const output = await git(['rev-list', '--count', `origin/${branch}..${branch}`], cwd);
+    return parseInt(output, 10);
+  } catch {
+    return 0;
+  }
+}
+
+// ============================================================
+// Commit Log Operations
+// ============================================================
+
 /**
  * Get commits between a base ref and HEAD (commits created in this branch).
  * Uses `git log <baseRef>..HEAD` to get commits that are in HEAD but not in baseRef.

@@ -16,17 +16,11 @@
  */
 import { mock, type Mock } from 'bun:test';
 
-// GitError class for tests
-export class GitError extends Error {
-  constructor(
-    message: string,
-    public readonly exitCode: number,
-    public readonly stderr: string
-  ) {
-    super(message);
-    this.name = 'GitError';
-  }
-}
+// Import and re-export the real GitError class from the git module.
+// This ensures instanceof checks work correctly in tests, because both the test code
+// and the mocked module use the same GitError class.
+import { GitError } from '../../lib/git.js';
+export { GitError };
 
 // Type definitions for mock functions
 type AsyncStringFn = (cwd: string) => Promise<string>;
@@ -68,6 +62,12 @@ export const mockGit = {
   }) as Mock<(remoteUrl: string) => string | null>,
   getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')) as Mock<AsyncStringNullFn>,
 
+  // Remote fetch operations
+  fetchRemote: mock(() => Promise.resolve()) as Mock<(branch: string, cwd: string) => Promise<void>>,
+  fetchAllRemote: mock(() => Promise.resolve()) as Mock<(cwd: string) => Promise<void>>,
+  getCommitsBehind: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
+  getCommitsAhead: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
+
   // Diff operations
   getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string>>,
   getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string | null>>,
@@ -106,6 +106,10 @@ export function resetGitMocks(): void {
   mockGit.removeWorktree.mockReset();
   mockGit.parseOrgRepo.mockReset();
   mockGit.getOrgRepoFromPath.mockReset();
+  mockGit.fetchRemote.mockReset();
+  mockGit.fetchAllRemote.mockReset();
+  mockGit.getCommitsBehind.mockReset();
+  mockGit.getCommitsAhead.mockReset();
   mockGit.getMergeBase.mockReset();
   mockGit.getMergeBaseSafe.mockReset();
   mockGit.getDiff.mockReset();
@@ -138,6 +142,10 @@ export function resetGitMocks(): void {
     return null;
   });
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/repo'));
+  mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+  mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
+  mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
+  mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
   mockGit.getMergeBase.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getDiff.mockImplementation(() => Promise.resolve(''));

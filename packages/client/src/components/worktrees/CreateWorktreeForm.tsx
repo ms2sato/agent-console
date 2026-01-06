@@ -1,14 +1,14 @@
 import { useId, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { AgentSelector } from '../AgentSelector';
 import { FormOverlay, Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
 import type { CreateWorktreeRequest, GitHubIssueSummary } from '@agent-console/shared';
-import { fetchGitHubIssue, refreshDefaultBranch } from '../../lib/api';
+import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
 import {
   Dialog,
   DialogContent,
@@ -72,12 +72,32 @@ export function CreateWorktreeForm({
   const [refreshedDefaultBranch, setRefreshedDefaultBranch] = useState<string | null>(null);
   const effectiveDefaultBranch = refreshedDefaultBranch ?? defaultBranch;
 
+  const queryClient = useQueryClient();
+
   // Mutation to refresh default branch from remote
   const refreshDefaultBranchMutation = useMutation({
     mutationFn: () => refreshDefaultBranch(repositoryId),
     onSuccess: (data) => {
       setRefreshedDefaultBranch(data.defaultBranch);
+      // Invalidate remote status cache when default branch changes
+      queryClient.invalidateQueries({
+        queryKey: ['remote-status', repositoryId],
+        exact: false,
+      });
     },
+  });
+
+  // The actual base branch to use (user input or effective default)
+  const baseBranch = watch('baseBranch');
+  const actualBaseBranch = baseBranch?.trim() || effectiveDefaultBranch;
+
+  // Query for remote branch status (only when not using existing branch mode)
+  const remoteStatusQuery = useQuery({
+    queryKey: ['remote-status', repositoryId, actualBaseBranch],
+    queryFn: () => getRemoteBranchStatus(repositoryId, actualBaseBranch),
+    enabled: branchNameMode !== 'existing' && !!actualBaseBranch,
+    staleTime: 30 * 1000, // Consider stale after 30 seconds
+    retry: false, // Don't retry on failure (e.g., network issues)
   });
 
   const buildIssuePrompt = (issue: GitHubIssueSummary) => {
@@ -122,43 +142,47 @@ export function CreateWorktreeForm({
     setValue('branchNameMode', 'prompt', { shouldDirty: true, shouldValidate: true });
   };
 
-  const handleFormSubmit = async (data: CreateWorktreeFormData) => {
-    try {
-      let request: CreateWorktreeRequest;
+  const buildRequest = (data: CreateWorktreeFormData, useRemote: boolean): CreateWorktreeRequest => {
+    switch (data.branchNameMode) {
+      case 'prompt':
+        return {
+          mode: 'prompt',
+          initialPrompt: data.initialPrompt!.trim(),
+          baseBranch: data.baseBranch?.trim() || undefined,
+          autoStartSession: true,
+          agentId: data.agentId,
+          title: data.sessionTitle?.trim() || undefined,
+          useRemote,
+        };
+      case 'custom':
+        return {
+          mode: 'custom',
+          branch: data.customBranch!.trim(),
+          baseBranch: data.baseBranch?.trim() || undefined,
+          autoStartSession: true,
+          agentId: data.agentId,
+          initialPrompt: data.initialPrompt?.trim() || undefined,
+          title: data.sessionTitle?.trim() || undefined,
+          useRemote,
+        };
+      case 'existing':
+        return {
+          mode: 'existing',
+          branch: data.customBranch!.trim(),
+          autoStartSession: true,
+          agentId: data.agentId,
+          initialPrompt: data.initialPrompt?.trim() || undefined,
+          title: data.sessionTitle?.trim() || undefined,
+        };
+    }
+    // Exhaustiveness check - compile error if new mode is added
+    const _exhaustive: never = data.branchNameMode;
+    throw new Error(`Unhandled branch mode: ${_exhaustive}`);
+  };
 
-      switch (data.branchNameMode) {
-        case 'prompt':
-          request = {
-            mode: 'prompt',
-            initialPrompt: data.initialPrompt!.trim(),
-            baseBranch: data.baseBranch?.trim() || undefined,
-            autoStartSession: true,
-            agentId: data.agentId,
-            title: data.sessionTitle?.trim() || undefined,
-          };
-          break;
-        case 'custom':
-          request = {
-            mode: 'custom',
-            branch: data.customBranch!.trim(),
-            baseBranch: data.baseBranch?.trim() || undefined,
-            autoStartSession: true,
-            agentId: data.agentId,
-            initialPrompt: data.initialPrompt?.trim() || undefined,
-            title: data.sessionTitle?.trim() || undefined,
-          };
-          break;
-        case 'existing':
-          request = {
-            mode: 'existing',
-            branch: data.customBranch!.trim(),
-            autoStartSession: true,
-            agentId: data.agentId,
-            initialPrompt: data.initialPrompt?.trim() || undefined,
-            title: data.sessionTitle?.trim() || undefined,
-          };
-          break;
-      }
+  const submitWithRemote = async (data: CreateWorktreeFormData, useRemote: boolean) => {
+    try {
+      const request = buildRequest(data, useRemote);
       await onSubmit(request);
     } catch (err) {
       setError('root', {
@@ -167,13 +191,30 @@ export function CreateWorktreeForm({
     }
   };
 
+  // Handler for normal form submit (Create button)
+  const handleFormSubmit = async (data: CreateWorktreeFormData) => {
+    await submitWithRemote(data, false);
+  };
+
+  // Handler for Fetch & Create button
+  const handleFetchAndCreate = () => {
+    handleSubmit((data) => submitWithRemote(data, true))();
+  };
+
   return (
     <div className="relative bg-slate-800 p-4 rounded mb-4">
       <FormOverlay isVisible={isPending} message="Creating worktree..." />
       <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset disabled={isPending} className="flex flex-col gap-3">
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Agent:</span>
+              <AgentSelector
+                value={watch('agentId')}
+                onChange={(value) => setValue('agentId', value)}
+              />
+            </div>
             <button
               type="button"
               className="btn bg-slate-700 hover:bg-slate-600 text-sm"
@@ -284,36 +325,64 @@ export function CreateWorktreeForm({
                   Default branch updated to: {refreshedDefaultBranch}
                 </p>
               )}
+              {/* Remote branch status - fixed height to prevent layout shift */}
+              <div className="h-5 mt-1">
+                {remoteStatusQuery.isLoading && (
+                  <div className="text-xs text-gray-400 flex items-center gap-1">
+                    <Spinner size="sm" />
+                    <span>Checking remote status...</span>
+                  </div>
+                )}
+                {remoteStatusQuery.isError && (
+                  <p className="text-xs text-yellow-400">
+                    Could not check remote status (will use local branch)
+                  </p>
+                )}
+                {remoteStatusQuery.data && remoteStatusQuery.data.behind > 0 && (
+                  <p className="text-xs text-yellow-400">
+                    ⚠️ {remoteStatusQuery.data.behind} commit{remoteStatusQuery.data.behind > 1 ? 's' : ''} behind origin/{actualBaseBranch}
+                  </p>
+                )}
+              </div>
             </FormField>
           )}
-
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-400">Agent:</span>
-            <AgentSelector
-              value={watch('agentId')}
-              onChange={(value) => setValue('agentId', value)}
-              className="flex-1"
-            />
-          </div>
 
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
           )}
 
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              className="btn btn-primary text-sm"
-            >
-              Create & Start Session
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="btn btn-danger text-sm"
-            >
-              Cancel
-            </button>
+          <div className="flex justify-between items-center">
+            {/* Left side - Fetch & Create (only when behind) */}
+            <div>
+              {branchNameMode !== 'existing' && remoteStatusQuery.data && remoteStatusQuery.data.behind > 0 && (
+                <button
+                  type="button"
+                  onClick={handleFetchAndCreate}
+                  className="btn bg-indigo-600 hover:bg-indigo-500 text-sm"
+                  title={`Create worktree from origin/${actualBaseBranch} (latest remote)`}
+                  disabled={isPending}
+                >
+                  Fetch & Create
+                </button>
+              )}
+            </div>
+
+            {/* Right side - Cancel and Create (always visible) */}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="btn btn-danger text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary text-sm"
+              >
+                Create & Start Session
+              </button>
+            </div>
           </div>
         </fieldset>
       </form>

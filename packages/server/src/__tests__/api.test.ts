@@ -46,6 +46,15 @@ mock.module('open', () => ({
   default: mockOpen,
 }));
 
+// Mock session-metadata-suggester to avoid running actual agent commands
+const mockSuggestSessionMetadata = mock(async () => ({
+  branch: 'suggested-branch',
+  title: 'Suggested Title',
+}));
+mock.module('../services/session-metadata-suggester.js', () => ({
+  suggestSessionMetadata: mockSuggestSessionMetadata,
+}));
+
 // Note: We use the real database connection module with in-memory SQLite.
 // This avoids mock.module which applies globally and affects other test files.
 
@@ -86,6 +95,10 @@ branch refs/heads/main
   mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
   mockGit.renameBranch.mockImplementation(() => Promise.resolve());
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/test-repo'));
+  mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+  mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
+  mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
+  mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
 }
 
 // Test JobQueue instance (created fresh for each test)
@@ -134,7 +147,18 @@ describe('API Routes Integration', () => {
     mockGit.getCurrentBranch.mockReset();
     mockGit.renameBranch.mockReset();
     mockGit.getOrgRepoFromPath.mockReset();
+    mockGit.fetchRemote.mockReset();
+    mockGit.fetchAllRemote.mockReset();
+    mockGit.getCommitsBehind.mockReset();
+    mockGit.getCommitsAhead.mockReset();
     mockOpen.mockClear();
+
+    // Reset session metadata suggester mock
+    mockSuggestSessionMetadata.mockReset();
+    mockSuggestSessionMetadata.mockImplementation(async () => ({
+      branch: 'suggested-branch',
+      title: 'Suggested Title',
+    }));
 
     // Setup default git command responses
     setupDefaultGitMocks();
@@ -1177,6 +1201,148 @@ describe('API Routes Integration', () => {
       });
     });
 
+    describe('GET /api/repositories/:id/branches/:branch/remote-status', () => {
+      it('should return behind and ahead counts', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock the git functions to return specific values
+        mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+        mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(3));
+        mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(2));
+
+        const res = await app.request(`/api/repositories/${repo.id}/branches/main/remote-status`);
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { behind: number; ahead: number };
+        expect(body.behind).toBe(3);
+        expect(body.ahead).toBe(2);
+
+        // Verify fetchRemote was called with correct branch
+        expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', repo.path);
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/branches/main/remote-status');
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 400 when git operation fails', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock fetchRemote to throw GitError
+        mockGit.fetchRemote.mockImplementation(() =>
+          Promise.reject(new GitError('git fetch failed: network error', 128, 'fatal: unable to access'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/branches/main/remote-status`);
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Failed to get remote status');
+      });
+
+      it('should return 400 when getCommitsBehind fails with GitError', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // fetchRemote succeeds but getCommitsBehind fails
+        mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+        mockGit.getCommitsBehind.mockImplementation(() =>
+          Promise.reject(new GitError('branch not found', 128, 'fatal: unknown revision'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/branches/feature/remote-status`);
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Failed to get remote status');
+      });
+
+      it('should handle branch names with special characters', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+        mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(1));
+        mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
+
+        // URL encode the branch name with slash
+        const res = await app.request(`/api/repositories/${repo.id}/branches/feature%2Fmy-feature/remote-status`);
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { behind: number; ahead: number };
+        expect(body.behind).toBe(1);
+        expect(body.ahead).toBe(0);
+      });
+    });
+
+    describe('POST /api/repositories/:id/fetch', () => {
+      it('should fetch all remote branches successfully', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
+
+        const res = await app.request(`/api/repositories/${repo.id}/fetch`, {
+          method: 'POST',
+        });
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+
+        // Verify fetchAllRemote was called with correct path
+        expect(mockGit.fetchAllRemote).toHaveBeenCalledWith(repo.path);
+      });
+
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/fetch', {
+          method: 'POST',
+        });
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 400 when git operation fails', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock fetchAllRemote to throw GitError
+        mockGit.fetchAllRemote.mockImplementation(() =>
+          Promise.reject(new GitError('git fetch failed: network error', 128, 'fatal: unable to access'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/fetch`, {
+          method: 'POST',
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Failed to fetch remote');
+      });
+
+      it('should rethrow non-GitError exceptions', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock fetchAllRemote to throw a generic error (not GitError)
+        mockGit.fetchAllRemote.mockImplementation(() =>
+          Promise.reject(new Error('unexpected internal error'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/fetch`, {
+          method: 'POST',
+        });
+        // Generic errors should result in 500
+        expect(res.status).toBe(500);
+      });
+    });
+
     describe('POST /api/repositories/:id/worktrees', () => {
       it('should create worktree with custom branch mode', async () => {
         const app = await createApp();
@@ -1247,6 +1413,271 @@ describe('API Routes Integration', () => {
           body: JSON.stringify({ mode: 'custom', branch: 'test' }),
         });
         expect(res.status).toBe(404);
+      });
+
+      it('should pass baseBranch without origin/ prefix when useRemote is false in custom mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'develop',
+            useRemote: false,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called with baseBranch (no origin/ prefix)
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'feature-test',     // branch
+          expect.any(String), // repoPath
+          { baseBranch: 'develop' } // baseBranch without origin/
+        );
+      });
+
+      it('should pass baseBranch with origin/ prefix when useRemote is true in custom mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'develop',
+            useRemote: true,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called with origin/<baseBranch>
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'feature-test',     // branch
+          expect.any(String), // repoPath
+          { baseBranch: 'origin/develop' } // baseBranch with origin/ prefix
+        );
+      });
+
+      it('should pass baseBranch without origin/ prefix when useRemote is not provided in custom mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'main',
+            // useRemote not provided - should default to false behavior
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called with baseBranch (no origin/ prefix)
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'feature-test',     // branch
+          expect.any(String), // repoPath
+          { baseBranch: 'main' } // baseBranch without origin/
+        );
+      });
+
+      it('should ignore useRemote flag for existing mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'existing',
+            branch: 'existing-branch',
+            useRemote: true, // This should be ignored for existing mode
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called without baseBranch (existing mode uses existing branch)
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'existing-branch',  // branch
+          expect.any(String), // repoPath
+          { baseBranch: undefined } // No baseBranch for existing mode
+        );
+      });
+
+      it('should pass baseBranch with origin/ prefix when useRemote is true in prompt mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'prompt',
+            initialPrompt: 'Add new feature X',
+            baseBranch: 'main',
+            useRemote: true,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called with origin/<baseBranch>
+        // The branch name comes from the mocked suggestSessionMetadata
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String),     // worktreePath
+          'suggested-branch',     // branch (from mock)
+          expect.any(String),     // repoPath
+          { baseBranch: 'origin/main' } // baseBranch with origin/ prefix
+        );
+      });
+
+      it('should pass baseBranch without origin/ prefix when useRemote is false in prompt mode', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'prompt',
+            initialPrompt: 'Add new feature Y',
+            baseBranch: 'develop',
+            useRemote: false,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        // Verify createWorktree was called without origin/ prefix
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String),     // worktreePath
+          'suggested-branch',     // branch (from mock)
+          expect.any(String),     // repoPath
+          { baseBranch: 'develop' } // baseBranch without origin/
+        );
+      });
+
+      it('should return fetchFailed flag when useRemote is true but fetch fails', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock fetchRemote to fail
+        mockGit.fetchRemote.mockImplementation(() =>
+          Promise.reject(new GitError('network error', 128, 'fatal: unable to access'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'main',
+            useRemote: true,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as {
+          worktree: unknown;
+          fetchFailed?: boolean;
+          fetchError?: string;
+        };
+
+        // Verify the response includes fetch failure information
+        expect(body.fetchFailed).toBe(true);
+        expect(body.fetchError).toBe('Failed to fetch remote branch, created from local branch instead');
+
+        // Verify createWorktree was called with local baseBranch (no origin/ prefix)
+        // because fetch failed and we fell back to local
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'feature-test',     // branch
+          expect.any(String), // repoPath
+          { baseBranch: 'main' } // baseBranch without origin/ due to fallback
+        );
+      });
+
+      it('should not return fetchFailed flag when useRemote is true and fetch succeeds', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Mock fetchRemote to succeed
+        mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'main',
+            useRemote: true,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as {
+          worktree: unknown;
+          fetchFailed?: boolean;
+          fetchError?: string;
+        };
+
+        // Verify the response does NOT include fetch failure flags
+        expect(body.fetchFailed).toBeUndefined();
+        expect(body.fetchError).toBeUndefined();
+
+        // Verify createWorktree was called with origin/<baseBranch>
+        expect(mockGit.createWorktree).toHaveBeenCalledWith(
+          expect.any(String), // worktreePath
+          'feature-test',     // branch
+          expect.any(String), // repoPath
+          { baseBranch: 'origin/main' } // baseBranch with origin/ prefix
+        );
+      });
+
+      it('should not return fetchFailed flag when useRemote is false', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'custom',
+            branch: 'feature-test',
+            baseBranch: 'main',
+            useRemote: false,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as {
+          worktree: unknown;
+          fetchFailed?: boolean;
+          fetchError?: string;
+        };
+
+        // Verify the response does NOT include fetch failure flags when useRemote is false
+        expect(body.fetchFailed).toBeUndefined();
+        expect(body.fetchError).toBeUndefined();
       });
     });
 
