@@ -480,7 +480,7 @@ describe('WorkerOutputFileManager', () => {
       expect(lines.length).toBeGreaterThan(0);
     });
 
-    it('should handle read during active buffering', async () => {
+    it('should include pending buffer when reading with file existing', async () => {
       // Write some data to file first
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
       vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
@@ -489,12 +489,101 @@ describe('WorkerOutputFileManager', () => {
       // Buffer more data (not flushed yet)
       manager.bufferOutput('session-1', 'worker-1', ' new');
 
-      // Read should return file content (pending buffer not included in file read)
+      // Read should return file content + pending buffer
       const result = await manager.readHistoryWithOffset('session-1', 'worker-1');
 
       expect(result).not.toBeNull();
-      // The file content is read, pending buffer affects offset calculation
-      expect(result!.data).toBe('existing');
+      // Both file content and pending buffer should be included
+      expect(result!.data).toBe('existing new');
+      // Offset should be file size (8) + pending buffer byte length (4)
+      expect(result!.offset).toBe(12);
+    });
+
+    it('should return only pending buffer when offset equals file size', async () => {
+      const filePath = manager.getOutputFilePath('session-offset-eq', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-offset-eq`, { recursive: true });
+      vol.writeFileSync(filePath, 'existing'); // 8 bytes
+
+      // Buffer more data (not flushed yet)
+      manager.bufferOutput('session-offset-eq', 'worker-1', ' new'); // 4 bytes
+
+      // Read from offset 8 (file size) should return only pending buffer
+      const result = await manager.readHistoryWithOffset('session-offset-eq', 'worker-1', 8);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe(' new');
+      expect(result!.offset).toBe(12); // 8 + 4
+    });
+
+    it('should return partial pending buffer when offset is within pending buffer range', async () => {
+      const filePath = manager.getOutputFilePath('session-partial', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-partial`, { recursive: true });
+      vol.writeFileSync(filePath, 'file'); // 4 bytes
+
+      // Buffer more data (not flushed yet)
+      manager.bufferOutput('session-partial', 'worker-1', 'buffer'); // 6 bytes
+
+      // Read from offset 6 (2 bytes into pending buffer) should return partial pending buffer
+      const result = await manager.readHistoryWithOffset('session-partial', 'worker-1', 6);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('ffer'); // skipped 'bu' (2 bytes)
+      expect(result!.offset).toBe(10); // 4 + 6
+    });
+
+    it('should return empty when offset equals total size (file + pending)', async () => {
+      const filePath = manager.getOutputFilePath('session-total', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-total`, { recursive: true });
+      vol.writeFileSync(filePath, 'file'); // 4 bytes
+
+      // Buffer more data (not flushed yet)
+      manager.bufferOutput('session-total', 'worker-1', 'buffer'); // 6 bytes
+
+      // Read from offset 10 (total size) should return empty
+      const result = await manager.readHistoryWithOffset('session-total', 'worker-1', 10);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('');
+      expect(result!.offset).toBe(10);
+    });
+
+    it('should return file data from offset + full pending buffer', async () => {
+      const filePath = manager.getOutputFilePath('session-mid', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-mid`, { recursive: true });
+      vol.writeFileSync(filePath, 'hello world'); // 11 bytes
+
+      // Buffer more data (not flushed yet)
+      manager.bufferOutput('session-mid', 'worker-1', '!!!'); // 3 bytes
+
+      // Read from offset 6 should return 'world' + '!!!'
+      const result = await manager.readHistoryWithOffset('session-mid', 'worker-1', 6);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('world!!!');
+      expect(result!.offset).toBe(14); // 11 + 3
+    });
+
+    it('should handle multi-byte UTF-8 in pending buffer with offset', async () => {
+      const filePath = manager.getOutputFilePath('session-utf8-pending', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-utf8-pending`, { recursive: true });
+      vol.writeFileSync(filePath, 'ABC'); // 3 bytes
+
+      // Buffer Japanese characters (3 bytes each)
+      manager.bufferOutput('session-utf8-pending', 'worker-1', '日本語'); // 9 bytes
+
+      // Read from offset 3 (file size) should return full pending buffer
+      const result = await manager.readHistoryWithOffset('session-utf8-pending', 'worker-1', 3);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('日本語');
+      expect(result!.offset).toBe(12); // 3 + 9
+
+      // Read from offset 6 (3 bytes into pending buffer) should return '本語'
+      const result2 = await manager.readHistoryWithOffset('session-utf8-pending', 'worker-1', 6);
+
+      expect(result2).not.toBeNull();
+      expect(result2!.data).toBe('本語');
+      expect(result2!.offset).toBe(12);
     });
   });
 
