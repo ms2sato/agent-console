@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -31,7 +31,7 @@ import {
 import { AddRepositoryForm } from '../components/repositories';
 import { CreateWorktreeForm } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -643,9 +643,21 @@ interface WorktreeRowProps {
 
 function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
+
+  const restoreSessionMutation = useMutation({
+    mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      navigate({ to: '/sessions/$sessionId', params: { sessionId: data.session.id } });
+    },
+    onError: (error: Error) => {
+      showError('Restore Failed', error.message);
+    },
+  });
 
   const deleteWorktreeMutation = useMutation({
     mutationFn: (force: boolean) => deleteWorktree(repositoryId, worktree.path, force),
@@ -664,6 +676,16 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       }
     },
   });
+
+  const handleRestoreSession = () => {
+    restoreSessionMutation.mutate({
+      type: 'worktree',
+      repositoryId: worktree.repositoryId,
+      worktreeId: worktree.branch,
+      locationPath: worktree.path,
+      continueConversation: true,
+    });
+  };
 
   const handleDeleteWorktree = () => {
     if (worktree.isMain) {
@@ -707,7 +729,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
       <div className="flex gap-2 shrink-0">
-        {session && (
+        {session ? (
           <Link
             to="/sessions/$sessionId"
             params={{ sessionId: session.id }}
@@ -715,6 +737,14 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           >
             Open
           </Link>
+        ) : (
+          <button
+            onClick={handleRestoreSession}
+            disabled={restoreSessionMutation.isPending}
+            className="btn btn-primary text-xs"
+          >
+            {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
+          </button>
         )}
         {!worktree.isMain && (
           <button
