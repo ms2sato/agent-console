@@ -202,6 +202,19 @@ export function createWorkerMessageHandler(
           sessionManager.writeWorkerInput(sessionId, workerId, filePath);
           break;
         }
+
+        case 'request-history':
+          // request-history is handled separately in routes.ts before this handler is called.
+          // If it reaches here, it means validation allowed it but routing didn't intercept it.
+          // This should not happen in normal operation.
+          logger.warn({ sessionId, workerId }, 'request-history message reached worker handler (should be handled by routes.ts)');
+          break;
+
+        default: {
+          // Exhaustive check: TypeScript will error if a new message type is added but not handled
+          const _exhaustive: never = parsed;
+          logger.warn({ messageType: (_exhaustive as WorkerClientMessage).type, sessionId, workerId }, 'Unknown worker message type');
+        }
       }
     } catch (e) {
       logger.warn({ err: e, sessionId, workerId }, 'Invalid worker message');

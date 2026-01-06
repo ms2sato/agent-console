@@ -13,5 +13,11 @@ export type { DeleteWorktreeDialogProps } from './DeleteWorktreeDialog';
 export { InitialPromptDialog } from './InitialPromptDialog';
 export type { InitialPromptDialogProps } from './InitialPromptDialog';
 
+export { EndSessionDialog } from './EndSessionDialog';
+export type { EndSessionDialogProps } from './EndSessionDialog';
+
 export { SessionSettingsMenu } from './SessionSettingsMenu';
 export type { SessionSettingsMenuProps, MenuAction } from './SessionSettingsMenu';
+
+export { QuickSessionSettingsMenu } from './QuickSessionSettingsMenu';
+export type { QuickSessionSettingsMenuProps, QuickMenuAction } from './QuickSessionSettingsMenu';

@@ -196,6 +196,13 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
           await sendDiffData(ws, locationPath, currentBaseCommit, targetRef);
           break;
         }
+
+        default: {
+          // Exhaustive check: TypeScript will error if a new message type is added but not handled
+          const _exhaustive: never = parsed;
+          log.error({ messageType: (_exhaustive as GitDiffClientMessage).type }, 'Unknown git-diff message type');
+          sendError(ws, 'Unknown message type');
+        }
       }
     } catch (e) {
       log.error({ err: e }, 'Invalid git-diff message');

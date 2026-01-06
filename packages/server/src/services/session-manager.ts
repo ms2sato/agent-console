@@ -11,6 +11,7 @@ import type {
   AgentActivityState,
   CreateSessionRequest,
   CreateWorkerParams,
+  WorkerErrorCode,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -123,6 +124,16 @@ export interface SessionLifecycleCallbacks {
   onSessionUpdated?: (session: Session) => void;
   onSessionDeleted?: (sessionId: string) => void;
 }
+
+/**
+ * Result type for restoreWorker operation.
+ * Provides detailed error information for specific failure cases.
+ * Note: worker type is narrowed to 'agent' | 'terminal' since git-diff workers
+ * don't support PTY restoration.
+ */
+export type RestoreWorkerResult =
+  | { success: true; worker: { type: 'agent' | 'terminal' } }
+  | { success: false; errorCode: WorkerErrorCode; message: string };
 
 /**
  * Default path existence checker using fs.access
@@ -493,7 +504,7 @@ export class SessionManager {
     const session = this.sessions.get(id);
     if (!session) return false;
 
-    // Kill all workers
+    // Kill all workers first (before removing from memory)
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
@@ -509,19 +520,36 @@ export class SessionManager {
       }
     }
 
-    // Delete all output files for this session via job queue
+    // Verify jobQueue is available before proceeding
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for session cleanup. Ensure initializeSessionManager() was called with jobQueue.');
     }
-    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
-    this.sessions.delete(id);
-    await this.sessionRepository.delete(id);
-    logger.info({ sessionId: id }, 'Session deleted');
+    // Perform all deletion operations atomically
+    // If any fail, restore in-memory state to maintain consistency
+    try {
+      // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical)
+      await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
-    this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
+      // 2. Remove from in-memory map
+      this.sessions.delete(id);
 
-    return true;
+      // 3. Delete from persistence (this is the critical operation)
+      await this.sessionRepository.delete(id);
+
+      logger.info({ sessionId: id }, 'Session deleted');
+
+      // 4. Only broadcast after all operations succeed
+      this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
+
+      return true;
+    } catch (err) {
+      // Restore in-memory session if it was removed
+      // This ensures UI and server state remain consistent
+      this.sessions.set(id, session);
+      logger.error({ sessionId: id, err }, 'Failed to delete session, restored in-memory state');
+      throw err;
+    }
   }
 
   getAllSessions(): Session[] {
@@ -1207,57 +1235,90 @@ export class SessionManager {
    *
    * - If worker exists with active PTY, return it as-is
    * - If worker exists without PTY (loaded from persistence), activate its PTY
-   * - Returns null for git-diff workers (they don't need PTY restoration)
-   * - Returns null if worker cannot be restored (session not found, etc.)
+   * - Returns error for git-diff workers (they don't need PTY restoration)
+   * - Returns error with specific code if worker cannot be restored
    */
-  async restoreWorker(sessionId: string, workerId: string): Promise<InternalWorker | null> {
+  async restoreWorker(sessionId: string, workerId: string): Promise<RestoreWorkerResult> {
     const session = this.sessions.get(sessionId);
-    if (!session) return null;
+    if (!session) {
+      return {
+        success: false,
+        errorCode: 'WORKER_NOT_FOUND',
+        message: 'Session not found',
+      };
+    }
 
     const existingWorker = session.workers.get(workerId);
-    if (!existingWorker) return null;
+    if (!existingWorker) {
+      return {
+        success: false,
+        errorCode: 'WORKER_NOT_FOUND',
+        message: 'Worker not found in session',
+      };
+    }
 
     // Git-diff workers don't need PTY restoration
-    if (existingWorker.type === 'git-diff') return null;
+    if (existingWorker.type === 'git-diff') {
+      return {
+        success: false,
+        errorCode: 'WORKER_NOT_FOUND',
+        message: 'Git-diff workers do not support PTY restoration',
+      };
+    }
 
     // If PTY is already active, return as-is (normal browser reload case)
-    if (existingWorker.pty) return existingWorker;
+    if (existingWorker.pty) {
+      return { success: true, worker: existingWorker };
+    }
 
     // SECURITY: Verify session's locationPath still exists before activating PTY
     const pathExistsResult = await this.pathExists(session.locationPath);
     if (!pathExistsResult) {
       logger.warn({ sessionId, workerId, locationPath: session.locationPath }, 'Cannot restore worker: session path no longer exists');
-      return null;
+      return {
+        success: false,
+        errorCode: 'PATH_NOT_FOUND',
+        message: 'Session directory was deleted or is inaccessible',
+      };
     }
 
     // Activate PTY for the worker
-    if (existingWorker.type === 'agent') {
-      // SECURITY: Verify agentId is still valid before activating
-      const agentManager = await getAgentManager();
-      const agent = agentManager.getAgent(existingWorker.agentId);
-      const effectiveAgentId = agent ? existingWorker.agentId : CLAUDE_CODE_AGENT_ID;
-      if (!agent) {
-        logger.warn({ sessionId, workerId, originalAgentId: existingWorker.agentId, fallbackAgentId: effectiveAgentId }, 'Agent no longer valid, falling back to default');
-      }
+    try {
+      if (existingWorker.type === 'agent') {
+        // SECURITY: Verify agentId is still valid before activating
+        const agentManager = await getAgentManager();
+        const agent = agentManager.getAgent(existingWorker.agentId);
+        const effectiveAgentId = agent ? existingWorker.agentId : CLAUDE_CODE_AGENT_ID;
+        if (!agent) {
+          logger.warn({ sessionId, workerId, originalAgentId: existingWorker.agentId, fallbackAgentId: effectiveAgentId }, 'Agent no longer valid, falling back to default');
+        }
 
-      await this.activateAgentWorkerPty(existingWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-        agentId: effectiveAgentId,
-        continueConversation: true,
-      });
-    } else {
-      this.activateTerminalWorkerPty(existingWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-      });
+        await this.activateAgentWorkerPty(existingWorker, {
+          sessionId,
+          locationPath: session.locationPath,
+          agentId: effectiveAgentId,
+          continueConversation: true,
+        });
+      } else {
+        this.activateTerminalWorkerPty(existingWorker, {
+          sessionId,
+          locationPath: session.locationPath,
+        });
+      }
+    } catch (err) {
+      logger.error({ sessionId, workerId, err }, 'Failed to activate PTY for worker');
+      return {
+        success: false,
+        errorCode: 'ACTIVATION_FAILED',
+        message: 'Failed to start process. Check permissions and system resources.',
+      };
     }
 
     await this.persistSession(session);
 
     logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');
 
-    return existingWorker;
+    return { success: true, worker: existingWorker };
   }
 
   /**
