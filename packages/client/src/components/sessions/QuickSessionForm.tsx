@@ -28,7 +28,7 @@ export function QuickSessionForm({
     resolver: valibotResolver(CreateQuickSessionRequestSchema),
     defaultValues: {
       type: 'quick',
-      locationPath: '',
+      locationPath: '/tmp',
       agentId: undefined,
     },
     mode: 'onBlur',

@@ -71,6 +71,7 @@ import {
   loadTerminalState,
   clearTerminalState,
   cleanupOldStates,
+  clearAllTerminalStates,
   isValidForServer,
 } from '../terminal-state-cache';
 
@@ -272,6 +273,38 @@ describe('terminal-state-cache', () => {
 
       // Should complete without error
       expect(mockStore.keys().length).toBe(0);
+    });
+  });
+
+  describe('clearAllTerminalStates', () => {
+    it('should clear all terminal entries', async () => {
+      const state1 = createValidState();
+      const state2 = createValidState();
+
+      mockStore.set('terminal:session-1:worker-1', state1);
+      mockStore.set('terminal:session-2:worker-2', state2);
+      mockStore.set('other-key', { foo: 'bar' }); // Non-terminal key
+
+      await clearAllTerminalStates();
+
+      // All terminal entries should be deleted
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+      expect(mockStore.get('terminal:session-2:worker-2')).toBeUndefined();
+      // Non-terminal key should be untouched
+      expect(mockStore.get('other-key')).toEqual({ foo: 'bar' });
+    });
+
+    it('should handle empty store', async () => {
+      await clearAllTerminalStates();
+
+      // Should complete without error
+      expect(mockStore.keys().length).toBe(0);
+    });
+
+    it('should handle keys() error gracefully', async () => {
+      keysMockThrows = true;
+      // Should not throw
+      await expect(clearAllTerminalStates()).resolves.toBeUndefined();
     });
   });
 

@@ -22,6 +22,9 @@ const logger = createLogger('websocket');
 // Track connected app clients for broadcasting
 const appClients = new Set<WSContext>();
 
+// Track clients that are still syncing initial state (to skip broadcasts during sync)
+const syncingClients = new Set<WSContext>();
+
 /**
  * Safely get the WebSocket ready state from a WSContext.
  * Returns undefined if readyState is not accessible (instead of using unsafe 'any' cast).
@@ -40,6 +43,11 @@ function broadcastToApp(msg: AppServerMessage): void {
   const deadClients: WSContext[] = [];
 
   for (const client of appClients) {
+    // Skip clients that are still syncing initial state (prevents race condition)
+    if (syncingClients.has(client)) {
+      continue;
+    }
+
     // Skip clients that are not in OPEN state
     const readyState = getWebSocketReadyState(client);
     if (typeof readyState === 'number' && readyState !== WS_READY_STATE.OPEN) {
@@ -163,8 +171,12 @@ export async function setupWebSocketRoutes(
         onOpen(_event: unknown, ws: WSContext) {
           logger.info('App WebSocket connected, sending initial sync');
 
-          // Wait for ALL sync operations to complete before adding to appClients
-          // This prevents race conditions where broadcasts arrive before initial sync
+          // Add to clients immediately but mark as syncing to prevent race conditions
+          // This ensures lifecycle events that occur during sync are properly queued
+          appClients.add(ws);
+          syncingClients.add(ws);
+
+          // Send all sync operations
           Promise.all([
             sendSessionsSync(ws, appDeps),
             getAgentManager().then((agentManager) => {
@@ -188,10 +200,12 @@ export async function setupWebSocketRoutes(
               logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
             }),
           ]).then(() => {
-            // Add to broadcast list AFTER all sync messages sent
-            appClients.add(ws);
+            // Remove from syncing set to start receiving broadcasts
+            syncingClients.delete(ws);
             logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
+            // On error, still remove from syncing set (client will be removed on close/error)
+            syncingClients.delete(ws);
             logger.error({ err }, 'Failed to send initial sync');
           });
         },
@@ -199,8 +213,9 @@ export async function setupWebSocketRoutes(
           handleAppMessage(ws, event.data);
         },
         onClose(_event: unknown, ws: WSContext) {
-          // Remove from broadcast list to prevent memory leak
+          // Remove from both sets to prevent memory leak
           appClients.delete(ws);
+          syncingClients.delete(ws);
           logger.info({ clientCount: appClients.size }, 'App WebSocket disconnected');
         },
       };
@@ -374,15 +389,14 @@ export async function setupWebSocketRoutes(
           // PTY-based worker handling (agent/terminal)
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
-          sessionManager.restoreWorker(sessionId, workerId).then(async (restoredWorker) => {
-            if (!restoredWorker) {
-              logger.warn({ sessionId, workerId }, 'Failed to restore PTY worker');
-              // restoreWorker returns null for: path not found, worker not found, or git-diff workers
-              sendErrorAndClose(ws, 'Worker activation failed. Session path may no longer exist.', 'PATH_NOT_FOUND');
+          sessionManager.restoreWorker(sessionId, workerId).then(async (result) => {
+            if (!result.success) {
+              logger.warn({ sessionId, workerId, errorCode: result.errorCode }, 'Failed to restore PTY worker');
+              sendErrorAndClose(ws, result.message, result.errorCode);
               return;
             }
 
-            await setupPtyWorkerHandlers(ws, restoredWorker.type, connectionStartTime);
+            await setupPtyWorkerHandlers(ws, result.worker.type, connectionStartTime);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);

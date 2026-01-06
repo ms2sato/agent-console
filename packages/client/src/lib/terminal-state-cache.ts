@@ -207,3 +207,26 @@ export async function cleanupOldStates(): Promise<void> {
     console.warn('Failed to cleanup old terminal states:', error);
   }
 }
+
+/**
+ * Clear all terminal state entries from IndexedDB.
+ *
+ * This is used when a server restart is detected to invalidate all cached states,
+ * since the server's in-memory history buffers are lost on restart.
+ */
+export async function clearAllTerminalStates(): Promise<void> {
+  try {
+    const allKeys = await keys();
+    const terminalKeys = allKeys.filter(
+      (key): key is string =>
+        typeof key === 'string' && key.startsWith(PREFIX)
+    );
+
+    const deletePromises = terminalKeys.map((key) => del(key));
+    await Promise.all(deletePromises);
+
+    console.info(`[TerminalCache] Cleared ${terminalKeys.length} cached terminal states`);
+  } catch (error) {
+    console.warn('Failed to clear all terminal states:', error);
+  }
+}

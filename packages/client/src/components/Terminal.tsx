@@ -8,7 +8,8 @@ import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebS
 import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, isValidForServer, clearTerminalState } from '../lib/terminal-state-cache.js';
+import { getServerId } from '../lib/server-id.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
 
@@ -227,18 +228,35 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Try to restore terminal state from cache before processing server history
     // This eliminates flickering when switching between workers
     loadTerminalState(sessionId, workerId)
-      .then((cached) => {
+      .then(async (cached) => {
         // Race condition check: abort if component unmounted or worker changed
         if (!stateRef.current.isMounted) {
+          console.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
+          console.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
           return;
         }
         // Skip if history was already requested (React Strict Mode double-mount)
         if (stateRef.current.historyRequested) {
           return;
         }
+
+        // Validate cache against current server ID
+        // If server has restarted, the cached offset is invalid
+        const currentServerId = getServerId();
+        if (cached && !isValidForServer(cached, currentServerId)) {
+          console.debug('[Terminal] Cache invalid for current server, clearing:', {
+            cachedServerId: cached.serverId,
+            currentServerId,
+            workerId,
+          });
+          // Clear the invalid cache entry
+          await clearTerminalState(sessionId, workerId);
+          cached = null;
+        }
+
         // Use terminalRef.current instead of captured terminal variable
         // to handle React Strict Mode double-mounting
         const currentTerminal = terminalRef.current;
@@ -277,9 +295,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         console.warn('[Terminal] Failed to load cached state:', e);
         // Race condition check: abort if component unmounted or worker changed
         if (!stateRef.current.isMounted) {
+          console.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
+          console.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
           return;
         }
         // Skip if history was already requested
@@ -416,12 +436,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // This enables instant restoration when switching back to this worker
       try {
         const serializedData = serializeAddon.serialize();
+        const currentServerId = getServerId();
         saveTerminalState(sessionId, workerId, {
           data: serializedData,
           savedAt: Date.now(),
           cols: terminal.cols,
           rows: terminal.rows,
           offset: offsetRef.current,
+          serverId: currentServerId,
         }).catch((e) => console.warn('[Terminal] Failed to save terminal state:', e));
       } catch (e) {
         console.warn('[Terminal] Failed to serialize terminal state:', e);

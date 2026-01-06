@@ -81,8 +81,9 @@ describe('QuickSessionForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Fill in location path
+      // Clear default value and fill in location path
       const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
       await user.type(pathInput, '/path/to/project');
 
       // Submit form
@@ -144,6 +145,10 @@ describe('QuickSessionForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
+      // Clear the default value to make path empty
+      const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
+
       // Submit without filling anything
       const submitButton = screen.getByText('Start');
       await user.click(submitButton);
@@ -160,11 +165,11 @@ describe('QuickSessionForm', () => {
     });
 
     /**
-     * This test ensures form submission validation works correctly when
-     * locationPath field has empty string as default value.
-     * The form uses defaultValues: { locationPath: '' }
+     * This test ensures form submission works correctly with the default
+     * locationPath value of '/tmp'.
+     * The form uses defaultValues: { locationPath: '/tmp' }
      */
-    it('should show validation error when submitting with empty default value', async () => {
+    it('should submit successfully with default locationPath value', async () => {
       const user = userEvent.setup();
       const { props } = renderQuickSessionForm();
 
@@ -173,18 +178,19 @@ describe('QuickSessionForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Submit immediately - locationPath is '' from defaultValues
+      // Submit immediately - locationPath is '/tmp' from defaultValues
       const submitButton = screen.getByText('Start');
       await user.click(submitButton);
 
-      // onSubmit should NOT be called
+      // onSubmit should be called with default path
       await waitFor(() => {
-        expect(props.onSubmit).not.toHaveBeenCalled();
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
       });
 
-      // Error should be displayed
-      await waitFor(() => {
-        expect(screen.getByText(/Location path is required/)).toBeTruthy();
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        type: 'quick',
+        locationPath: '/tmp',
       });
     });
   });

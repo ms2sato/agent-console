@@ -865,10 +865,12 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore should return existing worker without creating new PTY
-      const restored = await manager.restoreWorker(session.id, workerId);
+      const result = await manager.restoreWorker(session.id, workerId);
 
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(workerId);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('agent');
+      }
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
@@ -904,11 +906,12 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore worker
-      const restored = await manager2.restoreWorker(session.id, workerId);
+      const result = await manager2.restoreWorker(session.id, workerId);
 
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(workerId);
-      expect(restored?.type).toBe('agent');
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('agent');
+      }
 
       // New PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
@@ -942,17 +945,18 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore terminal worker
-      const restored = await manager2.restoreWorker(session.id, terminalWorkerId);
+      const result = await manager2.restoreWorker(session.id, terminalWorkerId);
 
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(terminalWorkerId);
-      expect(restored?.type).toBe('terminal');
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('terminal');
+      }
 
       // New PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
     });
 
-    it('should return null for git-diff worker (does not need PTY restoration)', async () => {
+    it('should return error for git-diff worker (does not need PTY restoration)', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -973,19 +977,25 @@ describe('SessionManager', () => {
 
       const manager2 = await getSessionManager();
 
-      // Restore should return null for git-diff worker
-      const restored = await manager2.restoreWorker(session.id, gitDiffWorker!.id);
-      expect(restored).toBeNull();
+      // Restore should return error for git-diff worker
+      const result = await manager2.restoreWorker(session.id, gitDiffWorker!.id);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+      }
     });
 
-    it('should return null for non-existent session', async () => {
+    it('should return error for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const restored = await manager.restoreWorker('non-existent', 'worker-1');
-      expect(restored).toBeNull();
+      const result = await manager.restoreWorker('non-existent', 'worker-1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+      }
     });
 
-    it('should return null if worker not found in persisted metadata', async () => {
+    it('should return error if worker not found in persisted metadata', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -1000,8 +1010,11 @@ describe('SessionManager', () => {
       const manager2 = await getSessionManager();
 
       // Try to restore non-existent worker
-      const restored = await manager2.restoreWorker(session.id, 'non-existent-worker');
-      expect(restored).toBeNull();
+      const result = await manager2.restoreWorker(session.id, 'non-existent-worker');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+      }
     });
 
     it('should update persistence with new PID after restoration', async () => {
@@ -1095,11 +1108,13 @@ describe('SessionManager', () => {
       const ptyCountAfterCreate = ptyFactory.instances.length;
 
       // Call restoreWorker on an already-active worker (PTY exists)
-      const restored = await manager.restoreWorker(session.id, workerId);
+      const result = await manager.restoreWorker(session.id, workerId);
 
       // Should return the worker successfully
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(workerId);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('agent');
+      }
 
       // No new PTY should be created (idempotent behavior)
       expect(ptyFactory.instances.length).toBe(ptyCountAfterCreate);
@@ -1168,11 +1183,13 @@ describe('SessionManager', () => {
       const ptyCountAfterCreate = ptyFactory.instances.length;
 
       // Call restoreWorker on an already-active terminal worker
-      const restored = await manager.restoreWorker(session.id, terminalWorker!.id);
+      const result = await manager.restoreWorker(session.id, terminalWorker!.id);
 
       // Should return the worker successfully
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(terminalWorker!.id);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('terminal');
+      }
 
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountAfterCreate);
@@ -1186,7 +1203,7 @@ describe('SessionManager', () => {
       return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn });
     }
 
-    it('should return null when session path no longer exists', async () => {
+    it('should return error with PATH_NOT_FOUND when session path no longer exists', async () => {
       // First, create a session with a manager that says path exists
       const managerForCreate = await getSessionManager();
 
@@ -1208,10 +1225,13 @@ describe('SessionManager', () => {
       // PTY count before restore attempt
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore should return null because path no longer exists
-      const restored = await managerAfterRestart.restoreWorker(session.id, workerId);
+      // Restore should return error because path no longer exists
+      const result = await managerAfterRestart.restoreWorker(session.id, workerId);
 
-      expect(restored).toBeNull();
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorCode).toBe('PATH_NOT_FOUND');
+      }
 
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
@@ -1241,10 +1261,13 @@ describe('SessionManager', () => {
       // PTY count before restore attempt
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore should return null because path no longer exists
-      const restored = await managerAfterRestart.restoreWorker(session.id, terminalWorkerId);
+      // Restore should return error because path no longer exists
+      const result = await managerAfterRestart.restoreWorker(session.id, terminalWorkerId);
 
-      expect(restored).toBeNull();
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorCode).toBe('PATH_NOT_FOUND');
+      }
 
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
@@ -1273,10 +1296,12 @@ describe('SessionManager', () => {
       const ptyCountBefore = ptyFactory.instances.length;
 
       // Restore should succeed
-      const restored = await managerAfterRestart.restoreWorker(session.id, workerId);
+      const result = await managerAfterRestart.restoreWorker(session.id, workerId);
 
-      expect(restored).not.toBeNull();
-      expect(restored?.id).toBe(workerId);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.worker.type).toBe('agent');
+      }
 
       // New PTY should be created (since internal worker had no PTY after restart)
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);

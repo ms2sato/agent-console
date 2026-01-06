@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, startTransition } from 'react
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../../components/Terminal';
 import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
 import { SessionSettings } from '../../components/SessionSettings';
+import { QuickSessionSettings } from '../../components/QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { DiffIcon } from '../../components/Icons';
@@ -30,12 +31,20 @@ interface Tab {
   name: string;
 }
 
-// Pre-generate favicon frames for animation to avoid expensive canvas.toDataURL() calls
-// Cache structure: { state: { frameIndex: dataUrl } }
-const faviconCache = new Map<string, string>();
+// Animation configuration
+const ANIMATION_FRAMES = 16;
+const ANIMATION_INTERVAL_MS = 100; // 10fps instead of 25fps
+
+// Activity states for pre-generation
+const FAVICON_STATES = ['active', 'idle', 'asking', 'unknown'] as const;
 
 function getFaviconCacheKey(state: AgentActivityState, frameIndex: number): string {
   return `${state}:${frameIndex}`;
+}
+
+// Calculate bounce offset for a given frame
+function getBounceOffset(frameIndex: number): number {
+  return Math.abs(Math.sin((frameIndex / ANIMATION_FRAMES) * Math.PI));
 }
 
 // Generate favicon based on activity state
@@ -63,24 +72,30 @@ function generateFavicon(state: AgentActivityState, bounce: number = 0): string 
   return canvas.toDataURL('image/png');
 }
 
-// Pre-generate animation frames for 'active' state (reduces CPU load during animation)
-// 16 frames = 1 full cycle, cached to avoid repeated canvas.toDataURL() calls
-const ANIMATION_FRAMES = 16;
-const ANIMATION_INTERVAL_MS = 100; // 10fps instead of 25fps
+// Pre-generate all favicon frames at module initialization (bounded set)
+// 16 frames x 4 states = 64 cached data URLs (~100KB total)
+// This prevents unbounded cache growth and expensive canvas.toDataURL() calls during animation
+const faviconCache = new Map<string, string>();
+
+// Initialize cache with all possible combinations at module load time
+for (const state of FAVICON_STATES) {
+  for (let frame = 0; frame < ANIMATION_FRAMES; frame++) {
+    const cacheKey = getFaviconCacheKey(state, frame);
+    const bounce = state === 'active' ? getBounceOffset(frame) : 0;
+    faviconCache.set(cacheKey, generateFavicon(state, bounce));
+  }
+}
 
 function getOrGenerateFavicon(state: AgentActivityState, frameIndex: number = 0): string {
   const cacheKey = getFaviconCacheKey(state, frameIndex);
+  // All frames are pre-generated, so this should always return a cached value
+  // Fallback to generating if somehow missing (defensive coding)
   const cached = faviconCache.get(cacheKey);
   if (cached) return cached;
 
-  // Calculate bounce for this frame
-  const bounce = state === 'active'
-    ? Math.abs(Math.sin((frameIndex / ANIMATION_FRAMES) * Math.PI))
-    : 0;
-
-  const dataUrl = generateFavicon(state, bounce);
-  faviconCache.set(cacheKey, dataUrl);
-  return dataUrl;
+  // This branch should never execute, but provides safety
+  const bounce = state === 'active' ? getBounceOffset(frameIndex) : 0;
+  return generateFavicon(state, bounce);
 }
 
 // Get branch name from session (for worktree sessions)
@@ -573,9 +588,9 @@ function TerminalPage() {
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Settings button (only for worktree sessions) */}
-        {session.type === 'worktree' && (
-          <div className="px-2">
+        {/* Settings button */}
+        <div className="px-2">
+          {session.type === 'worktree' ? (
             <SessionSettings
               sessionId={sessionId}
               repositoryId={repositoryId}
@@ -590,8 +605,13 @@ function TerminalPage() {
                 window.location.reload();
               }}
             />
-          </div>
-        )}
+          ) : (
+            <QuickSessionSettings
+              sessionId={sessionId}
+              initialPrompt={session.initialPrompt}
+            />
+          )}
+        </div>
       </div>
 
       {/* Worker panel - render only active tab (conditional rendering) */}
