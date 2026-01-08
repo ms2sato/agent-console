@@ -222,6 +222,19 @@ function send(msg: AppClientMessage): boolean {
 }
 
 /**
+ * Emit a session-deleted event locally without waiting for WebSocket.
+ * Used for optimistic UI updates after successful API calls.
+ * This allows immediate UI feedback while the WebSocket event may arrive later.
+ * The event is processed idempotently - duplicate deletions are safely ignored.
+ *
+ * @param sessionId - The ID of the deleted session
+ */
+export function emitSessionDeleted(sessionId: string): void {
+  const msg: AppServerMessage = { type: 'session-deleted', sessionId };
+  messageListeners.forEach(fn => fn(msg));
+}
+
+/**
  * Request a full session sync from the server.
  * Use this when the Dashboard mounts and the WebSocket is already connected.
  * Resets sessionsSynced to false to show loading state until sync is received.

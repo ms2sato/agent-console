@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { deleteSession } from '../../lib/api';
+import { emitSessionDeleted } from '../../lib/app-websocket';
 
 export interface EndSessionDialogProps {
   open: boolean;
@@ -19,6 +20,9 @@ export function EndSessionDialog({
   const deleteMutation = useMutation({
     mutationFn: () => deleteSession(sessionId),
     onSuccess: () => {
+      // Emit session-deleted locally for immediate UI update
+      // WebSocket event will arrive later but will be processed idempotently
+      emitSessionDeleted(sessionId);
       onOpenChange(false);
       navigate({ to: '/' });
     },

@@ -10,12 +10,14 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { deleteWorktree } from '../../lib/api';
+import { emitSessionDeleted } from '../../lib/app-websocket';
 
 export interface DeleteWorktreeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   repositoryId: string;
   worktreePath: string;
+  sessionId: string;
 }
 
 export function DeleteWorktreeDialog({
@@ -23,6 +25,7 @@ export function DeleteWorktreeDialog({
   onOpenChange,
   repositoryId,
   worktreePath,
+  sessionId,
 }: DeleteWorktreeDialogProps) {
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,6 +45,9 @@ export function DeleteWorktreeDialog({
     try {
       // Server-side deleteWorktree also terminates any running sessions
       await deleteWorktree(repositoryId, worktreePath, force);
+      // Emit session-deleted locally for immediate UI update
+      // WebSocket event will arrive later but will be processed idempotently
+      emitSessionDeleted(sessionId);
       onOpenChange(false);
       navigate({ to: '/' });
     } catch (err) {
