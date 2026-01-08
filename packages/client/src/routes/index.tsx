@@ -14,6 +14,7 @@ import {
   openPath,
 } from '../lib/api';
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
+import { emitSessionDeleted } from '../lib/app-websocket';
 import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-websocket.js';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -692,6 +693,11 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   const deleteWorktreeMutation = useMutation({
     mutationFn: (force: boolean) => deleteWorktree(repositoryId, worktree.path, force),
     onSuccess: () => {
+      // Emit session-deleted locally for immediate UI update if session exists
+      // WebSocket event will arrive later but will be processed idempotently
+      if (session) {
+        emitSessionDeleted(session.id);
+      }
       queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setDeleteConfirmType(null);
@@ -850,6 +856,9 @@ function SessionCard({ session }: SessionCardProps) {
   const deleteMutation = useMutation({
     mutationFn: deleteSession,
     onSuccess: () => {
+      // Emit session-deleted locally for immediate UI update
+      // WebSocket event will arrive later but will be processed idempotently
+      emitSessionDeleted(session.id);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowStopConfirm(false);
     },

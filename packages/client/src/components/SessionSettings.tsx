@@ -75,6 +75,7 @@ export function SessionSettings({
         onOpenChange={(open) => !open && closeDialog()}
         repositoryId={repositoryId}
         worktreePath={worktreePath}
+        sessionId={sessionId}
       />
 
       <InitialPromptDialog
