@@ -114,7 +114,7 @@ describe('EditRepositoryForm', () => {
       // Verify API was called with correct data
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const requestBody = getRequestBody(0);
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -140,10 +140,10 @@ describe('EditRepositoryForm', () => {
         expect(props.onSuccess).toHaveBeenCalledTimes(1);
       });
 
-      // Verify API was called with null (empty string converted to null)
+      // Verify API was called with empty string (server will convert to null)
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const requestBody = getRequestBody(0);
-      expect(requestBody).toEqual({ setupCommand: null, envVars: null });
+      expect(requestBody).toEqual({ setupCommand: '', envVars: '' });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -170,7 +170,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRequestBody(0);
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
     });
   });
 
