@@ -85,10 +85,11 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
   const handleFormSubmit = (data: EditRepositoryFormData) => {
     setError(null);
-    // Convert empty string to null for the API
-    const setupCommand = data.setupCommand?.trim() || null;
-    const envVars = data.envVars?.trim() || null;
-    updateMutation.mutate({ setupCommand, envVars });
+    // Send empty string as-is; server will convert to null for database storage
+    updateMutation.mutate({
+      setupCommand: data.setupCommand?.trim() ?? '',
+      envVars: data.envVars?.trim() ?? '',
+    });
   };
 
   return (
