@@ -63,27 +63,39 @@ class NotificationManager {
     worker: Worker,
     newState: AgentActivityState
   ): void {
-    // 1. Check if notification should be sent
-    const config = this.getNotificationConfig(session.id);
-    if (!this.shouldNotify(config, newState)) return;
+    // 1. Map activity state to event type
+    const eventType = this.mapActivityToEventType(newState);
 
-    // 2. Build notification context
+    // 2. Check if notification should be sent
+    const config = this.getNotificationConfig(session.id);
+    if (!config.rules.triggers[eventType]) return;
+
+    // 3. Build notification context
     const context: NotificationContext = {
       session,
       worker,
       event: {
-        type: 'activity_change',
+        type: eventType,
         activityState: newState,
         timestamp: new Date(),
       },
       agentConsoleUrl: this.buildSessionUrl(session, worker),
     };
 
-    // 3. Send to all configured services
+    // 4. Send to all configured services
     for (const handler of this.getEnabledHandlers(config)) {
       handler.send(context).catch(err => {
         this.logger.error(`Notification failed: ${handler.serviceId}`, err);
       });
+    }
+  }
+
+  private mapActivityToEventType(state: AgentActivityState): OutboundTriggerEventType {
+    switch (state) {
+      case 'waiting': return 'agent:waiting';
+      case 'idle': return 'agent:idle';
+      case 'active': return 'agent:active';
+      default: return 'agent:active';
     }
   }
 }
@@ -91,18 +103,17 @@ class NotificationManager {
 
 ### Service Handler Interface
 
-Handlers receive `SystemEvent` (defined in [System Events](./system-events.md)) and send formatted notifications.
+Outbound handlers receive `NotificationContext` (which includes the triggering event) and send formatted notifications to external services.
+
+> **Note**: Outbound integration uses `NotificationEvent` internally rather than `SystemEvent`. This is because outbound notifications are tightly coupled to UI presentation and require different data structures (e.g., `activityState` for status display). The event types align with those defined in [System Events](./system-events.md) but use a simpler internal format.
 
 ```typescript
 interface OutboundServiceHandler {
   /** Service identifier (e.g., 'slack', 'discord') */
   readonly serviceId: string;
 
-  /** Event types this handler supports */
-  readonly supportedEvents: SystemEventType[];
-
   /** Send notification to the service */
-  send(event: SystemEvent, context: NotificationContext): Promise<void>;
+  send(context: NotificationContext): Promise<void>;
 
   /** Validate service-specific configuration */
   validateConfig(config: unknown): boolean;
@@ -111,21 +122,35 @@ interface OutboundServiceHandler {
 interface NotificationContext {
   session: Session;
   worker: Worker;
+  event: NotificationEvent;
   agentConsoleUrl: string;
 }
+
+type NotificationEvent =
+  | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
+  | { type: 'agent:idle'; activityState: 'idle'; timestamp: Date }
+  | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
+  | { type: 'worker:error'; message: string; timestamp: Date }
+  | { type: 'worker:exited'; exitCode: number; timestamp: Date };
 ```
 
 ### Notification Rules
 
 ```typescript
+/** Event types that can trigger outbound notifications */
+type OutboundTriggerEventType =
+  | 'agent:waiting'
+  | 'agent:idle'
+  | 'agent:active'
+  | 'worker:error'
+  | 'worker:exited';
+
 interface NotificationRules {
-  /** Events that trigger notifications */
-  triggers: {
-    activityWaiting: boolean;  // Claude is asking
-    activityIdle: boolean;     // Claude finished
-    workerError: boolean;      // Error occurred
-    workerExit: boolean;       // Process exited
-  };
+  /**
+   * Events that trigger notifications.
+   * Keys are event types from SystemEventType (internal subset).
+   */
+  triggers: Partial<Record<OutboundTriggerEventType, boolean>>;
 
   /** Throttling settings */
   throttle?: {
@@ -135,6 +160,17 @@ interface NotificationRules {
     debounceSeconds?: number;
   };
 }
+
+// Default configuration
+const defaultNotificationRules: NotificationRules = {
+  triggers: {
+    'agent:waiting': true,   // Claude is asking
+    'agent:idle': true,      // Claude finished
+    'agent:active': false,   // Claude started (usually not notified)
+    'worker:error': true,    // Error occurred
+    'worker:exited': false,  // Process exited (optional)
+  },
+};
 ```
 
 ## Slack Implementation
@@ -175,32 +211,33 @@ class SlackHandler implements OutboundServiceHandler {
   }
 
   private buildMessage(context: NotificationContext): SlackMessage {
-    const { session, worker, event, agentConsoleUrl } = context;
+    const { session, event, agentConsoleUrl } = context;
     const sessionName = session.title || session.worktreeId || 'Quick Session';
 
     let statusText: string;
     let statusEmoji: string;
 
-    if (event.type === 'activity_change') {
-      switch (event.activityState) {
-        case 'waiting':
-          statusText = 'is asking a question';
-          statusEmoji = ':question:';
-          break;
-        case 'idle':
-          statusText = 'has finished';
-          statusEmoji = ':white_check_mark:';
-          break;
-        default:
-          statusText = `is ${event.activityState}`;
-          statusEmoji = ':hourglass:';
-      }
-    } else if (event.type === 'worker_error') {
-      statusText = 'encountered an error';
-      statusEmoji = ':x:';
-    } else {
-      statusText = 'process exited';
-      statusEmoji = ':stop_sign:';
+    switch (event.type) {
+      case 'agent:waiting':
+        statusText = 'is asking a question';
+        statusEmoji = ':question:';
+        break;
+      case 'agent:idle':
+        statusText = 'has finished';
+        statusEmoji = ':white_check_mark:';
+        break;
+      case 'agent:active':
+        statusText = 'is processing';
+        statusEmoji = ':hourglass:';
+        break;
+      case 'worker:error':
+        statusText = 'encountered an error';
+        statusEmoji = ':x:';
+        break;
+      case 'worker:exited':
+        statusText = 'process exited';
+        statusEmoji = ':stop_sign:';
+        break;
     }
 
     return {
@@ -411,12 +448,23 @@ class EmailHandler implements OutboundServiceHandler {
 
   async send(context: NotificationContext): Promise<void> {
     const config = await this.getConfig();
+    const statusText = this.getStatusText(context.event.type);
 
     await this.mailer.send({
       to: config.recipient,
-      subject: `[Agent Console] ${context.session.title} - Claude ${context.event.activityState}`,
+      subject: `[Agent Console] ${context.session.title} - Claude ${statusText}`,
       html: this.buildEmailBody(context),
     });
+  }
+
+  private getStatusText(eventType: NotificationEvent['type']): string {
+    switch (eventType) {
+      case 'agent:waiting': return 'is asking a question';
+      case 'agent:idle': return 'has finished';
+      case 'agent:active': return 'is processing';
+      case 'worker:error': return 'encountered an error';
+      case 'worker:exited': return 'process exited';
+    }
   }
 }
 ```

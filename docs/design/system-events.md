@@ -67,7 +67,20 @@ interface SystemEvent {
   /** Target worker (if applicable) */
   workerId?: string;
 
-  /** Event-specific payload */
+  /**
+   * Structured metadata for event routing and matching.
+   * Used by resolvers to find target sessions.
+   */
+  metadata: {
+    /** Repository identifier (e.g., 'owner/repo') */
+    repositoryName?: string;
+    /** Branch name */
+    branch?: string;
+    /** URL to event details (for display) */
+    url?: string;
+  };
+
+  /** Full event-specific payload (raw data from source) */
   payload: unknown;
 
   /** Human-readable summary */

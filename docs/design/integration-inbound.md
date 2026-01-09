@@ -106,9 +106,8 @@ class AgentWorkerHandler implements InboundEventHandler {
 
   private formatMessage(event: SystemEvent): string {
     // Format: \n[Source] TYPE: Summary\nURL: ...\n
-    const metadata = event.payload as { url?: string };
     return `\n[${event.source}] ${event.type.toUpperCase()}: ${event.summary}\n` +
-           `URL: ${metadata.url ?? 'N/A'}\n`;
+           `URL: ${event.metadata.url ?? 'N/A'}\n`;
   }
 }
 ```
@@ -350,7 +349,7 @@ Sessions are matched to webhooks by comparing repository identifiers.
 
 1. **Runtime resolution** (current approach):
    ```typescript
-   async function resolveTargets(event: InboundEvent): Promise<EventTarget[]> {
+   async function resolveTargets(event: SystemEvent): Promise<EventTarget[]> {
      const sessions = await sessionRepository.findAll();
      const targets: EventTarget[] = [];
 
@@ -364,9 +363,12 @@ Sessions are matched to webhooks by comparing repository identifiers.
        const remoteUrl = await getRemoteUrl(repository.path);
        if (!remoteUrl) continue;
 
-       // Compare org/repo
+       // Compare org/repo using metadata
        const repoOrgRepo = parseOrgRepo(remoteUrl);
-       if (repoOrgRepo?.toLowerCase() === event.metadata.repositoryName.toLowerCase()) {
+       const eventRepoName = event.metadata.repositoryName;
+       if (!eventRepoName) continue;
+
+       if (repoOrgRepo?.toLowerCase() === eventRepoName.toLowerCase()) {
          // Optionally match branch via worktreeId
          if (!event.metadata.branch || session.worktreeId === event.metadata.branch) {
            targets.push({ sessionId: session.id });
@@ -384,6 +386,26 @@ Sessions are matched to webhooks by comparing repository identifiers.
    - Update periodically or on access
 
 **Recommendation**: Start with runtime resolution. Add caching if performance becomes an issue (unlikely with typical session counts).
+
+### Service Parser Interface
+
+Service parsers authenticate webhooks and convert raw payloads to `SystemEvent`.
+
+```typescript
+interface ServiceParser {
+  /** Service identifier (e.g., 'github', 'gitlab') */
+  readonly serviceId: string;
+
+  /** Authenticate the incoming webhook request */
+  authenticate(payload: string, headers: Headers): Promise<boolean>;
+
+  /**
+   * Parse raw payload into SystemEvent.
+   * Returns null if the event type is not supported.
+   */
+  parse(payload: string, headers: Record<string, string>): Promise<SystemEvent | null>;
+}
+```
 
 ## GitHub Implementation
 
@@ -444,6 +466,11 @@ private parseWorkflowRun(body: unknown): SystemEvent {
     type: conclusion === 'success' ? 'ci:completed' : 'ci:failed',
     source: 'github',
     timestamp: new Date().toISOString(),
+    metadata: {
+      repositoryName: body.repository.full_name,
+      branch: body.workflow_run.head_branch,
+      url: body.workflow_run.html_url,
+    },
     payload: body,
     summary: `${body.workflow_run.name} ${conclusion}`,
   };
@@ -454,9 +481,49 @@ private parseIssueClosed(body: unknown): SystemEvent {
     type: 'issue:closed',
     source: 'github',
     timestamp: new Date().toISOString(),
+    metadata: {
+      repositoryName: body.repository.full_name,
+      url: body.issue.html_url,
+    },
     payload: body,
     summary: `Issue #${body.issue.number} closed: ${body.issue.title}`,
   };
+}
+
+private parsePullRequest(body: unknown): SystemEvent | null {
+  const action = body.action;
+
+  if (action === 'closed' && body.pull_request.merged) {
+    return {
+      type: 'pr:merged',
+      source: 'github',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        repositoryName: body.repository.full_name,
+        branch: body.pull_request.head.ref,
+        url: body.pull_request.html_url,
+      },
+      payload: body,
+      summary: `PR #${body.pull_request.number} merged: ${body.pull_request.title}`,
+    };
+  }
+
+  if (action === 'review_requested') {
+    return {
+      type: 'pr:review_requested',
+      source: 'github',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        repositoryName: body.repository.full_name,
+        branch: body.pull_request.head.ref,
+        url: body.pull_request.html_url,
+      },
+      payload: body,
+      summary: `Review requested on PR #${body.pull_request.number}: ${body.pull_request.title}`,
+    };
+  }
+
+  return null; // Unsupported pull_request action
 }
 ```
 
