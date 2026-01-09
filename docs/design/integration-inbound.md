@@ -1,10 +1,10 @@
 # Inbound Integration Design
 
-This document describes the design for receiving external events into Agent Console and notifying Claude Code instances.
+This document describes the design for receiving external events into Agent Console and routing them to appropriate handlers.
 
 ## Overview
 
-Inbound integration allows external systems to send events to Agent Console, which then notifies the appropriate Claude Code instance via PTY write.
+Inbound integration provides a **generalized event routing system** that receives external events (webhooks, etc.) and dispatches them to appropriate handlers based on event type and target.
 
 ```
 External System (e.g., GitHub CI)
@@ -16,10 +16,22 @@ Agent Console Server
         │ 1. Authenticate (service-specific)
         │ 2. Parse payload (service-specific)
         │ 3. Match to Session(s)
-        │ 4. Write to PTY
+        │ 4. Route to Handler(s)
         ▼
-Claude Code receives notification
+┌─────────────────────────────────────────────┐
+│              Event Handlers                  │
+├─────────────┬─────────────┬────────────────┤
+│ AgentWorker │ DiffWorker  │ UI Notifier    │
+│ (PTY write) │ (refresh)   │ (WebSocket)    │
+└─────────────┴─────────────┴────────────────┘
 ```
+
+## Design Principles
+
+1. **Generalized event routing** - Not tied to specific use cases; handlers determine actions
+2. **Multiple targets** - Single event can trigger multiple handlers (PTY, UI, etc.)
+3. **Always return 200 OK** - Webhook providers may disable or retry on errors
+4. **Async processing via queue** - Authenticate and enqueue immediately, process asynchronously
 
 ## Base Architecture
 
@@ -27,17 +39,141 @@ Claude Code receives notification
 
 | Component | Responsibility |
 |-----------|----------------|
-| Webhook Router | Route requests to service-specific handlers, authenticate, enqueue |
-| Notification Queue | Store pending notifications for async processing |
-| Queue Processor | Process queued items: parse, resolve, notify |
-| Service Handler | Parse service-specific payloads and resolve to sessions |
-| PTY Notifier | Write formatted message to Agent Worker's PTY |
+| Webhook Router | Route requests to service-specific parsers, authenticate, enqueue |
+| Event Queue | Store pending events for async processing (uses existing JobQueue) |
+| Event Processor | Process queued items: parse, resolve targets, dispatch to handlers |
+| Service Parser | Parse service-specific payloads and extract event metadata |
+| Event Handler | Execute actions for specific event types (PTY write, UI notify, etc.) |
 
-### Design Principles
+### Event Types
 
-1. **Always return 200 OK** - Webhook providers (GitHub, etc.) may disable webhooks or retry on errors
-2. **Async processing via queue** - Authenticate and enqueue immediately, process asynchronously
-3. **Resolve early** - Convert external identifiers (URL, branch) to internal IDs (repositoryId, sessionId) in Service Handler
+| Event Type | Source | Possible Handlers |
+|------------|--------|-------------------|
+| `ci:completed` | GitHub Actions, GitLab CI | AgentWorker (notify), DiffWorker (refresh) |
+| `ci:failed` | GitHub Actions, GitLab CI | AgentWorker (notify), UI (alert dialog) |
+| `issue:closed` | GitHub Issues | UI (session close dialog), Session (auto-archive) |
+| `pr:merged` | GitHub PR | UI (success dialog), Session (auto-archive) |
+| `pr:review_requested` | GitHub PR | AgentWorker (notify) |
+| `custom` | Generic webhook | Configurable per event |
+
+### Handler Interface
+
+```typescript
+interface InboundEventHandler {
+  /** Handler identifier */
+  readonly handlerId: string;
+
+  /** Event types this handler supports */
+  readonly supportedEvents: string[];
+
+  /**
+   * Handle the event for a specific target.
+   * Returns true if handled successfully.
+   */
+  handle(event: InboundEvent, target: EventTarget): Promise<boolean>;
+}
+
+interface InboundEvent {
+  /** Event type (e.g., 'ci:completed', 'issue:closed') */
+  type: string;
+
+  /** Source service (e.g., 'github', 'gitlab') */
+  source: string;
+
+  /** Event metadata */
+  metadata: {
+    repositoryName: string;  // e.g., 'owner/repo'
+    branch?: string;
+    url?: string;            // Link to event details
+  };
+
+  /** Service-specific payload (for handlers that need details) */
+  payload: unknown;
+
+  /** Human-readable summary */
+  summary: string;
+}
+
+interface EventTarget {
+  sessionId: string;
+  workerId?: string;  // If specified, target specific worker
+}
+```
+
+### Built-in Handlers
+
+#### 1. AgentWorkerHandler (PTY Write)
+
+Writes formatted message to Agent Worker's PTY stdin.
+
+```typescript
+class AgentWorkerHandler implements InboundEventHandler {
+  readonly handlerId = 'agent-worker';
+  readonly supportedEvents = ['ci:completed', 'ci:failed', 'pr:review_requested'];
+
+  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+    const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
+    if (!worker || worker.type !== 'agent') return false;
+
+    const message = this.formatMessage(event);
+    worker.pty.write(message);
+    return true;
+  }
+
+  private formatMessage(event: InboundEvent): string {
+    // Format: \n[Source] STATUS: Summary\nDetails...\nURL: ...\n
+    return `\n[${event.source}] ${event.type.toUpperCase()}: ${event.summary}\n` +
+           `URL: ${event.metadata.url ?? 'N/A'}\n`;
+  }
+}
+```
+
+#### 2. DiffWorkerHandler (Refresh)
+
+Triggers DiffWorker to refresh its diff view.
+
+```typescript
+class DiffWorkerHandler implements InboundEventHandler {
+  readonly handlerId = 'diff-worker';
+  readonly supportedEvents = ['ci:completed', 'pr:merged'];
+
+  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+    const workers = this.sessionManager.getWorkersByType(target.sessionId, 'git-diff');
+    if (workers.length === 0) return false;
+
+    for (const worker of workers) {
+      await this.diffService.refresh(worker.id);
+    }
+    return true;
+  }
+}
+```
+
+#### 3. UINotificationHandler (WebSocket)
+
+Sends notification to connected clients via WebSocket.
+
+```typescript
+class UINotificationHandler implements InboundEventHandler {
+  readonly handlerId = 'ui-notification';
+  readonly supportedEvents = ['ci:failed', 'issue:closed', 'pr:merged'];
+
+  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+    // Broadcast to all clients viewing this session
+    this.appWebSocket.broadcast({
+      type: 'inbound-event',
+      sessionId: target.sessionId,
+      event: {
+        type: event.type,
+        source: event.source,
+        summary: event.summary,
+        metadata: event.metadata,
+      },
+    });
+    return true;
+  }
+}
+```
 
 ### Flow
 
@@ -47,70 +183,147 @@ Claude Code receives notification
 // Step 1: Receive webhook (synchronous, fast)
 app.post('/webhooks/:service', async (c) => {
   const service = c.req.param('service');
-  const handler = getServiceHandler(service);
+  const parser = getServiceParser(service);
 
   // Authenticate (service-specific)
   const payload = await c.req.text();
-  if (!await handler.authenticate(payload, c.req.raw.headers)) {
-    // Authentication failure - log and discard (do NOT return error)
-    // Returning 4xx/5xx causes webhook providers to retry
+  if (!await parser.authenticate(payload, c.req.raw.headers)) {
     logger.warn({ service }, 'Webhook authentication failed');
-    return c.json({ ok: true });
+    return c.json({ ok: true }); // Always 200 OK
   }
 
-  // Enqueue for async processing using existing JobQueue
+  // Enqueue for async processing
   const jobId = generateId();
-  jobQueue.enqueue('webhook:process', {
+  jobQueue.enqueue('inbound-event:process', {
     jobId,
     service,
     rawPayload: payload,
     headers: Object.fromEntries(c.req.raw.headers),
     receivedAt: new Date().toISOString(),
-  } satisfies WebhookJobPayload);
+  } satisfies InboundEventJobPayload);
 
-  // Always return OK
   return c.json({ ok: true });
 });
 
 // Step 2: Process queue (asynchronous)
-// JobQueue calls this handler when processing 'webhook:process' jobs
-jobQueue.registerHandler('webhook:process', async (payload: WebhookJobPayload) => {
-  const { jobId, service, rawPayload, headers } = payload;
-  const handler = getServiceHandler(service);
+jobQueue.registerHandler('inbound-event:process', async (job: InboundEventJobPayload) => {
+  const parser = getServiceParser(job.service);
 
-  // Parse and resolve to notification
-  const notification = await handler.parseAndResolve(rawPayload, headers);
+  // Parse payload into event
+  const event = await parser.parse(job.rawPayload, job.headers);
+  if (!event) return; // Unsupported event type
 
-  if (!notification) {
-    // No matching sessions - job completes successfully (not an error)
-    return;
-  }
+  // Resolve targets (sessions matching repository/branch)
+  const targets = await resolveTargets(event);
+  if (targets.length === 0) return; // No matching sessions
 
-  // Notify all matched sessions and record each notification
-  for (const target of notification.targets) {
-    ptyNotifier.notify(target.sessionId, target.workerId, notification.message);
+  // Dispatch to all applicable handlers
+  const handlers = getHandlersForEvent(event.type);
 
-    // Record notification for Worker history
-    await inboundEventNotificationRepository.create({
-      id: generateId(),
-      jobId,
-      sessionId: target.sessionId,
-      workerId: target.workerId ?? 'all',
-      message: notification.message,
-      notifiedAt: new Date().toISOString(),
-    });
+  for (const target of targets) {
+    for (const handler of handlers) {
+      const handled = await handler.handle(event, target);
+
+      // Record notification history
+      if (handled) {
+        await inboundEventNotificationRepository.create({
+          id: generateId(),
+          jobId: job.jobId,
+          sessionId: target.sessionId,
+          workerId: target.workerId ?? 'all',
+          handlerId: handler.handlerId,
+          eventType: event.type,
+          eventSummary: event.summary,
+          notifiedAt: new Date().toISOString(),
+        });
+      }
+    }
   }
 });
 ```
 
-### Database Schema
+## Database Schema
 
-Webhook processing uses the existing JobQueue for persistence and adds a notification history table.
+### Kysely Schema Definition
 
-#### Job Payload (stored in `jobs.payload`)
+Add to `packages/server/src/database/schema.ts`:
 
 ```typescript
-interface WebhookJobPayload {
+/**
+ * Inbound event notifications table schema.
+ * Records history of external events delivered to sessions/workers.
+ */
+export interface InboundEventNotificationsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Reference to jobs.id for the original webhook job */
+  job_id: string;
+  /** Session that received this notification */
+  session_id: string;
+  /** Worker that received this notification ('all' if session-wide) */
+  worker_id: string;
+  /** Handler that processed this event */
+  handler_id: string;
+  /** Event type (e.g., 'ci:completed') */
+  event_type: string;
+  /** Human-readable event summary */
+  event_summary: string;
+  /** Timestamp when notification was delivered */
+  notified_at: string;
+}
+
+// Add to Database interface:
+export interface Database {
+  // ... existing tables
+  inbound_event_notifications: InboundEventNotificationsTable;
+}
+
+// Helper types
+export type InboundEventNotification = Selectable<InboundEventNotificationsTable>;
+export type NewInboundEventNotification = Insertable<InboundEventNotificationsTable>;
+```
+
+### Migration
+
+```typescript
+// migrations/007_create_inbound_event_notifications.ts
+import type { Kysely } from 'kysely';
+
+export async function up(db: Kysely<unknown>): Promise<void> {
+  await db.schema
+    .createTable('inbound_event_notifications')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('job_id', 'text', (col) => col.notNull())
+    .addColumn('session_id', 'text', (col) => col.notNull())
+    .addColumn('worker_id', 'text', (col) => col.notNull())
+    .addColumn('handler_id', 'text', (col) => col.notNull())
+    .addColumn('event_type', 'text', (col) => col.notNull())
+    .addColumn('event_summary', 'text', (col) => col.notNull())
+    .addColumn('notified_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex('idx_inbound_event_notifications_job')
+    .on('inbound_event_notifications')
+    .column('job_id')
+    .execute();
+
+  await db.schema
+    .createIndex('idx_inbound_event_notifications_session_worker')
+    .on('inbound_event_notifications')
+    .columns(['session_id', 'worker_id'])
+    .execute();
+}
+
+export async function down(db: Kysely<unknown>): Promise<void> {
+  await db.schema.dropTable('inbound_event_notifications').execute();
+}
+```
+
+### Job Payload (stored in existing `jobs.payload`)
+
+```typescript
+interface InboundEventJobPayload {
   jobId: string;                // Same as jobs.id (for cross-reference)
   service: string;              // 'github', 'gitlab', etc.
   rawPayload: string;           // Raw JSON payload
@@ -119,209 +332,74 @@ interface WebhookJobPayload {
 }
 ```
 
-The `jobs` table (from [Local Job Queue](./local-job-queue-design.md)) stores:
-- Webhook payload (service, raw data, headers)
-- Processing status (pending, processing, completed, stalled)
-- Retry information (attempts, last_error)
-- Timestamps (created_at, completed_at)
-
-#### Notification History Table (new)
+### Querying Event History
 
 ```typescript
-interface InboundEventNotification {
-  id: string;
-  jobId: string;          // Reference to jobs.id
-  sessionId: string;
-  workerId: string;       // 'all' if notified all Agent Workers
-  message: string;        // The message sent to PTY
-  notifiedAt: string;     // ISO timestamp
-}
+// Get events received by a specific Worker
+const events = await db
+  .selectFrom('inbound_event_notifications as ien')
+  .innerJoin('jobs as j', 'ien.job_id', 'j.id')
+  .where('ien.session_id', '=', sessionId)
+  .where('ien.worker_id', '=', workerId)
+  .select([
+    'ien.notified_at',
+    'ien.event_type',
+    'ien.event_summary',
+    'ien.handler_id',
+    'j.payload',
+    'j.status',
+  ])
+  .orderBy('ien.notified_at', 'desc')
+  .limit(50)
+  .execute();
 ```
 
-SQLite table:
-
-```sql
-CREATE TABLE inbound_event_notifications (
-  id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  worker_id TEXT NOT NULL,
-  message TEXT NOT NULL,
-  notified_at TEXT NOT NULL
-);
-
-CREATE INDEX idx_inbound_event_notifications_job ON inbound_event_notifications(job_id);
-CREATE INDEX idx_inbound_event_notifications_session_worker ON inbound_event_notifications(session_id, worker_id);
-```
-
-#### Querying Worker's Event History
-
-```sql
--- Get events received by a specific Worker
-SELECT
-  ien.notified_at,
-  ien.message,
-  j.type,
-  j.payload,
-  j.status,
-  j.created_at
-FROM inbound_event_notifications ien
-JOIN jobs j ON ien.job_id = j.id
-WHERE ien.session_id = ? AND ien.worker_id = ?
-ORDER BY ien.notified_at DESC
-LIMIT 50;
-```
-
-Benefits:
-- **Reuse existing infrastructure**: JobQueue handles persistence, retry, recovery
-- **Worker history**: Track which events each Worker received
-- **Debugging**: Full payload available in jobs table for replay
-
-### Service Handler Interface
-
-```typescript
-interface InboundServiceHandler {
-  /** Service identifier (e.g., 'github', 'gitlab') */
-  readonly serviceId: string;
-
-  /** Authenticate the incoming request (fast, synchronous check) */
-  authenticate(payload: string, headers: Headers): Promise<boolean>;
-
-  /**
-   * Parse payload and resolve to notification targets.
-   * Returns null if no matching sessions found (not an error).
-   */
-  parseAndResolve(
-    payload: string,
-    headers: Record<string, string>
-  ): Promise<InboundNotification | null>;
-}
-
-interface InboundNotification {
-  /** Resolved notification targets */
-  targets: NotificationTarget[];
-
-  /** Formatted message for Claude Code */
-  message: string;
-
-  /** Metadata for logging */
-  metadata: {
-    eventType: string;       // e.g., 'workflow_run'
-    repositoryName: string;  // e.g., 'owner/repo'
-    branch: string;
-  };
-}
-
-interface NotificationTarget {
-  sessionId: string;
-  workerId?: string;  // If undefined, notify all Agent Workers in session
-}
-```
-
-### Session Resolution (inside Service Handler)
-
-Service Handler is responsible for resolving external identifiers to internal session IDs:
-
-```typescript
-// Inside GitHubHandler.parseAndResolve()
-async parseAndResolve(
-  payload: string,
-  headers: Record<string, string>
-): Promise<InboundNotification | null> {
-  const body = JSON.parse(payload);
-  const eventType = headers['x-github-event'];
-
-  if (eventType !== 'workflow_run') {
-    return null; // Unsupported event type
-  }
-
-  // Extract external identifiers
-  const cloneUrl = body.repository.clone_url;
-  const branch = body.workflow_run.head_branch;
-
-  // Resolve to internal IDs
-  const sessions = await this.resolveToSessions(cloneUrl, branch);
-  if (sessions.length === 0) {
-    return null; // No matching sessions
-  }
-
-  // Build notification
-  return {
-    targets: sessions.map(s => ({ sessionId: s.id })),
-    message: this.formatMessage(body),
-    metadata: {
-      eventType: 'workflow_run',
-      repositoryName: body.repository.full_name,
-      branch,
-    },
-  };
-}
-
-private async resolveToSessions(cloneUrl: string, branch: string): Promise<Session[]> {
-  // Normalize URL
-  const normalizedUrl = normalizeGitUrl(cloneUrl);
-
-  // Find repository by remoteUrl
-  const repository = await this.repositoryStore.findByRemoteUrl(normalizedUrl);
-  if (!repository) return [];
-
-  // Find sessions by repositoryId and branch
-  return this.sessionStore.findByRepositoryAndBranch(repository.id, branch);
-}
-```
+## Session Resolution
 
 ### Repository Matching
 
-Use existing `parseOrgRepo` function from `packages/server/src/lib/git.ts` to extract `owner/repo` from URLs:
+Sessions are matched to webhooks by comparing repository identifiers.
 
-```typescript
-// Existing function in lib/git.ts
-parseOrgRepo('git@github.com:owner/repo.git')           // 'owner/repo'
-parseOrgRepo('https://github.com/owner/repo.git')       // 'owner/repo'
-parseOrgRepo('https://github.com/owner/repo')           // 'owner/repo'
-```
+**Challenge**: `RepositoriesTable` does not store `remote_url`. Remote URL is fetched at runtime via `git remote get-url origin`.
 
-For matching, compare extracted `owner/repo` strings rather than normalizing full URLs:
+**Approaches**:
 
-```typescript
-function matchRepository(webhookCloneUrl: string, dbRemoteUrl: string): boolean {
-  const webhookOrgRepo = parseOrgRepo(webhookCloneUrl);
-  const dbOrgRepo = parseOrgRepo(dbRemoteUrl);
+1. **Runtime resolution** (current approach):
+   ```typescript
+   async function resolveTargets(event: InboundEvent): Promise<EventTarget[]> {
+     const sessions = await sessionRepository.findAll();
+     const targets: EventTarget[] = [];
 
-  if (!webhookOrgRepo || !dbOrgRepo) return false;
+     for (const session of sessions) {
+       if (!session.repositoryId) continue; // Skip quick sessions
 
-  return webhookOrgRepo.toLowerCase() === dbOrgRepo.toLowerCase();
-}
-```
+       const repository = await repositoryRepository.findById(session.repositoryId);
+       if (!repository) continue;
 
-### PTY Notification
+       // Get remote URL at runtime
+       const remoteUrl = await getRemoteUrl(repository.path);
+       if (!remoteUrl) continue;
 
-```typescript
-class PtyNotifier {
-  notify(session: Session, message: string): void {
-    // Find agent workers in the session
-    const agentWorkers = this.sessionManager.getAgentWorkers(session.id);
+       // Compare org/repo
+       const repoOrgRepo = parseOrgRepo(remoteUrl);
+       if (repoOrgRepo?.toLowerCase() === event.metadata.repositoryName.toLowerCase()) {
+         // Optionally match branch via worktreeId
+         if (!event.metadata.branch || session.worktreeId === event.metadata.branch) {
+           targets.push({ sessionId: session.id });
+         }
+       }
+     }
 
-    for (const worker of agentWorkers) {
-      // Write to PTY stdin
-      worker.pty.write(message);
-    }
-  }
-}
-```
+     return targets;
+   }
+   ```
 
-#### Message Format Guidelines
+2. **Cache remote URL** (optimization):
+   - Add `remote_url` column to `RepositoriesTable`
+   - Populate on repository registration
+   - Update periodically or on access
 
-- Start with newline to separate from current output
-- Use a clear prefix (e.g., `[GitHub CI]`, `[GitLab Pipeline]`)
-- Keep messages concise but informative
-- Include URL for details when available
-
-```
-\n[Service Name] Status indicator and summary
-Key details on separate lines
-URL: https://...
-```
+**Recommendation**: Start with runtime resolution. Add caching if performance becomes an issue (unlikely with typical session counts).
 
 ## GitHub Implementation
 
@@ -333,18 +411,8 @@ POST /webhooks/github
 
 ### Authentication
 
-GitHub signs webhooks with HMAC-SHA256 using a shared secret.
-
 ```typescript
-class GitHubHandler implements InboundServiceHandler {
-  readonly serviceId = 'github';
-
-  constructor(
-    private webhookSecret: string,
-    private repositoryStore: RepositoryStore,
-    private sessionStore: SessionStore
-  ) {}
-
+class GitHubServiceParser implements ServiceParser {
   async authenticate(payload: string, headers: Headers): Promise<boolean> {
     const signature = headers.get('X-Hub-Signature-256');
     if (!signature) return false;
@@ -362,93 +430,87 @@ class GitHubHandler implements InboundServiceHandler {
 }
 ```
 
-### Parse and Resolve
-
-Handle `workflow_run` event (CI completion) and resolve to sessions:
+### Event Parsing
 
 ```typescript
-async parseAndResolve(
-  payload: string,
-  headers: Record<string, string>
-): Promise<InboundNotification | null> {
+async parse(payload: string, headers: Record<string, string>): Promise<InboundEvent | null> {
   const body = JSON.parse(payload);
-  const eventType = headers['x-github-event'];
+  const githubEvent = headers['x-github-event'];
 
-  // Only handle workflow_run completed events
-  if (eventType !== 'workflow_run' || body.action !== 'completed') {
-    return null;
+  switch (githubEvent) {
+    case 'workflow_run':
+      if (body.action !== 'completed') return null;
+      return this.parseWorkflowRun(body);
+
+    case 'issues':
+      if (body.action !== 'closed') return null;
+      return this.parseIssueClosed(body);
+
+    case 'pull_request':
+      return this.parsePullRequest(body);
+
+    default:
+      return null; // Unsupported event
   }
+}
 
-  const cloneUrl = body.repository.clone_url;
-  const branch = body.workflow_run.head_branch;
-  const repositoryName = body.repository.full_name;
-
-  // Resolve to sessions
-  const sessions = await this.resolveToSessions(cloneUrl, branch);
-  if (sessions.length === 0) {
-    return null;
-  }
-
-  // Format message
-  const message = this.formatMessage(body);
-
+private parseWorkflowRun(body: unknown): InboundEvent {
+  const conclusion = body.workflow_run.conclusion;
   return {
-    targets: sessions.map(s => ({ sessionId: s.id })),
-    message,
+    type: conclusion === 'success' ? 'ci:completed' : 'ci:failed',
+    source: 'GitHub',
     metadata: {
-      eventType: 'workflow_run',
-      repositoryName,
-      branch,
+      repositoryName: body.repository.full_name,
+      branch: body.workflow_run.head_branch,
+      url: body.workflow_run.html_url,
     },
+    payload: body,
+    summary: `${body.workflow_run.name} ${conclusion}`,
   };
 }
 
-private async resolveToSessions(cloneUrl: string, branch: string): Promise<Session[]> {
-  const normalizedUrl = normalizeGitUrl(cloneUrl);
-  const repository = await this.repositoryStore.findByRemoteUrl(normalizedUrl);
-  if (!repository) return [];
-
-  return this.sessionStore.findByRepositoryAndBranch(repository.id, branch);
-}
-
-private formatMessage(body: GitHubWorkflowRunPayload): string {
-  const { conclusion, name: workflowName, html_url: htmlUrl } = body.workflow_run;
-  const repositoryName = body.repository.full_name;
-  const branch = body.workflow_run.head_branch;
-
-  const statusIcon = conclusion === 'success' ? 'SUCCESS' :
-                     conclusion === 'failure' ? 'FAILURE' :
-                     conclusion.toUpperCase();
-
-  return `\n[GitHub CI] ${statusIcon}: "${workflowName}"\n` +
-         `Repository: ${repositoryName}\n` +
-         `Branch: ${branch}\n` +
-         `URL: ${htmlUrl}\n`;
+private parseIssueClosed(body: unknown): InboundEvent {
+  return {
+    type: 'issue:closed',
+    source: 'GitHub',
+    metadata: {
+      repositoryName: body.repository.full_name,
+      url: body.issue.html_url,
+    },
+    payload: body,
+    summary: `Issue #${body.issue.number} closed: ${body.issue.title}`,
+  };
 }
 ```
 
-### GitHub Webhook Setup
-
-1. Go to repository Settings → Webhooks → Add webhook
-2. Payload URL: `https://<your-domain>/webhooks/github`
-3. Content type: `application/json`
-4. Secret: Generate and save in Agent Console settings
-5. Events: Select "Workflow runs" (or specific events needed)
-
 ## Configuration
 
-### Settings Schema
+### Handler Registration
 
 ```typescript
-interface InboundIntegrationSettings {
-  github?: {
-    webhookSecret: string;
-    enabled: boolean;
+interface InboundIntegrationConfig {
+  /** Enabled handlers and their event subscriptions */
+  handlers: {
+    'agent-worker': {
+      enabled: boolean;
+      events: string[];  // e.g., ['ci:completed', 'ci:failed']
+    };
+    'diff-worker': {
+      enabled: boolean;
+      events: string[];
+    };
+    'ui-notification': {
+      enabled: boolean;
+      events: string[];
+    };
   };
-  // Future services
-  gitlab?: {
-    webhookToken: string;
-    enabled: boolean;
+
+  /** Service-specific settings */
+  services: {
+    github?: {
+      webhookSecret: string;
+      enabled: boolean;
+    };
   };
 }
 ```
@@ -462,52 +524,43 @@ GITHUB_WEBHOOK_SECRET=your-secret-here
 
 ## Future Extensions
 
+### Adding New Handlers
+
+1. Implement `InboundEventHandler` interface
+2. Register in handler registry
+3. Add configuration options
+4. Document supported events
+
 ### Adding New Services
 
-1. Implement `InboundServiceHandler` interface
-2. Register handler in webhook router
-3. Add service-specific configuration
-4. Document webhook setup for the service
+1. Implement `ServiceParser` interface
+2. Register in webhook router
+3. Add authentication method
+4. Document webhook setup
 
-### Example: GitLab
+### Session Actions (Future)
+
+Handlers that perform session-level actions:
 
 ```typescript
-class GitLabHandler implements InboundServiceHandler {
-  readonly serviceId = 'gitlab';
+class SessionActionHandler implements InboundEventHandler {
+  readonly handlerId = 'session-action';
+  readonly supportedEvents = ['issue:closed', 'pr:merged'];
 
-  async authenticate(req: Request): Promise<boolean> {
-    const token = req.headers.get('X-Gitlab-Token');
-    return token === await this.getWebhookToken();
-  }
-
-  async parsePayload(req: Request): Promise<InboundEvent> {
-    const body = await req.json();
-    // Parse GitLab pipeline event
-    return {
-      type: 'pipeline',
-      repository: {
-        url: body.project.git_http_url,
-        fullName: body.project.path_with_namespace,
-      },
-      branch: body.object_attributes.ref,
-      payload: { /* ... */ },
-    };
+  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+    // Example: Show dialog suggesting to close session
+    if (event.type === 'issue:closed' || event.type === 'pr:merged') {
+      this.appWebSocket.broadcast({
+        type: 'session-action-suggestion',
+        sessionId: target.sessionId,
+        action: 'archive',
+        reason: event.summary,
+      });
+    }
+    return true;
   }
 }
 ```
-
-### Custom Webhook (Future)
-
-For services without specific handlers, a generic webhook endpoint:
-
-```
-POST /webhooks/custom
-```
-
-With user-configurable:
-- Authentication method (header token, query param, etc.)
-- Payload mapping (JSONPath to extract repository, branch, message)
-- Message template
 
 ## API Reference
 
@@ -527,18 +580,9 @@ Always returns 200 OK:
 }
 ```
 
-**Important**: No error responses are returned, even for:
-- Authentication failure
-- Invalid payload format
-- No matching sessions
-
-This prevents webhook providers (GitHub, etc.) from:
-- Retrying failed requests repeatedly
-- Disabling the webhook endpoint after too many failures
-
-All failures are logged server-side for debugging.
+**Important**: No error responses are returned to prevent webhook providers from retrying or disabling endpoints.
 
 ## Related Documents
 
 - [Outbound Integration](./integration-outbound.md) - Sending notifications to external systems
-- [Session & Worker Design](./session-worker-design.md) - Session/Worker architecture
+- [Local Job Queue](./local-job-queue-design.md) - Async job processing infrastructure
