@@ -2,6 +2,8 @@
 
 This document describes the design for receiving external events into Agent Console and routing them to appropriate handlers.
 
+> **Prerequisite**: See [System Events](./system-events.md) for event format and type definitions.
+
 ## Overview
 
 Inbound integration provides a **generalized event routing system** that receives external events (webhooks, etc.) and dispatches them to appropriate handlers based on event type and target.
@@ -45,18 +47,21 @@ Agent Console Server
 | Service Parser | Parse service-specific payloads and extract event metadata |
 | Event Handler | Execute actions for specific event types (PTY write, UI notify, etc.) |
 
-### Event Types
+### Handled Event Types
 
-| Event Type | Source | Possible Handlers |
-|------------|--------|-------------------|
-| `ci:completed` | GitHub Actions, GitLab CI | AgentWorker (notify), DiffWorker (refresh) |
-| `ci:failed` | GitHub Actions, GitLab CI | AgentWorker (notify), UI (alert dialog) |
-| `issue:closed` | GitHub Issues | UI (session close dialog), Session (auto-archive) |
-| `pr:merged` | GitHub PR | UI (success dialog), Session (auto-archive) |
-| `pr:review_requested` | GitHub PR | AgentWorker (notify) |
-| `custom` | Generic webhook | Configurable per event |
+Inbound integration handles external source events defined in [System Events](./system-events.md):
+
+| Event Type | Possible Handlers |
+|------------|-------------------|
+| `ci:completed` | AgentWorker (notify), DiffWorker (refresh) |
+| `ci:failed` | AgentWorker (notify), UI (alert dialog) |
+| `issue:closed` | UI (session close dialog), Session (auto-archive) |
+| `pr:merged` | UI (success dialog), Session (auto-archive) |
+| `pr:review_requested` | AgentWorker (notify) |
 
 ### Handler Interface
+
+Handlers receive `SystemEvent` (defined in [System Events](./system-events.md)) and process them for specific targets.
 
 ```typescript
 interface InboundEventHandler {
@@ -64,34 +69,13 @@ interface InboundEventHandler {
   readonly handlerId: string;
 
   /** Event types this handler supports */
-  readonly supportedEvents: string[];
+  readonly supportedEvents: SystemEventType[];
 
   /**
    * Handle the event for a specific target.
    * Returns true if handled successfully.
    */
-  handle(event: InboundEvent, target: EventTarget): Promise<boolean>;
-}
-
-interface InboundEvent {
-  /** Event type (e.g., 'ci:completed', 'issue:closed') */
-  type: string;
-
-  /** Source service (e.g., 'github', 'gitlab') */
-  source: string;
-
-  /** Event metadata */
-  metadata: {
-    repositoryName: string;  // e.g., 'owner/repo'
-    branch?: string;
-    url?: string;            // Link to event details
-  };
-
-  /** Service-specific payload (for handlers that need details) */
-  payload: unknown;
-
-  /** Human-readable summary */
-  summary: string;
+  handle(event: SystemEvent, target: EventTarget): Promise<boolean>;
 }
 
 interface EventTarget {
@@ -109,9 +93,9 @@ Writes formatted message to Agent Worker's PTY stdin.
 ```typescript
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents = ['ci:completed', 'ci:failed', 'pr:review_requested'];
+  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'ci:failed', 'pr:review_requested'];
 
-  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
     if (!worker || worker.type !== 'agent') return false;
 
@@ -120,10 +104,11 @@ class AgentWorkerHandler implements InboundEventHandler {
     return true;
   }
 
-  private formatMessage(event: InboundEvent): string {
-    // Format: \n[Source] STATUS: Summary\nDetails...\nURL: ...\n
+  private formatMessage(event: SystemEvent): string {
+    // Format: \n[Source] TYPE: Summary\nURL: ...\n
+    const metadata = event.payload as { url?: string };
     return `\n[${event.source}] ${event.type.toUpperCase()}: ${event.summary}\n` +
-           `URL: ${event.metadata.url ?? 'N/A'}\n`;
+           `URL: ${metadata.url ?? 'N/A'}\n`;
   }
 }
 ```
@@ -135,9 +120,9 @@ Triggers DiffWorker to refresh its diff view.
 ```typescript
 class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
-  readonly supportedEvents = ['ci:completed', 'pr:merged'];
+  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'pr:merged'];
 
-  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const workers = this.sessionManager.getWorkersByType(target.sessionId, 'git-diff');
     if (workers.length === 0) return false;
 
@@ -156,9 +141,9 @@ Sends notification to connected clients via WebSocket.
 ```typescript
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
-  readonly supportedEvents = ['ci:failed', 'issue:closed', 'pr:merged'];
+  readonly supportedEvents: SystemEventType[] = ['ci:failed', 'issue:closed', 'pr:merged'];
 
-  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     // Broadcast to all clients viewing this session
     this.appWebSocket.broadcast({
       type: 'inbound-event',
@@ -167,7 +152,6 @@ class UINotificationHandler implements InboundEventHandler {
         type: event.type,
         source: event.source,
         summary: event.summary,
-        metadata: event.metadata,
       },
     });
     return true;
@@ -433,7 +417,7 @@ class GitHubServiceParser implements ServiceParser {
 ### Event Parsing
 
 ```typescript
-async parse(payload: string, headers: Record<string, string>): Promise<InboundEvent | null> {
+async parse(payload: string, headers: Record<string, string>): Promise<SystemEvent | null> {
   const body = JSON.parse(payload);
   const githubEvent = headers['x-github-event'];
 
@@ -454,29 +438,22 @@ async parse(payload: string, headers: Record<string, string>): Promise<InboundEv
   }
 }
 
-private parseWorkflowRun(body: unknown): InboundEvent {
+private parseWorkflowRun(body: unknown): SystemEvent {
   const conclusion = body.workflow_run.conclusion;
   return {
     type: conclusion === 'success' ? 'ci:completed' : 'ci:failed',
-    source: 'GitHub',
-    metadata: {
-      repositoryName: body.repository.full_name,
-      branch: body.workflow_run.head_branch,
-      url: body.workflow_run.html_url,
-    },
+    source: 'github',
+    timestamp: new Date().toISOString(),
     payload: body,
     summary: `${body.workflow_run.name} ${conclusion}`,
   };
 }
 
-private parseIssueClosed(body: unknown): InboundEvent {
+private parseIssueClosed(body: unknown): SystemEvent {
   return {
     type: 'issue:closed',
-    source: 'GitHub',
-    metadata: {
-      repositoryName: body.repository.full_name,
-      url: body.issue.html_url,
-    },
+    source: 'github',
+    timestamp: new Date().toISOString(),
     payload: body,
     summary: `Issue #${body.issue.number} closed: ${body.issue.title}`,
   };
@@ -545,9 +522,9 @@ Handlers that perform session-level actions:
 ```typescript
 class SessionActionHandler implements InboundEventHandler {
   readonly handlerId = 'session-action';
-  readonly supportedEvents = ['issue:closed', 'pr:merged'];
+  readonly supportedEvents: SystemEventType[] = ['issue:closed', 'pr:merged'];
 
-  async handle(event: InboundEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     // Example: Show dialog suggesting to close session
     if (event.type === 'issue:closed' || event.type === 'pr:merged') {
       this.appWebSocket.broadcast({
@@ -584,5 +561,6 @@ Always returns 200 OK:
 
 ## Related Documents
 
+- [System Events](./system-events.md) - Event format and type definitions
 - [Outbound Integration](./integration-outbound.md) - Sending notifications to external systems
 - [Local Job Queue](./local-job-queue-design.md) - Async job processing infrastructure

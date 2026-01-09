@@ -2,6 +2,8 @@
 
 This document describes the design for sending notifications from Agent Console to external systems when Claude Code's state changes.
 
+> **Prerequisite**: See [System Events](./system-events.md) for event format and type definitions.
+
 ## Overview
 
 Outbound integration allows Agent Console to notify users through external systems (e.g., Slack) when Claude Code requires attention.
@@ -41,13 +43,15 @@ User clicks URL to access Agent Console
 
 ### Trigger Events
 
-| Event | Description | Default Notify |
-|-------|-------------|----------------|
-| `activity:waiting` | Claude is asking a question | Yes |
-| `activity:idle` | Claude finished processing | Yes |
-| `activity:active` | Claude started processing | No |
+Outbound notifications are triggered by internal events (defined in [System Events](./system-events.md)):
+
+| Event Type | Description | Default Notify |
+|------------|-------------|----------------|
+| `agent:waiting` | Claude is asking a question | Yes |
+| `agent:idle` | Claude finished processing | Yes |
+| `agent:active` | Claude started processing | No |
 | `worker:error` | Worker encountered an error | Yes |
-| `worker:exit` | Worker process exited | Optional |
+| `worker:exited` | Worker process exited | Optional |
 
 ### Flow
 
@@ -87,13 +91,18 @@ class NotificationManager {
 
 ### Service Handler Interface
 
+Handlers receive `SystemEvent` (defined in [System Events](./system-events.md)) and send formatted notifications.
+
 ```typescript
 interface OutboundServiceHandler {
   /** Service identifier (e.g., 'slack', 'discord') */
   readonly serviceId: string;
 
+  /** Event types this handler supports */
+  readonly supportedEvents: SystemEventType[];
+
   /** Send notification to the service */
-  send(context: NotificationContext): Promise<void>;
+  send(event: SystemEvent, context: NotificationContext): Promise<void>;
 
   /** Validate service-specific configuration */
   validateConfig(config: unknown): boolean;
@@ -102,14 +111,8 @@ interface OutboundServiceHandler {
 interface NotificationContext {
   session: Session;
   worker: Worker;
-  event: NotificationEvent;
   agentConsoleUrl: string;
 }
-
-type NotificationEvent =
-  | { type: 'activity_change'; activityState: AgentActivityState; timestamp: Date }
-  | { type: 'worker_error'; message: string; timestamp: Date }
-  | { type: 'worker_exit'; exitCode: number; timestamp: Date };
 ```
 
 ### Notification Rules
@@ -453,6 +456,6 @@ This would require:
 
 ## Related Documents
 
+- [System Events](./system-events.md) - Event format and type definitions
 - [Inbound Integration](./integration-inbound.md) - Receiving events from external systems
-- [Session & Worker Design](./session-worker-design.md) - Session/Worker architecture
 - [WebSocket Protocol](./websocket-protocol.md) - Activity state synchronization
