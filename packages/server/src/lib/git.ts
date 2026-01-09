@@ -44,19 +44,21 @@ function createTimeoutPromise(timeoutMs: number, command: string): { promise: Pr
 }
 
 /**
- * Execute a git command asynchronously with timeout protection.
+ * Internal implementation of git command execution.
  *
  * @param args - Git command arguments (without 'git' prefix)
  * @param cwd - Working directory for the command
- * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
- * @returns The stdout output trimmed
+ * @param timeoutMs - Timeout in milliseconds
+ * @param trimOutput - How to trim the output: 'full' trims both ends, 'start' only trims leading whitespace
+ * @returns The stdout output
  * @throws GitError if the command fails or times out
- *
- * @example
- * const branch = await git(['branch', '--show-current'], repoPath);
- * const remoteUrl = await git(['remote', 'get-url', 'origin'], repoPath);
  */
-export async function git(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
+async function gitExec(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  trimOutput: 'full' | 'start'
+): Promise<string> {
   const proc = Bun.spawn(['git', ...args], {
     cwd,
     stdout: 'pipe',
@@ -79,7 +81,7 @@ export async function git(args: string[], cwd: string, timeoutMs: number = DEFAU
     }
 
     const stdout = await new Response(proc.stdout).text();
-    return stdout.trim();
+    return trimOutput === 'full' ? stdout.trim() : stdout.trimStart();
   } catch (error) {
     // If timeout occurred, kill the process
     if (error instanceof GitError && error.stderr === 'Timeout') {
@@ -93,6 +95,41 @@ export async function git(args: string[], cwd: string, timeoutMs: number = DEFAU
   } finally {
     cleanupTimeout();
   }
+}
+
+/**
+ * Execute a git command asynchronously with timeout protection.
+ *
+ * @param args - Git command arguments (without 'git' prefix)
+ * @param cwd - Working directory for the command
+ * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
+ * @returns The stdout output trimmed
+ * @throws GitError if the command fails or times out
+ *
+ * @example
+ * const branch = await git(['branch', '--show-current'], repoPath);
+ * const remoteUrl = await git(['remote', 'get-url', 'origin'], repoPath);
+ */
+export async function git(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
+  return gitExec(args, cwd, timeoutMs, 'full');
+}
+
+/**
+ * Execute a git command asynchronously, preserving trailing whitespace.
+ * Use this for commands where trailing newlines are significant (e.g., diff output).
+ *
+ * @param args - Git command arguments (without 'git' prefix)
+ * @param cwd - Working directory for the command
+ * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
+ * @returns The stdout output with only leading whitespace trimmed
+ * @throws GitError if the command fails or times out
+ *
+ * @example
+ * // Use for diff commands where trailing newlines matter for parsing
+ * const diff = await gitRaw(['diff', baseRef], repoPath);
+ */
+export async function gitRaw(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
+  return gitExec(args, cwd, timeoutMs, 'start');
 }
 
 /**
@@ -307,10 +344,10 @@ export async function getMergeBaseSafe(ref1: string, ref2: string, cwd: string):
  */
 export async function getDiff(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
   if (targetRef) {
-    return git(['diff', baseRef, targetRef], cwd);
+    return gitRaw(['diff', baseRef, targetRef], cwd);
   } else {
     // Diff from baseRef to working directory (staged + unstaged)
-    return git(['diff', baseRef], cwd);
+    return gitRaw(['diff', baseRef], cwd);
   }
 }
 
@@ -326,9 +363,9 @@ export async function getDiff(baseRef: string, targetRef: string | undefined, cw
  */
 export async function getDiffNumstat(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
   if (targetRef) {
-    return git(['diff', '--numstat', baseRef, targetRef], cwd);
+    return gitRaw(['diff', '--numstat', baseRef, targetRef], cwd);
   } else {
-    return git(['diff', '--numstat', baseRef], cwd);
+    return gitRaw(['diff', '--numstat', baseRef], cwd);
   }
 }
 

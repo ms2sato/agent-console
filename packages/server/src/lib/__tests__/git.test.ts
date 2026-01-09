@@ -241,4 +241,191 @@ describe('git remote operations', () => {
       expect(error.stderr).toBe('stderr content');
     });
   });
+
+  describe('git function', () => {
+    it('should trim both leading and trailing whitespace', async () => {
+      setMockSpawnResult('  output with spaces  \n');
+      const { git } = await getGitModule();
+
+      const result = await git(['status'], '/repo');
+
+      expect(result).toBe('output with spaces');
+    });
+
+    it('should trim trailing newlines', async () => {
+      setMockSpawnResult('branch-name\n');
+      const { git } = await getGitModule();
+
+      const result = await git(['branch', '--show-current'], '/repo');
+
+      expect(result).toBe('branch-name');
+    });
+  });
+
+  describe('gitRaw function', () => {
+    it('should preserve trailing whitespace', async () => {
+      // Simulate diff output with trailing newline
+      const diffOutput = 'diff --git a/file.txt b/file.txt\n@@ -1,3 +1,3 @@\n line1\n line2\n line3\n';
+      setMockSpawnResult(diffOutput);
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      expect(result).toBe(diffOutput);
+      expect(result.endsWith('\n')).toBe(true);
+    });
+
+    it('should trim only leading whitespace', async () => {
+      setMockSpawnResult('  output with trailing space  \n');
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      expect(result).toBe('output with trailing space  \n');
+    });
+
+    it('should preserve multiple trailing newlines', async () => {
+      const output = 'content\n\n';
+      setMockSpawnResult(output);
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      expect(result).toBe(output);
+    });
+
+    it('should return empty string for empty diff output', async () => {
+      setMockSpawnResult('');
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD'], '/repo');
+
+      expect(result).toBe('');
+    });
+
+    it('should preserve output without trailing newline as-is', async () => {
+      // Some edge cases may produce output without trailing newline
+      const output = 'no trailing newline';
+      setMockSpawnResult(output);
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      expect(result).toBe(output);
+      expect(result.endsWith('\n')).toBe(false);
+    });
+
+    it('should preserve whitespace-only changes within diff content', async () => {
+      // Diff showing whitespace-only changes (spaces added at end of lines)
+      const diffOutput = 'diff --git a/file.txt b/file.txt\n@@ -1,2 +1,2 @@\n-line with no trailing space\n+line with trailing space   \n';
+      setMockSpawnResult(diffOutput);
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      expect(result).toBe(diffOutput);
+      // Verify the trailing spaces in the changed line are preserved
+      expect(result).toContain('+line with trailing space   \n');
+    });
+
+    it('should throw GitError on command failure', async () => {
+      setMockSpawnResult('', 128, 'fatal: bad revision');
+      const { gitRaw, GitError } = await getGitModule();
+
+      await expect(gitRaw(['diff', 'nonexistent-ref'], '/repo')).rejects.toBeInstanceOf(GitError);
+    });
+
+    // Bug reproduction test: This test demonstrates the actual bug scenario
+    // where using .trim() would fail but .trimStart() works correctly.
+    // The unified diff format requires trailing newlines for proper parsing -
+    // line count in hunk headers like "@@ -1,5 +1,6 @@" must match actual lines.
+    it('should preserve trailing newline in realistic unified diff (bug reproduction)', async () => {
+      // Realistic unified diff output from git
+      // The hunk header "@@ -1,5 +1,6 @@" means:
+      // - Starting at line 1, show 5 lines in old version
+      // - Starting at line 1, show 6 lines in new version
+      // The parser relies on counting lines, and trailing newline is part of the format
+      const realisticDiff = `diff --git a/src/lib/git.ts b/src/lib/git.ts
+index abc1234..def5678 100644
+--- a/src/lib/git.ts
++++ b/src/lib/git.ts
+@@ -1,5 +1,6 @@
+ /**
+  * Git utilities using Bun.spawn
++ * Now with improved diff handling
+  */
+
+ export class GitError extends Error {
+`;
+      setMockSpawnResult(realisticDiff);
+      const { gitRaw } = await getGitModule();
+
+      const result = await gitRaw(['diff', 'HEAD~1'], '/repo');
+
+      // The exact output must be preserved including trailing newline
+      expect(result).toBe(realisticDiff);
+      expect(result.endsWith('\n')).toBe(true);
+
+      // Verify line count matches what hunk header claims
+      // The hunk header "@@ -1,5 +1,6 @@" indicates 6 lines in the new version
+      // Hunk content lines (after header): context, context, added, context, blank, context = 6 lines
+      // Split includes trailing empty string from final newline, so we need to account for that
+      const allLines = result.split('\n');
+      const hunkStartIndex = 5; // Lines 0-4 are: diff, index, ---, +++, @@
+      // The hunk content starts at index 5 and goes until the trailing empty string
+      // For +1,6 we expect 6 lines in the hunk content
+      const hunkLines = allLines.slice(hunkStartIndex, allLines.length - 1); // Exclude trailing empty from split
+      expect(hunkLines.length).toBe(6);
+    });
+  });
+
+  describe('getDiff', () => {
+    it('should use gitRaw and preserve trailing newlines', async () => {
+      const diffOutput = 'diff --git a/file.txt b/file.txt\nindex abc..def\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,3 @@\n line1\n line2\n+line3\n';
+      setMockSpawnResult(diffOutput);
+      const { getDiff } = await getGitModule();
+
+      const result = await getDiff('HEAD~1', undefined, '/repo');
+
+      expect(result).toBe(diffOutput);
+      expect(result.endsWith('\n')).toBe(true);
+      expect(spawnCalls[0].args).toEqual(['git', 'diff', 'HEAD~1']);
+    });
+
+    it('should handle diff between two refs', async () => {
+      const diffOutput = 'diff --git a/file.txt b/file.txt\n';
+      setMockSpawnResult(diffOutput);
+      const { getDiff } = await getGitModule();
+
+      const result = await getDiff('abc123', 'def456', '/repo');
+
+      expect(result).toBe(diffOutput);
+      expect(spawnCalls[0].args).toEqual(['git', 'diff', 'abc123', 'def456']);
+    });
+  });
+
+  describe('getDiffNumstat', () => {
+    it('should use gitRaw and preserve trailing newlines', async () => {
+      const numstatOutput = '10\t5\tfile.txt\n3\t0\tREADME.md\n';
+      setMockSpawnResult(numstatOutput);
+      const { getDiffNumstat } = await getGitModule();
+
+      const result = await getDiffNumstat('HEAD~1', undefined, '/repo');
+
+      expect(result).toBe(numstatOutput);
+      expect(result.endsWith('\n')).toBe(true);
+      expect(spawnCalls[0].args).toEqual(['git', 'diff', '--numstat', 'HEAD~1']);
+    });
+
+    it('should handle numstat between two refs', async () => {
+      const numstatOutput = '1\t1\tfile.txt\n';
+      setMockSpawnResult(numstatOutput);
+      const { getDiffNumstat } = await getGitModule();
+
+      const result = await getDiffNumstat('abc123', 'def456', '/repo');
+
+      expect(result).toBe(numstatOutput);
+      expect(spawnCalls[0].args).toEqual(['git', 'diff', '--numstat', 'abc123', 'def456']);
+    });
+  });
 });

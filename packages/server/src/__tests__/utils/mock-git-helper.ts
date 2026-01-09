@@ -32,6 +32,7 @@ type AsyncVoidFn = (...args: unknown[]) => Promise<void>;
 export const mockGit = {
   // Low-level
   git: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
+  gitRaw: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   gitSafe: mock(() => Promise.resolve(null)) as Mock<AsyncStringNullFn>,
   gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string) => Promise<boolean>>,
 
@@ -91,6 +92,7 @@ mock.module('../../lib/git.js', () => ({
  */
 export function resetGitMocks(): void {
   mockGit.git.mockReset();
+  mockGit.gitRaw.mockReset();
   mockGit.gitSafe.mockReset();
   mockGit.gitRefExists.mockReset();
   mockGit.getCurrentBranch.mockReset();
@@ -121,6 +123,7 @@ export function resetGitMocks(): void {
 
   // Set default implementations
   mockGit.git.mockImplementation(() => Promise.resolve(''));
+  mockGit.gitRaw.mockImplementation(() => Promise.resolve(''));
   mockGit.gitSafe.mockImplementation(() => Promise.resolve(null));
   mockGit.gitRefExists.mockImplementation(() => Promise.resolve(false));
   mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
