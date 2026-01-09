@@ -73,6 +73,34 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     setShowScrollButton(!atBottom);
   }, []);
 
+  /**
+   * Save terminal state to IndexedDB cache.
+   * This is called after history is written to keep the cache fresh.
+   * Follows the same error handling pattern as the cleanup function.
+   */
+  const saveCurrentTerminalState = useCallback(() => {
+    const terminal = terminalRef.current;
+    const serializeAddon = serializeAddonRef.current;
+    if (!terminal || !serializeAddon) {
+      return;
+    }
+
+    try {
+      const serializedData = serializeAddon.serialize();
+      const currentServerId = getServerId();
+      saveTerminalState(sessionId, workerId, {
+        data: serializedData,
+        savedAt: Date.now(),
+        cols: terminal.cols,
+        rows: terminal.rows,
+        offset: offsetRef.current,
+        serverId: currentServerId,
+      }).catch((e) => console.warn('[Terminal] Failed to save terminal state after history:', e));
+    } catch (e) {
+      console.warn('[Terminal] Failed to serialize terminal state after history:', e);
+    }
+  }, [sessionId, workerId]);
+
   const handleScrollToBottom = useCallback(() => {
     terminalRef.current?.scrollToBottom();
     setShowScrollButton(false);
@@ -103,7 +131,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         if (data) {
           terminal.write(data, () => {
             updateScrollButtonVisibility();
+            saveCurrentTerminalState();
           });
+        } else {
+          // No diff data, but cache was restored - save state to update offset
+          saveCurrentTerminalState();
         }
       } else if (!stateRef.current.restoredFromCache) {
         // No cache - write full history (explicit check for safety)
@@ -111,8 +143,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           writeFullHistory(terminal, data)
             .then(() => {
               updateScrollButtonVisibility();
+              saveCurrentTerminalState();
             })
             .catch((e) => console.error('[Terminal] Failed to write history:', e));
+        } else {
+          // No data and no cache - save empty state
+          saveCurrentTerminalState();
         }
       }
       return;
@@ -141,9 +177,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     writeFullHistory(terminal, data)
       .then(() => {
         updateScrollButtonVisibility();
+        saveCurrentTerminalState();
       })
       .catch((e) => console.error('[Terminal] Failed to write history:', e));
-  }, [updateScrollButtonVisibility]);
+  }, [updateScrollButtonVisibility, saveCurrentTerminalState]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
