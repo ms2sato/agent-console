@@ -6,7 +6,7 @@ import { SessionSettings } from '../../components/SessionSettings';
 import { QuickSessionSettings } from '../../components/QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
-import { DiffIcon, ChevronRightIcon } from '../../components/Icons';
+import { DiffIcon } from '../../components/Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
@@ -165,13 +165,6 @@ function TerminalPage() {
   const [branchName, setBranchName] = useState<string>('');
   // Local session title state (can be updated by settings dialog)
   const [sessionTitle, setSessionTitle] = useState<string>('');
-
-  // Get repository name directly from session (for worktree sessions)
-  const repositoryName =
-    (state.type === 'active' || state.type === 'disconnected') &&
-    state.session.type === 'worktree'
-      ? state.session.repositoryName
-      : undefined;
 
   // Sync branch name and title when state changes
   useEffect(() => {
@@ -509,9 +502,9 @@ function TerminalPage() {
           setActiveTabId(tab.id);
         });
       }}
-      className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-700 hover:bg-slate-800 ${
+      className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-600 hover:bg-slate-700 ${
         tab.id === activeTabId
-          ? 'bg-slate-800 text-white'
+          ? 'bg-slate-700 text-white'
           : 'text-gray-400'
       }`}
     >
@@ -574,38 +567,13 @@ function TerminalPage() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Header with tabs */}
-      <div className="bg-slate-900 border-b border-slate-700 flex items-center shrink-0">
-        {/* Breadcrumb navigation */}
-        <div className="flex items-center border-r border-slate-700">
-          <Link
-            to="/"
-            className="px-4 py-2 text-white font-bold text-sm hover:bg-slate-800 no-underline"
-          >
-            Agent Console
-          </Link>
-          {/* Repository name (for worktree sessions) */}
-          {repositoryName && (
-            <>
-              <ChevronRightIcon className="w-4 h-4 text-slate-500" />
-              <span className="px-2 py-2 text-slate-300 text-sm">{repositoryName}</span>
-            </>
-          )}
-          {/* Session title (if set) */}
-          {sessionTitle && (
-            <>
-              <ChevronRightIcon className="w-4 h-4 text-slate-500" />
-              <div className="px-2 py-2 text-slate-100 text-sm font-medium truncate max-w-[200px]" title={sessionTitle}>
-                {sessionTitle}
-              </div>
-            </>
-          )}
-        </div>
-        {/* Tabs */}
+      {/* Tab bar with worker tabs */}
+      <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
+        {/* Worker tabs */}
         {tabButtons}
         <button
           onClick={addTerminalTab}
-          className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-800"
+          className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
           title="Add shell tab"
         >
           +

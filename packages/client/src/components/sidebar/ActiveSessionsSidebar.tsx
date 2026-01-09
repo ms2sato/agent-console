@@ -1,13 +1,21 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
+import { useRef, useCallback, useEffect, useState } from 'react';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronLeftIcon, ChevronRightIcon } from '../Icons';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
+import {
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_COLLAPSED_WIDTH,
+} from '../../hooks/useSidebarState';
 
 interface ActiveSessionsSidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   sessions: SessionWithActivity[];
+  width: number;
+  onWidthChange: (width: number) => void;
 }
 
 /**
@@ -98,9 +106,23 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   );
 }
 
-export function ActiveSessionsSidebar({ collapsed, onToggle, sessions }: ActiveSessionsSidebarProps) {
+export function ActiveSessionsSidebar({
+  collapsed,
+  onToggle,
+  sessions,
+  width,
+  onWidthChange,
+}: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [isResizing, setIsResizing] = useState(false);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const currentWidthRef = useRef(width);
+
+  // Keep ref in sync with prop
+  useEffect(() => {
+    currentWidthRef.current = width;
+  }, [width]);
 
   // Extract current session ID from path if on session page
   const currentSessionId = location.pathname.startsWith('/sessions/')
@@ -111,11 +133,56 @@ export function ActiveSessionsSidebar({ collapsed, onToggle, sessions }: ActiveS
     navigate({ to: '/sessions/$sessionId', params: { sessionId } });
   };
 
+  const handleResizeMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (collapsed) return;
+
+      e.preventDefault();
+      setIsResizing(true);
+      const startX = e.clientX;
+      const startWidth = currentWidthRef.current;
+
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        const delta = moveEvent.clientX - startX;
+        const newWidth = Math.max(
+          SIDEBAR_MIN_WIDTH,
+          Math.min(SIDEBAR_MAX_WIDTH, startWidth + delta)
+        );
+        // Update DOM directly, no React state update
+        currentWidthRef.current = newWidth;
+        if (sidebarRef.current) {
+          sidebarRef.current.style.width = `${newWidth}px`;
+        }
+      };
+
+      const handleMouseUp = () => {
+        setIsResizing(false);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        // Now persist the final width to React state and localStorage
+        onWidthChange(currentWidthRef.current);
+      };
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [collapsed, onWidthChange]
+  );
+
+  // Calculate the actual width to use
+  const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : width;
+
   return (
     <aside
-      className={`bg-slate-900 border-r border-slate-700 flex flex-col shrink-0 transition-all duration-200 ${
-        collapsed ? 'w-12' : 'w-56'
+      ref={sidebarRef}
+      className={`bg-slate-900 border-r border-slate-700 flex flex-col shrink-0 relative ${
+        isResizing ? '' : 'transition-all duration-200'
       }`}
+      style={{ width: sidebarWidth }}
     >
       {/* Header */}
       <div
@@ -159,6 +226,15 @@ export function ActiveSessionsSidebar({ collapsed, onToggle, sessions }: ActiveS
           ))
         )}
       </div>
+
+      {/* Resize handle - only shown when expanded */}
+      {!collapsed && (
+        <div
+          className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors"
+          onMouseDown={handleResizeMouseDown}
+          title="Drag to resize"
+        />
+      )}
     </aside>
   );
 }

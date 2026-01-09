@@ -1,22 +1,30 @@
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { validateSessions } from '../lib/api';
-import { WarningIcon } from '../components/Icons';
+import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
 import { useAppWsState, useAppWsEvent } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
 import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
+import type { Session } from '@agent-console/shared';
 
 export const Route = createRootRoute({
   component: RootLayout,
 });
 
+// Extract sessionId from URL path
+function extractSessionId(pathname: string): string | null {
+  const match = pathname.match(/^\/sessions\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
 function RootLayout() {
   const location = useLocation();
   const connected = useAppWsState((s) => s.connected);
   const isSessionPage = location.pathname.startsWith('/sessions/');
+  const currentSessionId = isSessionPage ? extractSessionId(location.pathname) : null;
 
   // Session state management for sidebar
   const {
@@ -39,26 +47,13 @@ function RootLayout() {
   });
 
   // Sidebar state
-  const { collapsed, toggle } = useSidebarState();
+  const { collapsed, toggle, width, setWidth } = useSidebarState();
   const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
 
-  // Session pages have their own header with tabs, but still show sidebar
-  if (isSessionPage) {
-    return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <ActiveSessionsSidebar
-            collapsed={collapsed}
-            onToggle={toggle}
-            sessions={activeSessions}
-          />
-          <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <Outlet />
-          </main>
-        </div>
-      </div>
-    );
-  }
+  // Find current session for breadcrumb display
+  const currentSession: Session | undefined = currentSessionId
+    ? sessions.find(s => s.id === currentSessionId)
+    : undefined;
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -70,7 +65,7 @@ function RootLayout() {
         alignItems: 'center',
         flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Link
             to="/"
             style={{
@@ -82,6 +77,26 @@ function RootLayout() {
           >
             Agent Console
           </Link>
+          {isSessionPage && currentSession && (
+            <>
+              {currentSession.type === 'worktree' && (
+                <>
+                  <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                  <span style={{ color: '#94a3b8', fontSize: '0.8125rem' }}>
+                    {currentSession.repositoryName}
+                  </span>
+                </>
+              )}
+              {currentSession.title && (
+                <>
+                  <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                  <span style={{ color: '#e2e8f0', fontSize: '0.8125rem' }}>
+                    {currentSession.title}
+                  </span>
+                </>
+              )}
+            </>
+          )}
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
           <ValidationWarningIndicator />
@@ -96,8 +111,16 @@ function RootLayout() {
           collapsed={collapsed}
           onToggle={toggle}
           sessions={activeSessions}
+          width={width}
+          onWidthChange={setWidth}
         />
-        <main style={{ flex: 1, overflow: 'auto' }}>
+        <main style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          overflow: isSessionPage ? 'hidden' : 'auto',
+        }}>
           <Outlet />
         </main>
       </div>
