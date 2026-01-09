@@ -3,7 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { validateSessions } from '../lib/api';
 import { WarningIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
-import { useAppWsState } from '../hooks/useAppWs';
+import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
+import { useAppWsState, useAppWsEvent } from '../hooks/useAppWs';
+import { useSessionState } from '../hooks/useSessionState';
+import { useSidebarState } from '../hooks/useSidebarState';
+import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -14,13 +18,44 @@ function RootLayout() {
   const connected = useAppWsState((s) => s.connected);
   const isSessionPage = location.pathname.startsWith('/sessions/');
 
-  // Session pages have their own header with tabs
+  // Session state management for sidebar
+  const {
+    sessions,
+    workerActivityStates,
+    handleSessionsSync,
+    handleSessionCreated,
+    handleSessionUpdated,
+    handleSessionDeleted,
+    handleWorkerActivity,
+  } = useSessionState();
+
+  // Subscribe to app WebSocket events for real-time session updates
+  useAppWsEvent({
+    onSessionsSync: handleSessionsSync,
+    onSessionCreated: handleSessionCreated,
+    onSessionUpdated: handleSessionUpdated,
+    onSessionDeleted: handleSessionDeleted,
+    onWorkerActivity: handleWorkerActivity,
+  });
+
+  // Sidebar state
+  const { collapsed, toggle } = useSidebarState();
+  const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
+
+  // Session pages have their own header with tabs, but still show sidebar
   if (isSessionPage) {
     return (
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <Outlet />
-        </main>
+        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+          <ActiveSessionsSidebar
+            collapsed={collapsed}
+            onToggle={toggle}
+            sessions={activeSessions}
+          />
+          <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <Outlet />
+          </main>
+        </div>
       </div>
     );
   }
@@ -56,9 +91,16 @@ function RootLayout() {
         </div>
       </header>
       <ConnectionBanner connected={connected} />
-      <main style={{ flex: 1, overflow: 'auto' }}>
-        <Outlet />
-      </main>
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+        <ActiveSessionsSidebar
+          collapsed={collapsed}
+          onToggle={toggle}
+          sessions={activeSessions}
+        />
+        <main style={{ flex: 1, overflow: 'auto' }}>
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

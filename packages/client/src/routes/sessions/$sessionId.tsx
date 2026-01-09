@@ -266,6 +266,13 @@ function TerminalPage() {
     };
   }, [activityState]);
 
+  // Reset state and tabs when sessionId changes (navigating to different session)
+  useEffect(() => {
+    setState({ type: 'loading' });
+    setTabs([]);
+    setActiveTabId(null);
+  }, [sessionId]);
+
   // Initialize tabs when state becomes active
   useEffect(() => {
     if (state.type === 'active' && tabs.length === 0) {
