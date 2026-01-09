@@ -172,6 +172,79 @@ describe('GitDiffService', () => {
       expect(file).toBeDefined();
       expect(file?.isBinary).toBe(true);
     });
+
+    it('should handle quoted filenames with spaces', async () => {
+      // Git quotes filenames containing spaces or special characters
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('5\t0\tfile with spaces.ts');
+      mockGit.getStatusPorcelain.mockResolvedValue(' M "file with spaces.ts"');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      const file = result.summary.files.find(f => f.path === 'file with spaces.ts');
+      expect(file).toBeDefined();
+      expect(file?.stageState).toBe('unstaged');
+    });
+
+    it('should handle renamed files without quotes', async () => {
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tnew-name.ts');
+      mockGit.getStatusPorcelain.mockResolvedValue('R  old-name.ts -> new-name.ts');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      const file = result.summary.files.find(f => f.path === 'new-name.ts');
+      expect(file).toBeDefined();
+      expect(file?.status).toBe('renamed');
+      expect(file?.oldPath).toBe('old-name.ts');
+    });
+
+    it('should handle renamed files with quoted names', async () => {
+      // Both old and new names are quoted when they contain special characters
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tnew file.ts');
+      mockGit.getStatusPorcelain.mockResolvedValue('R  "old file.ts" -> "new file.ts"');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      const file = result.summary.files.find(f => f.path === 'new file.ts');
+      expect(file).toBeDefined();
+      expect(file?.status).toBe('renamed');
+      expect(file?.oldPath).toBe('old file.ts');
+    });
+
+    it('should handle renamed files with mixed quoting', async () => {
+      // Only one name is quoted (e.g., adding spaces to a previously simple filename)
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tfile with spaces.ts');
+      mockGit.getStatusPorcelain.mockResolvedValue('R  simple.ts -> "file with spaces.ts"');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      const file = result.summary.files.find(f => f.path === 'file with spaces.ts');
+      expect(file).toBeDefined();
+      expect(file?.status).toBe('renamed');
+      expect(file?.oldPath).toBe('simple.ts');
+    });
+
+    it('should skip malformed status lines gracefully', async () => {
+      // Lines that don't match expected format should be skipped
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('5\t0\tvalid-file.ts');
+      // First line is valid, second is malformed (only one character)
+      mockGit.getStatusPorcelain.mockResolvedValue(' M valid-file.ts\nX');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getDiffData('/repo/path', 'base-commit');
+
+      // Should still process the valid file
+      expect(result.summary.files).toHaveLength(1);
+      expect(result.summary.files[0].path).toBe('valid-file.ts');
+    });
   });
 
   // Note: File Watching tests require real file system and are tested separately.

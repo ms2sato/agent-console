@@ -73,30 +73,90 @@ export async function resolveRef(ref: string, repoPath: string): Promise<string 
 }
 
 /**
+ * Remove surrounding quotes from a git filename if present.
+ * Git quotes filenames containing special characters (spaces, non-ASCII, etc.)
+ *
+ * @param filename - The filename potentially wrapped in quotes
+ * @returns The unquoted filename
+ */
+function unquoteFilename(filename: string): string {
+  if (filename.startsWith('"') && filename.endsWith('"')) {
+    return filename.slice(1, -1);
+  }
+  return filename;
+}
+
+/**
+ * Parse the filename portion of a git status line, handling renames and quotes.
+ *
+ * Formats:
+ * - Simple: "filename"
+ * - Quoted: '"filename with spaces"'
+ * - Rename: "old -> new" or '"old" -> "new"' or '"old" -> new' etc.
+ *
+ * @param filenamePart - The filename portion after "XY "
+ * @returns Object with filename and optional oldPath for renames
+ */
+function parseFilenameWithRename(filenamePart: string): { filename: string; oldPath?: string } {
+  // Check for rename pattern: " -> " separator
+  // Handle various quote combinations:
+  // - old -> new
+  // - "old" -> "new"
+  // - "old with space" -> new
+  // - old -> "new with space"
+
+  // Use regex to find " -> " that's not inside quotes
+  // Pattern: look for " -> " but need to handle quotes properly
+  const renameMatch = filenamePart.match(/^(.+?) -> (.+)$/);
+
+  if (renameMatch) {
+    const oldPart = renameMatch[1];
+    const newPart = renameMatch[2];
+    return {
+      filename: unquoteFilename(newPart),
+      oldPath: unquoteFilename(oldPart),
+    };
+  }
+
+  return {
+    filename: unquoteFilename(filenamePart),
+  };
+}
+
+/**
  * Parse git status porcelain output to understand staged/unstaged state.
  *
- * Format: XY filename
+ * Format: XY filename  or  XY "filename"
  * Where X is the staged status and Y is the unstaged status.
  * ' ' = unmodified, M = modified, A = added, D = deleted, R = renamed, C = copied, U = unmerged
  * ? = untracked, ! = ignored
+ *
+ * Git uses quotes around filenames containing special characters (spaces, non-ASCII, etc.)
+ * Renames are shown as: R  old -> new  or  R  "old" -> "new"
  */
 function parseStatusPorcelain(statusOutput: string): Map<string, FileStatusInfo> {
   const fileMap = new Map<string, FileStatusInfo>();
 
+  // Regex pattern: ^XY filename$
+  // X and Y are single characters, followed by a space, then the filename
+  const linePattern = /^(.)(.) (.+)$/;
+
   for (const line of statusOutput.split('\n')) {
     if (!line) continue;
 
-    const indexStatus = line[0]; // Staged status
-    const worktreeStatus = line[1]; // Unstaged status
-    let filename = line.slice(3); // Rest is filename
-
-    // Handle renamed files (format: "R  old -> new")
-    let oldPath: string | undefined;
-    if (filename.includes(' -> ')) {
-      const parts = filename.split(' -> ');
-      oldPath = parts[0];
-      filename = parts[1];
+    const match = line.match(linePattern);
+    if (!match) {
+      // Log unexpected format for debugging
+      logger.warn({ line }, 'Failed to parse git status porcelain line');
+      continue;
     }
+
+    const indexStatus = match[1]; // Staged status (X)
+    const worktreeStatus = match[2]; // Unstaged status (Y)
+    const filenamePart = match[3]; // Rest is filename (possibly quoted, possibly rename)
+
+    // Parse filename, handling quotes and renames
+    const { filename, oldPath } = parseFilenameWithRename(filenamePart);
 
     // Determine status
     let status: GitFileStatus;
