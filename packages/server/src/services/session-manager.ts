@@ -1554,11 +1554,21 @@ export class SessionManager {
       .map(w => this.toPublicWorker(w));
 
     if (session.type === 'worktree') {
+      // Get repository name from RepositoryManager if available
+      let repositoryName = 'Unknown';
+      if (isRepositoryManagerInitialized()) {
+        const repository = getRepositoryManager().getRepository(session.repositoryId);
+        if (repository) {
+          repositoryName = repository.name;
+        }
+      }
+
       return {
         id: session.id,
         type: 'worktree',
         locationPath: session.locationPath,
         repositoryId: session.repositoryId,
+        repositoryName,
         worktreeId: session.worktreeId,
         status: session.status,
         createdAt: session.createdAt,

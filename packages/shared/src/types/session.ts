@@ -46,6 +46,7 @@ export interface SessionBase {
 export interface WorktreeSession extends SessionBase {
   type: 'worktree';
   repositoryId: string;
+  repositoryName: string;    // Human-readable repository name
   worktreeId: string;        // Worktree identifier (branch name)
 }
 

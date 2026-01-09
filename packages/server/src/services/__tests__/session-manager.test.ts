@@ -95,6 +95,8 @@ describe('SessionManager', () => {
       expect(session.locationPath).toBe('/test/path');
       if (session.type === 'worktree') {
         expect(session.repositoryId).toBe('repo-1');
+        // repositoryName is 'Unknown' when RepositoryManager is not initialized
+        expect(session.repositoryName).toBe('Unknown');
         expect(session.worktreeId).toBe('main');
       }
       expect(session.status).toBe('active');
