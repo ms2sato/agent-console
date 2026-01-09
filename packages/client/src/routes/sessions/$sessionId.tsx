@@ -132,7 +132,9 @@ interface WorkerErrorFallbackProps {
 
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
   const typeLabel = workerType === 'git-diff' ? 'Diff View' :
-                    workerType === 'agent' ? 'Agent' : 'Terminal';
+                    workerType === 'agent' ? 'Agent' :
+                    workerType === 'terminal' ? 'Terminal' :
+                    (() => { const _exhaustive: never = workerType; return _exhaustive; })();
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">

@@ -57,8 +57,12 @@ function getActivityLabel(state: AgentActivityState): string {
       return 'Idle';
     case 'active':
       return 'Working';
-    default:
+    case 'unknown':
       return 'Unknown';
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
   }
 }
 
@@ -118,11 +122,20 @@ export function ActiveSessionsSidebar({
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const currentWidthRef = useRef(width);
+  // Keep ref in sync with prop (no useEffect needed for simple ref sync)
+  currentWidthRef.current = width;
 
-  // Keep ref in sync with prop
+  // Store cleanup function for event listeners to handle unmount during resize
+  const cleanupFnRef = useRef<(() => void) | null>(null);
+
+  // Cleanup event listeners on unmount to prevent memory leaks
   useEffect(() => {
-    currentWidthRef.current = width;
-  }, [width]);
+    return () => {
+      if (cleanupFnRef.current) {
+        cleanupFnRef.current();
+      }
+    };
+  }, []);
 
   // Extract current session ID from path if on session page
   const currentSessionId = location.pathname.startsWith('/sessions/')
@@ -155,15 +168,23 @@ export function ActiveSessionsSidebar({
         }
       };
 
-      const handleMouseUp = () => {
-        setIsResizing(false);
+      const cleanup = () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+        cleanupFnRef.current = null;
+      };
+
+      const handleMouseUp = () => {
+        setIsResizing(false);
+        cleanup();
         // Now persist the final width to React state and localStorage
         onWidthChange(currentWidthRef.current);
       };
+
+      // Store cleanup function for potential unmount during resize
+      cleanupFnRef.current = cleanup;
 
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
