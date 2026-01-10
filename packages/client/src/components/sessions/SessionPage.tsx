@@ -1,20 +1,16 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
-import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../../components/Terminal';
-import { GitDiffWorkerView } from '../../components/workers/GitDiffWorkerView';
-import { SessionSettings } from '../../components/SessionSettings';
-import { QuickSessionSettings } from '../../components/QuickSessionSettings';
-import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
-import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
-import { DiffIcon } from '../../components/Icons';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
+import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
+import { SessionSettings } from '../SessionSettings';
+import { QuickSessionSettings } from '../QuickSessionSettings';
+import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
+import { ErrorBoundary } from '../ui/ErrorBoundary';
+import { DiffIcon } from '../Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
-
-export const Route = createFileRoute('/sessions/$sessionId')({
-  component: TerminalPage,
-});
 
 type PageState =
   | { type: 'loading' }
@@ -151,8 +147,13 @@ function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerE
   );
 }
 
-function TerminalPage() {
-  const { sessionId } = Route.useParams();
+export interface SessionPageProps {
+  sessionId: string;
+  workerId?: string;  // Optional - if not provided, will redirect to default worker
+}
+
+export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
+  const navigate = useNavigate();
   const [state, setState] = useState<PageState>({ type: 'loading' });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
@@ -162,6 +163,24 @@ function TerminalPage() {
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  // Navigate to specific worker
+  const navigateToWorker = useCallback((newWorkerId: string, replace: boolean = false) => {
+    navigate({
+      to: '/sessions/$sessionId/$workerId',
+      params: { sessionId, workerId: newWorkerId },
+      replace,
+    });
+  }, [navigate, sessionId]);
+
+  // Navigate to session base (will redirect to default worker)
+  const navigateToSession = useCallback(() => {
+    navigate({
+      to: '/sessions/$sessionId',
+      params: { sessionId },
+      replace: true,
+    });
+  }, [navigate, sessionId]);
 
   // Local branch name state (can be updated by settings dialog)
   const [branchName, setBranchName] = useState<string>('');
@@ -274,11 +293,54 @@ function TerminalPage() {
       const workers = state.session.workers;
       const newTabs = workersToTabs(workers);
       setTabs(newTabs);
-      // Set active tab to first agent worker if exists, otherwise first tab
-      const firstAgent = findFirstAgentWorker(workers);
-      setActiveTabId(firstAgent?.id ?? newTabs[0]?.id ?? null);
+
+      // Determine initial active tab:
+      // 1. If urlWorkerId is valid (exists in workers), use it
+      // 2. Otherwise, redirect to default (first agent or first tab)
+      const urlWorkerExists = urlWorkerId && workers.some(w => w.id === urlWorkerId);
+
+      if (urlWorkerExists) {
+        setActiveTabId(urlWorkerId);
+      } else {
+        // Calculate default tab
+        const defaultTabId = findFirstAgentWorker(workers)?.id ?? newTabs[0]?.id ?? null;
+        setActiveTabId(defaultTabId);
+
+        // Redirect to the default worker URL
+        if (defaultTabId) {
+          navigateToWorker(defaultTabId, true);
+        }
+      }
     }
-  }, [state, tabs.length, sessionId]);
+  }, [state, tabs.length, sessionId, urlWorkerId, navigateToWorker]);
+
+  // Handle URL workerId changes (user navigates directly to URL or uses back/forward)
+  useEffect(() => {
+    // Only handle when tabs are already initialized
+    if (tabs.length === 0 || state.type !== 'active') return;
+
+    const workers = state.session.workers;
+
+    if (urlWorkerId) {
+      // Check if the URL workerId is valid
+      const workerExists = workers.some(w => w.id === urlWorkerId);
+      if (workerExists) {
+        // Valid workerId - sync activeTabId
+        if (activeTabId !== urlWorkerId) {
+          setActiveTabId(urlWorkerId);
+        }
+      } else {
+        // Invalid workerId - redirect to session base
+        navigateToSession();
+      }
+    } else {
+      // No workerId in URL - redirect to default worker
+      const defaultTabId = findFirstAgentWorker(workers)?.id ?? tabs[0]?.id ?? null;
+      if (defaultTabId) {
+        navigateToWorker(defaultTabId, true);
+      }
+    }
+  }, [urlWorkerId, tabs, state, activeTabId, navigateToSession, navigateToWorker]);
 
   // Add a new terminal (shell) tab
   const addTerminalTab = useCallback(async () => {
@@ -297,10 +359,11 @@ function TerminalPage() {
       };
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
+      navigateToWorker(worker.id);
     } catch (error) {
       console.error('Failed to create terminal worker:', error);
     }
-  }, [state, sessionId, tabs]);
+  }, [state, sessionId, tabs, navigateToWorker]);
 
   // Close a tab (delete worker)
   const closeTab = useCallback(async (tabId: string) => {
@@ -313,19 +376,26 @@ function TerminalPage() {
 
     try {
       await deleteWorker(sessionId, tabId);
-      setTabs(prev => {
-        const newTabs = prev.filter(t => t.id !== tabId);
-        // If closing the active tab, switch to first agent or first remaining tab
-        if (activeTabId === tabId) {
-          const firstAgent = newTabs.find(t => t.workerType === 'agent');
-          setActiveTabId(firstAgent?.id ?? newTabs[0]?.id ?? null);
-        }
-        return newTabs;
-      });
+
+      // Calculate new tabs and new active tab
+      const newTabs = tabs.filter(t => t.id !== tabId);
+      let newActiveTabId = activeTabId;
+
+      // If closing the active tab, switch to first agent or first remaining tab
+      if (activeTabId === tabId) {
+        const firstAgent = newTabs.find(t => t.workerType === 'agent');
+        newActiveTabId = firstAgent?.id ?? newTabs[0]?.id ?? null;
+      }
+
+      setTabs(newTabs);
+      if (activeTabId === tabId && newActiveTabId) {
+        setActiveTabId(newActiveTabId);
+        navigateToWorker(newActiveTabId);
+      }
     } catch (error) {
       console.error('Failed to delete worker:', error);
     }
-  }, [sessionId, tabs, activeTabId]);
+  }, [sessionId, tabs, activeTabId, navigateToWorker]);
 
   // Load session data
   useEffect(() => {
@@ -494,16 +564,19 @@ function TerminalPage() {
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
+  const handleTabClick = (tabId: string) => {
+    // Use startTransition to mark this update as non-urgent
+    // This keeps the UI responsive during the state update
+    startTransition(() => {
+      setActiveTabId(tabId);
+      navigateToWorker(tabId);
+    });
+  };
+
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
-      onClick={() => {
-        // Use startTransition to mark this update as non-urgent
-        // This keeps the UI responsive during the state update
-        startTransition(() => {
-          setActiveTabId(tab.id);
-        });
-      }}
+      onClick={() => handleTabClick(tab.id)}
       className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-600 hover:bg-slate-700 ${
         tab.id === activeTabId
           ? 'bg-slate-700 text-white'

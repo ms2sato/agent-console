@@ -5,7 +5,7 @@ import { describe, it, expect } from 'bun:test';
  * These test the core business rules without rendering the full component.
  */
 
-// Extracted logic from $sessionId.tsx
+// Extracted logic from components/sessions/SessionPage.tsx
 type WorkerType = 'agent' | 'terminal' | 'git-diff';
 
 /**
