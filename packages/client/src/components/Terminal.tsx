@@ -8,8 +8,7 @@ import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebS
 import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState, isValidForServer, clearTerminalState } from '../lib/terminal-state-cache.js';
-import { getServerId } from '../lib/server-id.js';
+import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
 
@@ -87,14 +86,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     try {
       const serializedData = serializeAddon.serialize();
-      const currentServerId = getServerId();
       saveTerminalState(sessionId, workerId, {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
-        serverId: currentServerId,
       }).catch((e) => console.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
       console.warn('[Terminal] Failed to serialize terminal state after history:', e);
@@ -280,20 +277,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           return;
         }
 
-        // Validate cache against current server ID
-        // If server has restarted, the cached offset is invalid
-        const currentServerId = getServerId();
-        if (cached && !isValidForServer(cached, currentServerId)) {
-          console.debug('[Terminal] Cache invalid for current server, clearing:', {
-            cachedServerId: cached.serverId,
-            currentServerId,
-            workerId,
-          });
-          // Clear the invalid cache entry
-          await clearTerminalState(sessionId, workerId);
-          cached = null;
-        }
-
         // Use terminalRef.current instead of captured terminal variable
         // to handle React Strict Mode double-mounting
         const currentTerminal = terminalRef.current;
@@ -473,14 +456,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // This enables instant restoration when switching back to this worker
       try {
         const serializedData = serializeAddon.serialize();
-        const currentServerId = getServerId();
         saveTerminalState(sessionId, workerId, {
           data: serializedData,
           savedAt: Date.now(),
           cols: terminal.cols,
           rows: terminal.rows,
           offset: offsetRef.current,
-          serverId: currentServerId,
         }).catch((e) => console.warn('[Terminal] Failed to save terminal state:', e));
       } catch (e) {
         console.warn('[Terminal] Failed to serialize terminal state:', e);

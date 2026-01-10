@@ -17,14 +17,6 @@ export interface CachedState {
   rows: number;
   /** Server-side buffer offset for incremental history requests */
   offset: number;
-  /**
-   * Server instance identifier for cache invalidation on server restart.
-   * When server restarts, the buffer offsets become invalid because the server
-   * loses its in-memory history. By storing the server ID with the cache,
-   * we can detect when the server has restarted and invalidate stale caches.
-   * Optional for backward compatibility with existing cached states.
-   */
-  serverId?: string;
 }
 
 /**
@@ -47,37 +39,8 @@ function isCachedState(value: unknown): value is CachedState {
     typeof obj.savedAt === 'number' &&
     typeof obj.cols === 'number' &&
     typeof obj.rows === 'number' &&
-    typeof obj.offset === 'number' &&
-    // serverId is optional for backward compatibility
-    (obj.serverId === undefined || typeof obj.serverId === 'string')
+    typeof obj.offset === 'number'
   );
-}
-
-/**
- * Check if the cached state is valid for the current server instance.
- * Returns false if the server has restarted (different serverId).
- *
- * @param cachedState - The cached state to validate
- * @param currentServerId - The current server's instance ID (optional)
- * @returns true if the cache is valid for the current server, false otherwise
- */
-export function isValidForServer(
-  cachedState: CachedState,
-  currentServerId: string | undefined
-): boolean {
-  // If current server ID is not provided (feature not enabled), accept all caches
-  if (!currentServerId) {
-    return true;
-  }
-
-  // If cached state has no serverId (old cache format), it's invalid
-  // because we can't verify it's from the current server instance
-  if (!cachedState.serverId) {
-    return false;
-  }
-
-  // Server ID must match
-  return cachedState.serverId === currentServerId;
 }
 
 /**

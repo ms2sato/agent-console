@@ -3,10 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
-import { fetchConfig, fetchServerId } from './lib/api';
+import { fetchConfig } from './lib/api';
 import { setHomeDir } from './lib/path';
-import { setServerId } from './lib/server-id';
-import { clearAllTerminalStates } from './lib/terminal-state-cache';
 import './styles.css';
 
 // Create a new router instance
@@ -121,9 +119,6 @@ function showConnectionError(error: unknown) {
   document.getElementById('retry-button')?.addEventListener('click', initApp);
 }
 
-// Key for storing server ID in localStorage
-const SERVER_ID_STORAGE_KEY = 'agent-console:server-id';
-
 // Initialize app with config from server
 async function initApp() {
   showLoadingIndicator();
@@ -135,25 +130,6 @@ async function initApp() {
     console.error('Failed to fetch config:', e);
     showConnectionError(e);
     return;
-  }
-
-  // Fetch server ID and check for server restart
-  try {
-    const { serverId } = await fetchServerId();
-    setServerId(serverId);
-
-    // Check if server has restarted by comparing with stored server ID
-    const storedServerId = localStorage.getItem(SERVER_ID_STORAGE_KEY);
-    if (storedServerId && storedServerId !== serverId) {
-      // Server has restarted - clear all terminal caches since history buffers are lost
-      console.info('[App] Server restart detected, clearing terminal caches');
-      await clearAllTerminalStates();
-    }
-    localStorage.setItem(SERVER_ID_STORAGE_KEY, serverId);
-  } catch (e) {
-    // Server ID endpoint not available (older server version) - continue without it
-    // Terminal cache validation will be skipped, maintaining backward compatibility
-    console.warn('Server ID endpoint not available, terminal cache validation disabled:', e);
   }
 
   createRoot(rootElement).render(
