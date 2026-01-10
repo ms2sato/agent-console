@@ -56,12 +56,7 @@ export function useWorktreeCreationTasks(): UseWorktreeCreationTasksReturn {
         request: params.request,
         createdAt: new Date().toISOString(),
       };
-      console.log('[useWorktreeCreationTasks] addTask called:', newTask);
-      setTasks((prev) => {
-        const updated = [...prev, newTask];
-        console.log('[useWorktreeCreationTasks] tasks updated:', updated.length, 'tasks');
-        return updated;
-      });
+      setTasks((prev) => [...prev, newTask]);
     },
     []
   );
@@ -79,7 +74,6 @@ export function useWorktreeCreationTasks(): UseWorktreeCreationTasksReturn {
 
   const handleWorktreeCreationCompleted = useCallback(
     (payload: WorktreeCreationCompletedPayload) => {
-      console.log('[useWorktreeCreationTasks] handleWorktreeCreationCompleted:', payload.taskId, 'sessionId:', payload.session?.id);
       // Update task to completed status with session info (keep in sidebar with "New" badge)
       setTasks((prev) =>
         prev.map((t) =>

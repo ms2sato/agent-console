@@ -143,6 +143,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           console.log(`[WebSocket] worktree-creation-failed: taskId=${msg.taskId}`);
           optionsRef.current.onWorktreeCreationFailed?.(msg);
           break;
+        default: {
+          const _exhaustive: never = msg;
+          console.warn('Unknown message type received:', _exhaustive);
+        }
       }
     });
 

@@ -192,7 +192,6 @@ export function ActiveSessionsSidebar({
   creationTasks = [],
   onRemoveTask,
 }: ActiveSessionsSidebarProps) {
-  console.log('[ActiveSessionsSidebar] render with creationTasks:', creationTasks.length);
   const navigate = useNavigate();
   const location = useLocation();
   const [isResizing, setIsResizing] = useState(false);
@@ -228,13 +227,26 @@ export function ActiveSessionsSidebar({
   };
 
   const handleTaskClick = (task: WorktreeCreationTask) => {
-    // For completed tasks with sessionId, navigate to session and remove task
-    if (task.status === 'completed' && task.sessionId) {
-      navigate({ to: '/sessions/$sessionId', params: { sessionId: task.sessionId } });
-      onRemoveTask?.(task.id);
-    } else {
-      // For creating/failed tasks, navigate to task detail page
-      navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: task.id } });
+    switch (task.status) {
+      case 'completed':
+        if (task.sessionId) {
+          // Navigate to session and remove task
+          navigate({ to: '/sessions/$sessionId', params: { sessionId: task.sessionId } });
+          onRemoveTask?.(task.id);
+        } else {
+          // Completed but no session - navigate to task detail page
+          navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: task.id } });
+        }
+        break;
+      case 'creating':
+      case 'failed':
+        // Navigate to task detail page
+        navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: task.id } });
+        break;
+      default: {
+        const _exhaustive: never = task.status;
+        throw new Error(`Unhandled task status: ${_exhaustive}`);
+      }
     }
   };
 
