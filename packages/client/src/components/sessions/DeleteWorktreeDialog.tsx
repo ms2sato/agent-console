@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from '@tanstack/react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -28,6 +29,7 @@ export function DeleteWorktreeDialog({
   sessionId,
 }: DeleteWorktreeDialogProps) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +50,8 @@ export function DeleteWorktreeDialog({
       // Emit session-deleted locally for immediate UI update
       // WebSocket event will arrive later but will be processed idempotently
       emitSessionDeleted(sessionId);
+      // Invalidate worktrees cache so Dashboard shows updated list
+      await queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
       onOpenChange(false);
       navigate({ to: '/' });
     } catch (err) {
