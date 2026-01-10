@@ -50,8 +50,11 @@ function useWorktreeCreationTask(taskId: string): {
     // Call the API
     try {
       await createWorktreeAsync(task.repositoryId, newRequest);
-    } catch {
-      // If immediate API call fails, the error will be shown in the new task
+    } catch (error) {
+      // If API call fails immediately, remove the task to avoid stale "creating" state
+      removeTaskFromContext(newTaskId);
+      console.error('Failed to retry worktree creation:', error);
+      return; // Don't navigate away so user can see the original error
     }
 
     // Navigate back to dashboard
@@ -165,8 +168,9 @@ function WorktreeCreationTaskPage() {
           <button
             onClick={removeTask}
             className={`btn text-sm ${isFailed ? 'btn-danger' : 'bg-slate-600 hover:bg-slate-500'}`}
+            title={isCreating ? 'Hide from list (creation continues in background)' : undefined}
           >
-            {isCreating ? 'Cancel' : 'Dismiss'}
+            {isCreating ? 'Hide' : 'Dismiss'}
           </button>
         </div>
       </div>

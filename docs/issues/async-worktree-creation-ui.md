@@ -12,7 +12,8 @@ Convert worktree creation to an async process and show progress/error status in 
 ## Design Decisions
 
 ### Client-Side Task Management
-**Adopted lightweight approach: manage tasks on client side**
+
+Adopted lightweight approach: manage tasks on client side.
 
 Reasons:
 - Minimize server-side changes
@@ -162,7 +163,7 @@ export interface WorktreeCreationFailedPayload {
 
 ## Sequence Diagram
 
-```
+```text
 User          Client                    Server                  WebSocket
  |              |                          |                        |
  |--[Create]--->|                          |                        |
