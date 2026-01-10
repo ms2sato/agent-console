@@ -93,30 +93,36 @@ type EventSource =
   | 'gitlab'    // GitLab webhooks
   | 'internal'; // Agent Console internal events
 
-/** All system event types */
-type SystemEventType =
-  // CI/CD events (typically from external sources)
-  | 'ci:completed'
-  | 'ci:failed'
-  // Issue events
-  | 'issue:closed'
-  // Pull Request events
-  | 'pr:merged'
-  | 'pr:review_requested'
-  // Agent events (internal)
-  | 'agent:waiting'
-  | 'agent:idle'
-  | 'agent:active'
-  // Worker events (internal)
-  | 'worker:error'
-  | 'worker:exited';
+/**
+ * All system event types.
+ * This is the union of InboundEventType and OutboundTriggerEventType.
+ *
+ * @see InboundEventType in integration-inbound.md
+ * @see OutboundTriggerEventType in integration-outbound.md
+ */
+type SystemEventType = InboundEventType | OutboundTriggerEventType;
+
+// For reference, the individual types are:
+//
+// type InboundEventType =
+//   | 'ci:completed'   // CI/CD pipeline succeeded
+//   | 'ci:failed'      // CI/CD pipeline failed
+//   | 'issue:closed'   // Issue was closed
+//   | 'pr:merged';     // Pull request was merged
+//
+// type OutboundTriggerEventType =
+//   | 'agent:waiting'  // Agent is asking a question
+//   | 'agent:idle'     // Agent finished processing
+//   | 'agent:active'   // Agent is actively processing
+//   | 'worker:error'   // Worker encountered an error
+//   | 'worker:exited'; // Worker process exited
 ```
 
 ## Event Types
 
-### External Source Events
+### External Source Events (Inbound)
 
-Events originating from external services (GitHub, GitLab, etc.). These are received via webhooks and converted to system events.
+Events originating from external services (GitHub, GitLab, etc.). These are received via webhooks and converted to system events. See [Inbound Integration](./integration-inbound.md) for `InboundEventType` definition.
 
 | Event Type | Description | Typical Use |
 |------------|-------------|-------------|
@@ -124,11 +130,10 @@ Events originating from external services (GitHub, GitLab, etc.). These are rece
 | `ci:failed` | CI/CD pipeline failed | Notify agent, show UI alert |
 | `issue:closed` | Issue was closed | Suggest session archive |
 | `pr:merged` | Pull request was merged | Suggest session archive |
-| `pr:review_requested` | Review was requested | Notify agent |
 
-### Internal Source Events
+### Internal Source Events (Outbound)
 
-Events originating from within Agent Console.
+Events originating from within Agent Console. These trigger outbound notifications to external services. See [Outbound Integration](./integration-outbound.md) for `OutboundTriggerEventType` definition.
 
 | Event Type | Description | Typical Use |
 |------------|-------------|-------------|

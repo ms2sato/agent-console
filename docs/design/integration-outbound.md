@@ -4,6 +4,28 @@ This document describes the design for sending notifications from Agent Console 
 
 > **Prerequisite**: See [System Events](./system-events.md) for event format and type definitions.
 
+## Outbound Event Types
+
+Outbound events are internal events that trigger notifications to external services.
+
+```typescript
+/**
+ * Internal event format for outbound notifications.
+ * Each event type has specific payload for UI presentation.
+ */
+type NotificationEvent =
+  | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
+  | { type: 'agent:idle'; activityState: 'idle'; timestamp: Date }
+  | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
+  | { type: 'worker:error'; message: string; timestamp: Date }
+  | { type: 'worker:exited'; exitCode: number; timestamp: Date };
+
+/** Event types that can trigger outbound notifications (derived from NotificationEvent) */
+type OutboundTriggerEventType = NotificationEvent['type'];
+```
+
+> **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
+
 ## Overview
 
 Outbound integration allows Agent Console to notify users through external systems (e.g., Slack) when Claude Code requires attention.
@@ -105,7 +127,7 @@ class NotificationManager {
 
 Outbound handlers receive `NotificationContext` (which includes the triggering event) and send formatted notifications to external services.
 
-> **Note**: Outbound integration uses `NotificationEvent` internally rather than `SystemEvent`. This is because outbound notifications are tightly coupled to UI presentation and require different data structures (e.g., `activityState` for status display). The event types align with those defined in [System Events](./system-events.md) but use a simpler internal format.
+> **Note**: Outbound integration uses `NotificationEvent` internally rather than `SystemEvent`. This is because outbound notifications are tightly coupled to UI presentation and require different data structures (e.g., `activityState` for status display).
 
 ```typescript
 interface OutboundServiceHandler {
@@ -122,33 +144,18 @@ interface OutboundServiceHandler {
 interface NotificationContext {
   session: Session;
   worker: Worker;
-  event: NotificationEvent;
+  event: NotificationEvent;  // Defined in "Outbound Event Types" section
   agentConsoleUrl: string;
 }
-
-type NotificationEvent =
-  | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
-  | { type: 'agent:idle'; activityState: 'idle'; timestamp: Date }
-  | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
-  | { type: 'worker:error'; message: string; timestamp: Date }
-  | { type: 'worker:exited'; exitCode: number; timestamp: Date };
 ```
 
 ### Notification Rules
 
 ```typescript
-/** Event types that can trigger outbound notifications */
-type OutboundTriggerEventType =
-  | 'agent:waiting'
-  | 'agent:idle'
-  | 'agent:active'
-  | 'worker:error'
-  | 'worker:exited';
-
 interface NotificationRules {
   /**
    * Events that trigger notifications.
-   * Keys are event types from SystemEventType (internal subset).
+   * Keys are OutboundTriggerEventType (derived from NotificationEvent).
    */
   triggers: Partial<Record<OutboundTriggerEventType, boolean>>;
 

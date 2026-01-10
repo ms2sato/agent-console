@@ -4,6 +4,21 @@ This document describes the design for receiving external events into Agent Cons
 
 > **Prerequisite**: See [System Events](./system-events.md) for event format and type definitions.
 
+## Inbound Event Types
+
+Inbound events are external events received from services like GitHub and GitLab.
+
+```typescript
+/** Event types received from external sources */
+type InboundEventType =
+  | 'ci:completed'   // CI/CD pipeline succeeded
+  | 'ci:failed'      // CI/CD pipeline failed
+  | 'issue:closed'   // Issue was closed
+  | 'pr:merged';     // Pull request was merged
+```
+
+> **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
+
 ## Overview
 
 Inbound integration provides a **generalized event routing system** that receives external events (webhooks, etc.) and dispatches them to appropriate handlers based on event type and target.
@@ -57,7 +72,6 @@ Inbound integration handles external source events defined in [System Events](./
 | `ci:failed` | AgentWorker (notify), UI (alert dialog) |
 | `issue:closed` | UI (session close dialog), Session (auto-archive) |
 | `pr:merged` | UI (success dialog), Session (auto-archive) |
-| `pr:review_requested` | AgentWorker (notify) |
 
 ### Handler Interface
 
@@ -93,7 +107,7 @@ Writes formatted message to Agent Worker's PTY stdin.
 ```typescript
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'ci:failed', 'pr:review_requested'];
+  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'ci:failed'];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
@@ -505,21 +519,6 @@ private parsePullRequest(body: unknown): SystemEvent | null {
       },
       payload: body,
       summary: `PR #${body.pull_request.number} merged: ${body.pull_request.title}`,
-    };
-  }
-
-  if (action === 'review_requested') {
-    return {
-      type: 'pr:review_requested',
-      source: 'github',
-      timestamp: new Date().toISOString(),
-      metadata: {
-        repositoryName: body.repository.full_name,
-        branch: body.pull_request.head.ref,
-        url: body.pull_request.html_url,
-      },
-      payload: body,
-      summary: `Review requested on PR #${body.pull_request.number}: ${body.pull_request.title}`,
     };
   }
 
