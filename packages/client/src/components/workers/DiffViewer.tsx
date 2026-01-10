@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { parsePatch } from 'diff';
 import { Highlight, themes, type Language } from 'prism-react-renderer';
 import type { GitDiffFile } from '@agent-console/shared';
@@ -137,6 +137,12 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
   const containerRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  // Track scroll position to preserve it across data updates
+  const scrollPositionRef = useRef<number>(0);
+  const prevRawDiffRef = useRef<string>(rawDiff);
+  // Track when we just executed a programmatic scroll (to prevent useLayoutEffect from resetting)
+  const justScrolledRef = useRef(false);
+
   // Memoize parsed diff to avoid re-parsing on every render (expensive for large diffs)
   const parsedFiles = useMemo(() => parsePatch(rawDiff), [rawDiff]);
   const stripPrefix = (name: string | undefined) => name?.replace(/^[ab]\//, '');
@@ -144,19 +150,107 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
   // Sort files to match the left sidebar tree order
   const sortedFiles = useMemo(() => sortFilesAsTree(files), [files]);
 
-  // Scroll to file when scrollToFile changes
+  // Track scroll position on scroll events
   useEffect(() => {
-    if (scrollToFile && fileRefs.current.has(scrollToFile)) {
-      const element = fileRefs.current.get(scrollToFile);
-      element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      scrollPositionRef.current = container.scrollTop;
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Restore scroll position after data updates (but not on initial mount or explicit scroll)
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Skip if we just did a programmatic scroll (to prevent resetting to 0)
+    if (justScrolledRef.current) {
+      prevRawDiffRef.current = rawDiff;
+      return;
     }
+
+    // Only restore if rawDiff changed (data update from WebSocket)
+    // and not on initial mount (prevRawDiffRef would equal rawDiff)
+    const shouldRestore = prevRawDiffRef.current !== rawDiff && prevRawDiffRef.current !== '';
+    if (shouldRestore) {
+      // Data was updated, restore scroll position
+      // But skip if we're trying to scroll to a specific file
+      // Also skip if scrollPositionRef is 0 (no meaningful scroll position yet)
+      if (!scrollToFile && scrollPositionRef.current > 0) {
+        container.scrollTop = scrollPositionRef.current;
+      }
+    }
+
+    prevRawDiffRef.current = rawDiff;
+  }, [rawDiff, scrollToFile]);
+
+  // Scroll to file when scrollToFile changes.
+  // Uses rAF retry loop because DOM elements may not be ready immediately after render.
+  // The activeScrollRef persists the target even if scrollToFile becomes null quickly
+  // (which happens in React StrictMode or when parent clears state).
+  const activeScrollRef = useRef<{ targetFile: string; retryCount: number } | null>(null);
+
+  useEffect(() => {
+    if (!scrollToFile) return;
+
+    const targetFile = scrollToFile;
+    const MAX_SCROLL_RETRIES = 20;
+    const PROGRAMMATIC_SCROLL_FLAG_DELAY_MS = 500;
+
+    justScrolledRef.current = true;
+    activeScrollRef.current = { targetFile, retryCount: 0 };
+
+    function attemptScroll(): void {
+      const active = activeScrollRef.current;
+      if (!active || active.targetFile !== targetFile) return;
+
+      const container = containerRef.current;
+      const element = fileRefs.current.get(targetFile);
+
+      if (container && element) {
+        const scrollOffset =
+          element.getBoundingClientRect().top -
+          container.getBoundingClientRect().top +
+          container.scrollTop;
+
+        container.scrollTop = scrollOffset;
+        scrollPositionRef.current = scrollOffset;
+        activeScrollRef.current = null;
+        return;
+      }
+
+      active.retryCount++;
+      if (active.retryCount < MAX_SCROLL_RETRIES) {
+        requestAnimationFrame(attemptScroll);
+      } else {
+        activeScrollRef.current = null;
+      }
+    }
+
+    requestAnimationFrame(attemptScroll);
+
+    // Allow useLayoutEffect to skip restoration during programmatic scroll
+    const timeoutId = setTimeout(() => {
+      justScrolledRef.current = false;
+    }, PROGRAMMATIC_SCROLL_FLAG_DELAY_MS);
+
+    return () => clearTimeout(timeoutId);
   }, [scrollToFile]);
 
   // Set up intersection observer for tracking visible files
+  // Use a ref to store the observer so we can add/remove elements dynamically
+  const observerRef = useRef<IntersectionObserver | null>(null);
+
+  // Create the observer once when the component mounts
   useEffect(() => {
     if (!onFileVisible || !containerRef.current) return;
 
-    const observer = new IntersectionObserver(
+    observerRef.current = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
@@ -174,13 +268,21 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
       }
     );
 
-    // Observe all file sections
-    for (const element of fileRefs.current.values()) {
-      observer.observe(element);
-    }
+    return () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+    };
+  }, [onFileVisible]);
 
-    return () => observer.disconnect();
-  }, [onFileVisible, files]);
+  // Observe elements when they're added to the DOM
+  // This effect runs after render to ensure refs are populated
+  useEffect(() => {
+    if (!observerRef.current) return;
+
+    for (const element of fileRefs.current.values()) {
+      observerRef.current.observe(element);
+    }
+  }, [sortedFiles]); // Re-observe when sorted files change (elements might have changed)
 
   const setFileRef = useCallback((filePath: string, element: HTMLDivElement | null) => {
     if (element) {

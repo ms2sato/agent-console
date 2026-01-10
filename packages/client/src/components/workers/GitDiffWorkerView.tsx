@@ -1,12 +1,21 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { GitDiffTarget } from '@agent-console/shared';
 import { useGitDiffWorker } from '../../hooks/useGitDiffWorker';
+import { useDiffScrollPosition, getStoredVisibleFile } from '../../hooks/useDiffScrollPosition';
 import { RefreshIcon } from '../Icons';
 import { DiffViewer } from './DiffViewer';
 import { DiffFileList } from './DiffFileList';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { BaseCommitSelector } from './BaseCommitSelector';
 import { TargetRefSelector } from './TargetRefSelector';
+
+// Track which session/worker combos have had their scroll restored in this page session.
+// Persists across component remounts but resets on page reload.
+const scrollRestoredSet = new Set<string>();
+
+// Timing constants for scroll restoration
+const SCROLL_RESTORE_DELAY_MS = 100; // Wait for DOM to render before scrolling
+const SCROLL_CLEAR_DELAY_MS = 1000; // Keep scrollToFile active for rAF retry loop
 
 interface GitDiffWorkerViewProps {
   sessionId: string;
@@ -19,25 +28,107 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
     workerId,
   });
 
-  // Track file to scroll to (set when clicking sidebar)
+  // Track scroll position with localStorage persistence
+  const {
+    visibleFile,
+    initialScrollTarget,
+    setVisibleFile,
+    saveScrollPosition,
+    clearInitialScrollTarget,
+    refreshInitialScrollTarget,
+  } = useDiffScrollPosition(sessionId, workerId);
+
+  // Track file to scroll to (set when clicking sidebar or restoring position)
   const [scrollToFile, setScrollToFile] = useState<string | null>(null);
-  // Track currently visible file in diff viewer (updated by intersection observer)
-  const [visibleFile, setVisibleFile] = useState<string | null>(null);
+  // Key for tracking scroll restoration across remounts
+  const scrollKey = `${sessionId}:${workerId}`;
+  // Use ref to prevent duplicate scroll attempts within the same mount
+  const scrollAttemptedRef = useRef(false);
+  // Track whether scroll restoration is complete (to prevent IntersectionObserver from overwriting)
+  const scrollRestorationCompleteRef = useRef(false);
 
-  // Handle file click in sidebar - triggers scroll
-  const handleFileClick = useCallback((filePath: string) => {
-    setScrollToFile(filePath);
-    // Clear after a short delay to allow re-clicking the same file
-    setTimeout(() => setScrollToFile(null), 100);
-  }, []);
+  // Handle file click in sidebar - triggers scroll and saves position
+  const handleFileClick = useCallback(
+    (filePath: string) => {
+      scrollRestorationCompleteRef.current = true;
+      setScrollToFile(filePath);
+      saveScrollPosition(filePath);
+      setTimeout(() => setScrollToFile(null), SCROLL_CLEAR_DELAY_MS);
+    },
+    [saveScrollPosition]
+  );
 
-  // Handle file becoming visible in diff viewer
-  const handleFileVisible = useCallback((filePath: string) => {
-    setVisibleFile(filePath);
-  }, []);
+  // Handle file becoming visible in diff viewer.
+  // Only updates UI highlighting, does NOT save to localStorage.
+  // Skip updates until scroll restoration is complete to prevent overwriting saved position.
+  const handleFileVisible = useCallback(
+    (filePath: string) => {
+      if (scrollRestorationCompleteRef.current) {
+        setVisibleFile(filePath);
+      }
+    },
+    [setVisibleFile]
+  );
 
-  // Handle loading state
-  if (loading) {
+  // Reset scroll restoration state on mount/unmount.
+  // Refresh from localStorage on mount to handle HMR state preservation.
+  // We do NOT save scroll position on unmount because IntersectionObserver
+  // may report the wrong file during scroll animations.
+  useEffect(() => {
+    refreshInitialScrollTarget();
+    return () => {
+      scrollRestoredSet.delete(scrollKey);
+      scrollAttemptedRef.current = false;
+      scrollRestorationCompleteRef.current = false;
+    };
+  }, [scrollKey, refreshInitialScrollTarget]);
+
+  // Restore scroll position on initial load when diff data is ready
+  useEffect(() => {
+    // Skip if already restored in this page session or mount
+    if (scrollRestoredSet.has(scrollKey) || scrollAttemptedRef.current) {
+      return;
+    }
+
+    // Get scroll target - prefer state, fallback to localStorage for timing issues
+    // (state update from refreshInitialScrollTarget may not have completed yet)
+    const scrollTarget = initialScrollTarget ?? getStoredVisibleFile(sessionId, workerId);
+
+    // If no scroll target, enable IntersectionObserver tracking immediately
+    if (!scrollTarget) {
+      scrollRestorationCompleteRef.current = true;
+      return;
+    }
+
+    // Wait for diff data to be ready
+    const files = diffData?.summary?.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+
+    scrollAttemptedRef.current = true;
+
+    const fileExists = files.some((file) => file.path === scrollTarget);
+    if (fileExists) {
+      setTimeout(() => {
+        setScrollToFile(scrollTarget);
+        setVisibleFile(scrollTarget);
+        scrollRestoredSet.add(scrollKey);
+        scrollRestorationCompleteRef.current = true;
+        setTimeout(() => setScrollToFile(null), SCROLL_CLEAR_DELAY_MS);
+      }, SCROLL_RESTORE_DELAY_MS);
+    } else {
+      scrollRestoredSet.add(scrollKey);
+      scrollRestorationCompleteRef.current = true;
+    }
+
+    clearInitialScrollTarget();
+  }, [scrollKey, initialScrollTarget, diffData, clearInitialScrollTarget, sessionId, workerId, setVisibleFile]);
+
+  // Handle initial loading state (no data yet)
+  // Note: When refreshing with existing data, we keep showing the old content
+  // to preserve scroll position in DiffViewer
+  if (loading && !diffData) {
     return (
       <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
         <Header
