@@ -27,73 +27,6 @@ interface Tab {
   name: string;
 }
 
-// Animation configuration
-const ANIMATION_FRAMES = 16;
-const ANIMATION_INTERVAL_MS = 100; // 10fps instead of 25fps
-
-// Activity states for pre-generation
-const FAVICON_STATES = ['active', 'idle', 'asking', 'unknown'] as const;
-
-function getFaviconCacheKey(state: AgentActivityState, frameIndex: number): string {
-  return `${state}:${frameIndex}`;
-}
-
-// Calculate bounce offset for a given frame
-function getBounceOffset(frameIndex: number): number {
-  return Math.abs(Math.sin((frameIndex / ANIMATION_FRAMES) * Math.PI));
-}
-
-// Generate favicon based on activity state
-function generateFavicon(state: AgentActivityState, bounce: number = 0): string {
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
-
-  // Color based on state
-  const color = state === 'active' ? '#3b82f6' :  // blue
-                state === 'asking' ? '#eab308' :   // yellow
-                '#6b7280';                         // gray (idle/unknown)
-
-  // Bounce effect: move circle up and down (y: 22 to 10)
-  const y = state === 'active' ? 22 - (12 * bounce) : 16;
-
-  // Draw circle
-  ctx.beginPath();
-  ctx.arc(16, y, 10, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
-
-  return canvas.toDataURL('image/png');
-}
-
-// Pre-generate all favicon frames at module initialization (bounded set)
-// 16 frames x 4 states = 64 cached data URLs (~100KB total)
-// This prevents unbounded cache growth and expensive canvas.toDataURL() calls during animation
-const faviconCache = new Map<string, string>();
-
-// Initialize cache with all possible combinations at module load time
-for (const state of FAVICON_STATES) {
-  for (let frame = 0; frame < ANIMATION_FRAMES; frame++) {
-    const cacheKey = getFaviconCacheKey(state, frame);
-    const bounce = state === 'active' ? getBounceOffset(frame) : 0;
-    faviconCache.set(cacheKey, generateFavicon(state, bounce));
-  }
-}
-
-function getOrGenerateFavicon(state: AgentActivityState, frameIndex: number = 0): string {
-  const cacheKey = getFaviconCacheKey(state, frameIndex);
-  // All frames are pre-generated, so this should always return a cached value
-  // Fallback to generating if somehow missing (defensive coding)
-  const cached = faviconCache.get(cacheKey);
-  if (cached) return cached;
-
-  // This branch should never execute, but provides safety
-  const bounce = state === 'active' ? getBounceOffset(frameIndex) : 0;
-  return generateFavicon(state, bounce);
-}
-
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
   return session.type === 'worktree' ? session.worktreeId : '(quick)';
@@ -234,51 +167,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       document.title = 'Agent Console';
     };
   }, [state, sessionTitle, branchName]);
-
-  // Track animation frame for favicon
-  const faviconFrameRef = useRef(0);
-
-  // Update favicon based on activity state (with animation for active)
-  useEffect(() => {
-    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (!link) {
-      link = document.createElement('link');
-      link.rel = 'icon';
-      document.head.appendChild(link);
-    }
-
-    // Animate favicon when active (using cached frames at reduced frame rate)
-    if (activityState === 'active') {
-      faviconFrameRef.current = 0;
-      const interval = setInterval(() => {
-        const frameIndex = faviconFrameRef.current % ANIMATION_FRAMES;
-        const faviconUrl = getOrGenerateFavicon(activityState, frameIndex);
-        if (faviconUrl && link) {
-          link.href = faviconUrl;
-        }
-        faviconFrameRef.current++;
-      }, ANIMATION_INTERVAL_MS);
-
-      return () => {
-        clearInterval(interval);
-        if (link) {
-          link.href = '/favicon.ico';
-        }
-      };
-    }
-
-    // Static favicon for non-active states (cached)
-    const faviconUrl = getOrGenerateFavicon(activityState, 0);
-    if (faviconUrl) {
-      link.href = faviconUrl;
-    }
-
-    return () => {
-      if (link) {
-        link.href = '/favicon.ico';
-      }
-    };
-  }, [activityState]);
 
   // Reset state and tabs when sessionId changes (navigating to different session)
   useEffect(() => {
