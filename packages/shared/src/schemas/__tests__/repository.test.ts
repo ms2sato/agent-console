@@ -52,8 +52,11 @@ describe('CreateRepositoryRequestSchema', () => {
 });
 
 describe('CreateWorktreePromptRequestSchema', () => {
+  const validTaskId = 'test-task-id-123';
+
   it('should validate valid prompt mode request', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
     });
@@ -66,6 +69,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should validate with all optional fields', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
       baseBranch: 'develop',
@@ -84,6 +88,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should trim whitespace from initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: '  Fix login bug  ',
     });
@@ -95,6 +100,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject missing initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
     });
     expect(result.success).toBe(false);
@@ -102,6 +108,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject empty initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: '',
     });
@@ -110,6 +117,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject whitespace-only initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: '   ',
     });
@@ -118,6 +126,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject wrong mode', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       initialPrompt: 'Fix login bug',
     });
@@ -126,6 +135,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should accept valid baseBranch', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
       baseBranch: 'develop',
@@ -138,6 +148,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject baseBranch with spaces', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
       baseBranch: 'my branch',
@@ -147,6 +158,7 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should reject baseBranch with special characters', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
       baseBranch: 'feature@branch',
@@ -156,17 +168,38 @@ describe('CreateWorktreePromptRequestSchema', () => {
 
   it('should accept empty baseBranch (treated as undefined)', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix login bug',
       baseBranch: '',
     });
     expect(result.success).toBe(true);
   });
+
+  it('should reject missing taskId', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject empty taskId', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: '',
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('CreateWorktreeCustomRequestSchema', () => {
+  const validTaskId = 'test-task-id-123';
+
   it('should validate valid custom mode request', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/custom-branch',
     });
@@ -179,6 +212,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should validate with all optional fields', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/custom-branch',
       baseBranch: 'main',
@@ -199,6 +233,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should trim whitespace from branch', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: '  feature/test  ',
     });
@@ -210,6 +245,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject missing branch', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
     });
     expect(result.success).toBe(false);
@@ -217,6 +253,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject empty branch', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: '',
     });
@@ -225,6 +262,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject whitespace-only branch', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: '   ',
     });
@@ -233,6 +271,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject wrong mode', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'feature/custom-branch',
     });
@@ -241,6 +280,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject branch with spaces', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature branch',
     });
@@ -249,6 +289,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject branch with special characters', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature@branch',
     });
@@ -257,6 +298,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject branch with unicode characters', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/日本語',
     });
@@ -265,6 +307,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should accept valid baseBranch', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/new',
       baseBranch: 'develop',
@@ -277,6 +320,7 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 
   it('should reject baseBranch with spaces', () => {
     const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/new',
       baseBranch: 'my branch',
@@ -286,8 +330,11 @@ describe('CreateWorktreeCustomRequestSchema', () => {
 });
 
 describe('CreateWorktreeExistingRequestSchema', () => {
+  const validTaskId = 'test-task-id-123';
+
   it('should validate valid existing mode request', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'existing-branch',
     });
@@ -300,6 +347,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should validate with all optional fields', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'existing-branch',
       autoStartSession: true,
@@ -318,6 +366,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should trim whitespace from branch', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: '  main  ',
     });
@@ -329,6 +378,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject missing branch', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
     });
     expect(result.success).toBe(false);
@@ -336,6 +386,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject empty branch', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: '',
     });
@@ -344,6 +395,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject whitespace-only branch', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: '   ',
     });
@@ -352,6 +404,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject wrong mode', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       branch: 'existing-branch',
     });
@@ -360,6 +413,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject branch with spaces', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'my branch',
     });
@@ -368,6 +422,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject branch with special characters', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'branch@name',
     });
@@ -376,6 +431,7 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 
   it('should reject branch with unicode characters', () => {
     const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: '日本語ブランチ',
     });
@@ -384,8 +440,11 @@ describe('CreateWorktreeExistingRequestSchema', () => {
 });
 
 describe('CreateWorktreeRequestSchema', () => {
+  const validTaskId = 'test-task-id-123';
+
   it('should accept prompt mode', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
       initialPrompt: 'Fix bug',
     });
@@ -394,6 +453,7 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should accept custom mode', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
       branch: 'feature/new',
     });
@@ -402,6 +462,7 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should accept existing mode', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
       branch: 'main',
     });
@@ -410,6 +471,7 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should reject invalid mode', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'invalid',
       branch: 'test',
     });
@@ -418,6 +480,7 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should reject prompt mode without initialPrompt', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'prompt',
     });
     expect(result.success).toBe(false);
@@ -425,6 +488,7 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should reject custom mode without branch', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'custom',
     });
     expect(result.success).toBe(false);
@@ -432,7 +496,16 @@ describe('CreateWorktreeRequestSchema', () => {
 
   it('should reject existing mode without branch', () => {
     const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: validTaskId,
       mode: 'existing',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject missing taskId', () => {
+    const result = v.safeParse(CreateWorktreeRequestSchema, {
+      mode: 'prompt',
+      initialPrompt: 'Fix bug',
     });
     expect(result.success).toBe(false);
   });

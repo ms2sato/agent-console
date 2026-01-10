@@ -40,6 +40,12 @@ const RequiredBranchSchema = v.pipe(
  * Base schema for worktree creation requests
  */
 const CreateWorktreeBaseSchema = v.object({
+  /** Client-generated UUID for async request-response correlation */
+  taskId: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Task ID is required')
+  ),
   autoStartSession: v.optional(v.boolean()),
   agentId: v.optional(v.string()),
   initialPrompt: v.optional(v.string()),

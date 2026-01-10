@@ -9,7 +9,7 @@ import {
   unregisterRepository,
   createSession,
   deleteSession,
-  createWorktree,
+  createWorktreeAsync,
   deleteWorktree,
   openPath,
 } from '../lib/api';
@@ -30,9 +30,10 @@ import {
   AlertDialogAction,
 } from '../components/ui/alert-dialog';
 import { AddRepositoryForm } from '../components/repositories';
-import { CreateWorktreeForm } from '../components/worktrees';
+import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeRequest, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
+import { useWorktreeCreationTasksContext } from './__root';
+import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -542,10 +543,11 @@ interface RepositoryCardProps {
 }
 
 function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
-  const queryClient = useQueryClient();
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
   const [setupCommandFailure, setSetupCommandFailure] = useState<SetupCommandResult | null>(null);
+  const { errorDialogProps, showError: showWorktreeError } = useErrorDialog();
+  const { addTask, removeTask } = useWorktreeCreationTasksContext();
   const isGitHubRemote = Boolean(
     repository.remoteUrl &&
       (repository.remoteUrl.startsWith('git@github.com:') ||
@@ -569,29 +571,34 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
   const defaultBranch = branchesData?.defaultBranch || 'main';
 
-  const createWorktreeMutation = useMutation({
-    mutationFn: (params: CreateWorktreeRequest) =>
-      createWorktree(repository.id, params),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['worktrees', repository.id] });
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      setShowCreateWorktree(false);
-      // Show fallback notification if branch name generation failed
-      if (data.branchNameFallback) {
-        setFallbackInfo(data.branchNameFallback);
-      }
-      // Show setup command failure notification if command failed
-      if (data.setupCommandResult && !data.setupCommandResult.success) {
-        setSetupCommandFailure(data.setupCommandResult);
-      }
-      if (data.session) {
-        window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
-      }
-    },
-  });
+  // Async worktree creation - returns immediately after API accepts the request
+  const handleCreateWorktree = async (formRequest: CreateWorktreeFormRequest) => {
+    const taskId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    // Build full request with taskId for storage and API
+    const request = { ...formRequest, taskId };
 
-  const handleCreateWorktree = async (request: CreateWorktreeRequest) => {
-    await createWorktreeMutation.mutateAsync(request);
+    try {
+      // Add task to UI immediately
+      addTask({
+        id: taskId,
+        repositoryId: repository.id,
+        repositoryName: repository.name,
+        request,
+      });
+
+      // Call async API (returns { accepted: true })
+      await createWorktreeAsync(repository.id, request);
+
+      // Close the form immediately - task shows in sidebar
+      setShowCreateWorktree(false);
+    } catch (error) {
+      // If API call fails immediately (e.g., network error), remove the task and show error dialog
+      removeTask(taskId);
+      showWorktreeError('Failed to Create Worktree', error instanceof Error ? error.message : 'Unknown error');
+    }
   };
 
   return (
@@ -632,7 +639,6 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         <CreateWorktreeForm
           repositoryId={repository.id}
           defaultBranch={defaultBranch}
-          isPending={createWorktreeMutation.isPending}
           onSubmit={handleCreateWorktree}
           onCancel={() => setShowCreateWorktree(false)}
         />
@@ -662,6 +668,8 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
         result={setupCommandFailure}
         onClose={() => setSetupCommandFailure(null)}
       />
+
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }

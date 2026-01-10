@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as WorktreeCreationTasksTaskIdRouteImport } from './routes/worktree-creation-tasks/$taskId'
 import { Route as SettingsRepositoriesRouteImport } from './routes/settings/repositories'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as JobsJobIdIndexRouteImport } from './routes/jobs/$jobId/index'
@@ -46,6 +47,12 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   path: '/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorktreeCreationTasksTaskIdRoute =
+  WorktreeCreationTasksTaskIdRouteImport.update({
+    id: '/worktree-creation-tasks/$taskId',
+    path: '/worktree-creation-tasks/$taskId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const SettingsRepositoriesRoute = SettingsRepositoriesRouteImport.update({
   id: '/settings/repositories',
   path: '/settings/repositories',
@@ -82,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
+  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -95,6 +103,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
+  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -109,6 +118,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
+  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/jobs/': typeof JobsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -124,6 +134,7 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/settings/repositories'
+    | '/worktree-creation-tasks/$taskId'
     | '/agents'
     | '/jobs'
     | '/settings'
@@ -137,6 +148,7 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/settings/repositories'
+    | '/worktree-creation-tasks/$taskId'
     | '/agents'
     | '/jobs'
     | '/settings'
@@ -150,6 +162,7 @@ export interface FileRouteTypes {
     | '/'
     | '/maintenance'
     | '/settings/repositories'
+    | '/worktree-creation-tasks/$taskId'
     | '/agents/'
     | '/jobs/'
     | '/settings/'
@@ -164,6 +177,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   MaintenanceRoute: typeof MaintenanceRoute
   SettingsRepositoriesRoute: typeof SettingsRepositoriesRoute
+  WorktreeCreationTasksTaskIdRoute: typeof WorktreeCreationTasksTaskIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   JobsIndexRoute: typeof JobsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
@@ -209,6 +223,13 @@ declare module '@tanstack/react-router' {
       path: '/agents'
       fullPath: '/agents'
       preLoaderRoute: typeof AgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/worktree-creation-tasks/$taskId': {
+      id: '/worktree-creation-tasks/$taskId'
+      path: '/worktree-creation-tasks/$taskId'
+      fullPath: '/worktree-creation-tasks/$taskId'
+      preLoaderRoute: typeof WorktreeCreationTasksTaskIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/repositories': {
@@ -260,6 +281,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   MaintenanceRoute: MaintenanceRoute,
   SettingsRepositoriesRoute: SettingsRepositoriesRoute,
+  WorktreeCreationTasksTaskIdRoute: WorktreeCreationTasksTaskIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   JobsIndexRoute: JobsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,

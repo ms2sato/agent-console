@@ -1344,25 +1344,28 @@ describe('API Routes Integration', () => {
     });
 
     describe('POST /api/repositories/:id/worktrees', () => {
-      it('should create worktree with custom branch mode', async () => {
+      // Helper to generate unique task IDs
+      const generateTaskId = () => `task-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      it('should accept worktree creation request with custom branch mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
-
-        // Worktree creation is mocked via mockGitCreateWorktree in setupDefaultGitMocks
 
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'custom', branch: 'test-feature' }),
+          body: JSON.stringify({
+            taskId: generateTaskId(),
+            mode: 'custom',
+            branch: 'test-feature',
+          }),
         });
 
-        // API returns 201 when worktree creation succeeds
-        expect(res.status).toBe(201);
+        // API returns 202 Accepted for async processing
+        expect(res.status).toBe(202);
 
-        // Response structure may vary based on whether worktree lookup succeeds
-        // In integration test with mocked git commands, the path lookup may fail
-        const body = await res.json();
-        expect(typeof body).toBe('object');
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
       it('should return 400 for invalid mode', async () => {
@@ -1372,9 +1375,26 @@ describe('API Routes Integration', () => {
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'invalid' }),
+          body: JSON.stringify({ taskId: generateTaskId(), mode: 'invalid' }),
         });
         expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when taskId is missing', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'custom', branch: 'test' }),
+        });
+        expect(res.status).toBe(400);
+
+        // Validation fails because taskId is required in all union members
+        // The exact error message depends on Valibot's union validation
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBeDefined();
       });
 
       it('should return 400 when prompt mode lacks initialPrompt', async () => {
@@ -1384,7 +1404,7 @@ describe('API Routes Integration', () => {
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'prompt' }),
+          body: JSON.stringify({ taskId: generateTaskId(), mode: 'prompt' }),
         });
         expect(res.status).toBe(400);
       });
@@ -1396,7 +1416,7 @@ describe('API Routes Integration', () => {
         const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'prompt', initialPrompt: '   ' }),
+          body: JSON.stringify({ taskId: generateTaskId(), mode: 'prompt', initialPrompt: '   ' }),
         });
         expect(res.status).toBe(400);
 
@@ -1410,12 +1430,12 @@ describe('API Routes Integration', () => {
         const res = await app.request('/api/repositories/non-existent/worktrees', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'custom', branch: 'test' }),
+          body: JSON.stringify({ taskId: generateTaskId(), mode: 'custom', branch: 'test' }),
         });
         expect(res.status).toBe(404);
       });
 
-      it('should pass baseBranch without origin/ prefix when useRemote is false in custom mode', async () => {
+      it('should accept worktree creation with useRemote false in custom mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1423,6 +1443,7 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'custom',
             branch: 'feature-test',
             baseBranch: 'develop',
@@ -1430,18 +1451,12 @@ describe('API Routes Integration', () => {
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called with baseBranch (no origin/ prefix)
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'feature-test',     // branch
-          expect.any(String), // repoPath
-          { baseBranch: 'develop' } // baseBranch without origin/
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should pass baseBranch with origin/ prefix when useRemote is true in custom mode', async () => {
+      it('should accept worktree creation with useRemote true in custom mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1449,6 +1464,7 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'custom',
             branch: 'feature-test',
             baseBranch: 'develop',
@@ -1456,18 +1472,12 @@ describe('API Routes Integration', () => {
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called with origin/<baseBranch>
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'feature-test',     // branch
-          expect.any(String), // repoPath
-          { baseBranch: 'origin/develop' } // baseBranch with origin/ prefix
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should pass baseBranch without origin/ prefix when useRemote is not provided in custom mode', async () => {
+      it('should accept worktree creation without useRemote in custom mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1475,25 +1485,19 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'custom',
             branch: 'feature-test',
             baseBranch: 'main',
-            // useRemote not provided - should default to false behavior
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called with baseBranch (no origin/ prefix)
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'feature-test',     // branch
-          expect.any(String), // repoPath
-          { baseBranch: 'main' } // baseBranch without origin/
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should ignore useRemote flag for existing mode', async () => {
+      it('should accept worktree creation with existing mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1501,24 +1505,19 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'existing',
             branch: 'existing-branch',
-            useRemote: true, // This should be ignored for existing mode
+            useRemote: true, // This should be accepted (ignored during async processing)
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called without baseBranch (existing mode uses existing branch)
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'existing-branch',  // branch
-          expect.any(String), // repoPath
-          { baseBranch: undefined } // No baseBranch for existing mode
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should pass baseBranch with origin/ prefix when useRemote is true in prompt mode', async () => {
+      it('should accept worktree creation with useRemote true in prompt mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1526,6 +1525,7 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'prompt',
             initialPrompt: 'Add new feature X',
             baseBranch: 'main',
@@ -1533,19 +1533,12 @@ describe('API Routes Integration', () => {
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called with origin/<baseBranch>
-        // The branch name comes from the mocked suggestSessionMetadata
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String),     // worktreePath
-          'suggested-branch',     // branch (from mock)
-          expect.any(String),     // repoPath
-          { baseBranch: 'origin/main' } // baseBranch with origin/ prefix
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should pass baseBranch without origin/ prefix when useRemote is false in prompt mode', async () => {
+      it('should accept worktree creation with useRemote false in prompt mode', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1553,6 +1546,7 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'prompt',
             initialPrompt: 'Add new feature Y',
             baseBranch: 'develop',
@@ -1560,22 +1554,16 @@ describe('API Routes Integration', () => {
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        // Verify createWorktree was called without origin/ prefix
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String),     // worktreePath
-          'suggested-branch',     // branch (from mock)
-          expect.any(String),     // repoPath
-          { baseBranch: 'develop' } // baseBranch without origin/
-        );
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should return fetchFailed flag when useRemote is true but fetch fails', async () => {
+      it('should accept worktree creation even when fetch will fail (async processing handles it)', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
-        // Mock fetchRemote to fail
+        // Mock fetchRemote to fail - but this happens during async processing
         mockGit.fetchRemote.mockImplementation(() =>
           Promise.reject(new GitError('network error', 128, 'fatal: unable to access'))
         );
@@ -1584,6 +1572,7 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'custom',
             branch: 'feature-test',
             baseBranch: 'main',
@@ -1591,68 +1580,13 @@ describe('API Routes Integration', () => {
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        const body = (await res.json()) as {
-          worktree: unknown;
-          fetchFailed?: boolean;
-          fetchError?: string;
-        };
-
-        // Verify the response includes fetch failure information
-        expect(body.fetchFailed).toBe(true);
-        expect(body.fetchError).toBe('Failed to fetch remote branch, created from local branch instead');
-
-        // Verify createWorktree was called with local baseBranch (no origin/ prefix)
-        // because fetch failed and we fell back to local
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'feature-test',     // branch
-          expect.any(String), // repoPath
-          { baseBranch: 'main' } // baseBranch without origin/ due to fallback
-        );
+        // API immediately returns 202 - fetch failure is handled in background
+        expect(res.status).toBe(202);
+        const body = await res.json() as { accepted: boolean };
+        expect(body.accepted).toBe(true);
       });
 
-      it('should not return fetchFailed flag when useRemote is true and fetch succeeds', async () => {
-        const app = await createApp();
-        const { repo } = await registerTestRepo(app);
-
-        // Mock fetchRemote to succeed
-        mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
-
-        const res = await app.request(`/api/repositories/${repo.id}/worktrees`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'custom',
-            branch: 'feature-test',
-            baseBranch: 'main',
-            useRemote: true,
-          }),
-        });
-
-        expect(res.status).toBe(201);
-
-        const body = (await res.json()) as {
-          worktree: unknown;
-          fetchFailed?: boolean;
-          fetchError?: string;
-        };
-
-        // Verify the response does NOT include fetch failure flags
-        expect(body.fetchFailed).toBeUndefined();
-        expect(body.fetchError).toBeUndefined();
-
-        // Verify createWorktree was called with origin/<baseBranch>
-        expect(mockGit.createWorktree).toHaveBeenCalledWith(
-          expect.any(String), // worktreePath
-          'feature-test',     // branch
-          expect.any(String), // repoPath
-          { baseBranch: 'origin/main' } // baseBranch with origin/ prefix
-        );
-      });
-
-      it('should not return fetchFailed flag when useRemote is false', async () => {
+      it('should return 400 when agent does not exist', async () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
@@ -1660,24 +1594,17 @@ describe('API Routes Integration', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            taskId: generateTaskId(),
             mode: 'custom',
-            branch: 'feature-test',
-            baseBranch: 'main',
-            useRemote: false,
+            branch: 'test-feature',
+            agentId: 'non-existent-agent',
           }),
         });
 
-        expect(res.status).toBe(201);
-
-        const body = (await res.json()) as {
-          worktree: unknown;
-          fetchFailed?: boolean;
-          fetchError?: string;
-        };
-
-        // Verify the response does NOT include fetch failure flags when useRemote is false
-        expect(body.fetchFailed).toBeUndefined();
-        expect(body.fetchError).toBeUndefined();
+        // Agent validation happens synchronously before accepting
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Agent not found');
       });
     });
 

@@ -1,4 +1,5 @@
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
+import { createContext, useContext } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { validateSessions } from '../lib/api';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
@@ -8,7 +9,26 @@ import { useAppWsState, useAppWsEvent } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
 import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
+import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import type { Session } from '@agent-console/shared';
+
+/**
+ * Context for worktree creation tasks.
+ * This allows child routes (like Dashboard) to add tasks and the sidebar to display them.
+ */
+export const WorktreeCreationTasksContext = createContext<UseWorktreeCreationTasksReturn | null>(null);
+
+/**
+ * Hook to access worktree creation tasks context.
+ * Must be used within a route that is a child of __root.
+ */
+export function useWorktreeCreationTasksContext(): UseWorktreeCreationTasksReturn {
+  const context = useContext(WorktreeCreationTasksContext);
+  if (!context) {
+    throw new Error('useWorktreeCreationTasksContext must be used within WorktreeCreationTasksContext.Provider');
+  }
+  return context;
+}
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -37,6 +57,9 @@ function RootLayout() {
     handleWorkerActivity,
   } = useSessionState();
 
+  // Worktree creation task management
+  const worktreeCreationTasks = useWorktreeCreationTasks();
+
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
     onSessionsSync: handleSessionsSync,
@@ -44,6 +67,8 @@ function RootLayout() {
     onSessionUpdated: handleSessionUpdated,
     onSessionDeleted: handleSessionDeleted,
     onWorkerActivity: handleWorkerActivity,
+    onWorktreeCreationCompleted: worktreeCreationTasks.handleWorktreeCreationCompleted,
+    onWorktreeCreationFailed: worktreeCreationTasks.handleWorktreeCreationFailed,
   });
 
   // Sidebar state
@@ -56,75 +81,79 @@ function RootLayout() {
     : undefined;
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <header style={{
-        padding: '8px 16px',
-        borderBottom: '1px solid #334155',
-        backgroundColor: '#0f172a',
-        display: 'flex',
-        alignItems: 'center',
-        flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Link
-            to="/"
-            style={{
-              color: '#fff',
-              textDecoration: 'none',
-              fontSize: '0.875rem',
-              fontWeight: 'bold',
-            }}
-          >
-            Agent Console
-          </Link>
-          {isSessionPage && currentSession && (
-            <>
-              {currentSession.type === 'worktree' && (
-                <>
-                  <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                  <span style={{ color: '#94a3b8', fontSize: '0.8125rem' }}>
-                    {currentSession.repositoryName}
-                  </span>
-                </>
-              )}
-              {currentSession.title && (
-                <>
-                  <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                  <span style={{ color: '#e2e8f0', fontSize: '0.8125rem' }}>
-                    {currentSession.title}
-                  </span>
-                </>
-              )}
-            </>
-          )}
-        </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <ValidationWarningIndicator />
-          <JobsNavLink />
-          <AgentsNavLink />
-          <RepositoriesNavLink />
-        </div>
-      </header>
-      <ConnectionBanner connected={connected} />
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
-        <ActiveSessionsSidebar
-          collapsed={collapsed}
-          onToggle={toggle}
-          sessions={activeSessions}
-          width={width}
-          onWidthChange={setWidth}
-        />
-        <main style={{
-          flex: 1,
+    <WorktreeCreationTasksContext.Provider value={worktreeCreationTasks}>
+      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <header style={{
+          padding: '8px 16px',
+          borderBottom: '1px solid #334155',
+          backgroundColor: '#0f172a',
           display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-          overflow: isSessionPage ? 'hidden' : 'auto',
+          alignItems: 'center',
+          flexShrink: 0,
         }}>
-          <Outlet />
-        </main>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Link
+              to="/"
+              style={{
+                color: '#fff',
+                textDecoration: 'none',
+                fontSize: '0.875rem',
+                fontWeight: 'bold',
+              }}
+            >
+              Agent Console
+            </Link>
+            {isSessionPage && currentSession && (
+              <>
+                {currentSession.type === 'worktree' && (
+                  <>
+                    <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                    <span style={{ color: '#94a3b8', fontSize: '0.8125rem' }}>
+                      {currentSession.repositoryName}
+                    </span>
+                  </>
+                )}
+                {currentSession.title && (
+                  <>
+                    <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                    <span style={{ color: '#e2e8f0', fontSize: '0.8125rem' }}>
+                      {currentSession.title}
+                    </span>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <ValidationWarningIndicator />
+            <JobsNavLink />
+            <AgentsNavLink />
+            <RepositoriesNavLink />
+          </div>
+        </header>
+        <ConnectionBanner connected={connected} />
+        <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+          <ActiveSessionsSidebar
+            collapsed={collapsed}
+            onToggle={toggle}
+            sessions={activeSessions}
+            width={width}
+            onWidthChange={setWidth}
+            creationTasks={worktreeCreationTasks.tasks}
+            onRemoveTask={worktreeCreationTasks.removeTask}
+          />
+          <main style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            overflow: isSessionPage ? 'hidden' : 'auto',
+          }}>
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+    </WorktreeCreationTasksContext.Provider>
   );
 }
 

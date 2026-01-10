@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -46,6 +46,10 @@ interface UseAppWsEventOptions {
   onRepositoryDeleted?: (repositoryId: string) => void;
   /** Called when a repository is updated */
   onRepositoryUpdated?: (repository: Repository) => void;
+  /** Called when async worktree creation completes successfully */
+  onWorktreeCreationCompleted?: (payload: WorktreeCreationCompletedPayload) => void;
+  /** Called when async worktree creation fails */
+  onWorktreeCreationFailed?: (payload: WorktreeCreationFailedPayload) => void;
 }
 
 /**
@@ -131,6 +135,18 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           console.log(`[WebSocket] repository-updated: ${msg.repository.id}`);
           optionsRef.current.onRepositoryUpdated?.(msg.repository);
           break;
+        case 'worktree-creation-completed':
+          console.log(`[WebSocket] worktree-creation-completed: taskId=${msg.taskId}`);
+          optionsRef.current.onWorktreeCreationCompleted?.(msg);
+          break;
+        case 'worktree-creation-failed':
+          console.log(`[WebSocket] worktree-creation-failed: taskId=${msg.taskId}`);
+          optionsRef.current.onWorktreeCreationFailed?.(msg);
+          break;
+        default: {
+          const _exhaustive: never = msg;
+          console.warn('Unknown message type received:', _exhaustive);
+        }
       }
     });
 
