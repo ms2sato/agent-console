@@ -18,7 +18,12 @@ function useWorktreeCreationTask(taskId: string): {
   retryTask: () => Promise<void>;
 } {
   const navigate = useNavigate();
-  const { getTask, removeTask: removeTaskFromContext, addTask } = useWorktreeCreationTasksContext();
+  const {
+    getTask,
+    removeTask: removeTaskFromContext,
+    addTask,
+    handleWorktreeCreationFailed,
+  } = useWorktreeCreationTasksContext();
 
   const task = getTask(taskId);
 
@@ -51,10 +56,13 @@ function useWorktreeCreationTask(taskId: string): {
     try {
       await createWorktreeAsync(task.repositoryId, newRequest);
     } catch (error) {
-      // If API call fails immediately, remove the task to avoid stale "creating" state
-      removeTaskFromContext(newTaskId);
+      // Update the new task to failed state so user can see the error in sidebar
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      handleWorktreeCreationFailed({ taskId: newTaskId, error: errorMessage });
       console.error('Failed to retry worktree creation:', error);
-      return; // Don't navigate away so user can see the original error
+      // Navigate to the new failed task's detail page
+      navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: newTaskId } });
+      return;
     }
 
     // Navigate back to dashboard

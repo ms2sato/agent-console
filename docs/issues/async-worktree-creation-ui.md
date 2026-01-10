@@ -49,6 +49,9 @@ export interface WorktreeCreationTask {
   repositoryName: string;
   status: WorktreeCreationStatus;
   request: CreateWorktreeRequest;  // Kept for retry
+  // On completion
+  sessionId?: string;
+  sessionTitle?: string;
   // On failure
   error?: string;
   // Timestamp
