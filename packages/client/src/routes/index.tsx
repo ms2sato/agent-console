@@ -547,7 +547,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
   const [setupCommandFailure, setSetupCommandFailure] = useState<SetupCommandResult | null>(null);
   const { errorDialogProps, showError: showWorktreeError } = useErrorDialog();
-  const { addTask } = useWorktreeCreationTasksContext();
+  const { addTask, removeTask } = useWorktreeCreationTasksContext();
   const isGitHubRemote = Boolean(
     repository.remoteUrl &&
       (repository.remoteUrl.startsWith('git@github.com:') ||
@@ -573,7 +573,10 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 
   // Async worktree creation - returns immediately after API accepts the request
   const handleCreateWorktree = async (formRequest: CreateWorktreeFormRequest) => {
-    const taskId = crypto.randomUUID();
+    const taskId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     // Build full request with taskId for storage and API
     const request = { ...formRequest, taskId };
 
@@ -592,7 +595,8 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
       // Close the form immediately - task shows in sidebar
       setShowCreateWorktree(false);
     } catch (error) {
-      // If API call fails immediately (e.g., network error), show error dialog
+      // If API call fails immediately (e.g., network error), remove the task and show error dialog
+      removeTask(taskId);
       showWorktreeError('Failed to Create Worktree', error instanceof Error ? error.message : 'Unknown error');
     }
   };

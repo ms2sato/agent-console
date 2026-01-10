@@ -581,13 +581,13 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
     throw new ValidationError(`Agent not found: ${selectedAgentId}`);
   }
 
-  // Return immediately - worktree creation will happen in background
-  // Import broadcast function lazily to avoid circular dependencies
-  const { broadcastToApp } = await import('../websocket/routes.js');
-
   // Execute worktree creation in background (fire-and-forget)
   // This promise is intentionally not awaited
   (async () => {
+    // Import broadcast function lazily to avoid circular dependencies
+    // This import is inside the async IIFE to avoid blocking the 202 response
+    const { broadcastToApp } = await import('../websocket/routes.js');
+
     try {
       let branch: string;
       let baseBranch: string | undefined;
@@ -598,7 +598,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
       const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote === true;
 
       switch (mode) {
-        case 'prompt':
+        case 'prompt': {
           // Generate branch name from prompt using the selected agent
           const suggestion = await suggestSessionMetadata({
             prompt: body.initialPrompt!.trim(),
@@ -619,6 +619,7 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
           }
           baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
           break;
+        }
         case 'custom':
           branch = body.branch!;
           baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
