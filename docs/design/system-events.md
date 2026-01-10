@@ -159,23 +159,25 @@ See [Inbound Integration](./integration-inbound.md) for details.
 ### Outbound Flow (Internal → External)
 
 ```
-Agent Activity Change
+Agent Activity Change / Worker Event
       │
       ▼
-┌─────────────────┐
-│  SystemEvent    │  type: 'agent:waiting'
-│                 │  source: 'internal'
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Notification    │  Format & send
-│ Services        │
-└────────┬────────┘
-         │
-         ▼
+┌─────────────────────┐
+│  NotificationEvent  │  type: 'agent:waiting'
+│  (Outbound format)  │  activityState: 'waiting'
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Notification        │  Format & send
+│ Services            │
+└──────────┬──────────┘
+           │
+           ▼
    Slack, Email, etc.
 ```
+
+> **Note**: Outbound uses `NotificationEvent` (not `SystemEvent`) for UI-specific data structures.
 
 See [Outbound Integration](./integration-outbound.md) for details.
 

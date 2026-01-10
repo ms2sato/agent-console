@@ -22,16 +22,23 @@ type OutboundTriggerEventType =
  * Each event type has specific payload for UI presentation.
  */
 type NotificationEvent =
-  | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
-  | { type: 'agent:idle'; activityState: 'idle'; timestamp: Date }
-  | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
-  | { type: 'worker:error'; message: string; timestamp: Date }
-  | { type: 'worker:exited'; exitCode: number; timestamp: Date };
+  | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: string }
+  | { type: 'agent:idle'; activityState: 'idle'; timestamp: string }
+  | { type: 'agent:active'; activityState: 'active'; timestamp: string }
+  | { type: 'worker:error'; message: string; timestamp: string }
+  | { type: 'worker:exited'; exitCode: number; timestamp: string };
+// Note: timestamp is ISO 8601 string for consistency with SystemEvent
 
-// Type assertion: NotificationEvent['type'] must be subset of OutboundTriggerEventType
-type _AssertEventTypes = NotificationEvent['type'] extends OutboundTriggerEventType
+// Bidirectional type assertions:
+// 1. NotificationEvent types must be valid OutboundTriggerEventType
+type _AssertValidTypes = NotificationEvent['type'] extends OutboundTriggerEventType
   ? true
-  : never;  // Compile error if mismatch
+  : never;
+
+// 2. All OutboundTriggerEventType must have corresponding NotificationEvent
+type _AssertComplete = OutboundTriggerEventType extends NotificationEvent['type']
+  ? true
+  : never;  // Compile error if any OutboundTriggerEventType is missing from NotificationEvent
 ```
 
 > **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
@@ -85,36 +92,84 @@ Outbound notifications are triggered by internal events (defined in [System Even
 | `worker:error` | Worker encountered an error | Yes |
 | `worker:exited` | Worker process exited | Optional |
 
+### Event Trigger Sources
+
+Each event type has a different trigger source:
+
+| Event Type | Trigger Source | Entry Point |
+|------------|----------------|-------------|
+| `agent:waiting` | ActivityDetector | `onActivityChange()` |
+| `agent:idle` | ActivityDetector | `onActivityChange()` |
+| `agent:active` | ActivityDetector | `onActivityChange()` |
+| `worker:error` | PTY error event | `onWorkerError()` |
+| `worker:exited` | PTY exit event | `onWorkerExit()` |
+
 ### Flow
 
 ```typescript
 // Pseudocode for outbound notification flow
 class NotificationManager {
+  /**
+   * Called when agent activity state changes (waiting/idle/active).
+   * Triggered by ActivityDetector parsing PTY output.
+   */
   onActivityChange(
     session: Session,
     worker: Worker,
     newState: AgentActivityState
   ): void {
-    // 1. Map activity state to event type
-    const eventType = this.mapActivityToEventType(newState);
+    const event: NotificationEvent = {
+      type: this.mapActivityToEventType(newState),
+      activityState: newState,
+      timestamp: new Date().toISOString(),
+    };
+    this.sendNotification(session, worker, event);
+  }
 
-    // 2. Check if notification should be sent
+  /**
+   * Called when worker encounters an error.
+   * Triggered by PTY error event.
+   */
+  onWorkerError(session: Session, worker: Worker, message: string): void {
+    const event: NotificationEvent = {
+      type: 'worker:error',
+      message,
+      timestamp: new Date().toISOString(),
+    };
+    this.sendNotification(session, worker, event);
+  }
+
+  /**
+   * Called when worker process exits.
+   * Triggered by PTY exit event.
+   */
+  onWorkerExit(session: Session, worker: Worker, exitCode: number): void {
+    const event: NotificationEvent = {
+      type: 'worker:exited',
+      exitCode,
+      timestamp: new Date().toISOString(),
+    };
+    this.sendNotification(session, worker, event);
+  }
+
+  private sendNotification(
+    session: Session,
+    worker: Worker,
+    event: NotificationEvent
+  ): void {
+    // Check if notification should be sent
     const config = this.getNotificationConfig(session.id);
-    if (!config.rules.triggers[eventType]) return;
+    if (!config.rules.triggers[event.type]) return;
 
-    // 3. Build notification context
+    // Build notification context
     const context: NotificationContext = {
       session,
       worker,
-      event: {
-        type: eventType,
-        activityState: newState,
-        timestamp: new Date(),
-      },
+      event,
       agentConsoleUrl: this.buildSessionUrl(session, worker),
     };
 
-    // 4. Send to all configured services
+    // Send to all configured services
     for (const handler of this.getEnabledHandlers(config)) {
       handler.send(context).catch(err => {
         this.logger.error(`Notification failed: ${handler.serviceId}`, err);

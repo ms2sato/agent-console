@@ -82,8 +82,8 @@ interface InboundEventHandler {
   /** Handler identifier */
   readonly handlerId: string;
 
-  /** Event types this handler supports */
-  readonly supportedEvents: SystemEventType[];
+  /** Event types this handler supports (inbound events only) */
+  readonly supportedEvents: InboundEventType[];
 
   /**
    * Handle the event for a specific target.
@@ -107,7 +107,7 @@ Writes formatted message to Agent Worker's PTY stdin.
 ```typescript
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'ci:failed'];
+  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed'];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
@@ -133,7 +133,7 @@ Triggers DiffWorker to refresh its diff view.
 ```typescript
 class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
-  readonly supportedEvents: SystemEventType[] = ['ci:completed', 'pr:merged'];
+  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'pr:merged'];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const workers = this.sessionManager.getWorkersByType(target.sessionId, 'git-diff');
@@ -154,7 +154,7 @@ Sends notification to connected clients via WebSocket.
 ```typescript
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
-  readonly supportedEvents: SystemEventType[] = ['ci:failed', 'issue:closed', 'pr:merged'];
+  readonly supportedEvents: InboundEventType[] = ['ci:failed', 'issue:closed', 'pr:merged'];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     // Broadcast to all clients viewing this session
@@ -195,7 +195,7 @@ app.post('/webhooks/:service', async (c) => {
     jobId,
     service,
     rawPayload: payload,
-    headers: Object.fromEntries(c.req.raw.headers),
+    headers: Object.fromEntries(c.req.raw.headers),  // Stored as Record for serialization
     receivedAt: new Date().toISOString(),
   } satisfies InboundEventJobPayload);
 
@@ -206,8 +206,11 @@ app.post('/webhooks/:service', async (c) => {
 jobQueue.registerHandler('inbound-event:process', async (job: InboundEventJobPayload) => {
   const parser = getServiceParser(job.service);
 
+  // Convert stored Record back to Headers for parsing
+  const headers = new Headers(job.headers);
+
   // Parse payload into event
-  const event = await parser.parse(job.rawPayload, job.headers);
+  const event = await parser.parse(job.rawPayload, headers);
   if (!event) return; // Unsupported event type
 
   // Resolve targets (sessions matching repository/branch)
@@ -240,6 +243,8 @@ jobQueue.registerHandler('inbound-event:process', async (job: InboundEventJobPay
 ```
 
 ## Database Schema
+
+> **Prerequisite**: This design uses the `jobs` table from [Local Job Queue](./local-job-queue-design.md).
 
 ### Kysely Schema Definition
 
@@ -417,7 +422,7 @@ interface ServiceParser {
    * Parse raw payload into SystemEvent.
    * Returns null if the event type is not supported.
    */
-  parse(payload: string, headers: Record<string, string>): Promise<SystemEvent | null>;
+  parse(payload: string, headers: Headers): Promise<SystemEvent | null>;
 }
 ```
 
@@ -453,9 +458,9 @@ class GitHubServiceParser implements ServiceParser {
 ### Event Parsing
 
 ```typescript
-async parse(payload: string, headers: Record<string, string>): Promise<SystemEvent | null> {
+async parse(payload: string, headers: Headers): Promise<SystemEvent | null> {
   const body = JSON.parse(payload);
-  const githubEvent = headers['x-github-event'];
+  const githubEvent = headers.get('x-github-event');
 
   switch (githubEvent) {
     case 'workflow_run':
@@ -536,15 +541,15 @@ interface InboundIntegrationConfig {
   handlers: {
     'agent-worker': {
       enabled: boolean;
-      events: string[];  // e.g., ['ci:completed', 'ci:failed']
+      events: InboundEventType[];
     };
     'diff-worker': {
       enabled: boolean;
-      events: string[];
+      events: InboundEventType[];
     };
     'ui-notification': {
       enabled: boolean;
-      events: string[];
+      events: InboundEventType[];
     };
   };
 
@@ -588,7 +593,7 @@ Handlers that perform session-level actions:
 ```typescript
 class SessionActionHandler implements InboundEventHandler {
   readonly handlerId = 'session-action';
-  readonly supportedEvents: SystemEventType[] = ['issue:closed', 'pr:merged'];
+  readonly supportedEvents: InboundEventType[] = ['issue:closed', 'pr:merged'];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     // Example: Show dialog suggesting to close session
