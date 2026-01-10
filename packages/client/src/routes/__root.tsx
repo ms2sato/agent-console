@@ -1,6 +1,8 @@
+import { useEffect } from 'react';
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { validateSessions } from '../lib/api';
+import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
@@ -49,6 +51,11 @@ function RootLayout() {
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();
   const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
+
+  // Update favicon based on worker activity states
+  useEffect(() => {
+    updateFavicon(hasAnyAskingWorker(workerActivityStates));
+  }, [workerActivityStates]);
 
   // Find current session for breadcrumb display
   const currentSession: Session | undefined = currentSessionId

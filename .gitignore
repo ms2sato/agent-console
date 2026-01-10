@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 public/
+!packages/client/public/
 *.tsbuildinfo
 
 # Editor
