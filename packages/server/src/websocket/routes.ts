@@ -37,8 +37,11 @@ function getWebSocketReadyState(client: WSContext): number | undefined {
   return undefined;
 }
 
-// Helper to broadcast message to all app clients
-function broadcastToApp(msg: AppServerMessage): void {
+/**
+ * Broadcast a message to all connected app clients.
+ * Used for real-time updates like session lifecycle events and async operation results.
+ */
+export function broadcastToApp(msg: AppServerMessage): void {
   const msgStr = JSON.stringify(msg);
   const deadClients: WSContext[] = [];
 

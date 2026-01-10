@@ -266,6 +266,13 @@ export interface CreateWorktreeResponse {
   fetchError?: string;
 }
 
+/**
+ * Response for async worktree creation (when taskId is provided)
+ */
+export interface CreateWorktreeAsyncResponse {
+  accepted: true;
+}
+
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {
   const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`);
   if (!res.ok) {
@@ -310,10 +317,36 @@ export async function fetchBranchCommits(sessionId: string, baseRef: string): Pr
   return res.json();
 }
 
+/**
+ * Create a worktree synchronously (without taskId).
+ * @deprecated Use createWorktreeAsync instead for non-blocking UI
+ */
 export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest
 ): Promise<CreateWorktreeResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to create worktree');
+  }
+  return res.json();
+}
+
+/**
+ * Create a worktree asynchronously.
+ * The request must include a client-generated taskId for correlation.
+ * Returns immediately with `{ accepted: true }`.
+ * Listen to WebSocket for `worktree-creation-completed` or `worktree-creation-failed` events.
+ */
+export async function createWorktreeAsync(
+  repositoryId: string,
+  request: CreateWorktreeRequest
+): Promise<CreateWorktreeAsyncResponse> {
   const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

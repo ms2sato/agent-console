@@ -560,7 +560,7 @@ api.post('/repositories/:id/github-issue', validateBody(FetchGitHubIssueRequestS
   }
 });
 
-// Create a worktree
+// Create a worktree (async - returns immediately and broadcasts result via WebSocket)
 api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema), async (c) => {
   const repoId = c.req.param('id');
   const repositoryManager = getRepositoryManager();
@@ -571,17 +571,9 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
   }
 
   const body = getValidatedBody<CreateWorktreeRequest>(c);
-  const { mode, autoStartSession, agentId, initialPrompt, title } = body;
+  const { taskId, mode, autoStartSession, agentId, initialPrompt, title } = body;
 
-  let branch: string;
-  let baseBranch: string | undefined;
-  let effectiveTitle: string | undefined = title;
-  let branchNameFallback: BranchNameFallback | undefined;
-
-  // Extract useRemote flag (only available for 'prompt' and 'custom' modes)
-  const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote === true;
-
-  // Get the agent for branch name generation (if prompt mode)
+  // Validate agent exists before returning accepted (fail fast for invalid config)
   const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
   const agentManager = await getAgentManager();
   const agent = agentManager.getAgent(selectedAgentId);
@@ -589,109 +581,159 @@ api.post('/repositories/:id/worktrees', validateBody(CreateWorktreeRequestSchema
     throw new ValidationError(`Agent not found: ${selectedAgentId}`);
   }
 
-  switch (mode) {
-    case 'prompt':
-      // Generate branch name from prompt using the selected agent
-      const suggestion = await suggestSessionMetadata({
-        prompt: body.initialPrompt!.trim(),
-        repositoryPath: repo.path,
-        agent,
-      });
-      if (suggestion.error || !suggestion.branch) {
-        // Fallback: use timestamp-based branch name, empty title
-        branch = `task-${Date.now()}`;
-        branchNameFallback = {
-          usedBranch: branch,
-          reason: suggestion.error || 'Failed to generate branch name',
-        };
-      } else {
-        branch = suggestion.branch;
-        // Use generated title if user didn't provide one
-        effectiveTitle = title ?? suggestion.title;
-      }
-      baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
-      break;
-    case 'custom':
-      branch = body.branch!;
-      baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
-      break;
-    case 'existing':
-      branch = body.branch!;
-      baseBranch = undefined;
-      break;
-    default: {
-      // Exhaustiveness check - compile error if new mode is added
-      const _exhaustive: never = mode;
-      throw new Error(`Unhandled branch mode: ${_exhaustive}`);
-    }
-  }
+  // Return immediately - worktree creation will happen in background
+  // Import broadcast function lazily to avoid circular dependencies
+  const { broadcastToApp } = await import('../websocket/routes.js');
 
-  // If useRemote is true, fetch the remote branch first to ensure it's up-to-date,
-  // then prefix baseBranch with origin/ to branch from remote
-  let effectiveUseRemote = useRemote;
-  if (useRemote && baseBranch) {
+  // Execute worktree creation in background (fire-and-forget)
+  // This promise is intentionally not awaited
+  (async () => {
     try {
-      // Fetch to ensure origin/<baseBranch> is up-to-date
-      await fetchRemote(baseBranch, repo.path);
-    } catch (error) {
-      // If fetch fails, fall back to local branch
-      logger.warn({ repoId, baseBranch, error: error instanceof Error ? error.message : String(error) },
-        'Failed to fetch remote branch, falling back to local');
-      effectiveUseRemote = false;
-    }
-  }
-  const effectiveBaseBranch = effectiveUseRemote && baseBranch ? `origin/${baseBranch}` : baseBranch;
+      let branch: string;
+      let baseBranch: string | undefined;
+      let effectiveTitle: string | undefined = title;
+      let branchNameFallback: BranchNameFallback | undefined;
 
-  const result = await worktreeService.createWorktree(repo.path, branch, effectiveBaseBranch);
+      // Extract useRemote flag (only available for 'prompt' and 'custom' modes)
+      const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote === true;
 
-  if (result.error) {
-    throw new ValidationError(result.error);
-  }
-
-  // Get the created worktree info
-  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
-  const worktree = worktrees.find(wt => wt.path === result.worktreePath);
-
-  // Execute setup command if configured
-  let setupCommandResult: SetupCommandResult | undefined;
-  if (repo.setupCommand && worktree && result.index !== undefined) {
-    setupCommandResult = await worktreeService.executeSetupCommand(
-      repo.setupCommand,
-      result.worktreePath,
-      {
-        worktreeNum: result.index,
-        branch: worktree.branch,
-        repo: repo.name,
+      switch (mode) {
+        case 'prompt':
+          // Generate branch name from prompt using the selected agent
+          const suggestion = await suggestSessionMetadata({
+            prompt: body.initialPrompt!.trim(),
+            repositoryPath: repo.path,
+            agent,
+          });
+          if (suggestion.error || !suggestion.branch) {
+            // Fallback: use timestamp-based branch name, empty title
+            branch = `task-${Date.now()}`;
+            branchNameFallback = {
+              usedBranch: branch,
+              reason: suggestion.error || 'Failed to generate branch name',
+            };
+          } else {
+            branch = suggestion.branch;
+            // Use generated title if user didn't provide one
+            effectiveTitle = title ?? suggestion.title;
+          }
+          baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
+          break;
+        case 'custom':
+          branch = body.branch!;
+          baseBranch = body.baseBranch || await worktreeService.getDefaultBranch(repo.path) || 'main';
+          break;
+        case 'existing':
+          branch = body.branch!;
+          baseBranch = undefined;
+          break;
+        default: {
+          // Exhaustiveness check - compile error if new mode is added
+          const _exhaustive: never = mode;
+          throw new Error(`Unhandled branch mode: ${_exhaustive}`);
+        }
       }
-    );
-  }
 
-  // Optionally start a session
-  let session = null;
-  if (autoStartSession && worktree) {
-    const sessionManager = getSessionManager();
-    session = await sessionManager.createSession({
-      type: 'worktree',
-      repositoryId: repoId,
-      worktreeId: worktree.branch,
-      locationPath: worktree.path,
-      agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
-      initialPrompt,
-      title: effectiveTitle,
-    });
-  }
+      // If useRemote is true, fetch the remote branch first to ensure it's up-to-date,
+      // then prefix baseBranch with origin/ to branch from remote
+      let effectiveUseRemote = useRemote;
+      let fetchFailed = false;
+      let fetchError: string | undefined;
+      if (useRemote && baseBranch) {
+        try {
+          // Fetch to ensure origin/<baseBranch> is up-to-date
+          await fetchRemote(baseBranch, repo.path);
+        } catch (error) {
+          // If fetch fails, fall back to local branch
+          logger.warn({ repoId, baseBranch, error: error instanceof Error ? error.message : String(error) },
+            'Failed to fetch remote branch, falling back to local');
+          effectiveUseRemote = false;
+          fetchFailed = true;
+          fetchError = 'Failed to fetch remote branch, created from local branch instead';
+        }
+      }
+      const effectiveBaseBranch = effectiveUseRemote && baseBranch ? `origin/${baseBranch}` : baseBranch;
 
-  // Report if fetch failed and we fell back to local branch
-  const fetchFailed = useRemote && !effectiveUseRemote;
+      const result = await worktreeService.createWorktree(repo.path, branch, effectiveBaseBranch);
 
-  return c.json({
-    worktree,
-    session,
-    branchNameFallback,
-    setupCommandResult,
-    fetchFailed: fetchFailed || undefined,  // Only include if true
-    fetchError: fetchFailed ? 'Failed to fetch remote branch, created from local branch instead' : undefined,
-  }, 201);
+      if (result.error) {
+        // Broadcast failure
+        broadcastToApp({
+          type: 'worktree-creation-failed',
+          taskId,
+          error: result.error,
+        });
+        return;
+      }
+
+      // Get the created worktree info
+      const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
+      const worktree = worktrees.find(wt => wt.path === result.worktreePath);
+
+      // Execute setup command if configured
+      let setupCommandResult: SetupCommandResult | undefined;
+      if (repo.setupCommand && worktree && result.index !== undefined) {
+        setupCommandResult = await worktreeService.executeSetupCommand(
+          repo.setupCommand,
+          result.worktreePath,
+          {
+            worktreeNum: result.index,
+            branch: worktree.branch,
+            repo: repo.name,
+          }
+        );
+      }
+
+      // Optionally start a session
+      let session = null;
+      if (autoStartSession && worktree) {
+        const sessionManager = getSessionManager();
+        session = await sessionManager.createSession({
+          type: 'worktree',
+          repositoryId: repoId,
+          worktreeId: worktree.branch,
+          locationPath: worktree.path,
+          agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
+          initialPrompt,
+          title: effectiveTitle,
+        });
+      }
+
+      // Broadcast success
+      if (worktree) {
+        broadcastToApp({
+          type: 'worktree-creation-completed',
+          taskId,
+          worktree,
+          session,
+          branchNameFallback,
+          setupCommandResult,
+          fetchFailed: fetchFailed || undefined,
+          fetchError,
+        });
+        logger.info({ taskId, repoId, branch: worktree.branch }, 'Worktree creation completed');
+      } else {
+        // This shouldn't happen, but handle gracefully
+        broadcastToApp({
+          type: 'worktree-creation-failed',
+          taskId,
+          error: 'Worktree created but not found in list',
+        });
+        logger.error({ taskId, repoId, worktreePath: result.worktreePath }, 'Worktree created but not found in list');
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree creation';
+      logger.error({ taskId, repoId, error: errorMessage }, 'Worktree creation failed');
+      broadcastToApp({
+        type: 'worktree-creation-failed',
+        taskId,
+        error: errorMessage,
+      });
+    }
+  })();
+
+  // Return accepted immediately (do not wait for worktree creation)
+  return c.json({ accepted: true }, 202);
 });
 
 // Delete a worktree

@@ -302,7 +302,7 @@ describe('API Client', () => {
     });
   });
 
-  describe('createWorktree', () => {
+  describe('createWorktree (legacy sync)', () => {
     it('should create worktree successfully with custom mode', async () => {
       const { createWorktree } = await import('../api');
       const mockResponse = {
@@ -311,12 +311,12 @@ describe('API Client', () => {
       };
       mockFetch.mockResolvedValue(createMockResponse(mockResponse));
 
-      const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1' });
+      const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
 
       expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'custom', branch: 'feature-1' }),
+        body: JSON.stringify({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' }),
       });
       expect(result).toEqual(mockResponse);
     });
@@ -330,9 +330,26 @@ describe('API Client', () => {
         json: mock(() => Promise.resolve({ error: 'Branch already exists' })),
       } as unknown as Response);
 
-      await expect(createWorktree('repo-id', { mode: 'custom', branch: 'existing' })).rejects.toThrow(
+      await expect(createWorktree('repo-id', { mode: 'custom', branch: 'existing', taskId: 'test-task-id' })).rejects.toThrow(
         'Branch already exists'
       );
+    });
+  });
+
+  describe('createWorktreeAsync', () => {
+    it('should create worktree asynchronously and return accepted', async () => {
+      const { createWorktreeAsync } = await import('../api');
+      const mockResponse = { accepted: true };
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await createWorktreeAsync('repo-id', { mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
+
+      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' }),
+      });
+      expect(result).toEqual(mockResponse);
     });
   });
 

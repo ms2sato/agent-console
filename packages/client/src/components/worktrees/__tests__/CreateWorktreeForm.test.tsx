@@ -51,7 +51,6 @@ function renderCreateWorktreeForm(props: Partial<React.ComponentProps<typeof Cre
   const defaultProps = {
     repositoryId: 'repo-1',
     defaultBranch: 'main',
-    isPending: false,
     onSubmit: mock(() => Promise.resolve()),
     onCancel: mock(() => {}),
   };
@@ -396,22 +395,6 @@ describe('CreateWorktreeForm', () => {
   });
 
   describe('UI state', () => {
-    it('should disable form when isPending is true', async () => {
-      renderCreateWorktreeForm({ isPending: true });
-
-      // Wait for agents to load
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      // Form overlay should be visible with loading message
-      expect(screen.getByText('Creating worktree...')).toBeTruthy();
-
-      // Form fields should be disabled
-      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
-      expect(promptInput.closest('fieldset')?.disabled).toBe(true);
-    });
-
     it('should call onCancel when cancel button is clicked', async () => {
       const user = userEvent.setup();
       const { props } = renderCreateWorktreeForm();

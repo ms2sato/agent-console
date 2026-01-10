@@ -1,5 +1,9 @@
 import type { Worker, AgentActivityState } from './worker.js';
 import type { AgentDefinition } from './agent.js';
+import type {
+  WorktreeCreationCompletedPayload,
+  WorktreeCreationFailedPayload,
+} from './worktree-creation.js';
 
 // Forward declaration of Repository to avoid circular dependency
 // The full type is defined in @agent-console/shared/src/index.ts
@@ -128,6 +132,8 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'repository-created': 11,
   'repository-updated': 12,
   'repository-deleted': 13,
+  'worktree-creation-completed': 14,
+  'worktree-creation-failed': 15,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -148,7 +154,9 @@ export type AppServerMessage =
   | { type: 'repositories-sync'; repositories: Repository[] }
   | { type: 'repository-created'; repository: Repository }
   | { type: 'repository-updated'; repository: Repository }
-  | { type: 'repository-deleted'; repositoryId: string };
+  | { type: 'repository-deleted'; repositoryId: string }
+  | ({ type: 'worktree-creation-completed' } & WorktreeCreationCompletedPayload)
+  | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload);
 
 /**
  * Valid message types for AppClientMessage.

@@ -1,2 +1,2 @@
 export { CreateWorktreeForm } from './CreateWorktreeForm';
-export type { CreateWorktreeFormProps } from './CreateWorktreeForm';
+export type { CreateWorktreeFormProps, CreateWorktreeFormRequest } from './CreateWorktreeForm';
