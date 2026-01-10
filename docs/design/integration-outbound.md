@@ -20,7 +20,6 @@ type OutboundTriggerEventType =
 /**
  * Internal event format for outbound notifications.
  * Each event type has specific payload for UI presentation.
- * The `type` field must be a member of OutboundTriggerEventType.
  */
 type NotificationEvent =
   | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
@@ -28,6 +27,11 @@ type NotificationEvent =
   | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
   | { type: 'worker:error'; message: string; timestamp: Date }
   | { type: 'worker:exited'; exitCode: number; timestamp: Date };
+
+// Type assertion: NotificationEvent['type'] must be subset of OutboundTriggerEventType
+type _AssertEventTypes = NotificationEvent['type'] extends OutboundTriggerEventType
+  ? true
+  : never;  // Compile error if mismatch
 ```
 
 > **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
