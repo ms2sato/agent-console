@@ -457,6 +457,8 @@ class GitHubServiceParser implements ServiceParser {
 
 ### Event Parsing
 
+> **Implementation Note**: The examples below use `unknown` type for brevity. In production, define TypeScript interfaces for GitHub webhook payloads (e.g., `GitHubWorkflowRunPayload`) and add type guards to validate payload structure before property access. Return `null` for malformed payloads.
+
 ```typescript
 async parse(payload: string, headers: Headers): Promise<SystemEvent | null> {
   const body = JSON.parse(payload);
