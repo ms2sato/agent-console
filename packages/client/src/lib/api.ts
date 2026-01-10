@@ -600,28 +600,6 @@ export async function fetchSessionPrLink(sessionId: string): Promise<SessionPrLi
 }
 
 // ===========================================================================
-// Server ID
-// ===========================================================================
-
-export interface ServerIdResponse {
-  serverId: string;
-}
-
-/**
- * Fetch the server instance ID.
- * This ID is unique per server process and is used to detect server restarts.
- * When the server restarts, terminal caches become invalid because the server
- * loses its in-memory history buffers.
- */
-export async function fetchServerId(): Promise<ServerIdResponse> {
-  const res = await fetch(`${API_BASE}/server/id`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch server ID: ${res.statusText}`);
-  }
-  return res.json();
-}
-
-// ===========================================================================
 // Remote Branch Status
 // ===========================================================================
 

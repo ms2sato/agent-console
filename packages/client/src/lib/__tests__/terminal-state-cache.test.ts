@@ -72,7 +72,6 @@ import {
   clearTerminalState,
   cleanupOldStates,
   clearAllTerminalStates,
-  isValidForServer,
 } from '../terminal-state-cache';
 
 describe('terminal-state-cache', () => {
@@ -308,32 +307,6 @@ describe('terminal-state-cache', () => {
     });
   });
 
-  describe('isValidForServer', () => {
-    it('should return true when server ID is not provided', () => {
-      const state = createValidState();
-
-      expect(isValidForServer(state, undefined)).toBe(true);
-    });
-
-    it('should return false when cached state has no serverId', () => {
-      const state = createValidState(); // No serverId
-
-      expect(isValidForServer(state, 'server-123')).toBe(false);
-    });
-
-    it('should return true when server IDs match', () => {
-      const state = createValidState({ serverId: 'server-123' });
-
-      expect(isValidForServer(state, 'server-123')).toBe(true);
-    });
-
-    it('should return false when server IDs do not match', () => {
-      const state = createValidState({ serverId: 'server-123' });
-
-      expect(isValidForServer(state, 'server-456')).toBe(false);
-    });
-  });
-
   describe('key format', () => {
     it('should handle session and worker IDs with special characters', async () => {
       const state = createValidState();
@@ -350,40 +323,6 @@ describe('terminal-state-cache', () => {
       await saveTerminalState(sessionId, workerId, state);
 
       expect(mockStore.get(`terminal:${sessionId}:${workerId}`)).toEqual(state);
-    });
-  });
-
-  describe('serverId validation in type guard', () => {
-    it('should accept state with valid string serverId', async () => {
-      const stateWithServerId = {
-        data: 'test',
-        savedAt: Date.now(),
-        cols: 80,
-        rows: 24,
-        offset: 0,
-        serverId: 'server-123',
-      };
-      mockStore.set('terminal:session-1:worker-1', stateWithServerId);
-
-      const result = await loadTerminalState('session-1', 'worker-1');
-
-      expect(result).toEqual(stateWithServerId);
-    });
-
-    it('should reject state with invalid serverId type', async () => {
-      const stateWithInvalidServerId = {
-        data: 'test',
-        savedAt: Date.now(),
-        cols: 80,
-        rows: 24,
-        offset: 0,
-        serverId: 12345, // number instead of string
-      };
-      mockStore.set('terminal:session-1:worker-1', stateWithInvalidServerId);
-
-      const result = await loadTerminalState('session-1', 'worker-1');
-
-      expect(result).toBeNull();
     });
   });
 });
