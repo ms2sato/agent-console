@@ -131,8 +131,28 @@ After specialists complete, verify:
 ### Step 6: Decide Next Action
 
 - **If CRITICAL/HIGH issues remain:** Start next iteration
-- **If no CRITICAL/HIGH issues:** Exit loop (success)
+- **If no CRITICAL/HIGH issues:** Proceed to Step 7 (Code Simplification)
 - **If max iterations (5) reached:** Exit loop and report remaining issues
+
+### Step 7: Code Simplification
+
+After all CRITICAL/HIGH issues are resolved, run `code-simplifier` to refine the modified code:
+
+Launch `code-simplifier`:
+```
+Review and simplify all files that were modified during this review-loop session.
+
+Focus on:
+- Clarity and consistency improvements
+- Removing unnecessary complexity introduced during fixes
+- Applying project coding standards
+
+Preserve all functionality - only improve how the code is written.
+
+After simplification, run: bun run test && bun run typecheck
+```
+
+Wait for completion. If tests or typecheck fail, report the issue but do not iterate further.
 
 ## Final Report
 
@@ -146,6 +166,7 @@ After the loop completes, provide a summary:
 - HIGH issues resolved: {count}
 - Remaining MEDIUM issues: {count}
 - Remaining LOW issues: {count}
+- Code simplification: {applied/skipped}
 
 ### Iterations Summary
 {Brief summary of what was fixed in each iteration}
