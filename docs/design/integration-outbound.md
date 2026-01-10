@@ -9,9 +9,18 @@ This document describes the design for sending notifications from Agent Console 
 Outbound events are internal events that trigger notifications to external services.
 
 ```typescript
+/** Event types that can trigger outbound notifications */
+type OutboundTriggerEventType =
+  | 'agent:waiting'   // Agent is asking a question
+  | 'agent:idle'      // Agent finished processing
+  | 'agent:active'    // Agent is actively processing
+  | 'worker:error'    // Worker encountered an error
+  | 'worker:exited';  // Worker process exited
+
 /**
  * Internal event format for outbound notifications.
  * Each event type has specific payload for UI presentation.
+ * The `type` field must be a member of OutboundTriggerEventType.
  */
 type NotificationEvent =
   | { type: 'agent:waiting'; activityState: 'waiting'; timestamp: Date }
@@ -19,9 +28,6 @@ type NotificationEvent =
   | { type: 'agent:active'; activityState: 'active'; timestamp: Date }
   | { type: 'worker:error'; message: string; timestamp: Date }
   | { type: 'worker:exited'; exitCode: number; timestamp: Date };
-
-/** Event types that can trigger outbound notifications (derived from NotificationEvent) */
-type OutboundTriggerEventType = NotificationEvent['type'];
 ```
 
 > **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.

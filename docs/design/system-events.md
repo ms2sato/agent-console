@@ -95,27 +95,13 @@ type EventSource =
 
 /**
  * All system event types.
- * This is the union of InboundEventType and OutboundTriggerEventType.
+ * Union of InboundEventType and OutboundTriggerEventType.
  *
- * @see InboundEventType in integration-inbound.md
- * @see OutboundTriggerEventType in integration-outbound.md
+ * Each subsystem defines its own event types:
+ * - InboundEventType: defined in integration-inbound.md
+ * - OutboundTriggerEventType: defined in integration-outbound.md
  */
 type SystemEventType = InboundEventType | OutboundTriggerEventType;
-
-// For reference, the individual types are:
-//
-// type InboundEventType =
-//   | 'ci:completed'   // CI/CD pipeline succeeded
-//   | 'ci:failed'      // CI/CD pipeline failed
-//   | 'issue:closed'   // Issue was closed
-//   | 'pr:merged';     // Pull request was merged
-//
-// type OutboundTriggerEventType =
-//   | 'agent:waiting'  // Agent is asking a question
-//   | 'agent:idle'     // Agent finished processing
-//   | 'agent:active'   // Agent is actively processing
-//   | 'worker:error'   // Worker encountered an error
-//   | 'worker:exited'; // Worker process exited
 ```
 
 ## Event Types
