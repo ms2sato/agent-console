@@ -21,3 +21,6 @@ export type { SessionSettingsMenuProps, MenuAction } from './SessionSettingsMenu
 
 export { QuickSessionSettingsMenu } from './QuickSessionSettingsMenu';
 export type { QuickSessionSettingsMenuProps, QuickMenuAction } from './QuickSessionSettingsMenu';
+
+export { SessionPage } from './SessionPage';
+export type { SessionPageProps } from './SessionPage';
