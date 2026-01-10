@@ -915,5 +915,56 @@ describe('WorkerOutputFileManager', () => {
       // Last 2 lines: "line3" and empty line after last \n
       expect(result!.data).toBe('line3\n');
     });
+
+    it('should include pending buffer when file exists', async () => {
+      const filePath = manager.getOutputFilePath('session-pending-file', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-file`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2\nline3'); // 17 bytes
+
+      // Buffer more data (not flushed yet)
+      manager.bufferOutput('session-pending-file', 'worker-1', '\nline4\nline5'); // 12 bytes
+
+      const result = await manager.readLastNLines('session-pending-file', 'worker-1', 3);
+
+      expect(result).not.toBeNull();
+      // Should get last 3 lines from combined content (file + pending)
+      expect(result!.data).toBe('line3\nline4\nline5');
+      // Offset should be file size (17) + pending buffer byte length (12)
+      expect(result!.offset).toBe(29);
+    });
+
+    it('should include pending buffer even when fewer lines requested', async () => {
+      const filePath = manager.getOutputFilePath('session-pending-fewer', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-fewer`, { recursive: true });
+      vol.writeFileSync(filePath, 'old1\nold2\nold3'); // 14 bytes
+
+      // Buffer more data that contains the most recent output (not flushed yet)
+      manager.bufferOutput('session-pending-fewer', 'worker-1', '\nnew1\nnew2'); // 10 bytes
+
+      // Request only last 2 lines - should be from pending buffer
+      const result = await manager.readLastNLines('session-pending-fewer', 'worker-1', 2);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('new1\nnew2');
+      // Offset should be file size (14) + pending buffer byte length (10)
+      expect(result!.offset).toBe(24);
+    });
+
+    it('should handle pending buffer with multi-byte UTF-8 characters', async () => {
+      const filePath = manager.getOutputFilePath('session-pending-utf8', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-utf8`, { recursive: true });
+      vol.writeFileSync(filePath, 'hello\n'); // 6 bytes
+
+      // Buffer Japanese characters (3 bytes each)
+      manager.bufferOutput('session-pending-utf8', 'worker-1', 'テスト'); // 9 bytes
+
+      const result = await manager.readLastNLines('session-pending-utf8', 'worker-1', 2);
+
+      expect(result).not.toBeNull();
+      // Last 2 lines: "hello" and "テスト"
+      expect(result!.data).toBe('hello\nテスト');
+      // Offset should be file size (6) + pending buffer byte length (9)
+      expect(result!.offset).toBe(15);
+    });
   });
 });

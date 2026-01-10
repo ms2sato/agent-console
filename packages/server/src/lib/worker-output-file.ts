@@ -352,18 +352,21 @@ export class WorkerOutputFileManager {
     maxLines: number
   ): Promise<HistoryReadResult> {
     try {
+      // Get pending buffer for this worker
+      const key = this.getKey(sessionId, workerId);
+      const pending = this.pendingFlushes.get(key);
+      const pendingBuffer = pending?.buffer || '';
+      const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
+
       // Find the actual file (uncompressed or legacy compressed)
       const actualFile = await this.getActualFilePath(sessionId, workerId);
 
       if (!actualFile) {
-        // No file exists, check pending buffer
-        const key = this.getKey(sessionId, workerId);
-        const pending = this.pendingFlushes.get(key);
-        if (pending && pending.buffer.length > 0) {
+        // No file exists, return only pending buffer
+        if (pendingByteLength > 0) {
           // Apply line limit to pending buffer
-          const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
-          const trimmedData = this.getLastNLines(pending.buffer, maxLines);
-          return { data: trimmedData, offset: byteLength };
+          const trimmedData = this.getLastNLines(pendingBuffer, maxLines);
+          return { data: trimmedData, offset: pendingByteLength };
         }
         // No file and no pending buffer - return empty history
         // This is a valid state for newly created workers
@@ -376,14 +379,16 @@ export class WorkerOutputFileManager {
         ? Buffer.from(gunzipSync(rawBuffer))
         : rawBuffer;
 
-      // The offset is always the full content size, not the truncated data size
-      const currentOffset = buffer.length;
-      const fullContent = buffer.toString('utf-8');
+      const fileSize = buffer.length;
+      const totalOffset = fileSize + pendingByteLength;
 
-      // Get last N lines
+      // Combine file content with pending buffer
+      const fullContent = buffer.toString('utf-8') + pendingBuffer;
+
+      // Get last N lines from combined content
       const trimmedData = this.getLastNLines(fullContent, maxLines);
 
-      return { data: trimmedData, offset: currentOffset };
+      return { data: trimmedData, offset: totalOffset };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         const key = this.getKey(sessionId, workerId);
