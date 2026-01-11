@@ -2,7 +2,8 @@ import { serveStatic, upgradeWebSocket, websocket } from 'hono/bun';
 import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
-import { setupWebSocketRoutes } from './websocket/routes.js';
+import { webhooks } from './routes/webhooks.js';
+import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
@@ -13,6 +14,7 @@ import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
 import { setNotificationManager } from './services/notifications/index.js';
 import { setSystemCapabilities } from './services/system-capabilities-service.js';
+import { initializeInboundIntegration } from './services/inbound/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -125,7 +127,15 @@ app.get('/health', (c) => {
 
 // Mount API routes
 app.route('/api', api);
+// Mount webhook routes
+app.route('/webhooks', webhooks);
 
+initializeInboundIntegration({
+  jobQueue: appContext.jobQueue,
+  sessionManager: appContext.sessionManager,
+  repositoryManager: appContext.repositoryManager,
+  broadcastToApp,
+});
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
 // WebSocket routes are not caught by the catch-all SPA handler
 await setupWebSocketRoutes(app, upgradeWebSocket);

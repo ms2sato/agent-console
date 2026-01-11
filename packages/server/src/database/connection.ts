@@ -195,6 +195,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 6) {
     await migrateToV6(database);
   }
+
+  if (currentVersion < 7) {
+    await migrateToV7(database);
+  }
 }
 
 /**
@@ -449,6 +453,45 @@ async function migrateToV6(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 6`.execute(database);
 
   logger.info('Migration to v6 completed');
+}
+
+/**
+ * Migration v7: Create inbound_event_notifications table.
+ * Stores delivery history for inbound integration events.
+ */
+async function migrateToV7(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v7: Creating inbound_event_notifications table');
+
+  await database.schema
+    .createTable('inbound_event_notifications')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('job_id', 'text', (col) => col.notNull())
+    .addColumn('session_id', 'text', (col) => col.notNull())
+    .addColumn('worker_id', 'text', (col) => col.notNull())
+    .addColumn('handler_id', 'text', (col) => col.notNull())
+    .addColumn('event_type', 'text', (col) => col.notNull())
+    .addColumn('event_summary', 'text', (col) => col.notNull())
+    .addColumn('notified_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await database.schema
+    .createIndex('idx_inbound_event_notifications_job')
+    .ifNotExists()
+    .on('inbound_event_notifications')
+    .column('job_id')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_inbound_event_notifications_session_worker')
+    .ifNotExists()
+    .on('inbound_event_notifications')
+    .columns(['session_id', 'worker_id'])
+    .execute();
+
+  await sql`PRAGMA user_version = 7`.execute(database);
+
+  logger.info('Migration to v7 completed');
 }
 
 /**

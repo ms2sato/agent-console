@@ -1,5 +1,17 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload } from '@agent-console/shared';
+import type {
+  AppServerMessage,
+  AgentActivityState,
+  Session,
+  WorkerActivityInfo,
+  AgentDefinition,
+  Repository,
+  WorktreeCreationCompletedPayload,
+  WorktreeCreationFailedPayload,
+  WorktreeDeletionCompletedPayload,
+  WorktreeDeletionFailedPayload,
+  InboundEventSummary,
+} from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -52,6 +64,8 @@ interface UseAppWsEventOptions {
   onWorktreeCreationCompleted?: (payload: WorktreeCreationCompletedPayload) => void;
   /** Called when async worktree creation fails */
   onWorktreeCreationFailed?: (payload: WorktreeCreationFailedPayload) => void;
+  /** Called when an inbound integration event is received */
+  onInboundEvent?: (sessionId: string, event: InboundEventSummary) => void;
   /** Called when async worktree deletion completes successfully */
   onWorktreeDeletionCompleted?: (payload: WorktreeDeletionCompletedPayload) => void;
   /** Called when async worktree deletion fails */
@@ -152,6 +166,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'worktree-creation-failed':
           console.log(`[WebSocket] worktree-creation-failed: taskId=${msg.taskId}`);
           optionsRef.current.onWorktreeCreationFailed?.(msg);
+          break;
+        case 'inbound-event':
+          console.log(`[WebSocket] inbound-event: ${msg.event.type}`);
+          optionsRef.current.onInboundEvent?.(msg.sessionId, msg.event);
           break;
         case 'worktree-deletion-completed':
           console.log(`[WebSocket] worktree-deletion-completed: taskId=${msg.taskId}`);

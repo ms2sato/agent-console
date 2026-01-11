@@ -22,6 +22,7 @@ Singleton WebSocket connection for app-wide state synchronization. Persists acro
 | `session-updated` | `{ session: Session }` | Session updated (title, branch, etc.) |
 | `session-deleted` | `{ sessionId: string }` | Session deleted |
 | `worker-activity` | `{ sessionId, workerId, activityState }` | Worker activity state changed |
+| `inbound-event` | `{ sessionId, event }` | Inbound integration event notification |
 
 ### Client → Server Messages
 

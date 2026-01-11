@@ -78,6 +78,8 @@ export interface EnqueueOptions {
   priority?: number;
   /** Maximum retry attempts before marking as stalled. Default: 5 */
   maxAttempts?: number;
+  /** Optional job ID override (useful for cross-referencing) */
+  jobId?: string;
 }
 
 /**
@@ -182,7 +184,7 @@ export class JobQueue {
    * @returns The job ID
    */
   async enqueue(type: string, payload: unknown, options?: EnqueueOptions): Promise<string> {
-    const id = randomUUID();
+    const id = options?.jobId ?? randomUUID();
     const now = Date.now();
 
     await this.db

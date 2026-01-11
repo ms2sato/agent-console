@@ -26,6 +26,12 @@ export const JOB_TYPES = {
    * Payload: CleanupRepositoryPayload
    */
   CLEANUP_REPOSITORY: 'cleanup:repository',
+
+  /**
+   * Process an inbound integration webhook event.
+   * Payload: InboundEventJobPayload
+   */
+  INBOUND_EVENT_PROCESS: 'inbound-event:process',
 } as const;
 
 /**
@@ -53,4 +59,20 @@ export interface CleanupWorkerOutputPayload {
  */
 export interface CleanupRepositoryPayload {
   repoDir: string;
+}
+
+/**
+ * Payload for inbound-event:process job.
+ */
+export interface InboundEventJobPayload {
+  /** Same value as jobs.id (for cross-reference) */
+  jobId: string;
+  /** Webhook service identifier (e.g., 'github') */
+  service: string;
+  /** Raw JSON payload */
+  rawPayload: string;
+  /** Request headers as a serializable record */
+  headers: Record<string, string>;
+  /** ISO timestamp when received */
+  receivedAt: string;
 }

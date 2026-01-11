@@ -11,6 +11,7 @@ export interface Database {
   agents: AgentsTable;
   jobs: JobsTable;
   repository_slack_integrations: RepositorySlackIntegrationsTable;
+  inbound_event_notifications: InboundEventNotificationsTable;
 }
 
 /**
@@ -180,6 +181,32 @@ export type JobRow = Selectable<JobsTable>;
 export type NewJob = Insertable<JobsTable>;
 /** Job data for UPDATE queries */
 export type JobUpdate = Updateable<JobsTable>;
+
+/**
+ * Inbound event notifications table schema.
+ * Records history of external events delivered to sessions/workers.
+ */
+export interface InboundEventNotificationsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Reference to jobs.id for the original webhook job */
+  job_id: string;
+  /** Session that received this notification */
+  session_id: string;
+  /** Worker that received this notification ('all' if session-wide) */
+  worker_id: string;
+  /** Handler that processed this event */
+  handler_id: string;
+  /** Event type (e.g., 'ci:completed') */
+  event_type: string;
+  /** Human-readable event summary */
+  event_summary: string;
+  /** Timestamp when notification was delivered */
+  notified_at: string;
+}
+
+export type InboundEventNotification = Selectable<InboundEventNotificationsTable>;
+export type NewInboundEventNotification = Insertable<InboundEventNotificationsTable>;
 
 /**
  * Repository Slack Integrations table schema.
