@@ -7,10 +7,12 @@ export interface WorkerBase {
 export interface AgentWorker extends WorkerBase {
   type: 'agent';
   agentId: string;  // References AgentDefinition.id (e.g., 'claude-code-builtin')
+  activated: boolean;  // Whether the PTY is running (false when hibernated)
 }
 
 export interface TerminalWorker extends WorkerBase {
   type: 'terminal';
+  activated: boolean;  // Whether the PTY is running (false when hibernated)
 }
 
 export interface GitDiffWorker extends WorkerBase {

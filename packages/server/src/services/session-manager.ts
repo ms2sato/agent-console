@@ -9,6 +9,7 @@ import type {
   CreateSessionRequest,
   CreateWorkerParams,
   WorkerErrorCode,
+  SessionActivationState,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -17,6 +18,8 @@ import type {
 import type {
   InternalWorker,
   InternalPtyWorker,
+  InternalAgentWorker,
+  InternalTerminalWorker,
   WorkerCallbacks,
 } from './worker-types.js';
 import { WorkerManager } from './worker-manager.js';
@@ -79,6 +82,7 @@ export interface SessionLifecycleCallbacks {
   onSessionCreated?: (session: Session) => void;
   onSessionUpdated?: (session: Session) => void;
   onSessionDeleted?: (sessionId: string) => void;
+  onWorkerActivated?: (sessionId: string, workerId: string) => void;
 }
 
 /**
@@ -324,6 +328,20 @@ export class SessionManager {
    */
   setGlobalActivityCallback(callback: (sessionId: string, workerId: string, state: AgentActivityState) => void): void {
     this.workerManager.setGlobalActivityCallback(callback);
+  }
+
+  /**
+   * Set up the PTY exit callback to update session activation state when workers exit.
+   * This broadcasts session-updated events to keep clients in sync.
+   */
+  setupPtyExitCallback(): void {
+    this.workerManager.setGlobalPtyExitCallback((sessionId, _workerId) => {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        // Broadcast session update with new activation state
+        this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+      }
+    });
   }
 
   /**
@@ -1030,6 +1048,9 @@ export class SessionManager {
 
     logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');
 
+    // Notify listeners that the worker was activated (broadcasts to app clients)
+    this.sessionLifecycleCallbacks?.onWorkerActivated?.(sessionId, workerId);
+
     return { success: true, worker: existingWorker };
   }
 
@@ -1183,6 +1204,22 @@ export class SessionManager {
     return filterRepositoryEnvVars(parsedEnvVars);
   }
 
+  /**
+   * Compute the activation state of a session based on its workers' PTY state.
+   * A session is 'running' if at least one PTY worker has an active PTY.
+   * A session is 'hibernated' if all PTY workers have no PTY (after server restart).
+   * Sessions with no PTY workers (only git-diff) are considered 'running'.
+   */
+  private computeActivationState(session: InternalSession): SessionActivationState {
+    const ptyWorkers = Array.from(session.workers.values()).filter(
+      (w): w is InternalAgentWorker | InternalTerminalWorker =>
+        w.type === 'agent' || w.type === 'terminal'
+    );
+    if (ptyWorkers.length === 0) return 'running';
+    const hasActivePty = ptyWorkers.some((w) => w.pty !== null);
+    return hasActivePty ? 'running' : 'hibernated';
+  }
+
   private async persistSession(session: InternalSession): Promise<void> {
     const persisted = this.toPersistedSession(session);
     await this.sessionRepository.save(persisted);
@@ -1219,6 +1256,7 @@ export class SessionManager {
       id: session.id,
       locationPath: session.locationPath,
       status: session.status,
+      activationState: this.computeActivationState(session),
       createdAt: session.createdAt,
       workers,
       initialPrompt: session.initialPrompt,

@@ -62,10 +62,11 @@ describe('App Handler', () => {
           type: 'quick',
           locationPath: '/path/1',
           status: 'active',
+          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
-            { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent 1', createdAt: '2024-01-01' },
-            { id: 'worker-2', type: 'terminal', name: 'Terminal 1', createdAt: '2024-01-01' },
+            { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent 1', createdAt: '2024-01-01', activated: true },
+            { id: 'worker-2', type: 'terminal', name: 'Terminal 1', createdAt: '2024-01-01', activated: true },
           ],
         },
         {
@@ -73,9 +74,10 @@ describe('App Handler', () => {
           type: 'quick',
           locationPath: '/path/2',
           status: 'active',
+          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
-            { id: 'worker-3', type: 'agent', agentId: 'claude', name: 'Agent 2', createdAt: '2024-01-01' },
+            { id: 'worker-3', type: 'agent', agentId: 'claude', name: 'Agent 2', createdAt: '2024-01-01', activated: true },
           ],
         },
       ];
@@ -113,9 +115,10 @@ describe('App Handler', () => {
           type: 'quick',
           locationPath: '/path/1',
           status: 'active',
+          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
-            { id: 'worker-1', type: 'terminal', name: 'Terminal', createdAt: '2024-01-01' },
+            { id: 'worker-1', type: 'terminal', name: 'Terminal', createdAt: '2024-01-01', activated: true },
           ],
         },
       ];
@@ -137,9 +140,10 @@ describe('App Handler', () => {
           type: 'quick',
           locationPath: '/path/1',
           status: 'active',
+          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
-            { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-01' },
+            { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-01', activated: true },
           ],
         },
       ];
@@ -182,8 +186,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => [
-          { id: '1', type: 'quick', locationPath: '/', status: 'active', createdAt: '', workers: [] },
-          { id: '2', type: 'quick', locationPath: '/', status: 'active', createdAt: '', workers: [] },
+          { id: '1', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
+          { id: '2', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
         ] as Session[],
         getWorkerActivityState: () => undefined,
         logger: { debug: mockDebug, warn: mock(), error: mock() },
