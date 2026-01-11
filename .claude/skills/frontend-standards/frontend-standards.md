@@ -181,6 +181,121 @@ const schema = v.pipe(
 )
 ```
 
+## React Best Practices
+
+### Suspense Usage
+
+- Prefer Suspense for async operations and loading states over manual `isLoading` flags
+- Use Suspense boundaries for code splitting and data fetching
+- Pair ErrorBoundary with Suspense for error handling
+
+```typescript
+// ❌ Avoid: manual loading state
+function UserProfile({ userId }: { userId: string }) {
+  const { data, isLoading, error } = useQuery(...);
+  if (isLoading) return <Spinner />;
+  if (error) return <ErrorMessage />;
+  return <Profile user={data} />;
+}
+
+// ✅ Prefer: Suspense boundary
+function UserProfile({ userId }: { userId: string }) {
+  const { data } = useSuspenseQuery(...);
+  return <Profile user={data} />;
+}
+// Wrapped with <Suspense fallback={<Spinner />}> at parent level
+```
+
+### useEffect Discipline
+
+Challenge every useEffect - could it be:
+- A derived value (computed from props/state)?
+- An event handler?
+- `useMemo` or `useCallback`?
+
+```typescript
+// ❌ Avoid: useEffect for derived state
+const [fullName, setFullName] = useState('');
+useEffect(() => {
+  setFullName(`${firstName} ${lastName}`);
+}, [firstName, lastName]);
+
+// ✅ Prefer: derived value
+const fullName = `${firstName} ${lastName}`;
+
+// ❌ Avoid: useEffect for event response
+useEffect(() => {
+  if (submitted) {
+    navigate('/success');
+  }
+}, [submitted]);
+
+// ✅ Prefer: event handler
+const handleSubmit = async () => {
+  await submitForm();
+  navigate('/success');
+};
+```
+
+### Icon Components
+
+SVG icons should be in a dedicated `Icons.tsx` file, not inline in View components:
+
+```typescript
+// ❌ Avoid: inline SVG in component
+function DeleteButton() {
+  return (
+    <button>
+      <svg viewBox="0 0 24 24">...</svg>
+    </button>
+  );
+}
+
+// ✅ Prefer: extracted icon component
+// In Icons.tsx
+export function TrashIcon(props: IconProps) {
+  return <svg viewBox="0 0 24 24" {...props}>...</svg>;
+}
+
+// In component
+function DeleteButton() {
+  return (
+    <button>
+      <TrashIcon className="w-4 h-4" />
+    </button>
+  );
+}
+```
+
+### External State (useSyncExternalStore)
+
+Use `useSyncExternalStore` for singleton/global state subscriptions, not useEffect:
+
+```typescript
+// ❌ Avoid: useEffect with manual subscription
+function useConnectionStatus() {
+  const [status, setStatus] = useState(connectionStore.getStatus());
+  useEffect(() => {
+    const unsubscribe = connectionStore.subscribe(setStatus);
+    return unsubscribe;
+  }, []);
+  return status;
+}
+
+// ✅ Prefer: useSyncExternalStore
+function useConnectionStatus() {
+  return useSyncExternalStore(
+    connectionStore.subscribe,
+    connectionStore.getStatus,
+    connectionStore.getServerStatus // optional: for SSR
+  );
+}
+```
+
+### Query Key Management
+
+See the [TanStack Query](#tanstack-query) section for key factory patterns and invalidation best practices.
+
 ## Testing
 
 ### Component Testing

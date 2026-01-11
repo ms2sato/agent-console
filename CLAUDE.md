@@ -79,6 +79,7 @@ Project-defined skills (in `.claude/skills/`):
 - **Code quality standards:** `.claude/skills/code-quality-standards/` - Evaluation criteria for code reviews
 - **Frontend standards:** `.claude/skills/frontend-standards/` - React patterns and frontend best practices
 - **Backend standards:** `.claude/skills/backend-standards/` - Hono/Bun patterns and backend best practices
+- **Test standards:** `.claude/skills/test-standards/` - Testing best practices and anti-patterns
 
 **Parallel execution.** When changes span multiple packages, launch specialists in parallel:
 - Frontend and backend changes → `frontend-specialist` + `backend-specialist` simultaneously
