@@ -10,6 +10,7 @@ import { DiffIcon } from '../Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
+import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
 
 type PageState =
@@ -35,48 +36,6 @@ function getBranchName(session: Session): string {
 // Get repository ID from session (for worktree sessions)
 function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
-}
-
-// Helper function for connection status color
-function getConnectionStatusColor(
-  status: ConnectionStatus,
-  activityState: AgentActivityState
-): string {
-  // Connected with known activity state shows green (fully operational)
-  if (status === 'connected' && activityState !== 'unknown') {
-    return 'bg-green-500';
-  }
-
-  switch (status) {
-    case 'connected':
-    case 'connecting':
-      return 'bg-yellow-500';
-    case 'exited':
-      return 'bg-red-500';
-    case 'disconnected':
-      return 'bg-gray-500';
-  }
-}
-
-// Helper function for connection status text
-function getConnectionStatusText(
-  status: ConnectionStatus,
-  activityState: AgentActivityState,
-  exitInfo: { code: number; signal: string | null } | null
-): string {
-  switch (status) {
-    case 'connecting':
-      return 'Connecting...';
-    case 'connected':
-      return activityState === 'unknown' ? 'Starting Claude...' : 'Connected';
-    case 'disconnected':
-      return 'Disconnected';
-    case 'exited': {
-      const code = exitInfo?.code ?? 'unknown';
-      const signal = exitInfo?.signal ? `, signal: ${exitInfo.signal}` : '';
-      return `Exited (code: ${code}${signal})`;
-    }
-  }
 }
 
 // Convert workers to tabs
@@ -480,10 +439,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const session = state.session;
   const repositoryId = getRepositoryId(session);
 
-  const statusColor = getConnectionStatusColor(connectionStatus, activityState);
-  const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null);
-
   const activeTab = tabs.find(t => t.id === activeTabId);
+  const statusWorkerType = activeTab?.workerType ?? 'agent';
+  const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
+  const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
   const handleTabClick = (tabId: string) => {
     // Use startTransition to mark this update as non-urgent
