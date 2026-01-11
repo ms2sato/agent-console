@@ -199,6 +199,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 7) {
     await migrateToV7(database);
   }
+
+  if (currentVersion < 8) {
+    await migrateToV8(database);
+  }
 }
 
 /**
@@ -492,6 +496,25 @@ async function migrateToV7(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 7`.execute(database);
 
   logger.info('Migration to v7 completed');
+}
+
+/**
+ * Migration v8: Add unique constraint for inbound_event_notifications.
+ */
+async function migrateToV8(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v8: Adding inbound_event_notifications uniqueness constraint');
+
+  await database.schema
+    .createIndex('uniq_inbound_event_notifications_delivery')
+    .ifNotExists()
+    .on('inbound_event_notifications')
+    .columns(['job_id', 'session_id', 'worker_id', 'handler_id'])
+    .unique()
+    .execute();
+
+  await sql`PRAGMA user_version = 8`.execute(database);
+
+  logger.info('Migration to v8 completed');
 }
 
 /**

@@ -8,7 +8,6 @@ import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
-<<<<<<< HEAD
 import { createAppContext, shutdownAppContext, type AppContext } from './app-context.js';
 // Import singleton setters to populate existing singletons from AppContext
 import { setSessionManager } from './services/session-manager.js';
@@ -103,7 +102,6 @@ logger.info('Singletons populated from AppContext');
 // Note: AppBindings type is available for routes that want to use c.get('appContext'),
 // but for Phase 1 we keep using the singleton shims for backward compatibility.
 const app = new Hono();
-
 // Global error handler
 app.onError(onApiError);
 
