@@ -9,9 +9,16 @@ import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
-import { getSessionManager } from './session-manager.js';
 
 const logger = createLogger('repository-manager');
+
+/**
+ * Callbacks for resolving dependencies without circular imports.
+ * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
+ */
+export interface RepositoryDependencyCallbacks {
+  getSessionsUsingRepository: (repositoryId: string) => { id: string; title?: string }[];
+}
 
 /**
  * Extract org/repo from git remote URL
@@ -32,6 +39,7 @@ export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
   private repository: RepositoryRepository;
   private lifecycleCallbacks: RepositoryLifecycleCallbacks | null = null;
+  private dependencyCallbacks: RepositoryDependencyCallbacks | null = null;
   private jobQueue: JobQueue | null = null;
 
   /**
@@ -69,6 +77,14 @@ export class RepositoryManager {
    */
   setLifecycleCallbacks(callbacks: RepositoryLifecycleCallbacks): void {
     this.lifecycleCallbacks = callbacks;
+  }
+
+  /**
+   * Set callbacks for resolving dependencies without circular imports.
+   * Must be called after both SessionManager and RepositoryManager are initialized.
+   */
+  setDependencyCallbacks(callbacks: RepositoryDependencyCallbacks): void {
+    this.dependencyCallbacks = callbacks;
   }
 
   /**
@@ -139,8 +155,8 @@ export class RepositoryManager {
     if (!repo) return false;
 
     // Check if any active sessions are using this repository
-    const sessionManager = getSessionManager();
-    const activeSessions = sessionManager.getSessionsUsingRepository(id);
+    // Uses callback to avoid circular dependency with SessionManager
+    const activeSessions = this.dependencyCallbacks?.getSessionsUsingRepository(id) ?? [];
     if (activeSessions.length > 0) {
       throw new Error(
         `Cannot unregister repository: ${activeSessions.length} active session(s) are using it. ` +

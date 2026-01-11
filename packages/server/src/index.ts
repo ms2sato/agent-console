@@ -9,8 +9,8 @@ import { rootLogger, createLogger } from './lib/logger.js';
 import { initializeDatabase, closeDatabase } from './database/connection.js';
 import { getConfigDir } from './lib/config.js';
 import { initializeJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
-import { initializeSessionManager } from './services/session-manager.js';
-import { initializeRepositoryManager } from './services/repository-manager.js';
+import { initializeSessionManager, getSessionManager } from './services/session-manager.js';
+import { initializeRepositoryManager, getRepositoryManager, isRepositoryManagerInitialized } from './services/repository-manager.js';
 import { initializeNotificationServices, shutdownNotificationServices } from './services/notifications/index.js';
 import { createSessionRepository } from './repositories/index.js';
 import * as fs from 'fs';
@@ -121,6 +121,21 @@ try {
 const sessionRepository = await createSessionRepository();
 await initializeSessionManager({ sessionRepository, jobQueue });
 await initializeRepositoryManager({ jobQueue });
+
+// Wire up callbacks between managers to resolve circular dependencies
+// Both managers need to call each other, but direct imports would create cycles
+const sessionManager = getSessionManager();
+const repositoryManager = getRepositoryManager();
+
+repositoryManager.setDependencyCallbacks({
+  getSessionsUsingRepository: (repoId) => sessionManager.getSessionsUsingRepository(repoId),
+});
+
+sessionManager.setRepositoryCallbacks({
+  getRepository: (repoId) => repositoryManager.getRepository(repoId),
+  isInitialized: () => isRepositoryManagerInitialized(),
+});
+
 initializeNotificationServices();
 logger.info('Services initialized');
 

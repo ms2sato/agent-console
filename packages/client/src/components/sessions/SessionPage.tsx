@@ -37,6 +37,48 @@ function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
 }
 
+// Helper function for connection status color
+function getConnectionStatusColor(
+  status: ConnectionStatus,
+  activityState: AgentActivityState
+): string {
+  // Connected with known activity state shows green (fully operational)
+  if (status === 'connected' && activityState !== 'unknown') {
+    return 'bg-green-500';
+  }
+
+  switch (status) {
+    case 'connected':
+    case 'connecting':
+      return 'bg-yellow-500';
+    case 'exited':
+      return 'bg-red-500';
+    case 'disconnected':
+      return 'bg-gray-500';
+  }
+}
+
+// Helper function for connection status text
+function getConnectionStatusText(
+  status: ConnectionStatus,
+  activityState: AgentActivityState,
+  exitInfo: { code: number; signal: string | null } | null
+): string {
+  switch (status) {
+    case 'connecting':
+      return 'Connecting...';
+    case 'connected':
+      return activityState === 'unknown' ? 'Starting Claude...' : 'Connected';
+    case 'disconnected':
+      return 'Disconnected';
+    case 'exited': {
+      const code = exitInfo?.code ?? 'unknown';
+      const signal = exitInfo?.signal ? `, signal: ${exitInfo.signal}` : '';
+      return `Exited (code: ${code}${signal})`;
+    }
+  }
+}
+
 // Convert workers to tabs
 function workersToTabs(workers: Worker[]): Tab[] {
   return workers.map(worker => ({
@@ -438,17 +480,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const session = state.session;
   const repositoryId = getRepositoryId(session);
 
-  const statusColor =
-    connectionStatus === 'connected' && activityState !== 'unknown' ? 'bg-green-500' :
-    connectionStatus === 'connected' || connectionStatus === 'connecting' ? 'bg-yellow-500' :
-    connectionStatus === 'exited' ? 'bg-red-500' : 'bg-gray-500';
-
-  const statusText =
-    connectionStatus === 'connecting' ? 'Connecting...' :
-    connectionStatus === 'connected' && activityState === 'unknown' ? 'Starting Claude...' :
-    connectionStatus === 'connected' ? 'Connected' :
-    connectionStatus === 'disconnected' ? 'Disconnected' :
-    `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
+  const statusColor = getConnectionStatusColor(connectionStatus, activityState);
+  const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null);
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
