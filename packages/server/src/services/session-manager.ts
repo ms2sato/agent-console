@@ -345,6 +345,13 @@ export class SessionManager {
   }
 
   /**
+   * Set a global callback for all worker exit events (for notifications)
+   */
+  setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number) => void): void {
+    this.workerManager.setGlobalWorkerExitCallback(callback);
+  }
+
+  /**
    * Set callbacks for session lifecycle events (for dashboard broadcast)
    */
   setSessionLifecycleCallbacks(callbacks: SessionLifecycleCallbacks): void {

@@ -42,7 +42,6 @@ import { expandTemplate } from '../lib/template.js';
 import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
 import { workerOutputFileManager } from '../lib/worker-output-file.js';
-import { getNotificationManager } from './notifications/index.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worker-manager');
@@ -123,6 +122,15 @@ export type PtyExitCallback = (
 ) => void;
 
 /**
+ * Callback type for global worker exit events.
+ */
+export type GlobalWorkerExitCallback = (
+  sessionId: string,
+  workerId: string,
+  exitCode: number
+) => void;
+
+/**
  * Session info for notification events.
  * Minimal interface to avoid circular dependency with InternalSession.
  */
@@ -137,6 +145,7 @@ export class WorkerManager {
   private ptyProvider: PtyProvider;
   private globalActivityCallback?: GlobalActivityCallback;
   private globalPtyExitCallback?: PtyExitCallback;
+  private globalWorkerExitCallback?: GlobalWorkerExitCallback;
 
   constructor(ptyProvider: PtyProvider) {
     this.ptyProvider = ptyProvider;
@@ -155,6 +164,13 @@ export class WorkerManager {
    */
   setGlobalPtyExitCallback(callback: PtyExitCallback): void {
     this.globalPtyExitCallback = callback;
+  }
+
+  /**
+   * Set a global callback for all worker exit events (for notifications).
+   */
+  setGlobalWorkerExitCallback(callback: GlobalWorkerExitCallback): void {
+    this.globalWorkerExitCallback = callback;
   }
 
   // ========== Worker Initialization ==========
@@ -417,26 +433,10 @@ export class WorkerManager {
 
   /**
    * Notify about worker exit. Called by setupWorkerEventHandlers.
-   * Session info is fetched via callback to avoid coupling.
+   * Uses global callback to delegate notification to SessionManager which has full session context.
    */
   private notifyWorkerExit(sessionId: string, worker: InternalPtyWorker, exitCode: number): void {
-    try {
-      const notificationManager = getNotificationManager();
-      // Get session info via the onGetSessionInfo callback if provided
-      // For now, use minimal info since we don't have session context
-      notificationManager.onWorkerExit(
-        {
-          id: sessionId,
-          title: undefined,
-          worktreeId: null,
-          repositoryId: null,
-        },
-        { id: worker.id },
-        exitCode
-      );
-    } catch {
-      // NotificationManager not initialized yet, skip
-    }
+    this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode);
   }
 
   // ========== Worker I/O ==========

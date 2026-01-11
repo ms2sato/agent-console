@@ -246,6 +246,28 @@ export async function setupWebSocketRoutes(
     }
   });
 
+  // Set up global worker exit callback to send notifications
+  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode) => {
+    try {
+      const notificationManager = getNotificationManager();
+      const session = sessionManager.getSession(sessionId);
+      if (session) {
+        notificationManager.onWorkerExit(
+          {
+            id: sessionId,
+            title: session.title,
+            worktreeId: session.type === 'worktree' ? session.worktreeId : null,
+            repositoryId: session.type === 'worktree' ? session.repositoryId : null,
+          },
+          { id: workerId },
+          exitCode
+        );
+      }
+    } catch {
+      // NotificationManager not initialized yet, skip
+    }
+  });
+
   // Set up session lifecycle callbacks to broadcast to all app clients
   sessionManager.setSessionLifecycleCallbacks({
     onSessionCreated: (session) => {
