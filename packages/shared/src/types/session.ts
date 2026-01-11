@@ -84,6 +84,7 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
   'history': 3,
   'activity': 4,
   'error': 5,
+  'output-truncated': 6,
 } as const;
 
 export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
@@ -96,14 +97,16 @@ export type WorkerErrorCode =
   | 'AGENT_NOT_FOUND'       // Agent definition deleted
   | 'ACTIVATION_FAILED'     // PTY spawn failed
   | 'WORKER_NOT_FOUND'      // Worker doesn't exist in session
-  | 'HISTORY_LOAD_FAILED';  // History retrieval failed (timeout or error)
+  | 'HISTORY_LOAD_FAILED'   // History retrieval failed (timeout or error)
+  | 'SESSION_DELETED';      // Session was deleted while WebSocket was connected
 
 export type WorkerServerMessage =
   | { type: 'output'; data: string; offset: number }
   | { type: 'exit'; exitCode: number; signal: string | null }
   | { type: 'history'; data: string; offset: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
-  | { type: 'error'; message: string; code?: WorkerErrorCode };
+  | { type: 'error'; message: string; code?: WorkerErrorCode }
+  | { type: 'output-truncated'; message: string };
 
 export interface WorkerActivityInfo {
   sessionId: string;

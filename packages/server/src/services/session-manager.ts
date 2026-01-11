@@ -41,6 +41,7 @@ import {
 } from '../lib/git.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
+import { notifySessionDeleted } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
@@ -485,6 +486,10 @@ export class SessionManager {
   async deleteSession(id: string): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
+
+    // Notify all active Worker WebSocket connections that session is being deleted
+    // This must happen BEFORE killing workers so clients receive the notification
+    notifySessionDeleted(id);
 
     // Kill all workers first (before removing from memory)
     for (const worker of session.workers.values()) {
