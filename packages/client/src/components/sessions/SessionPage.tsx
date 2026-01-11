@@ -11,6 +11,7 @@ import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, S
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
+import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
 import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
 
 type PageState =
@@ -97,6 +98,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const pendingWorkerIdRef = useRef<string | null>(null);
 
   // Navigate to specific worker
   const navigateToWorker = useCallback((newWorkerId: string, replace: boolean = false) => {
@@ -174,6 +176,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setState({ type: 'loading' });
     setTabs([]);
     setActiveTabId(null);
+    pendingWorkerIdRef.current = null;
   }, [sessionId]);
 
   // Initialize tabs when state becomes active
@@ -208,15 +211,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     // Only handle when tabs are already initialized
     if (tabs.length === 0 || state.type !== 'active') return;
 
-    const workers = state.session.workers;
+    const defaultTabId = getDefaultTabId(tabs);
 
     if (urlWorkerId) {
       // Check if the URL workerId is valid
-      const workerExists = workers.some(w => w.id === urlWorkerId);
-      if (workerExists) {
+      if (isWorkerIdReady(urlWorkerId, tabs, pendingWorkerIdRef.current)) {
         // Valid workerId - sync activeTabId
         if (activeTabId !== urlWorkerId) {
           setActiveTabId(urlWorkerId);
+        }
+        if (pendingWorkerIdRef.current === urlWorkerId) {
+          pendingWorkerIdRef.current = null;
         }
       } else {
         // Invalid workerId - redirect to session base
@@ -224,7 +229,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       }
     } else {
       // No workerId in URL - redirect to default worker
-      const defaultTabId = findFirstAgentWorker(workers)?.id ?? tabs[0]?.id ?? null;
       if (defaultTabId) {
         navigateToWorker(defaultTabId, true);
       }
@@ -246,6 +250,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         workerType: 'terminal',
         name: worker.name,
       };
+      pendingWorkerIdRef.current = worker.id;
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
