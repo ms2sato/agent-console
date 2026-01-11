@@ -14,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ask when uncertain.** When uncertain about a design decision, do not decide arbitrarily. Ask the user for confirmation.
 
+**Validate task assumptions before implementing.** Before implementing any task, understand WHY the task is needed. If a task assumes existing behavior that seems questionable, verify whether that assumption is correct. Do not implement a "fix" for behavior that may not actually need fixing. When in doubt, ask the user to confirm the underlying assumption.
+
 ## Design Review Mindset
 
 The following are perspectives to revisit repeatedly during design. This is not a one-way checklist.
