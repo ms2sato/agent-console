@@ -61,18 +61,4 @@ export interface CleanupRepositoryPayload {
   repoDir: string;
 }
 
-/**
- * Payload for inbound-event:process job.
- */
-export interface InboundEventJobPayload {
-  /** Same value as jobs.id (for cross-reference) */
-  jobId: string;
-  /** Webhook service identifier (e.g., 'github') */
-  service: string;
-  /** Raw JSON payload */
-  rawPayload: string;
-  /** Request headers as a serializable record */
-  headers: Record<string, string>;
-  /** ISO timestamp when received */
-  receivedAt: string;
-}
+export type { InboundEventJobPayload } from '@agent-console/shared';

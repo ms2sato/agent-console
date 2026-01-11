@@ -104,7 +104,6 @@ logger.info('Singletons populated from AppContext');
 // Note: AppBindings type is available for routes that want to use c.get('appContext'),
 // but for Phase 1 we keep using the singleton shims for backward compatibility.
 const app = new Hono();
-
 // Global error handler
 app.onError(onApiError);
 

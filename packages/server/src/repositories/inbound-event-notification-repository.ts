@@ -15,6 +15,9 @@ export async function createInboundEventNotification(
   await db
     .insertInto('inbound_event_notifications')
     .values(notification)
+    .onConflict((oc) =>
+      oc.columns(['job_id', 'session_id', 'worker_id', 'handler_id']).doNothing()
+    )
     .execute();
 
   logger.debug(
