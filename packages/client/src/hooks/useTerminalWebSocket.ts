@@ -49,6 +49,8 @@ export function useTerminalWebSocket(
   usePersistentWebSocket({
     key: { sessionId, workerId },
     connect: ({ sessionId, workerId }) => {
+      // Clear error on new connection attempt (including retry)
+      setError(null);
       workerWs.connect(sessionId, workerId, {
         type: 'terminal',
         onOutput,
