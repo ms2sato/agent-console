@@ -572,33 +572,49 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
   }, [sessionId, workerId]);
 
-  const statusColor =
-    workerError ? 'bg-red-500' :
-    status === 'connected' ? 'bg-green-500' :
-    status === 'connecting' ? 'bg-yellow-500' :
-    status === 'exited' ? 'bg-red-500' : 'bg-gray-500';
+  /**
+   * Get status indicator color based on current state.
+   */
+  function getStatusColor(): string {
+    if (workerError) return 'bg-red-500';
+    switch (status) {
+      case 'connected':
+        return 'bg-green-500';
+      case 'connecting':
+        return 'bg-yellow-500';
+      case 'exited':
+        return 'bg-red-500';
+      case 'disconnected':
+      default:
+        return 'bg-gray-500';
+    }
+  }
 
-  const getStatusText = () => {
-    if (workerError) {
-      return 'Error';
+  /**
+   * Get status display text.
+   */
+  function getStatusText(): string {
+    if (workerError) return 'Error';
+    switch (status) {
+      case 'connecting':
+        return 'Connecting...';
+      case 'connected':
+        return 'Connected';
+      case 'disconnected':
+        return 'Disconnected';
+      case 'exited':
+        return `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
+      default:
+        return '';
     }
-    if (status === 'connecting') return 'Connecting...';
-    if (status === 'connected') return 'Connected';
-    if (status === 'disconnected') return 'Disconnected';
-    if (status === 'exited') {
-      return `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
-    }
-    return '';
-  };
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {!hideStatusBar && (
         <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3 shrink-0">
-          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
-          <span className="text-gray-500 text-sm">
-            {getStatusText()}
-          </span>
+          <span className={`inline-block w-2 h-2 rounded-full ${getStatusColor()}`} />
+          <span className="text-gray-500 text-sm">{getStatusText()}</span>
         </div>
       )}
       <div className="flex-1 min-h-0 relative overflow-hidden">

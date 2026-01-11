@@ -64,6 +64,7 @@ export function WorkerErrorRecovery({
   onDeleteSession,
 }: WorkerErrorRecoveryProps) {
   const { title, description, primaryAction } = getErrorDetails(errorCode);
+  const showDeleteAsPrimary = primaryAction === 'delete-session';
 
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-slate-900/95 z-10">
@@ -74,24 +75,22 @@ export function WorkerErrorRecovery({
         <p className="text-gray-500 text-xs mb-6 font-mono">{errorMessage}</p>
 
         <div className="flex flex-col gap-2">
-          {/* Primary action based on error type */}
-          {primaryAction === 'retry' && onRetry && (
-            <button onClick={onRetry} className="btn btn-primary text-sm flex items-center justify-center gap-2">
-              <RefreshIcon className="w-4 h-4" />
-              Retry Connection
-            </button>
-          )}
-
-          {primaryAction === 'delete-session' && onDeleteSession && (
+          {/* Primary action: Delete Session (for path/agent issues) */}
+          {showDeleteAsPrimary && onDeleteSession && (
             <button onClick={onDeleteSession} className="btn btn-danger text-sm flex items-center justify-center gap-2">
               <TrashIcon className="w-4 h-4" />
               Delete Session
             </button>
           )}
 
-          {/* Secondary action: retry when primary is delete */}
-          {primaryAction !== 'retry' && onRetry && (
-            <button onClick={onRetry} className="btn bg-slate-700 hover:bg-slate-600 text-sm flex items-center justify-center gap-2">
+          {/* Retry button: primary styling when retry is primary action, secondary otherwise */}
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className={`btn text-sm flex items-center justify-center gap-2 ${
+                showDeleteAsPrimary ? 'bg-slate-700 hover:bg-slate-600' : 'btn-primary'
+              }`}
+            >
               <RefreshIcon className="w-4 h-4" />
               Retry Connection
             </button>
