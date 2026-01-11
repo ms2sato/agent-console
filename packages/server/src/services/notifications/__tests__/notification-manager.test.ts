@@ -8,24 +8,20 @@ import type { SlackHandler } from '../slack-handler.js';
 describe('NotificationManager', () => {
   // Mock SlackHandler with proper typing
   function createMockSlackHandler() {
-    const canHandleMock = mock((_repositoryId: string) => Promise.resolve(true));
-    const sendMock = mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve());
-    const sendTestMock = mock((_message: string, _repositoryId: string) => Promise.resolve());
     return {
       integrationType: 'slack' as const,
-      canHandle: canHandleMock,
-      send: sendMock,
-      sendTest: sendTestMock,
+      canHandle: mock((_repositoryId: string) => Promise.resolve(true)),
+      send: mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve()),
+      sendTest: mock((_message: string, _repositoryId: string) => Promise.resolve()),
       sendToWebhook: mock((_context: NotificationContext, _webhookUrl: string) => Promise.resolve()),
-      _canHandleMock: canHandleMock,
-      _sendMock: sendMock,
-      _sendTestMock: sendTestMock,
     };
   }
 
+  type MockSlackHandler = ReturnType<typeof createMockSlackHandler>;
+
   // Helper to create NotificationManager with mock SlackHandler
   function createNotificationManager(
-    slackHandler = createMockSlackHandler(),
+    slackHandler: MockSlackHandler = createMockSlackHandler(),
     options?: NotificationManagerOptions
   ) {
     const manager = new NotificationManager(
@@ -113,8 +109,8 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('agent:waiting');
 
       manager.dispose();
@@ -132,8 +128,8 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('agent:idle');
 
       manager.dispose();
@@ -151,8 +147,8 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('agent:active');
 
       manager.dispose();
@@ -168,7 +164,7 @@ describe('NotificationManager', () => {
       manager.onActivityChange(testSession, testWorker, 'unknown' as AgentActivityState);
 
       // No wait needed since unknown state is filtered before any async operation
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });
@@ -185,15 +181,15 @@ describe('NotificationManager', () => {
       // First, go to waiting state
       manager.onActivityChange(testSession, testWorker, 'asking' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      expect(slackHandler._sendMock.mock.calls[0][0].event.type).toBe('agent:waiting');
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send.mock.calls[0][0].event.type).toBe('agent:waiting');
 
       // Then transition to idle (user responded) - should NOT notify
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Still only 1 notification (the initial waiting)
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
 
       manager.dispose();
     });
@@ -208,16 +204,16 @@ describe('NotificationManager', () => {
       // First, go to active state
       manager.onActivityChange(testSession, testWorker, 'active' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      expect(slackHandler._sendMock.mock.calls[0][0].event.type).toBe('agent:active');
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send.mock.calls[0][0].event.type).toBe('agent:active');
 
       // Then transition to idle (work completed) - SHOULD notify
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // 2 notifications: active and idle
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(2);
-      expect(slackHandler._sendMock.mock.calls[1][0].event.type).toBe('agent:idle');
+      expect(slackHandler.send).toHaveBeenCalledTimes(2);
+      expect(slackHandler.send.mock.calls[1][0].event.type).toBe('agent:idle');
 
       manager.dispose();
     });
@@ -235,14 +231,14 @@ describe('NotificationManager', () => {
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1); // only waiting
+      expect(slackHandler.send).toHaveBeenCalledTimes(1); // only waiting
 
       // Now go to waiting again - should notify (state changed from idle to waiting)
       manager.onActivityChange(testSession, testWorker, 'asking' as AgentActivityState);
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(2);
-      expect(slackHandler._sendMock.mock.calls[1][0].event.type).toBe('agent:waiting');
+      expect(slackHandler.send).toHaveBeenCalledTimes(2);
+      expect(slackHandler.send.mock.calls[1][0].event.type).toBe('agent:waiting');
 
       manager.dispose();
     });
@@ -267,7 +263,7 @@ describe('NotificationManager', () => {
       // Wait a bit for async operations (though none should happen since trigger is disabled)
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });
@@ -290,7 +286,7 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
 
       manager.dispose();
     });
@@ -312,7 +308,7 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // agent:active is disabled by default, so no notification should be sent
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });
@@ -330,8 +326,8 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      expect(slackHandler._sendMock.mock.calls[0][0].event.type).toBe('agent:waiting');
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send.mock.calls[0][0].event.type).toBe('agent:waiting');
 
       manager.dispose();
     });
@@ -358,7 +354,7 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 100));
 
       // Both sessions should have sent notifications (debounce is independent per session:worker)
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(2);
+      expect(slackHandler.send).toHaveBeenCalledTimes(2);
 
       manager.dispose();
     });
@@ -379,8 +375,8 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 100));
 
       // Only the last state should be sent
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('agent:waiting');
 
       manager.dispose();
@@ -402,14 +398,14 @@ describe('NotificationManager', () => {
       manager.onActivityChange(testSession, testWorker, 'asking' as AgentActivityState);
 
       // No notification sent yet (waiting for debounce)
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       // Wait for debounce period to pass
       await new Promise(resolve => setTimeout(resolve, 100));
 
       // Only the last state should be sent
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('agent:waiting');
 
       manager.dispose();
@@ -428,7 +424,7 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should be sent immediately (no debounce delay)
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
 
       manager.dispose();
     });
@@ -448,7 +444,7 @@ describe('NotificationManager', () => {
       // Wait for async notification sending
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.agentConsoleUrl).toBe('http://example.com:8080/sessions/session-1?workerId=worker-1');
 
       manager.dispose();
@@ -469,8 +465,8 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should be sent immediately, not debounced
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('worker:error');
       expect((context.event as { message: string }).message).toBe('Process crashed');
 
@@ -490,8 +486,8 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should be sent immediately, not debounced
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context] = slackHandler.send.mock.calls[0];
       expect(context.event.type).toBe('worker:exited');
       expect((context.event as { exitCode: number }).exitCode).toBe(0);
 
@@ -506,7 +502,7 @@ describe('NotificationManager', () => {
 
       await manager.sendTestNotification('test-repo-1', 'Test message');
 
-      expect(slackHandler._sendTestMock).toHaveBeenCalledWith('Test message', 'test-repo-1');
+      expect(slackHandler.sendTest).toHaveBeenCalledWith('Test message', 'test-repo-1');
 
       manager.dispose();
     });
@@ -523,7 +519,7 @@ describe('NotificationManager', () => {
 
       // Schedule a debounced notification
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       // Dispose before debounce completes
       manager.dispose();
@@ -532,7 +528,7 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 150));
 
       // Notification should NOT be sent after dispose
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
     });
   });
 
@@ -582,11 +578,11 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should use canHandle first
-      expect(slackHandler._canHandleMock).toHaveBeenCalledWith('repo-123');
+      expect(slackHandler.canHandle).toHaveBeenCalledWith('repo-123');
 
       // Should use send with repositoryId
-      expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
-      const [context, repositoryId] = slackHandler._sendMock.mock.calls[0];
+      expect(slackHandler.send).toHaveBeenCalledTimes(1);
+      const [context, repositoryId] = slackHandler.send.mock.calls[0];
       expect(context.session.id).toBe('session-1');
       expect(repositoryId).toBe('repo-123');
 
@@ -596,7 +592,7 @@ describe('NotificationManager', () => {
     it('should not send notification when canHandle returns false', async () => {
       // Create a mock where canHandle returns false
       const mockSlackHandler = createMockSlackHandler();
-      mockSlackHandler._canHandleMock.mockResolvedValue(false);
+      mockSlackHandler.canHandle.mockResolvedValue(false);
 
       const { manager, slackHandler } = createNotificationManager(mockSlackHandler, {
         debounceSeconds: 0,
@@ -609,10 +605,10 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // canHandle should be called
-      expect(slackHandler._canHandleMock).toHaveBeenCalledWith('repo-123');
+      expect(slackHandler.canHandle).toHaveBeenCalledWith('repo-123');
 
       // send should NOT be called when canHandle returns false
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });
@@ -631,8 +627,8 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should not call canHandle or send for sessions without repository
-      expect(slackHandler._canHandleMock).not.toHaveBeenCalled();
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.canHandle).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });
@@ -640,7 +636,7 @@ describe('NotificationManager', () => {
     it('should handle canHandle error gracefully', async () => {
       // Create a mock where canHandle throws an error
       const mockSlackHandler = createMockSlackHandler();
-      mockSlackHandler._canHandleMock.mockRejectedValue(new Error('Database error'));
+      mockSlackHandler.canHandle.mockRejectedValue(new Error('Database error'));
 
       const { manager, slackHandler } = createNotificationManager(mockSlackHandler, {
         debounceSeconds: 0,
@@ -653,7 +649,7 @@ describe('NotificationManager', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Should not send notification when canHandle fails
-      expect(slackHandler._sendMock).not.toHaveBeenCalled();
+      expect(slackHandler.send).not.toHaveBeenCalled();
 
       manager.dispose();
     });

@@ -84,11 +84,8 @@ export class SlackHandler implements OutboundServiceHandler {
    * @throws Error if Slack integration is not configured or disabled
    */
   async send(context: NotificationContext, repositoryId: string): Promise<void> {
-    const integration = await getByRepositoryId(repositoryId);
-    if (!integration || !integration.enabled) {
-      throw new Error('Slack integration not configured or disabled');
-    }
-    await this.sendToWebhook(context, integration.webhookUrl);
+    const webhookUrl = await this.getWebhookUrl(repositoryId);
+    await this.sendToWebhook(context, webhookUrl);
   }
 
   /**
@@ -100,10 +97,7 @@ export class SlackHandler implements OutboundServiceHandler {
    * @throws Error if Slack integration is not configured or disabled
    */
   async sendTest(message: string, repositoryId: string): Promise<void> {
-    const integration = await getByRepositoryId(repositoryId);
-    if (!integration || !integration.enabled) {
-      throw new Error('Slack integration not configured or disabled');
-    }
+    const webhookUrl = await this.getWebhookUrl(repositoryId);
 
     const slackMessage: SlackMessage = {
       text: message,
@@ -118,18 +112,19 @@ export class SlackHandler implements OutboundServiceHandler {
       ],
     };
 
-    const response = await fetch(integration.webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(slackMessage),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Slack API error: ${response.status} - ${errorText}`);
-    }
-
+    await this.postToSlack(webhookUrl, slackMessage);
     logger.info('Slack test notification sent successfully');
+  }
+
+  /**
+   * Get webhook URL for a repository, throwing if not configured or disabled.
+   */
+  private async getWebhookUrl(repositoryId: string): Promise<string> {
+    const integration = await getByRepositoryId(repositoryId);
+    if (!integration || !integration.enabled) {
+      throw new Error('Slack integration not configured or disabled');
+    }
+    return integration.webhookUrl;
   }
 
   /**
@@ -151,6 +146,19 @@ export class SlackHandler implements OutboundServiceHandler {
       'Sending Slack notification'
     );
 
+    await this.postToSlack(webhookUrl, message);
+
+    logger.info(
+      { sessionId: context.session.id, eventType: context.event.type },
+      'Slack notification sent successfully'
+    );
+  }
+
+  /**
+   * POST a message to a Slack webhook URL.
+   * Handles HTTP errors consistently.
+   */
+  private async postToSlack(webhookUrl: string, message: SlackMessage): Promise<void> {
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -161,11 +169,6 @@ export class SlackHandler implements OutboundServiceHandler {
       const errorText = await response.text().catch(() => 'Unknown error');
       throw new Error(`Slack API error: ${response.status} - ${errorText}`);
     }
-
-    logger.info(
-      { sessionId: context.session.id, eventType: context.event.type },
-      'Slack notification sent successfully'
-    );
   }
 
   /**
