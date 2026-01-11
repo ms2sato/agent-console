@@ -118,7 +118,7 @@ describe('AgentActivityPatternsSchema', () => {
         'Do you want to.*\\?',
         '\\[y\\].*\\[n\\]',
         '^Please confirm:',
-        'Enter to select.*Tab.*navigate.*Esc to cancel',
+        'Enter to select.*to navigate.*Esc to cancel',
       ],
     });
     expect(result.success).toBe(true);
