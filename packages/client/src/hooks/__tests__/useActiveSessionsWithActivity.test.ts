@@ -10,6 +10,7 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
     type: 'quick',
     locationPath: '/test/path',
     status: 'active',
+    activationState: 'running',
     createdAt: new Date().toISOString(),
     workers: [],
     ...overrides,

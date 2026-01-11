@@ -4,13 +4,18 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
+import { useMutation } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
-import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
+import { clearVisibilityTracking, disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import { deleteSession } from '../lib/api.js';
+import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
+import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
 /**
  * State for conditional rendering support.
@@ -37,6 +42,7 @@ export interface TerminalProps {
 }
 
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+  const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
@@ -60,6 +66,29 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
   const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+
+  // Mutation for deleting session on error recovery
+  const deleteSessionMutation = useMutation({
+    mutationFn: () => deleteSession(sessionId),
+    onSuccess: () => {
+      emitSessionDeleted(sessionId);
+      navigate({ to: '/' });
+    },
+  });
+
+  // Handler for retrying worker connection
+  const handleRetry = useCallback(() => {
+    // Disconnect and increment retry count to trigger reconnection
+    disconnect(sessionId, workerId);
+    setWorkerError(null);
+    setRetryCount((c) => c + 1);
+  }, [sessionId, workerId]);
+
+  // Handler for deleting session on unrecoverable errors
+  const handleDeleteSession = useCallback(() => {
+    deleteSessionMutation.mutate();
+  }, [deleteSessionMutation]);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -243,14 +272,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [sessionId, workerId]);
 
-  const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(sessionId, workerId, {
-    onOutput: handleOutput,
-    onHistory: handleHistory,
-    onExit: handleExit,
-    onConnectionChange: handleConnectionChange,
-    onActivity: handleActivity,
-    onOutputTruncated: handleOutputTruncated,
-  });
+  const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(
+    sessionId,
+    workerId,
+    {
+      onOutput: handleOutput,
+      onHistory: handleHistory,
+      onExit: handleExit,
+      onConnectionChange: handleConnectionChange,
+      onActivity: handleActivity,
+      onOutputTruncated: handleOutputTruncated,
+    },
+    retryCount
+  );
 
   // Sync connected value from hook to ref for use in async callbacks
   // (The ref is also updated in handleConnectionChange, but this handles the initial value)
@@ -638,12 +672,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       <div className="flex-1 min-h-0 relative overflow-hidden">
         <div ref={containerRef} className="absolute inset-0 bg-slate-800 p-2" />
         {workerError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90">
-            <div className="bg-red-900/80 border border-red-700 rounded-lg p-6 max-w-md text-center">
-              <div className="text-red-400 text-lg font-medium mb-2">Worker Error</div>
-              <div className="text-gray-200">{workerError.message}</div>
-            </div>
-          </div>
+          <WorkerErrorRecovery
+            errorCode={workerError.code}
+            errorMessage={workerError.message}
+            onRetry={handleRetry}
+            onDeleteSession={handleDeleteSession}
+          />
         )}
         {/* Truncation warning banner */}
         {truncationWarning && (

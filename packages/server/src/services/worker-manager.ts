@@ -113,6 +113,16 @@ export type GlobalActivityCallback = (
 ) => void;
 
 /**
+ * Callback type for PTY exit events.
+ * Used to notify SessionManager when a worker's PTY exits so it can update
+ * the session's activation state.
+ */
+export type PtyExitCallback = (
+  sessionId: string,
+  workerId: string
+) => void;
+
+/**
  * Session info for notification events.
  * Minimal interface to avoid circular dependency with InternalSession.
  */
@@ -126,6 +136,7 @@ export interface SessionInfoForNotification {
 export class WorkerManager {
   private ptyProvider: PtyProvider;
   private globalActivityCallback?: GlobalActivityCallback;
+  private globalPtyExitCallback?: PtyExitCallback;
 
   constructor(ptyProvider: PtyProvider) {
     this.ptyProvider = ptyProvider;
@@ -136,6 +147,14 @@ export class WorkerManager {
    */
   setGlobalActivityCallback(callback: GlobalActivityCallback): void {
     this.globalActivityCallback = callback;
+  }
+
+  /**
+   * Set a global callback for PTY exit events.
+   * Used by SessionManager to update session activation state when workers exit.
+   */
+  setGlobalPtyExitCallback(callback: PtyExitCallback): void {
+    this.globalPtyExitCallback = callback;
   }
 
   // ========== Worker Initialization ==========
@@ -369,8 +388,12 @@ export class WorkerManager {
       const signalStr = signal !== undefined ? String(signal) : null;
       logger.info({ workerId: worker.id, pid: pty.pid, exitCode, signal: signalStr }, 'Worker exited');
 
+      // Mark worker as deactivated (PTY no longer running)
+      worker.pty = null;
+
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.dispose();
+        worker.activityDetector = null;
       }
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
@@ -380,6 +403,9 @@ export class WorkerManager {
 
       // Send notification for worker exit
       this.notifyWorkerExit(sessionId, worker, exitCode);
+
+      // Notify SessionManager that PTY exited so it can update session activation state
+      this.globalPtyExitCallback?.(sessionId, worker.id);
     });
     if (onExitDisposable) {
       disposables.push({ dispose: () => onExitDisposable.dispose() });
@@ -537,9 +563,9 @@ export class WorkerManager {
 
     switch (worker.type) {
       case 'agent':
-        return { ...base, type: 'agent', agentId: worker.agentId } as AgentWorker;
+        return { ...base, type: 'agent', agentId: worker.agentId, activated: worker.pty !== null } as AgentWorker;
       case 'terminal':
-        return { ...base, type: 'terminal' } as TerminalWorker;
+        return { ...base, type: 'terminal', activated: worker.pty !== null } as TerminalWorker;
       case 'git-diff':
         return { ...base, type: 'git-diff', baseCommit: worker.baseCommit } as GitDiffWorker;
     }
