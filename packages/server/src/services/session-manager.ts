@@ -39,6 +39,7 @@ import {
   resolveRef,
   stopWatching,
 } from './git-diff-service.js';
+import { getNotificationManager } from './notifications/index.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
@@ -533,15 +534,23 @@ export class SessionManager {
       // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical)
       await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
-      // 2. Remove from in-memory map
+      // 2. Clean up notification state (throttle timers, debounce timers)
+      try {
+        const notificationManager = getNotificationManager();
+        notificationManager.cleanupSession(id);
+      } catch {
+        // NotificationManager not initialized yet, skip
+      }
+
+      // 3. Remove from in-memory map
       this.sessions.delete(id);
 
-      // 3. Delete from persistence (this is the critical operation)
+      // 4. Delete from persistence (this is the critical operation)
       await this.sessionRepository.delete(id);
 
       logger.info({ sessionId: id }, 'Session deleted');
 
-      // 4. Only broadcast after all operations succeed
+      // 5. Only broadcast after all operations succeed
       this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
 
       return true;
@@ -777,6 +786,14 @@ export class SessionManager {
     } else {
       // git-diff worker: stop file watcher (fire-and-forget)
       void stopWatching(session.locationPath);
+    }
+
+    // Clean up notification state (debounce timers, previous state)
+    try {
+      const notificationManager = getNotificationManager();
+      notificationManager.cleanupWorker(sessionId, workerId);
+    } catch {
+      // NotificationManager not initialized yet, skip
     }
 
     session.workers.delete(workerId);
@@ -1069,6 +1086,26 @@ export class SessionManager {
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
       for (const callbacks of callbacksSnapshot) {
         callbacks.onExit(exitCode, signalStr);
+      }
+
+      // Send notification for worker exit
+      try {
+        const notificationManager = getNotificationManager();
+        const session = this.sessions.get(sessionId);
+        if (session) {
+          notificationManager.onWorkerExit(
+            {
+              id: session.id,
+              title: session.title,
+              worktreeId: session.type === 'worktree' ? session.worktreeId : null,
+              repositoryId: session.type === 'worktree' ? session.repositoryId : null,
+            },
+            { id: worker.id },
+            exitCode
+          );
+        }
+      } catch {
+        // NotificationManager not initialized yet, skip
       }
     });
   }

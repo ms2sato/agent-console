@@ -11,6 +11,7 @@ import type { WSContext } from 'hono/ws';
 import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
+import { getNotificationManager } from '../services/notifications/index.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
@@ -88,6 +89,17 @@ export async function setupWebSocketRoutes(
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
 
+  // Set up session exists callback for notification manager
+  // This allows debounce callbacks to validate session existence without circular dependencies
+  try {
+    const notificationManager = getNotificationManager();
+    notificationManager.setSessionExistsCallback((sessionId) => {
+      return sessionManager.getSession(sessionId) !== undefined;
+    });
+  } catch {
+    // NotificationManager not initialized yet, skip
+  }
+
   // Set up global activity callback to broadcast to all app clients
   sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
     broadcastToApp({
@@ -96,6 +108,29 @@ export async function setupWebSocketRoutes(
       workerId,
       activityState: state,
     });
+
+    // Send notification for activity state changes
+    try {
+      const notificationManager = getNotificationManager();
+      const session = sessionManager.getSession(sessionId);
+      if (session) {
+        const worker = session.workers.find(w => w.id === workerId);
+        if (worker) {
+          notificationManager.onActivityChange(
+            {
+              id: sessionId,
+              title: session.title,
+              worktreeId: session.type === 'worktree' ? session.worktreeId : null,
+              repositoryId: session.type === 'worktree' ? session.repositoryId : null,
+            },
+            { id: workerId },
+            state
+          );
+        }
+      }
+    } catch {
+      // NotificationManager not initialized yet, skip
+    }
   });
 
   // Set up session lifecycle callbacks to broadcast to all app clients

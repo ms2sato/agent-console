@@ -10,6 +10,7 @@ export interface Database {
   repositories: RepositoriesTable;
   agents: AgentsTable;
   jobs: JobsTable;
+  repository_slack_integrations: RepositorySlackIntegrationsTable;
 }
 
 /**
@@ -179,3 +180,29 @@ export type JobRow = Selectable<JobsTable>;
 export type NewJob = Insertable<JobsTable>;
 /** Job data for UPDATE queries */
 export type JobUpdate = Updateable<JobsTable>;
+
+/**
+ * Repository Slack Integrations table schema.
+ * Stores per-repository Slack integration settings for outbound notifications.
+ */
+export interface RepositorySlackIntegrationsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Foreign key reference to repositories.id */
+  repository_id: string;
+  /** Slack webhook URL */
+  webhook_url: string;
+  /** Whether integration is enabled (0 = disabled, 1 = enabled) */
+  enabled: number;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string */
+  updated_at: Generated<string>;
+}
+
+/** Repository Slack integration row as returned from SELECT queries */
+export type RepositorySlackIntegrationRow = Selectable<RepositorySlackIntegrationsTable>;
+/** Repository Slack integration data for INSERT queries */
+export type NewRepositorySlackIntegration = Insertable<RepositorySlackIntegrationsTable>;
+/** Repository Slack integration data for UPDATE queries */
+export type RepositorySlackIntegrationUpdate = Updateable<RepositorySlackIntegrationsTable>;

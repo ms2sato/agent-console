@@ -11,6 +11,7 @@ import { getConfigDir } from './lib/config.js';
 import { initializeJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
 import { initializeSessionManager } from './services/session-manager.js';
 import { initializeRepositoryManager } from './services/repository-manager.js';
+import { initializeNotificationServices, shutdownNotificationServices } from './services/notifications/index.js';
 import { createSessionRepository } from './repositories/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -21,9 +22,10 @@ const logger = createLogger('server');
 logger.info({ pid: process.pid }, 'Server process starting');
 
 /**
- * Graceful shutdown: stop job queue and close database.
+ * Graceful shutdown: stop job queue, close database, and shutdown notification services.
  */
 async function shutdown(): Promise<void> {
+  shutdownNotificationServices();
   await resetJobQueue();
   await closeDatabase();
 }
@@ -119,6 +121,7 @@ try {
 const sessionRepository = await createSessionRepository();
 await initializeSessionManager({ sessionRepository, jobQueue });
 await initializeRepositoryManager({ jobQueue });
+initializeNotificationServices();
 logger.info('Services initialized');
 
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback

@@ -616,3 +616,88 @@ export async function getRemoteBranchStatus(
   }
   return res.json();
 }
+
+// ===========================================================================
+// Repository Slack Integration
+// ===========================================================================
+
+export interface RepositorySlackIntegrationResponse {
+  id: string;
+  repositoryId: string;
+  webhookUrl: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Fetch Slack integration settings for a repository.
+ * Returns null if no integration exists (404 response).
+ */
+export async function fetchRepositorySlackIntegration(
+  repositoryId: string
+): Promise<RepositorySlackIntegrationResponse | null> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack`);
+  if (res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to fetch Slack integration');
+  }
+  return res.json();
+}
+
+export interface UpdateRepositorySlackIntegrationRequest {
+  webhookUrl: string;
+  enabled: boolean;
+}
+
+/**
+ * Update or create Slack integration settings for a repository.
+ */
+export async function updateRepositorySlackIntegration(
+  repositoryId: string,
+  data: UpdateRepositorySlackIntegrationRequest
+): Promise<RepositorySlackIntegrationResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to update Slack integration');
+  }
+  return res.json();
+}
+
+/**
+ * Send a test notification to the repository's Slack webhook.
+ */
+export async function testRepositorySlackIntegration(repositoryId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack/test`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to send test notification');
+  }
+}
+
+// ===========================================================================
+// Notification Settings
+// ===========================================================================
+
+export interface NotificationStatus {
+  baseUrl: string;
+  isBaseUrlConfigured: boolean;
+}
+
+export async function fetchNotificationStatus(): Promise<NotificationStatus> {
+  const res = await fetch(`${API_BASE}/settings/notifications/status`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch notification status');
+  }
+  return res.json();
+}
