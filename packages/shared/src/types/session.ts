@@ -4,6 +4,7 @@ import type {
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
 } from './worktree-creation.js';
+import type { InboundEventSummary } from './system-events.js';
 
 // Forward declaration of Repository to avoid circular dependency
 // The full type is defined in @agent-console/shared/src/index.ts
@@ -142,6 +143,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worktree-creation-completed': 14,
   'worktree-creation-failed': 15,
   'worker-activated': 16,
+  'inbound-event': 17,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -164,6 +166,7 @@ export type AppServerMessage =
   | { type: 'repository-created'; repository: Repository }
   | { type: 'repository-updated'; repository: Repository }
   | { type: 'repository-deleted'; repositoryId: string }
+  | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
   | ({ type: 'worktree-creation-completed' } & WorktreeCreationCompletedPayload)
   | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload);
 

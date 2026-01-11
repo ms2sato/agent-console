@@ -33,7 +33,7 @@ import { AddRepositoryForm } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
 import { useWorktreeCreationTasksContext } from './__root';
-import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult, InboundEventSummary } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -373,6 +373,21 @@ function DashboardPage() {
     }
   }, []);
 
+  const handleInboundEvent = useCallback((sessionId: string, event: InboundEventSummary) => {
+    const session = sessionsRef.current.find(s => s.id === sessionId);
+    const projectName = session
+      ? session.locationPath.split('/').filter(Boolean).pop() ?? 'Unknown'
+      : 'Session';
+    const now = Date.now();
+
+    showNotification(
+      `[${event.source}] ${event.type}`,
+      `${projectName} - ${event.summary}`,
+      sessionId,
+      `inbound-${sessionId}-${now}`
+    );
+  }, []);
+
   // Connect to app WebSocket for real-time updates
   useAppWsEvent({
     onSessionsSync: handleSessionsSync,
@@ -388,6 +403,7 @@ function DashboardPage() {
     onRepositoryCreated: handleRepositoryCreated,
     onRepositoryDeleted: handleRepositoryDeleted,
     onRepositoryUpdated: handleRepositoryUpdated,
+    onInboundEvent: handleInboundEvent,
   });
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
