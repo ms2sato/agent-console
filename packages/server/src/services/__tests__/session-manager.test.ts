@@ -580,6 +580,80 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setGlobalWorkerExitCallback', () => {
+    it('should call global callback on worker exit', async () => {
+      const manager = await getSessionManager();
+
+      const exitCallback = mock(() => {});
+      manager.setGlobalWorkerExitCallback(exitCallback);
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
+
+      // Simulate PTY exit
+      const pty = ptyFactory.instances[0];
+      pty.simulateExit(0);
+
+      // Global exit callback should have been called with session and worker info
+      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 0);
+    });
+
+    it('should call global callback with non-zero exit code', async () => {
+      const manager = await getSessionManager();
+
+      const exitCallback = mock(() => {});
+      manager.setGlobalWorkerExitCallback(exitCallback);
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
+
+      // Simulate PTY exit with non-zero code
+      const pty = ptyFactory.instances[0];
+      pty.simulateExit(1);
+
+      // Global exit callback should have been called with the exit code
+      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 1);
+    });
+
+    it('should call global callback for terminal worker exit', async () => {
+      const manager = await getSessionManager();
+
+      const exitCallback = mock(() => {});
+      manager.setGlobalWorkerExitCallback(exitCallback);
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Create a terminal worker (index 1, since agent is index 0)
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      expect(terminalWorker).not.toBeNull();
+
+      // Find the terminal PTY (it should be the second one created)
+      const terminalPtyIndex = ptyFactory.instances.length - 1;
+      const terminalPty = ptyFactory.instances[terminalPtyIndex];
+      terminalPty.simulateExit(0);
+
+      // Global exit callback should have been called for the terminal worker
+      expect(exitCallback).toHaveBeenCalledWith(session.id, terminalWorker!.id, 0);
+    });
+  });
+
   describe('setSessionLifecycleCallbacks', () => {
     it('should call onSessionCreated when a session is created', async () => {
       const manager = await getSessionManager();
