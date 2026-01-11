@@ -208,11 +208,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     // Only handle when tabs are already initialized
     if (tabs.length === 0 || state.type !== 'active') return;
 
-    const workers = state.session.workers;
+    const firstAgentTabId = tabs.find(tab => tab.workerType === 'agent')?.id ?? null;
 
     if (urlWorkerId) {
       // Check if the URL workerId is valid
-      const workerExists = workers.some(w => w.id === urlWorkerId);
+      const workerExists = tabs.some(tab => tab.id === urlWorkerId);
       if (workerExists) {
         // Valid workerId - sync activeTabId
         if (activeTabId !== urlWorkerId) {
@@ -224,7 +224,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       }
     } else {
       // No workerId in URL - redirect to default worker
-      const defaultTabId = findFirstAgentWorker(workers)?.id ?? tabs[0]?.id ?? null;
+      const defaultTabId = firstAgentTabId ?? tabs[0]?.id ?? null;
       if (defaultTabId) {
         navigateToWorker(defaultTabId, true);
       }
