@@ -1,32 +1,12 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import type { AgentActivityState, NotificationContext, RepositorySlackIntegration } from '@agent-console/shared';
-
-// Mock the logger to avoid noise in tests
-mock.module('../../lib/logger.js', () => ({
-  createLogger: () => ({
-    info: () => {},
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-  }),
-}));
-
-// Mock repository integration lookup function - will be configured per test
-let mockGetByRepositoryId: (_id: string) => Promise<RepositorySlackIntegration | null> = () => Promise.resolve(null);
-
-mock.module('../repository-slack-integration-service.js', () => ({
-  getByRepositoryId: (id: string) => mockGetByRepositoryId(id),
-}));
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import type { AgentActivityState, NotificationContext, RepositorySlackIntegration, OutboundTriggerEventType } from '@agent-console/shared';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../../database/connection.js';
+import * as repoSlackIntegrationService from '../repository-slack-integration-service.js';
+import { NotificationManager, type NotificationManagerOptions } from '../notification-manager.js';
+import type { SlackHandler } from '../slack-handler.js';
 
 describe('NotificationManager', () => {
-  let importCounter = 0;
-
-  // Reset the mock before each test
-  beforeEach(() => {
-    mockGetByRepositoryId = () => Promise.resolve(null);
-  });
-
-  // Mock SlackHandler with proper typing - using new interface
+  // Mock SlackHandler with proper typing
   function createMockSlackHandler() {
     const canHandleMock = mock((_repositoryId: string) => Promise.resolve(true));
     const sendMock = mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve());
@@ -43,45 +23,33 @@ describe('NotificationManager', () => {
     };
   }
 
-  // Helper to get NotificationManager with mocked dependencies
-  // Optionally override private methods for testing with custom debounce/trigger settings
-  async function getNotificationManager(
+  // Helper to create NotificationManager with mock SlackHandler
+  function createNotificationManager(
     slackHandler = createMockSlackHandler(),
-    options?: {
-      debounceSeconds?: number;
-      triggers?: Record<string, boolean>;
-      baseUrl?: string;
-    }
+    options?: NotificationManagerOptions
   ) {
-    // Import fresh module
-    const module = await import(`../notification-manager.js?v=${++importCounter}`);
-
-    // Create the manager with mock slack handler
-    const manager = new module.NotificationManager(slackHandler as unknown as import('../slack-handler.js').SlackHandler);
-
-    // Override private methods if options provided (for testing)
-    if (options?.debounceSeconds !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (manager as any).getDebounceSeconds = () => options.debounceSeconds;
-    }
-    if (options?.triggers) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (manager as any).isTriggerEnabled = (eventType: string) => options.triggers![eventType] ?? false;
-    }
-    if (options?.baseUrl !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (manager as any).getBaseUrl = () => options.baseUrl;
-    }
-
+    const manager = new NotificationManager(
+      slackHandler as unknown as SlackHandler,
+      options
+    );
     return { manager, slackHandler };
   }
+
+  // All triggers enabled for testing
+  const allTriggersEnabled: Record<OutboundTriggerEventType, boolean> = {
+    'agent:waiting': true,
+    'agent:idle': true,
+    'agent:active': true,
+    'worker:error': true,
+    'worker:exited': true,
+  };
 
   // Test session and worker info
   const testSession = {
     id: 'session-1',
     title: 'Test Session',
     worktreeId: 'feature-branch',
-    repositoryId: 'test-repo-1',  // Required for Slack notifications
+    repositoryId: 'test-repo-1',
   };
 
   const testWorker = {
@@ -98,22 +66,46 @@ describe('NotificationManager', () => {
     updatedAt: new Date().toISOString(),
   };
 
-  // Helper to set up mock for repository integration
-  function setupMockIntegration(integration: RepositorySlackIntegration | null = defaultRepoIntegration) {
-    mockGetByRepositoryId = (id: string) => {
-      if (integration && id === integration.repositoryId) {
-        return Promise.resolve(integration);
-      }
-      return Promise.resolve(null);
-    };
+  // Helper to create the parent repository record (required due to foreign key constraint)
+  async function createTestRepository(repositoryId: string) {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    // Use ON CONFLICT to avoid duplicate key errors when called multiple times
+    await db.insertInto('repositories').values({
+      id: repositoryId,
+      name: 'test-repo',
+      path: `/test/path/to/${repositoryId}`,
+      created_at: now,
+      updated_at: now,
+    }).onConflict((oc) => oc.column('id').doNothing()).execute();
+  }
+
+  beforeEach(async () => {
+    // Initialize in-memory database for each test
+    await initializeDatabase(':memory:');
+  });
+
+  afterEach(async () => {
+    await closeDatabase();
+  });
+
+  // Helper to set up repository integration in the real database
+  async function setupRepoIntegration(integration: RepositorySlackIntegration = defaultRepoIntegration) {
+    // Create parent repository first
+    await createTestRepository(integration.repositoryId);
+    await repoSlackIntegrationService.create(
+      integration.repositoryId,
+      integration.webhookUrl,
+      integration.enabled
+    );
   }
 
   describe('activity state mapping', () => {
     it('should map "asking" activity state to "agent:waiting" event', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSession, testWorker, 'asking' as AgentActivityState);
@@ -129,10 +121,10 @@ describe('NotificationManager', () => {
     });
 
     it('should map "idle" activity state to "agent:idle" event', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
@@ -148,10 +140,10 @@ describe('NotificationManager', () => {
     });
 
     it('should map "active" activity state to "agent:active" event', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSession, testWorker, 'active' as AgentActivityState);
@@ -167,10 +159,10 @@ describe('NotificationManager', () => {
     });
 
     it('should not trigger notification for "unknown" activity state', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSession, testWorker, 'unknown' as AgentActivityState);
@@ -184,10 +176,10 @@ describe('NotificationManager', () => {
 
   describe('state transition filtering', () => {
     it('should skip waiting -> idle transition (user action result)', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // First, go to waiting state
@@ -207,10 +199,10 @@ describe('NotificationManager', () => {
     });
 
     it('should send active -> idle transition (work completed)', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // First, go to active state
@@ -231,10 +223,10 @@ describe('NotificationManager', () => {
     });
 
     it('should still track state after skipping waiting -> idle', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // waiting -> idle (skipped)
@@ -258,8 +250,8 @@ describe('NotificationManager', () => {
 
   describe('trigger rules filtering', () => {
     it('should not send notification when trigger is disabled', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
         triggers: {
           'agent:waiting': false, // disabled
@@ -281,8 +273,8 @@ describe('NotificationManager', () => {
     });
 
     it('should send notification when trigger is enabled', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
         triggers: {
           'agent:waiting': true, // enabled
@@ -307,14 +299,17 @@ describe('NotificationManager', () => {
   describe('default trigger configuration', () => {
     // Tests using the actual default configuration
     it('should have agent:active disabled by default', async () => {
-      setupMockIntegration();
-      // Use the actual default settings (no overrides)
-      const { manager, slackHandler } = await getNotificationManager();
+      await setupRepoIntegration();
+      // Use the actual default settings (no trigger overrides, but set debounce for faster test)
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 0, // Override debounce for faster test
+        // triggers not set - uses DEFAULT_TRIGGERS
+      });
 
       manager.onActivityChange(testSession, testWorker, 'active' as AgentActivityState);
 
-      // Wait longer than default debounce (3 seconds) + buffer
-      await new Promise(resolve => setTimeout(resolve, 3200));
+      // Wait for async operations
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       // agent:active is disabled by default, so no notification should be sent
       expect(slackHandler._sendMock).not.toHaveBeenCalled();
@@ -323,14 +318,17 @@ describe('NotificationManager', () => {
     });
 
     it('should have agent:waiting enabled by default', async () => {
-      setupMockIntegration();
-      // Use the actual default settings (no overrides)
-      const { manager, slackHandler } = await getNotificationManager();
+      await setupRepoIntegration();
+      // Use the actual default settings (no trigger overrides, but set debounce for faster test)
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 0, // Override debounce for faster test
+        // triggers not set - uses DEFAULT_TRIGGERS
+      });
 
       manager.onActivityChange(testSession, testWorker, 'asking' as AgentActivityState);
 
-      // Wait longer than default debounce (3 seconds) + buffer
-      await new Promise(resolve => setTimeout(resolve, 3200));
+      // Wait for async notification sending
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       expect(slackHandler._sendMock).toHaveBeenCalledTimes(1);
       expect(slackHandler._sendMock.mock.calls[0][0].event.type).toBe('agent:waiting');
@@ -341,12 +339,11 @@ describe('NotificationManager', () => {
 
   describe('debouncing per session:worker', () => {
     it('should debounce notifications independently for different session:worker pairs', async () => {
-      // Set up mock to return integration for multiple repositories
-      mockGetByRepositoryId = () => Promise.resolve(defaultRepoIntegration);
+      await setupRepoIntegration();
 
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0.05, // 50ms debounce
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       const session2 = { id: 'session-2', title: 'Session 2', worktreeId: 'branch-2', repositoryId: 'test-repo-1' };
@@ -367,10 +364,10 @@ describe('NotificationManager', () => {
     });
 
     it('should coalesce rapid state changes for same session:worker into one notification', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0.05, // 50ms debounce
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // Rapid state changes for same session:worker
@@ -392,11 +389,11 @@ describe('NotificationManager', () => {
 
   describe('debouncing behavior', () => {
     it('should debounce rapid state changes', async () => {
-      setupMockIntegration();
+      await setupRepoIntegration();
       // Use very short debounce for testing with real timers
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0.05, // 50ms
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // Rapid state changes
@@ -419,10 +416,10 @@ describe('NotificationManager', () => {
     });
 
     it('should send immediately when debounceSeconds is 0', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
@@ -439,10 +436,10 @@ describe('NotificationManager', () => {
 
   describe('URL building', () => {
     it('should build correct agentConsoleUrl format', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
         baseUrl: 'http://example.com:8080',
       });
 
@@ -460,10 +457,10 @@ describe('NotificationManager', () => {
 
   describe('worker events', () => {
     it('should send worker:error notification immediately without debouncing', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 10, // Long debounce that shouldn't apply
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onWorkerError(testSession, testWorker, 'Process crashed');
@@ -481,10 +478,10 @@ describe('NotificationManager', () => {
     });
 
     it('should send worker:exited notification immediately without debouncing', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 10, // Long debounce that shouldn't apply
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onWorkerExit(testSession, testWorker, 0);
@@ -504,8 +501,8 @@ describe('NotificationManager', () => {
 
   describe('sendTestNotification', () => {
     it('should call slackHandler.sendTest with repositoryId', async () => {
-      setupMockIntegration();
-      const { manager, slackHandler } = await getNotificationManager();
+      await setupRepoIntegration();
+      const { manager, slackHandler } = createNotificationManager();
 
       await manager.sendTestNotification('test-repo-1', 'Test message');
 
@@ -517,11 +514,11 @@ describe('NotificationManager', () => {
 
   describe('dispose', () => {
     it('should clear all debounce timers on dispose', async () => {
-      setupMockIntegration();
+      await setupRepoIntegration();
       // Use short debounce for testing with real timers
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0.1, // 100ms
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       // Schedule a debounced notification
@@ -565,17 +562,18 @@ describe('NotificationManager', () => {
     };
 
     it('should use canHandle and send methods when repository has integration', async () => {
-      // Configure mock to return repository integration
-      mockGetByRepositoryId = (id: string) => {
-        if (id === 'repo-123') {
-          return Promise.resolve(repoSlackIntegration);
-        }
-        return Promise.resolve(null);
-      };
+      // Create parent repository first
+      await createTestRepository(repoSlackIntegration.repositoryId);
+      // Configure repository integration in the real database
+      await repoSlackIntegrationService.create(
+        repoSlackIntegration.repositoryId,
+        repoSlackIntegration.webhookUrl,
+        repoSlackIntegration.enabled
+      );
 
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSessionWithDifferentRepo, testWorker, 'idle' as AgentActivityState);
@@ -600,9 +598,9 @@ describe('NotificationManager', () => {
       const mockSlackHandler = createMockSlackHandler();
       mockSlackHandler._canHandleMock.mockResolvedValue(false);
 
-      const { manager, slackHandler } = await getNotificationManager(mockSlackHandler, {
+      const { manager, slackHandler } = createNotificationManager(mockSlackHandler, {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSessionWithDifferentRepo, testWorker, 'idle' as AgentActivityState);
@@ -621,11 +619,10 @@ describe('NotificationManager', () => {
 
     it('should not send notification for sessions without repositoryId', async () => {
       // testSessionWithoutRepo has no repositoryId
-      mockGetByRepositoryId = () => Promise.resolve(null);
 
-      const { manager, slackHandler } = await getNotificationManager(createMockSlackHandler(), {
+      const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSessionWithoutRepo, testWorker, 'idle' as AgentActivityState);
@@ -645,9 +642,9 @@ describe('NotificationManager', () => {
       const mockSlackHandler = createMockSlackHandler();
       mockSlackHandler._canHandleMock.mockRejectedValue(new Error('Database error'));
 
-      const { manager, slackHandler } = await getNotificationManager(mockSlackHandler, {
+      const { manager, slackHandler } = createNotificationManager(mockSlackHandler, {
         debounceSeconds: 0,
-        triggers: { 'agent:waiting': true, 'agent:idle': true, 'agent:active': true, 'worker:error': true, 'worker:exited': true },
+        triggers: allTriggersEnabled,
       });
 
       manager.onActivityChange(testSessionWithDifferentRepo, testWorker, 'idle' as AgentActivityState);

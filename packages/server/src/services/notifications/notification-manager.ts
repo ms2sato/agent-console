@@ -30,7 +30,7 @@ const logger = createLogger('notification-manager');
  * - worker:error is enabled (important to know about errors)
  * - worker:exited is disabled (may not always be relevant)
  */
-const DEFAULT_TRIGGERS: Record<OutboundTriggerEventType, boolean> = {
+export const DEFAULT_TRIGGERS: Record<OutboundTriggerEventType, boolean> = {
   'agent:waiting': true,
   'agent:idle': true,
   'agent:active': false,
@@ -42,7 +42,20 @@ const DEFAULT_TRIGGERS: Record<OutboundTriggerEventType, boolean> = {
  * Default debounce duration in seconds.
  * Waits for state to stabilize before sending notification.
  */
-const DEFAULT_DEBOUNCE_SECONDS = 3;
+export const DEFAULT_DEBOUNCE_SECONDS = 3;
+
+/**
+ * Options for configuring NotificationManager behavior.
+ * Used primarily for testing to override default settings.
+ */
+export interface NotificationManagerOptions {
+  /** Override debounce duration in seconds (default: 3) */
+  debounceSeconds?: number;
+  /** Override trigger configuration (default: DEFAULT_TRIGGERS) */
+  triggers?: Record<OutboundTriggerEventType, boolean>;
+  /** Override base URL for agent console (default: serverConfig.APP_URL) */
+  baseUrl?: string;
+}
 
 /**
  * Minimal session info for notification context.
@@ -84,6 +97,7 @@ export type SessionExistsCallback = (sessionId: string) => boolean;
 export class NotificationManager {
   private slackHandler: SlackHandler;
   private sessionExistsCallback: SessionExistsCallback | null = null;
+  private options: NotificationManagerOptions;
 
   /** Previous state per session:worker for change detection */
   private previousState = new Map<string, NotificationEvent['type']>();
@@ -91,8 +105,9 @@ export class NotificationManager {
   /** Pending debounce timers per session:worker */
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  constructor(slackHandler: SlackHandler) {
+  constructor(slackHandler: SlackHandler, options?: NotificationManagerOptions) {
     this.slackHandler = slackHandler;
+    this.options = options ?? {};
 
     logger.info('NotificationManager initialized');
   }
@@ -101,6 +116,9 @@ export class NotificationManager {
    * Check if a trigger is enabled for a given event type.
    */
   private isTriggerEnabled(eventType: OutboundTriggerEventType): boolean {
+    if (this.options.triggers) {
+      return this.options.triggers[eventType] ?? false;
+    }
     return DEFAULT_TRIGGERS[eventType] ?? false;
   }
 
@@ -108,14 +126,14 @@ export class NotificationManager {
    * Get debounce duration in seconds.
    */
   private getDebounceSeconds(): number {
-    return DEFAULT_DEBOUNCE_SECONDS;
+    return this.options.debounceSeconds ?? DEFAULT_DEBOUNCE_SECONDS;
   }
 
   /**
    * Get base URL for agent console from server config.
    */
   private getBaseUrl(): string {
-    return serverConfig.APP_URL;
+    return this.options.baseUrl ?? serverConfig.APP_URL;
   }
 
   /**
