@@ -12,6 +12,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
 
+**Ask when uncertain.** When uncertain about a design decision, do not decide arbitrarily. Ask the user for confirmation.
+
+## Design Review Mindset
+
+The following are perspectives to revisit repeatedly during design. This is not a one-way checklist.
+
+- Is the existing pattern truly appropriate?
+  - Are you following it just because other code does so?
+  - When uncertain, ask the user
+
+- Have you considered abstraction? Have you judged whether it is truly necessary after attempting it?
+  - Do not avoid abstraction; judge its necessity after considering it
+
+- Is the placement appropriate?
+  - Module-specific or shared?
+  - Does it align with the scope of responsibility?
+
+- Is the interface actually usable?
+  - Is the design such that callers cannot pass the information they need?
+
+- Does the naming cause misunderstanding in context?
+  - Can you predict the value from the name?
+  - Is it consistent with existing naming conventions in the codebase?
+
+- Do default values contradict state?
+  - Does the default value make sense when other fields are unset?
+
+- Is there anything unnecessary? Can it be deleted?
+  - Prioritize deletion over addition
+
 ## Subagent and Skill Usage Policy
 
 **Primary agent as coordinator.** The primary agent (first launched) MUST NOT write code directly. Instead:
