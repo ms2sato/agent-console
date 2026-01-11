@@ -290,8 +290,19 @@ export class SessionManager {
 
     // Delete orphan sessions (path no longer exists)
     for (const sessionId of orphanSessionIds) {
-      await this.sessionRepository.delete(sessionId);
-      logger.info({ sessionId }, 'Removed orphan session with non-existent path');
+      // Clean up worker output files
+      try {
+        await workerOutputFileManager.deleteSessionOutputs(sessionId);
+      } catch (error) {
+        logger.error({ sessionId, err: error }, 'Failed to delete worker output files for orphan session');
+      }
+      // Delete from database
+      try {
+        await this.sessionRepository.delete(sessionId);
+        logger.info({ sessionId }, 'Removed orphan session with non-existent path');
+      } catch (error) {
+        logger.error({ sessionId, err: error }, 'Failed to delete orphan session from database');
+      }
     }
 
     // Save all sessions (inherited with updated PID, others unchanged)

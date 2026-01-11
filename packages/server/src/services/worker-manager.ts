@@ -485,11 +485,11 @@ export class WorkerManager {
   restoreWorkersFromPersistence(persistedWorkers: PersistedWorker[]): Map<string, InternalWorker> {
     const workers = new Map<string, InternalWorker>();
 
+    // Shared base properties (excluding connectionCallbacks which must be unique per worker)
     const ptyWorkerBase = {
       pty: null,
       outputBuffer: '',
       outputOffset: 0,
-      connectionCallbacks: new Map(),
     };
 
     for (const pw of persistedWorkers) {
@@ -501,6 +501,7 @@ export class WorkerManager {
           worker = {
             ...base,
             ...ptyWorkerBase,
+            connectionCallbacks: new Map(), // Must be unique per worker
             type: 'agent',
             agentId: pw.agentId,
             activityState: 'unknown',
@@ -508,7 +509,7 @@ export class WorkerManager {
           };
           break;
         case 'terminal':
-          worker = { ...base, ...ptyWorkerBase, type: 'terminal' };
+          worker = { ...base, ...ptyWorkerBase, connectionCallbacks: new Map(), type: 'terminal' };
           break;
         case 'git-diff':
           worker = { ...base, type: 'git-diff', baseCommit: pw.baseCommit };
