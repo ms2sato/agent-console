@@ -18,9 +18,10 @@ Invoke with specific context:
 ## Review Process
 
 1. **Understand Context** - Read the code and its surrounding context
-2. **Apply Standards** - Evaluate against the quality standards
-3. **Prioritize Findings** - Focus on impactful issues, not nitpicks
-4. **Provide Evidence** - Reference specific code locations (file:line)
+2. **Apply Standards** - Evaluate against the code-quality-standards skill
+3. **Apply Domain Standards** - Use frontend-standards for React code, backend-standards for server code
+4. **Prioritize Findings** - Focus on impactful issues, not nitpicks
+5. **Provide Evidence** - Reference specific code locations (file:line)
 
 ## Output Format
 
@@ -42,46 +43,6 @@ For each issue found:
 
 ### Recommendations
 Prioritized list of suggested improvements.
-
-## React-Specific Checks
-
-When reviewing React code, pay special attention to:
-
-1. **Suspense Usage** - Prefer Suspense for async operations and loading states over manual isLoading flags
-2. **useEffect Discipline** - Challenge every useEffect: could it be a derived value, event handler, or useMemo instead?
-3. **Icon Components** - SVG icons should be in `Icons.tsx`, not inline in View components
-4. **External State** - Use `useSyncExternalStore` for singleton/global state, not useEffect with manual subscriptions
-5. **Query Key Management** - TanStack Query keys should use consistent factories, invalidation should be complete
-
-## Backend-Specific Checks
-
-When reviewing backend code, pay special attention to:
-
-1. **Resource Cleanup** - Are PTY processes, WebSocket connections, and file handles properly cleaned up?
-2. **WebSocket Message Types** - Are server→client and client→server message types clearly defined and validated?
-3. **Structured Logging** - Use Pino with structured data: `logger.info({ sessionId, workerId }, 'message')`, not string interpolation
-4. **Callback Registration** - Are callbacks properly detached when resources are destroyed? (memory leak prevention)
-5. **Output Buffering** - Is rapid PTY output buffered before WebSocket send to reduce message frequency?
-
-## TypeScript Safety Checks
-
-1. **Exhaustive Type Handling** - When handling discriminated unions (e.g., `type: 'agent' | 'terminal' | 'git-diff'`):
-   - All cases must be explicitly handled with `if/else if` or `switch`
-   - **Never use bare `else` for the last case** - always use `else if` with explicit type check
-   - Add exhaustive check: `const _exhaustive: never = value;` to catch future type additions at compile time
-   - **Red flag**: `else { ... }` handling a union type = implicit fallback that hides bugs
-
-2. **Null Safety** - Check that nullable types (`T | null`) are properly guarded before use
-
-## File Size and Responsibility Checks
-
-1. **File Size Warning** - Flag files that exceed reasonable limits:
-   - \> 500 lines: Consider splitting into modules
-   - Look for natural boundaries (e.g., related functions/types that could be extracted)
-
-2. **Responsibility Clustering** - Check if function/method names suggest multiple concerns:
-   - Prefixes like `initializeWorker*`, `activateWorker*` vs `createSession*` = extraction candidate
-   - A class/file doing two distinct things violates Single Responsibility Principle
 
 ## When Existing Patterns Are Questionable
 
@@ -108,3 +69,4 @@ Example format:
 - Focus only on review and recommendations
 - Be constructive, not just critical
 - Acknowledge trade-offs (e.g., simplicity vs flexibility)
+- Reference the skill files (code-quality-standards, frontend-standards, backend-standards) for detailed evaluation criteria

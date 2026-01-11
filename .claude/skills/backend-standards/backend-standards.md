@@ -395,3 +395,137 @@ process.on('uncaughtException', (error) => {
 - Clean up dead WebSocket connections
 - Use timeouts for operations
 - Handle reconnection gracefully
+
+## Backend Best Practices
+
+### Resource Cleanup Checklist
+
+When creating resources that need cleanup:
+
+1. **PTY Processes** - Kill processes when workers are destroyed
+2. **WebSocket Connections** - Close connections on disconnect, handle cleanup in `onClose`
+3. **File Handles** - Close file handles after operations complete
+4. **Event Listeners** - Remove listeners when resources are destroyed
+
+```typescript
+// ✅ Proper cleanup pattern
+class Worker {
+  private pty: Pty;
+  private callbacks: Map<string, () => void> = new Map();
+
+  destroy() {
+    // 1. Kill PTY process
+    this.pty.kill();
+
+    // 2. Detach all callbacks to prevent memory leaks
+    this.callbacks.forEach((unsubscribe) => unsubscribe());
+    this.callbacks.clear();
+
+    // 3. Close any open file handles
+    // ...
+  }
+}
+```
+
+### Callback Registration and Detachment
+
+**Always detach callbacks when resources are destroyed** to prevent memory leaks:
+
+```typescript
+// ❌ Memory leak: callbacks never detached
+class SessionManager {
+  attachWorkerCallbacks(workerId: string, callbacks: Callbacks) {
+    this.workerCallbacks.set(workerId, callbacks);
+  }
+  // No detach method!
+}
+
+// ✅ Proper callback lifecycle
+class SessionManager {
+  attachWorkerCallbacks(workerId: string, callbacks: Callbacks) {
+    this.workerCallbacks.set(workerId, callbacks);
+  }
+
+  detachWorkerCallbacks(workerId: string) {
+    this.workerCallbacks.delete(workerId);
+  }
+}
+
+// In WebSocket handler
+onClose() {
+  sessionManager.detachWorkerCallbacks(sessionId, workerId);
+}
+```
+
+### WebSocket Message Types
+
+Define and validate message types explicitly for both directions:
+
+```typescript
+// packages/shared/src/types/websocket.ts
+
+// Server → Client messages
+type AppServerMessage =
+  | { type: 'sessions'; sessions: Session[] }
+  | { type: 'session-created'; session: Session }
+  | { type: 'worker-activity'; sessionId: string; workerId: string; state: ActivityState };
+
+// Client → Server messages
+type AppClientMessage =
+  | { type: 'subscribe'; sessionId: string }
+  | { type: 'unsubscribe'; sessionId: string };
+
+// Validate incoming messages with Valibot
+const AppClientMessageSchema = v.variant('type', [
+  v.object({ type: v.literal('subscribe'), sessionId: v.string() }),
+  v.object({ type: v.literal('unsubscribe'), sessionId: v.string() }),
+]);
+```
+
+### PTY Output Buffering
+
+Buffer rapid PTY output before sending to WebSocket to reduce message frequency:
+
+```typescript
+// ❌ Sends every byte immediately - high message frequency
+pty.onData((data) => {
+  ws.send(data);
+});
+
+// ✅ Buffer output and flush periodically
+class OutputBuffer {
+  private buffer = '';
+  private flushTimeout: Timer | null = null;
+
+  append(data: string) {
+    this.buffer += data;
+    if (!this.flushTimeout) {
+      this.flushTimeout = setTimeout(() => this.flush(), 16); // ~60fps
+    }
+  }
+
+  private flush() {
+    if (this.buffer) {
+      this.ws.send(this.buffer);
+      this.buffer = '';
+    }
+    this.flushTimeout = null;
+  }
+}
+```
+
+### Structured Logging Best Practices
+
+```typescript
+// ❌ Avoid: string interpolation
+logger.info(`Worker ${workerId} created for session ${sessionId}`);
+
+// ✅ Prefer: structured data first, message second
+logger.info({ sessionId, workerId }, 'Worker created');
+
+// ❌ Avoid: logging objects directly
+logger.error(error, 'Operation failed');
+
+// ✅ Prefer: wrap error in `err` key for proper serialization
+logger.error({ err: error, sessionId }, 'Operation failed');
+```

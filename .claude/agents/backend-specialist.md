@@ -3,7 +3,7 @@ name: backend-specialist
 description: Implement backend features and fixes. Use for API endpoints, WebSocket handlers, services, and server-side logic in packages/server.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: opus
-skills: development-workflow-standards, code-quality-standards, backend-standards
+skills: development-workflow-standards, code-quality-standards, backend-standards, test-standards
 ---
 
 You are a backend specialist. Your responsibility is to implement backend features, fix bugs, and maintain code quality in the Bun/Hono server application.

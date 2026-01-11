@@ -9,6 +9,29 @@ This document defines the evaluation criteria for code design and quality review
 - Are unrelated concerns separated into different modules?
 - Would a change in one domain require changes in unrelated code?
 
+### File Size and Responsibility Checks
+
+**File Size Warning**: Flag files that exceed reasonable limits:
+- \> 500 lines: Consider splitting into modules
+- Look for natural boundaries (e.g., related functions/types that could be extracted)
+
+**Responsibility Clustering**: Check if function/method names suggest multiple concerns:
+- Prefixes like `initializeWorker*`, `activateWorker*` vs `createSession*` = extraction candidate
+- A class/file doing two distinct things violates Single Responsibility Principle
+
+Example red flags:
+```typescript
+// File: session-manager.ts (800+ lines)
+// Contains both session management AND worker lifecycle
+createSession()
+deleteSession()
+initializeAgentWorker()   // ← Different concern
+activateWorker()          // ← Different concern
+cleanupWorkerResources()  // ← Different concern
+```
+
+Consider extracting to `worker-lifecycle.ts` or similar.
+
 ### Open-Closed Principle
 - Can new features be added without modifying existing code?
 - Are extension points clearly defined?
@@ -35,6 +58,39 @@ This document defines the evaluation criteria for code design and quality review
 - Are types used to make invalid states unrepresentable?
 - Is `any` avoided? Is `unknown` used with proper type guards?
 - Are discriminated unions used for state management?
+
+### Exhaustive Type Handling
+
+When handling discriminated unions (e.g., `type: 'agent' | 'terminal' | 'git-diff'`):
+
+1. **All cases must be explicitly handled** with `if/else if` or `switch`
+2. **Never use bare `else` for the last case** - always use `else if` with explicit type check
+3. **Add exhaustive check** to catch future type additions at compile time
+
+```typescript
+// ❌ Wrong: bare else hides bugs when new types are added
+if (worker.type === 'agent') {
+  // handle agent
+} else if (worker.type === 'terminal') {
+  // handle terminal
+} else {
+  // This silently handles 'git-diff' and any future types!
+}
+
+// ✅ Correct: explicit type check + exhaustive guard
+if (worker.type === 'agent') {
+  // handle agent
+} else if (worker.type === 'terminal') {
+  // handle terminal
+} else if (worker.type === 'git-diff') {
+  // handle git-diff
+} else {
+  const _exhaustive: never = worker.type;
+  throw new Error(`Unknown worker type: ${worker.type}`);
+}
+```
+
+**Red flag**: `else { ... }` handling a union type = implicit fallback that hides bugs
 
 ### Null Safety
 - Is nullability explicit in types?
@@ -215,24 +271,6 @@ Key principles:
 - Validate message format before processing (use Valibot schemas)
 - Don't trust client-provided IDs without verification
 - Rate-limit rapid reconnection attempts
-
-## 9. React Best Practices
-
-### Suspense Usage
-- Is Suspense used for async data fetching and code splitting?
-- Are loading states handled declaratively with Suspense boundaries?
-- Is ErrorBoundary paired with Suspense for error handling?
-
-### useEffect Discipline
-- Is useEffect avoided when derived state or event handlers suffice?
-- Are effects truly for synchronization with external systems?
-- Could the logic be moved to event handlers, useMemo, or server components?
-- Are unnecessary re-subscriptions avoided?
-
-### Component Organization
-- Are SVG icons extracted to a dedicated Icons.tsx component?
-- Are View components kept clean of implementation details?
-- Is presentational logic separated from business logic?
 
 ## Evaluation Output Format
 
