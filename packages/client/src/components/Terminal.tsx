@@ -60,8 +60,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  // Track retrying state to trigger reconnection
-  const [isRetrying, setIsRetrying] = useState(false);
+  // Track retry count to trigger reconnection via usePersistentWebSocket deps
+  const [retryCount, setRetryCount] = useState(0);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -114,8 +114,22 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Clear error and trigger reconnection
     setWorkerError(null);
     setStatus('connecting');
-    setIsRetrying(true);
-  }, []);
+    // Reset state for fresh connection
+    stateRef.current = {
+      isMounted: stateRef.current.isMounted,
+      pendingHistory: null,
+      restoredFromCache: false,
+      waitingForDiff: false,
+      cachedOffset: 0,
+      historyRequested: false,
+      currentWorkerId: workerId,
+    };
+    // Disconnect first to clear existing connection
+    disconnect(sessionId, workerId);
+    // Increment retryCount to trigger usePersistentWebSocket effect
+    // This will call connect() since the connection was just removed
+    setRetryCount((prev) => prev + 1);
+  }, [sessionId, workerId]);
 
   const handleDeleteSession = useCallback(async () => {
     try {
@@ -126,26 +140,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       console.error('[Terminal] Failed to delete session:', e);
     }
   }, [sessionId, navigate]);
-
-  // Handle retry by triggering reconnection
-  useEffect(() => {
-    if (isRetrying) {
-      // Disconnect and reconnect
-      disconnect(sessionId, workerId);
-      // Reset state for fresh connection
-      stateRef.current = {
-        isMounted: stateRef.current.isMounted,
-        pendingHistory: null,
-        restoredFromCache: false,
-        waitingForDiff: false,
-        cachedOffset: 0,
-        historyRequested: false,
-        currentWorkerId: workerId,
-      };
-      setIsRetrying(false);
-      // Connection will be re-established by usePersistentWebSocket hook
-    }
-  }, [isRetrying, sessionId, workerId]);
 
   const handleOutput = useCallback((data: string, offset: number) => {
     offsetRef.current = offset;
@@ -248,7 +242,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onExit: handleExit,
     onConnectionChange: handleConnectionChange,
     onActivity: handleActivity,
-  });
+  }, retryCount);
 
   // Keep a ref to the latest connected value for use in async callbacks
   const connectedRef = useRef(connected);

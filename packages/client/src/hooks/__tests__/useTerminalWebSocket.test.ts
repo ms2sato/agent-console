@@ -303,4 +303,60 @@ describe('useTerminalWebSocket', () => {
     expect(options1.onOutput).not.toHaveBeenCalled();
     expect(options2.onOutput).toHaveBeenCalledWith('test', 100);
   });
+
+  it('should create new connection when retryCount changes after disconnect', async () => {
+    // This test verifies the retry flow: disconnect first, then increment retryCount.
+    // When retryCount changes, usePersistentWebSocket effect re-runs and calls connect().
+    // Since the connection was removed by disconnect(), connect() creates a new WebSocket.
+    const options = createDefaultOptions();
+    const { rerender } = renderHook(
+      ({ sessionId, workerId, retryCount }) => useTerminalWebSocket(sessionId, workerId, options, retryCount),
+      { initialProps: { sessionId: 'session-1', workerId: 'worker-1', retryCount: 0 } }
+    );
+
+    const firstWs = MockWebSocket.getLastInstance();
+    expect(firstWs?.url).toContain('session-1');
+    expect(firstWs?.url).toContain('worker-1');
+
+    act(() => {
+      firstWs?.simulateOpen();
+    });
+
+    // Simulate the retry flow: disconnect first, then increment retryCount
+    // (This is what Terminal.tsx handleRetry does)
+    act(() => {
+      _reset(); // Clear connections (simulates disconnect)
+    });
+    rerender({ sessionId: 'session-1', workerId: 'worker-1', retryCount: 1 });
+
+    // A new WebSocket should be created
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).not.toBe(firstWs);
+    // URL should be the same since sessionId/workerId didn't change
+    expect(secondWs?.url).toContain('session-1');
+    expect(secondWs?.url).toContain('worker-1');
+  });
+
+  it('should not reconnect when retryCount stays the same', async () => {
+    const options = createDefaultOptions();
+    const { rerender } = renderHook(
+      ({ sessionId, workerId, retryCount }) => useTerminalWebSocket(sessionId, workerId, options, retryCount),
+      { initialProps: { sessionId: 'session-1', workerId: 'worker-1', retryCount: 0 } }
+    );
+
+    const firstWs = MockWebSocket.getLastInstance();
+
+    act(() => {
+      firstWs?.simulateOpen();
+    });
+
+    // Rerender with same retryCount
+    rerender({ sessionId: 'session-1', workerId: 'worker-1', retryCount: 0 });
+
+    // Should NOT disconnect
+    expect(firstWs?.close).not.toHaveBeenCalled();
+
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).toBe(firstWs);
+  });
 });

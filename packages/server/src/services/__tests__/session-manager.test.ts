@@ -712,6 +712,48 @@ describe('SessionManager', () => {
       await manager.deleteSession(session.id);
       expect(onSessionDeleted).toHaveBeenCalledTimes(1);
     });
+
+    it('should call onSessionUpdated with hibernated activationState when PTY exits', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Verify initial activationState is 'running' (PTY is active)
+      expect(session.activationState).toBe('running');
+
+      // Clear mock to only capture exit-related calls
+      onSessionUpdated.mockClear();
+
+      // Simulate PTY exit
+      const pty = ptyFactory.instances[0];
+      pty.simulateExit(0);
+
+      // onSessionUpdated should be called once for the PTY exit
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+
+      // The session passed to callback should have activationState 'hibernated'
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+          activationState: 'hibernated',
+        })
+      );
+
+      // Verify getSession also returns hibernated state
+      const updatedSession = manager.getSession(session.id);
+      expect(updatedSession?.activationState).toBe('hibernated');
+
+      // Verify the worker is still in the session
+      expect(updatedSession?.workers.find((w: Worker) => w.id === agentWorker.id)).toBeDefined();
+    });
   });
 
   describe('getWorkerOutputBuffer', () => {

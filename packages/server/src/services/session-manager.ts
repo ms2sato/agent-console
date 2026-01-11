@@ -1090,6 +1090,9 @@ export class SessionManager {
         callbacks.onExit(exitCode, signalStr);
       }
 
+      // Clear PTY reference so computeActivationState reflects the exit
+      worker.pty = null;
+
       // Send notification for worker exit
       try {
         const notificationManager = getNotificationManager();
@@ -1108,6 +1111,12 @@ export class SessionManager {
         }
       } catch {
         // NotificationManager not initialized yet, skip
+      }
+
+      // Broadcast session update since activationState may have changed
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
       }
     });
   }

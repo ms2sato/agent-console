@@ -27,7 +27,8 @@ interface UseTerminalWebSocketReturn {
 export function useTerminalWebSocket(
   sessionId: string,
   workerId: string,
-  options: UseTerminalWebSocketOptions
+  options: UseTerminalWebSocketOptions,
+  retryCount: number = 0
 ): UseTerminalWebSocketReturn {
   const { onOutput, onHistory, onExit, onConnectionChange, onActivity } = options;
 
@@ -63,7 +64,7 @@ export function useTerminalWebSocket(
       setError(null);
     },
     keyEquals: (a, b) => a.sessionId === b.sessionId && a.workerId === b.workerId,
-    deps: [sessionId, workerId],
+    deps: [sessionId, workerId, retryCount],
   });
 
   // Update callbacks without reconnecting when they change
