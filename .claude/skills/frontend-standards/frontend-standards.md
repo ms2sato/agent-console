@@ -294,22 +294,7 @@ function useConnectionStatus() {
 
 ### Query Key Management
 
-TanStack Query keys should use consistent factories:
-
-```typescript
-// Define key factories
-const sessionKeys = {
-  all: ['sessions'] as const,
-  lists: () => [...sessionKeys.all, 'list'] as const,
-  detail: (id: string) => [...sessionKeys.all, 'detail', id] as const,
-};
-
-// Use in queries
-useQuery({ queryKey: sessionKeys.detail(sessionId), ... });
-
-// Invalidation should be complete
-queryClient.invalidateQueries({ queryKey: sessionKeys.all });
-```
+See the [TanStack Query](#tanstack-query) section for key factory patterns and invalidation best practices.
 
 ## Testing
 

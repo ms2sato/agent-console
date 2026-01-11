@@ -408,14 +408,18 @@ When creating resources that need cleanup:
 4. **Event Listeners** - Remove listeners when resources are destroyed
 
 ```typescript
-// ✅ Proper cleanup pattern
+// ✅ Proper cleanup pattern with error handling
 class Worker {
   private pty: Pty;
   private callbacks: Map<string, () => void> = new Map();
 
   destroy() {
-    // 1. Kill PTY process
-    this.pty.kill();
+    // 1. Kill PTY process (handle failures gracefully)
+    try {
+      this.pty.kill();
+    } catch (error) {
+      logger.warn({ err: error }, 'Error killing PTY during cleanup');
+    }
 
     // 2. Detach all callbacks to prevent memory leaks
     this.callbacks.forEach((unsubscribe) => unsubscribe());
@@ -426,6 +430,8 @@ class Worker {
   }
 }
 ```
+
+**Note**: Cleanup operations should not throw. Wrap potentially failing operations in try-catch and log warnings instead of propagating errors.
 
 ### Callback Registration and Detachment
 

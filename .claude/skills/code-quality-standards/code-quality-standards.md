@@ -32,6 +32,8 @@ cleanupWorkerResources()  // ← Different concern
 
 Consider extracting to `worker-lifecycle.ts` or similar.
 
+**Note**: Line count is a heuristic. A 250-line file with two unrelated responsibilities is a better extraction candidate than an 800-line file with one tightly cohesive concern. Responsibility clustering is the primary signal, not raw line count.
+
 ### Open-Closed Principle
 - Can new features be added without modifying existing code?
 - Are extension points clearly defined?
