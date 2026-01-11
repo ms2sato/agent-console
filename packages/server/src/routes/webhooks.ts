@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import { getJobQueue, JOB_TYPES } from '../jobs/index.js';
 import { getServiceParser } from '../services/inbound/parser-registry.js';
 
@@ -8,6 +9,11 @@ const logger = createLogger('webhooks');
 const webhooks = new Hono();
 
 webhooks.post('/github', async (c) => {
+  if (!serverConfig.GITHUB_WEBHOOK_SECRET) {
+    logger.warn('GitHub webhook secret not configured');
+    return c.json({ ok: false }, 403);
+  }
+
   const parser = getServiceParser('github');
   if (!parser) {
     logger.warn('GitHub webhook parser not registered');
