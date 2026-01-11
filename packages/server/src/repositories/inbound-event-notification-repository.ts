@@ -1,6 +1,8 @@
+import type { Kysely } from 'kysely';
 import { getDatabase } from '../database/connection.js';
 import { createLogger } from '../lib/logger.js';
 import type {
+  Database,
   InboundEventNotification,
   NewInboundEventNotification,
 } from '../database/schema.js';
@@ -8,9 +10,10 @@ import type {
 const logger = createLogger('inbound-event-notification-repository');
 
 export async function createInboundEventNotification(
-  notification: NewInboundEventNotification
+  notification: NewInboundEventNotification,
+  dbOverride?: Kysely<Database>
 ): Promise<InboundEventNotification> {
-  const db = getDatabase();
+  const db = dbOverride ?? getDatabase();
 
   await db
     .insertInto('inbound_event_notifications')
