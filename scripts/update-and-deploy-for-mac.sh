@@ -12,9 +12,11 @@ bun install
 echo "==> Installing plist..."
 COMMAND_PATH=$(which bun)
 PORT=${PORT:-6340}
+APP_URL=${APP_URL:-"http://localhost:$PORT"}
 sed -e "s|{{HOME}}|$HOME|g" \
     -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
     -e "s|{{PORT}}|$PORT|g" \
+    -e "s|{{APP_URL}}|$APP_URL|g" \
     -e "s|{{PATH}}|$PATH|g" \
     "$SCRIPT_DIR/com.agent-console.plist.template" \
     > ~/Library/LaunchAgents/com.agent-console.plist
