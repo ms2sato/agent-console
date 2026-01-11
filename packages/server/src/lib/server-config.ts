@@ -47,6 +47,13 @@ export const serverConfig = {
    * Default: 5000 lines (approximately 500KB-1MB)
    */
   WORKER_OUTPUT_INITIAL_HISTORY_LINES: parseInt(process.env.WORKER_OUTPUT_INITIAL_HISTORY_LINES || '5000', 10),
+  /**
+   * Base URL for the application.
+   * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).
+   * If not set, notifications will show a warning about missing configuration.
+   * Example: APP_URL=https://agent-console.example.com
+   */
+  APP_URL: process.env.APP_URL || '',
 } as const;
 
 /**

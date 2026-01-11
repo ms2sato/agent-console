@@ -10,11 +10,41 @@ const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response()));
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
-// Helper to get request body from mockFetch calls
-function getRequestBody(callIndex: number): Record<string, unknown> {
+// Default mock for Slack integration (returns 404 - not found)
+function createSlackNotFoundResponse() {
+  return {
+    ok: false,
+    status: 404,
+    json: () => Promise.resolve({ error: 'Not found' }),
+  } as unknown as Response;
+}
+
+// Helper to set up mock fetch with Slack integration always returning 404
+function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.includes('/integrations/slack')) {
+      return Promise.resolve(createSlackNotFoundResponse());
+    }
+    if (typeof mainResponse === 'function') {
+      return mainResponse();
+    }
+    return Promise.resolve(mainResponse);
+  });
+}
+
+// Helper to get request body from the repository update API call
+function getRepositoryUpdateRequestBody(): Record<string, unknown> {
   const calls = mockFetch.mock.calls as Array<[RequestInfo | URL, RequestInit | undefined]>;
-  const init = calls[callIndex]?.[1];
-  return JSON.parse(init?.body as string);
+  // Find the call to the repository update endpoint (PATCH /api/repositories/:id)
+  const updateCall = calls.find(([input, init]) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    return url.includes('/api/repositories/') && !url.includes('/integrations/') && init?.method === 'PATCH';
+  });
+  if (!updateCall || !updateCall[1]?.body) {
+    throw new Error('Repository update API call not found');
+  }
+  return JSON.parse(updateCall[1].body as string);
 }
 
 // Restore original fetch after all tests
@@ -92,7 +122,7 @@ describe('EditRepositoryForm', () => {
     it('should submit with valid setup command', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: 'bun install' } })
       );
 
@@ -112,15 +142,14 @@ describe('EditRepositoryForm', () => {
       });
 
       // Verify API was called with correct data
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-      const requestBody = getRequestBody(0);
+      const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
     });
 
     it('should submit with empty string (clears command)', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository({ setupCommand: 'bun install' });
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: null } })
       );
 
@@ -141,15 +170,14 @@ describe('EditRepositoryForm', () => {
       });
 
       // Verify API was called with empty string (server will convert to null)
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-      const requestBody = getRequestBody(0);
+      const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody).toEqual({ setupCommand: '', envVars: '' });
     });
 
     it('should trim whitespace from setupCommand', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: 'bun install' } })
       );
 
@@ -169,7 +197,7 @@ describe('EditRepositoryForm', () => {
       });
 
       // Verify API was called with trimmed value
-      const requestBody = getRequestBody(0);
+      const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
     });
   });
@@ -187,13 +215,18 @@ describe('EditRepositoryForm', () => {
         repositories: [repository],
       });
 
-      // Make fetch hang to observe optimistic state
+      // Make fetch hang to observe optimistic state for repository update,
+      // but Slack integration check returns 404 immediately
       let resolveFetch: (value: Response) => void;
-      mockFetch.mockReturnValueOnce(
-        new Promise<Response>((resolve) => {
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/integrations/slack')) {
+          return Promise.resolve(createSlackNotFoundResponse());
+        }
+        return new Promise<Response>((resolve) => {
           resolveFetch = resolve;
-        })
-      );
+        });
+      });
 
       renderEditRepositoryForm({ repository }, { queryClient });
 
@@ -227,10 +260,8 @@ describe('EditRepositoryForm', () => {
         repositories: [repository],
       });
 
-      // Mock fetch to fail
-      mockFetch.mockResolvedValueOnce(
-        createMockResponse({ error: 'Server error' }, false)
-      );
+      // Mock fetch to fail for repository update, return 404 for Slack
+      setupMockFetch(createMockResponse({ error: 'Server error' }, false));
 
       renderEditRepositoryForm({ repository }, { queryClient });
 
@@ -270,7 +301,7 @@ describe('EditRepositoryForm', () => {
       const originalCancelQueries = queryClient.cancelQueries.bind(queryClient);
       queryClient.cancelQueries = cancelQueriesSpy as typeof queryClient.cancelQueries;
 
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: 'bun install' } })
       );
 
@@ -303,7 +334,7 @@ describe('EditRepositoryForm', () => {
     it('should accept multi-line commands', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: 'bun install\nbun run build' } })
       );
 
@@ -323,7 +354,7 @@ describe('EditRepositoryForm', () => {
       });
 
       // Verify API was called with multi-line command
-      const requestBody = getRequestBody(0);
+      const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.setupCommand).toContain('\n');
     });
 
@@ -332,7 +363,7 @@ describe('EditRepositoryForm', () => {
       const commandWithTemplate = 'cd {{WORKTREE_PATH}} && bun install';
       // Pre-populate the repository with the template command to avoid userEvent escaping issues
       const repository = createTestRepository({ setupCommand: commandWithTemplate });
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: commandWithTemplate } })
       );
 
@@ -352,7 +383,7 @@ describe('EditRepositoryForm', () => {
       });
 
       // Verify API was called with template variable preserved
-      const requestBody = getRequestBody(0);
+      const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.setupCommand).toBe(commandWithTemplate);
     });
   });
@@ -362,8 +393,14 @@ describe('EditRepositoryForm', () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
 
-      // Make fetch hang indefinitely
-      mockFetch.mockReturnValueOnce(new Promise(() => {}));
+      // Make fetch hang indefinitely for repository update, return 404 for Slack
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/integrations/slack')) {
+          return Promise.resolve(createSlackNotFoundResponse());
+        }
+        return new Promise(() => {});
+      });
 
       renderEditRepositoryForm({ repository });
 
@@ -387,7 +424,7 @@ describe('EditRepositoryForm', () => {
     it('should call onSuccess after successful mutation', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
-      mockFetch.mockResolvedValueOnce(
+      setupMockFetch(
         createMockResponse({ repository: { ...repository, setupCommand: 'bun install' } })
       );
 
@@ -409,6 +446,9 @@ describe('EditRepositoryForm', () => {
 
     it('should call onCancel when cancel button is clicked', async () => {
       const user = userEvent.setup();
+      // Set up mock to return 404 for Slack integration
+      setupMockFetch(createMockResponse({}));
+
       const { props } = renderEditRepositoryForm();
 
       // Click cancel button
@@ -422,10 +462,8 @@ describe('EditRepositoryForm', () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
 
-      // Mock fetch to fail with specific error
-      mockFetch.mockResolvedValueOnce(
-        createMockResponse({ error: 'Invalid setup command' }, false)
-      );
+      // Mock fetch to fail with specific error for repository update, return 404 for Slack
+      setupMockFetch(createMockResponse({ error: 'Invalid setup command' }, false));
 
       const { props } = renderEditRepositoryForm({ repository });
 
@@ -450,10 +488,8 @@ describe('EditRepositoryForm', () => {
       const user = userEvent.setup();
       const repository = createTestRepository();
 
-      // Mock fetch to fail without error field
-      mockFetch.mockResolvedValueOnce(
-        createMockResponse({}, false)
-      );
+      // Mock fetch to fail without error field for repository update, return 404 for Slack
+      setupMockFetch(createMockResponse({}, false));
 
       renderEditRepositoryForm({ repository });
 
@@ -474,6 +510,9 @@ describe('EditRepositoryForm', () => {
 
   describe('initial state', () => {
     it('should display repository name and path', () => {
+      // Set up mock to return 404 for Slack integration
+      setupMockFetch(createMockResponse({}));
+
       const repository = createTestRepository({
         name: 'my-repo',
         path: '/home/user/projects/my-repo',
@@ -486,6 +525,9 @@ describe('EditRepositoryForm', () => {
     });
 
     it('should pre-populate setupCommand from repository', () => {
+      // Set up mock to return 404 for Slack integration
+      setupMockFetch(createMockResponse({}));
+
       const repository = createTestRepository({ setupCommand: 'npm install && npm run build' });
 
       renderEditRepositoryForm({ repository });
@@ -495,6 +537,9 @@ describe('EditRepositoryForm', () => {
     });
 
     it('should handle null setupCommand gracefully', () => {
+      // Set up mock to return 404 for Slack integration
+      setupMockFetch(createMockResponse({}));
+
       const repository = createTestRepository({ setupCommand: null });
 
       renderEditRepositoryForm({ repository });
@@ -504,6 +549,9 @@ describe('EditRepositoryForm', () => {
     });
 
     it('should handle undefined setupCommand gracefully', () => {
+      // Set up mock to return 404 for Slack integration
+      setupMockFetch(createMockResponse({}));
+
       const repository = createTestRepository();
       // Explicitly set to undefined instead of null
       delete (repository as { setupCommand?: string | null }).setupCommand;

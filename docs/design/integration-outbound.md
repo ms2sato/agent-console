@@ -224,12 +224,13 @@ interface NotificationRules {
    */
   triggers: Partial<Record<OutboundTriggerEventType, boolean>>;
 
-  /** Throttling settings */
-  throttle?: {
-    /** Minimum seconds between notifications for same session */
-    minIntervalSeconds: number;
-    /** Debounce: only notify if state persists for N seconds */
-    debounceSeconds?: number;
+  /**
+   * Debounce settings.
+   * Notifications are only sent when state changes AND persists for debounceSeconds.
+   */
+  debounce?: {
+    /** Wait N seconds for state to stabilize before sending notification */
+    debounceSeconds: number;
   };
 }
 
@@ -242,8 +243,13 @@ const defaultNotificationRules: NotificationRules = {
     'worker:error': true,    // Error occurred
     'worker:exited': false,  // Process exited (optional)
   },
+  debounce: {
+    debounceSeconds: 3,      // Wait 3s for state to stabilize
+  },
 };
 ```
+
+> **Note**: Notifications are only sent when the state **changes**. The same state persisting does not trigger repeated notifications.
 
 ## Slack Implementation
 
@@ -253,11 +259,11 @@ const defaultNotificationRules: NotificationRules = {
 interface SlackConfig {
   webhookUrl: string;
   enabled: boolean;
-  /** Optional: customize message appearance */
-  username?: string;
-  iconEmoji?: string;
 }
 ```
+
+> **Note**: Modern Slack App webhooks ignore `username` and `icon_emoji` in the payload.
+> To customize the bot name and icon, configure them in your Slack App settings.
 
 ### Handler Implementation
 
@@ -362,16 +368,72 @@ interface OutboundIntegrationSettings {
 
   /** Default notification rules */
   defaultRules: NotificationRules;
-
-  /** Service configurations */
-  services: {
-    slack?: SlackConfig;
-    // Future services
-    discord?: DiscordConfig;
-    email?: EmailConfig;
-  };
 }
 ```
+
+> **Note**: Service configurations (Slack, etc.) are managed at the **repository level**, not globally. See "Repository-level Slack Integration" below.
+
+### Repository-level Slack Integration
+
+Each repository can have its own Slack integration settings. This allows different repositories to notify different Slack channels.
+
+#### Database Schema
+
+```sql
+CREATE TABLE repository_slack_integrations (
+  id TEXT PRIMARY KEY,                                              -- UUID
+  repository_id TEXT NOT NULL UNIQUE REFERENCES repositories(id) ON DELETE CASCADE,
+  webhook_url TEXT NOT NULL,                                        -- Slack webhook URL
+  enabled INTEGER NOT NULL DEFAULT 1,                               -- 0 = disabled, 1 = enabled
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+> **Note**: Modern Slack App webhooks ignore `username` and `icon_emoji` in the payload.
+> These must be configured in the Slack App settings, not per-message.
+
+#### TypeScript Interface
+
+```typescript
+interface RepositorySlackIntegration {
+  id: string;
+  repositoryId: string;
+  webhookUrl: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+#### Webhook Resolution
+
+Notifications are only sent if the session's repository has Slack integration configured and enabled.
+
+```typescript
+function getSlackWebhookUrl(session: Session): string | null {
+  // Only repository-level integration is supported
+  if (session.repositoryId) {
+    const repoIntegration = getRepositorySlackIntegration(session.repositoryId);
+    if (repoIntegration?.enabled) {
+      return repoIntegration.webhookUrl;
+    }
+  }
+
+  // No global fallback - repository integration required
+  return null;
+}
+```
+
+> **Note**: Sessions not associated with a repository (quick sessions) do not send Slack notifications.
+
+#### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/repositories/:id/integrations/slack` | Get Slack integration for repository |
+| PUT | `/api/repositories/:id/integrations/slack` | Create or update Slack integration |
+| DELETE | `/api/repositories/:id/integrations/slack` | Remove Slack integration |
 
 ### Per-Session Override (Future)
 
@@ -395,12 +457,11 @@ interface SessionNotificationSettings {
 ### Environment Variables
 
 ```bash
-# Base URL for notification links
-AGENT_CONSOLE_BASE_URL=https://agent-console.example.com
-
-# Slack webhook URL
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+# Base URL for notification links (required for Slack "Open Session" button)
+APP_URL=https://agent-console.example.com
 ```
+
+> **Note**: Slack webhook URLs are configured per-repository in the database, not via environment variables.
 
 ## URL Requirements
 
@@ -415,19 +476,35 @@ For notification URLs to work, Agent Console must be accessible from where users
 
 Users should configure `baseUrl` appropriately for their deployment.
 
-## Throttling and Debouncing
+## State Change Detection and Debouncing
 
-### Why Throttling?
+### Notification Trigger Logic
 
-- Prevent notification spam during rapid state changes
-- Reduce noise for users
-- Avoid rate limits on external services
+Notifications are only sent when the agent **changes** to a different state. The same state persisting does not trigger repeated notifications.
+
+```
+State transitions that trigger notification (if event type enabled):
+  idle → waiting  ✓ (notify: agent:waiting)
+  active → idle   ✓ (notify: agent:idle)
+  idle → idle     ✗ (no change, no notification)
+  waiting → waiting ✗ (no change, no notification)
+  waiting → idle  ✗ (user action result, no notification needed)
+```
+
+> **Note**: `waiting → idle` is skipped because it's the result of user responding to the agent's question. The user already knows about this transition since they triggered it.
+
+### Why Debouncing?
+
+During rapid state changes (e.g., agent quickly toggling between states), debouncing prevents notification spam by waiting for the state to stabilize.
 
 ### Implementation
 
 ```typescript
-class ThrottledNotificationManager extends NotificationManager {
-  private lastNotification = new Map<string, Date>();
+class NotificationManager {
+  /** Previous state per session:worker for change detection */
+  private previousState = new Map<string, NotificationEvent['type']>();
+
+  /** Pending debounce timers per session:worker */
   private debounceTimers = new Map<string, NodeJS.Timeout>();
 
   onActivityChange(
@@ -436,46 +513,50 @@ class ThrottledNotificationManager extends NotificationManager {
     newState: AgentActivityState
   ): void {
     const key = `${session.id}:${worker.id}`;
+    const eventType = this.mapActivityToEventType(newState);
     const config = this.getNotificationConfig(session.id);
-    const throttle = config.rules.throttle;
+    const debounce = config.rules.debounce;
+
+    // Clear existing debounce timer
+    clearTimeout(this.debounceTimers.get(key));
 
     // Debounce: wait for state to stabilize
-    if (throttle?.debounceSeconds) {
-      clearTimeout(this.debounceTimers.get(key));
+    if (debounce?.debounceSeconds) {
       this.debounceTimers.set(key, setTimeout(() => {
-        this.sendIfNotThrottled(session, worker, newState, throttle);
-      }, throttle.debounceSeconds * 1000));
+        this.sendIfStateChanged(session, worker, eventType);
+      }, debounce.debounceSeconds * 1000));
     } else {
-      this.sendIfNotThrottled(session, worker, newState, throttle);
+      this.sendIfStateChanged(session, worker, eventType);
     }
   }
 
-  private sendIfNotThrottled(
+  private sendIfStateChanged(
     session: Session,
     worker: Worker,
-    newState: AgentActivityState,
-    throttle?: NotificationRules['throttle']
+    eventType: NotificationEvent['type']
   ): void {
     const key = `${session.id}:${worker.id}`;
-    const lastTime = this.lastNotification.get(key);
-    const minInterval = (throttle?.minIntervalSeconds ?? 0) * 1000;
+    const previousType = this.previousState.get(key);
 
-    if (lastTime && Date.now() - lastTime.getTime() < minInterval) {
-      return; // Throttled
+    // Only notify on state change
+    if (previousType === eventType) {
+      return; // Same state, no notification
     }
 
-    this.lastNotification.set(key, new Date());
-    super.onActivityChange(session, worker, newState);
+    // Update previous state
+    this.previousState.set(key, eventType);
+
+    // Send notification
+    this.sendNotification(session, worker, eventType);
   }
 }
 ```
 
-### Default Throttle Settings
+### Default Debounce Settings
 
 ```typescript
-const defaultThrottleSettings: NotificationRules['throttle'] = {
-  minIntervalSeconds: 60,  // Max 1 notification per minute per session
-  debounceSeconds: 3,      // Wait 3s for state to stabilize
+const defaultDebounceSettings: NotificationRules['debounce'] = {
+  debounceSeconds: 3,  // Wait 3s for state to stabilize
 };
 ```
 

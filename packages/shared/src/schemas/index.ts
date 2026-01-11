@@ -79,3 +79,9 @@ export {
   SystemOpenRequestSchema,
   type SystemOpenRequest,
 } from './system.js';
+
+// Notification schemas
+export {
+  RepositorySlackIntegrationInputSchema,
+  type RepositorySlackIntegrationInput,
+} from './notification.js';

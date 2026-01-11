@@ -34,11 +34,22 @@ import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
   SystemOpenRequestSchema,
+  RepositorySlackIntegrationInputSchema,
+} from '@agent-console/shared';
+import type {
+  RepositorySlackIntegrationInput,
 } from '@agent-console/shared';
 import { getSessionManager } from '../services/session-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
+import {
+  getNotificationManager,
+  getRepositorySlackIntegration,
+  upsertRepositorySlackIntegration,
+  deleteRepositorySlackIntegration,
+} from '../services/notifications/index.js';
+import { serverConfig } from '../lib/server-config.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
@@ -499,6 +510,15 @@ api.delete('/repositories/:id', async (c) => {
     );
   }
 
+  // Clean up Slack integration before deleting repository
+  // This prevents orphaned integration records in the database
+  try {
+    await deleteRepositorySlackIntegration(repoId);
+  } catch {
+    // Ignore errors - integration may not exist, which is fine
+    logger.debug({ repositoryId: repoId }, 'No Slack integration to cleanup for repository');
+  }
+
   const success = await repositoryManager.unregisterRepository(repoId);
 
   if (!success) {
@@ -884,6 +904,78 @@ api.post('/repositories/:id/fetch', async (c) => {
   }
 });
 
+// ===========================================================================
+// Repository Slack Integration
+// ===========================================================================
+
+// Get Slack integration for a repository
+api.get('/repositories/:id/integrations/slack', async (c) => {
+  const repositoryId = c.req.param('id');
+  const integration = await getRepositorySlackIntegration(repositoryId);
+
+  if (!integration) {
+    throw new NotFoundError('Slack integration not found for this repository');
+  }
+
+  return c.json(integration);
+});
+
+// Create or update Slack integration for a repository
+api.put(
+  '/repositories/:id/integrations/slack',
+  validateBody(RepositorySlackIntegrationInputSchema),
+  async (c) => {
+    const repositoryId = c.req.param('id');
+    const body = getValidatedBody<RepositorySlackIntegrationInput>(c);
+
+    // Verify repository exists
+    const repositoryManager = getRepositoryManager();
+    const repo = repositoryManager.getRepository(repositoryId);
+    if (!repo) {
+      throw new NotFoundError('Repository');
+    }
+
+    const integration = await upsertRepositorySlackIntegration(
+      repositoryId,
+      body.webhookUrl,
+      body.enabled
+    );
+
+    return c.json(integration);
+  }
+);
+
+// Delete Slack integration for a repository
+api.delete('/repositories/:id/integrations/slack', async (c) => {
+  const repositoryId = c.req.param('id');
+  const deleted = await deleteRepositorySlackIntegration(repositoryId);
+
+  if (!deleted) {
+    throw new NotFoundError('Slack integration not found for this repository');
+  }
+
+  return c.json({ success: true });
+});
+
+// Test Slack integration for a repository
+api.post('/repositories/:id/integrations/slack/test', async (c) => {
+  const repositoryId = c.req.param('id');
+
+  // Verify repository exists
+  const repositoryManager = getRepositoryManager();
+  const repo = repositoryManager.getRepository(repositoryId);
+  if (!repo) {
+    throw new NotFoundError('Repository');
+  }
+
+  const notificationManager = getNotificationManager();
+  await notificationManager.sendTestNotification(
+    repositoryId,
+    '🔔 Test notification from Agent Console'
+  );
+  return c.json({ success: true });
+});
+
 // Get all agents
 api.get('/agents', async (c) => {
   const agentManager = await getAgentManager();
@@ -1112,5 +1204,21 @@ api.delete('/jobs/:id', async (c) => {
 
   return c.json({ success: true });
 });
+
+// ===========================================================================
+// Notification Settings
+// ===========================================================================
+
+// Get notification configuration status
+api.get('/settings/notifications/status', (c) => {
+  const baseUrl = serverConfig.APP_URL;
+  return c.json({
+    baseUrl,
+    isBaseUrlConfigured: baseUrl !== '',
+  });
+});
+
+// Note: Test notification is done via repository-specific endpoint
+// POST /api/repositories/:id/integrations/slack/test
 
 export { api };

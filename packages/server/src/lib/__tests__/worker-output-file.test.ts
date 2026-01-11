@@ -24,6 +24,8 @@ mock.module('../server-config.js', () => ({
     WORKER_OUTPUT_FLUSH_INTERVAL: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
     WORKER_OUTPUT_FLUSH_THRESHOLD: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
     WORKER_OUTPUT_INITIAL_HISTORY_LINES: 5000,
+    // Notification settings - preserve defaults for notification tests
+    APP_URL: process.env.APP_URL || '',
   },
 }));
 

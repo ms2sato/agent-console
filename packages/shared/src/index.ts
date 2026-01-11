@@ -4,6 +4,8 @@ export * from './types/session.js';
 export * from './types/worktree-creation.js';
 export * from './types/git-diff.js';
 export * from './types/job.js';
+export * from './types/integration.js';
+export * from './types/notification.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
 

@@ -158,6 +158,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 5) {
     await migrateToV5(database);
   }
+
+  if (currentVersion < 6) {
+    await migrateToV6(database);
+  }
 }
 
 /**
@@ -365,6 +369,53 @@ async function migrateToV5(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 5`.execute(database);
 
   logger.info('Migration to v5 completed');
+}
+
+/**
+ * Migration v6: Create repository_slack_integrations table.
+ * Stores per-repository Slack integration settings for outbound notifications.
+ */
+async function migrateToV6(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v6: Creating repository_slack_integrations table');
+
+  // Create repository_slack_integrations table
+  let integrationsTable = database.schema
+    .createTable('repository_slack_integrations')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('repository_id', 'text', (col) =>
+      col.notNull().unique().references('repositories.id').onDelete('cascade')
+    )
+    .addColumn('webhook_url', 'text', (col) => col.notNull())
+    .addColumn('enabled', 'integer', (col) => col.notNull().defaultTo(1));
+  integrationsTable = addDatetime(
+    integrationsTable,
+    'repository_slack_integrations',
+    'created_at',
+    (col) => col.notNull(),
+    { defaultNow: true }
+  );
+  integrationsTable = addDatetime(
+    integrationsTable,
+    'repository_slack_integrations',
+    'updated_at',
+    (col) => col.notNull(),
+    { defaultNow: true }
+  );
+  await integrationsTable.execute();
+
+  // Create index for foreign key lookups
+  await database.schema
+    .createIndex('idx_repository_slack_integrations_repository_id')
+    .ifNotExists()
+    .on('repository_slack_integrations')
+    .column('repository_id')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 6`.execute(database);
+
+  logger.info('Migration to v6 completed');
 }
 
 /**
