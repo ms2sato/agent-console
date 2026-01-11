@@ -56,6 +56,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [cacheError, setCacheError] = useState<string | null>(null);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -134,8 +135,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           // No diff data, but cache was restored - save state to update offset
           saveCurrentTerminalState();
         }
-      } else if (!stateRef.current.restoredFromCache) {
-        // No cache - write full history (explicit check for safety)
+      } else {
+        // No cache - write full history
         if (data) {
           writeFullHistory(terminal, data)
             .then(() => {
@@ -313,6 +314,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       })
       .catch((e) => {
         console.warn('[Terminal] Failed to load cached state:', e);
+        setCacheError('Failed to load cached terminal state');
+
         // Race condition check: abort if component unmounted or worker changed
         if (!stateRef.current.isMounted) {
           console.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
@@ -468,7 +471,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       }
 
       // Reset state for conditional rendering support
-      stateRef.current = { isMounted: false, pendingHistory: null, restoredFromCache: false, waitingForDiff: false, cachedOffset: 0, historyRequested: false, currentWorkerId: '' };
+      stateRef.current = {
+        isMounted: false,
+        pendingHistory: null,
+        restoredFromCache: false,
+        waitingForDiff: false,
+        cachedOffset: 0,
+        historyRequested: false,
+        currentWorkerId: '',
+      };
       offsetRef.current = 0;
 
       cancelAnimationFrame(rafId);
@@ -528,33 +539,46 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
   }, [sessionId, workerId]);
 
-  const statusColor =
-    workerError ? 'bg-red-500' :
-    status === 'connected' ? 'bg-green-500' :
-    status === 'connecting' ? 'bg-yellow-500' :
-    status === 'exited' ? 'bg-red-500' : 'bg-gray-500';
+  function getStatusColor(): string {
+    if (workerError) return 'bg-red-500';
+    switch (status) {
+      case 'connected': return 'bg-green-500';
+      case 'connecting': return 'bg-yellow-500';
+      case 'exited': return 'bg-red-500';
+      case 'disconnected': return 'bg-gray-500';
+    }
+  }
 
-  const getStatusText = () => {
-    if (workerError) {
-      return 'Error';
+  function getStatusText(): string {
+    if (workerError) return 'Error';
+    switch (status) {
+      case 'connecting': return 'Connecting...';
+      case 'connected': return 'Connected';
+      case 'disconnected': return 'Disconnected';
+      case 'exited':
+        return `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
     }
-    if (status === 'connecting') return 'Connecting...';
-    if (status === 'connected') return 'Connected';
-    if (status === 'disconnected') return 'Disconnected';
-    if (status === 'exited') {
-      return `Exited (code: ${exitInfo?.code}${exitInfo?.signal ? `, signal: ${exitInfo.signal}` : ''})`;
-    }
-    return '';
-  };
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {!hideStatusBar && (
         <div className="px-3 py-2 bg-slate-900 border-b border-gray-700 flex items-center gap-3 shrink-0">
-          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${getStatusColor()}`} />
           <span className="text-gray-500 text-sm">
             {getStatusText()}
           </span>
+        </div>
+      )}
+      {cacheError && (
+        <div className="bg-yellow-500/20 text-yellow-400 text-xs px-3 py-2 border-b border-yellow-500/30 flex items-center justify-between shrink-0">
+          <span>{cacheError}</span>
+          <button
+            onClick={() => setCacheError(null)}
+            className="ml-2 underline hover:text-yellow-300"
+          >
+            Dismiss
+          </button>
         </div>
       )}
       <div className="flex-1 min-h-0 relative overflow-hidden">

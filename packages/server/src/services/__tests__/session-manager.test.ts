@@ -1220,9 +1220,17 @@ describe('SessionManager', () => {
       // Simulate server restart and path no longer exists
       mockProcess.markDead(process.pid);
 
-      // Create a new manager where path validation will fail
-      const mockPathNotExists = async (_path: string): Promise<boolean> => false;
-      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotExists);
+      // Create a new manager with a mock that returns true during init but false afterward
+      // This simulates: path existed when inherited during init, but deleted before restoreWorker
+      let initComplete = false;
+      const mockPathExistsOnlyDuringInit = async (_path: string): Promise<boolean> => {
+        if (!initComplete) {
+          return true; // Return true during initialization
+        }
+        return false; // Return false for subsequent calls (restoreWorker)
+      };
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathExistsOnlyDuringInit);
+      initComplete = true; // Mark init as complete
 
       // PTY count before restore attempt
       const ptyCountBefore = ptyFactory.instances.length;
@@ -1257,8 +1265,16 @@ describe('SessionManager', () => {
       // Simulate server restart and path no longer exists
       mockProcess.markDead(process.pid);
 
-      const mockPathNotExists = async (_path: string): Promise<boolean> => false;
-      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotExists);
+      // Create a new manager with a mock that returns true during init but false afterward
+      let initComplete = false;
+      const mockPathExistsOnlyDuringInit = async (_path: string): Promise<boolean> => {
+        if (!initComplete) {
+          return true;
+        }
+        return false;
+      };
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathExistsOnlyDuringInit);
+      initComplete = true;
 
       // PTY count before restore attempt
       const ptyCountBefore = ptyFactory.instances.length;

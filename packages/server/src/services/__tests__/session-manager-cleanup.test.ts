@@ -67,6 +67,9 @@ describe('SessionManager cleanup on initialization', () => {
   }
 
   it('should inherit sessions without serverPid (legacy sessions) and kill worker processes', async () => {
+    // Create the location path that the session references
+    fs.mkdirSync('/path/to/worktree', { recursive: true });
+
     const legacySession: PersistedSession = {
       id: 'legacy-session',
       type: 'quick',
@@ -104,6 +107,9 @@ describe('SessionManager cleanup on initialization', () => {
   });
 
   it('should preserve sessions when parent server is still alive', async () => {
+    // Create the location path that the session references
+    fs.mkdirSync('/path/to/worktree', { recursive: true });
+
     const activeSession: PersistedSession = {
       id: 'active-session',
       type: 'worktree',
@@ -137,6 +143,9 @@ describe('SessionManager cleanup on initialization', () => {
   });
 
   it('should kill orphan worker processes and inherit session when parent server is dead', async () => {
+    // Create the location path that the session references
+    fs.mkdirSync('/path/to/worktree', { recursive: true });
+
     const orphanSession: PersistedSession = {
       id: 'orphan-session',
       type: 'quick',
@@ -174,6 +183,11 @@ describe('SessionManager cleanup on initialization', () => {
   });
 
   it('should handle mixed sessions correctly', async () => {
+    // Create the location paths that the sessions reference
+    fs.mkdirSync('/path/1', { recursive: true });
+    fs.mkdirSync('/path/2', { recursive: true });
+    fs.mkdirSync('/path/3', { recursive: true });
+
     const sessions: PersistedSession[] = [
       {
         id: 'legacy-session',

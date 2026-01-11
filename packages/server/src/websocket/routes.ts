@@ -23,38 +23,52 @@ const logger = createLogger('websocket');
 // Track connected app clients for broadcasting
 const appClients = new Set<WSContext>();
 
-// Track clients that are still syncing initial state (to skip broadcasts during sync)
+// Clients still syncing initial state - broadcasts are queued until sync completes
 const syncingClients = new Set<WSContext>();
+const clientQueues = new Map<WSContext, AppServerMessage[]>();
 
 /**
  * Safely get the WebSocket ready state from a WSContext.
- * Returns undefined if readyState is not accessible (instead of using unsafe 'any' cast).
+ * Returns undefined if readyState is not accessible.
  */
 function getWebSocketReadyState(client: WSContext): number | undefined {
-  // Type-safe check for readyState property
-  if ('readyState' in client && typeof (client as { readyState?: unknown }).readyState === 'number') {
-    return (client as { readyState: number }).readyState;
+  const rawClient = client as { readyState?: unknown };
+  if (typeof rawClient.readyState === 'number') {
+    return rawClient.readyState;
   }
   return undefined;
 }
 
 /**
+ * Remove a client from all tracking sets/maps.
+ */
+function cleanupClient(client: WSContext): void {
+  appClients.delete(client);
+  syncingClients.delete(client);
+  clientQueues.delete(client);
+}
+
+/**
  * Broadcast a message to all connected app clients.
  * Used for real-time updates like session lifecycle events and async operation results.
+ * Messages are queued for clients that are still syncing initial state.
  */
 export function broadcastToApp(msg: AppServerMessage): void {
   const msgStr = JSON.stringify(msg);
   const deadClients: WSContext[] = [];
 
   for (const client of appClients) {
-    // Skip clients that are still syncing initial state (prevents race condition)
+    // Queue messages for clients still syncing initial state
     if (syncingClients.has(client)) {
+      const queue = clientQueues.get(client) ?? [];
+      queue.push(msg);
+      clientQueues.set(client, queue);
       continue;
     }
 
-    // Skip clients that are not in OPEN state
+    // Skip clients not in OPEN state
     const readyState = getWebSocketReadyState(client);
-    if (typeof readyState === 'number' && readyState !== WS_READY_STATE.OPEN) {
+    if (readyState !== undefined && readyState !== WS_READY_STATE.OPEN) {
       deadClients.push(client);
       continue;
     }
@@ -70,7 +84,7 @@ export function broadcastToApp(msg: AppServerMessage): void {
   // Clean up dead clients
   if (deadClients.length > 0) {
     for (const client of deadClients) {
-      appClients.delete(client);
+      cleanupClient(client);
     }
     logger.debug({ removed: deadClients.length, remaining: appClients.size }, 'Cleaned up dead app clients');
   }
@@ -240,10 +254,26 @@ export async function setupWebSocketRoutes(
           ]).then(() => {
             // Remove from syncing set to start receiving broadcasts
             syncingClients.delete(ws);
+
+            // Flush queued messages that arrived during sync
+            const queue = clientQueues.get(ws);
+            if (queue && queue.length > 0) {
+              for (const queuedMsg of queue) {
+                try {
+                  ws.send(JSON.stringify(queuedMsg));
+                } catch (e) {
+                  logger.warn({ err: e }, 'Failed to send queued message to app client');
+                }
+              }
+              logger.debug({ queuedCount: queue.length }, 'Flushed queued messages after sync');
+            }
+            clientQueues.delete(ws);
+
             logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
-            // On error, still remove from syncing set (client will be removed on close/error)
+            // On error, remove from syncing set (client will be fully removed on close/error)
             syncingClients.delete(ws);
+            clientQueues.delete(ws);
             logger.error({ err }, 'Failed to send initial sync');
           });
         },
@@ -251,9 +281,7 @@ export async function setupWebSocketRoutes(
           handleAppMessage(ws, event.data);
         },
         onClose(_event: unknown, ws: WSContext) {
-          // Remove from both sets to prevent memory leak
-          appClients.delete(ws);
-          syncingClients.delete(ws);
+          cleanupClient(ws);
           logger.info({ clientCount: appClients.size }, 'App WebSocket disconnected');
         },
       };
