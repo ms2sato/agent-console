@@ -13,7 +13,8 @@ export const CLAUDE_CODE_AGENT_ID = 'claude-code-builtin';
  */
 const ASKING_PATTERNS: string[] = [
   // Selection menu footer (most reliable - appears on all permission prompts)
-  'Enter to select.*Tab.*navigate.*Esc to cancel',
+  // Matches both "Enter to select · ↑/↓ to navigate" and "Enter to select, Tab to navigate"
+  'Enter to select.*to navigate.*Esc to cancel',
 
   // Permission prompts - Claude Code style
   'Do you want to.*\\?', // "Do you want to create/edit/run..." prompts

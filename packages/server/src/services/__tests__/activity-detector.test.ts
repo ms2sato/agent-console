@@ -3,10 +3,10 @@ import { ActivityDetector } from '../activity-detector.js';
 import type { AgentActivityState, AgentActivityPatterns } from '@agent-console/shared';
 import { travel } from '../../test/time-travel.js';
 
-// Claude Code asking patterns (same as in agent-manager.ts)
+// Claude Code asking patterns (same as in claude-code.ts)
 const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
   askingPatterns: [
-    'Enter to select.*Tab.*navigate.*Esc to cancel',
+    'Enter to select.*to navigate.*Esc to cancel',
     'Do you want to.*\\?',
     '\\[y\\].*\\[n\\]',
     '\\[a\\].*always',
@@ -90,6 +90,16 @@ describe('ActivityDetector', () => {
     it('should detect asking state from Enter/Tab/Esc menu pattern', () => {
       travel(new Date('2025-01-01T00:00:00Z'), (c) => {
         detector.processOutput('Enter to select, Tab to navigate, Esc to cancel');
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
+    it('should detect asking state from Enter/arrow/Esc menu pattern', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('Enter to select · ↑/↓ to navigate · Esc to cancel');
 
         c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
