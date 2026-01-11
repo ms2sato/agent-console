@@ -52,11 +52,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     currentWorkerId: workerId,
   });
   const offsetRef = useRef<number>(0);
+  const connectedRef = useRef(false);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [cacheError, setCacheError] = useState<string | null>(null);
+  const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
+  const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -186,18 +189,59 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   const handleConnectionChange = useCallback((connected: boolean) => {
+    connectedRef.current = connected;
     setStatus(connected ? 'connected' : 'disconnected');
-    // Reset history request flags on disconnect so next reconnect can request history
-    // Without this, if connection fails before history response, terminal stays blank forever
-    if (!connected) {
+
+    if (connected) {
+      // Reconnected: re-request history if we were waiting for it but lost connection
+      // This handles the case where WebSocket disconnected during cache restore flow
+      if (stateRef.current.restoredFromCache && !stateRef.current.historyRequested) {
+        const fromOffset = stateRef.current.cachedOffset;
+        stateRef.current.historyRequested = true;
+        stateRef.current.waitingForDiff = true;
+        requestHistory(sessionId, workerId, fromOffset);
+      }
+    } else {
+      // Disconnected: reset historyRequested flag so next reconnect can request history
+      // Keep waitingForDiff and restoredFromCache so we know to re-request
       stateRef.current.historyRequested = false;
-      stateRef.current.waitingForDiff = false;
     }
-  }, []);
+  }, [sessionId, workerId]);
 
   const handleActivity = useCallback((state: AgentActivityState) => {
     onActivityChange?.(state);
   }, [onActivityChange]);
+
+  const handleOutputTruncated = useCallback((message: string) => {
+    // Clear any existing timeout
+    if (truncationTimeoutRef.current) {
+      clearTimeout(truncationTimeoutRef.current);
+    }
+
+    // Show warning banner with auto-dismiss after 10 seconds
+    setTruncationWarning(message);
+    truncationTimeoutRef.current = setTimeout(() => {
+      setTruncationWarning(null);
+      truncationTimeoutRef.current = null;
+    }, 10000);
+
+    // Reset offset tracking to resync with server
+    offsetRef.current = 0;
+    stateRef.current.cachedOffset = 0;
+    stateRef.current.historyRequested = false;
+    stateRef.current.waitingForDiff = false;
+    stateRef.current.restoredFromCache = false;
+
+    // Clear terminal to show that history was lost
+    terminalRef.current?.reset();
+
+    // Request fresh history if connected
+    if (connectedRef.current) {
+      stateRef.current.historyRequested = true;
+      stateRef.current.waitingForDiff = true;
+      requestHistory(sessionId, workerId, 0);
+    }
+  }, [sessionId, workerId]);
 
   const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(sessionId, workerId, {
     onOutput: handleOutput,
@@ -205,10 +249,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onExit: handleExit,
     onConnectionChange: handleConnectionChange,
     onActivity: handleActivity,
+    onOutputTruncated: handleOutputTruncated,
   });
 
-  // Keep a ref to the latest connected value for use in async callbacks
-  const connectedRef = useRef(connected);
+  // Sync connected value from hook to ref for use in async callbacks
+  // (The ref is also updated in handleConnectionChange, but this handles the initial value)
   useEffect(() => {
     connectedRef.current = connected;
   }, [connected]);
@@ -539,6 +584,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
   }, [sessionId, workerId]);
 
+  // Clean up truncation warning timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (truncationTimeoutRef.current) {
+        clearTimeout(truncationTimeoutRef.current);
+      }
+    };
+  }, []);
+
   function getStatusColor(): string {
     if (workerError) return 'bg-red-500';
     switch (status) {
@@ -589,6 +643,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
               <div className="text-red-400 text-lg font-medium mb-2">Worker Error</div>
               <div className="text-gray-200">{workerError.message}</div>
             </div>
+          </div>
+        )}
+        {/* Truncation warning banner */}
+        {truncationWarning && (
+          <div className="absolute top-0 left-0 right-0 bg-amber-600/90 text-white px-4 py-2 text-sm flex items-center justify-between z-10">
+            <span>{truncationWarning}</span>
+            <button
+              onClick={() => setTruncationWarning(null)}
+              className="ml-4 text-white/80 hover:text-white font-bold"
+              aria-label="Dismiss warning"
+            >
+              x
+            </button>
           </div>
         )}
         {/* Scroll to bottom button */}

@@ -12,6 +12,24 @@ import { createLogger } from './logger.js';
 const logger = createLogger('worker-output-file');
 
 /**
+ * Callback type for output truncation notification.
+ * Used to notify WebSocket clients when output file is truncated.
+ */
+export type OutputTruncatedCallback = (sessionId: string, workerId: string) => void;
+
+/** Registered callback for output truncation notifications */
+let onOutputTruncatedCallback: OutputTruncatedCallback | null = null;
+
+/**
+ * Set the callback for output truncation notifications.
+ * This should be called during server initialization by the WebSocket routes module.
+ * Using a callback pattern avoids circular dependency between worker-output-file and routes.
+ */
+export function setOutputTruncatedCallback(callback: OutputTruncatedCallback): void {
+  onOutputTruncatedCallback = callback;
+}
+
+/**
  * Result of reading history with offset
  */
 export interface HistoryReadResult {
@@ -199,7 +217,7 @@ export class WorkerOutputFileManager {
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
         if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
-          await this.truncateFile(filePath, stats.size);
+          await this.truncateFile(filePath, stats.size, sessionId, workerId);
         }
       } else {
         // Simple append to uncompressed file
@@ -208,7 +226,7 @@ export class WorkerOutputFileManager {
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
         if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
-          await this.truncateFile(filePath, stats.size);
+          await this.truncateFile(filePath, stats.size, sessionId, workerId);
         }
       }
     } catch (error) {
@@ -219,10 +237,18 @@ export class WorkerOutputFileManager {
   /**
    * Truncate file from the beginning to stay within max size.
    * Keeps the most recent data and ensures UTF-8 boundary safety.
+   * Notifies connected clients when truncation occurs.
    * @param filePath Path to the file
    * @param currentSize Current size of the file
+   * @param sessionId Session ID for notification
+   * @param workerId Worker ID for notification
    */
-  private async truncateFile(filePath: string, currentSize: number): Promise<void> {
+  private async truncateFile(
+    filePath: string,
+    currentSize: number,
+    sessionId: string,
+    workerId: string
+  ): Promise<void> {
     const maxSize = serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE;
     const targetSize = Math.floor(maxSize * 0.8); // Truncate to 80% to avoid frequent truncation
 
@@ -243,6 +269,11 @@ export class WorkerOutputFileManager {
       await fs.writeFile(filePath, trimmedBuffer);
 
       logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length }, 'Truncated output file');
+
+      // Notify connected clients about the truncation via registered callback
+      if (onOutputTruncatedCallback) {
+        onOutputTruncatedCallback(sessionId, workerId);
+      }
     } catch (error) {
       logger.error({ filePath, err: error }, 'Failed to truncate output file');
     }

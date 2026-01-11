@@ -23,6 +23,7 @@ import {
   type WorkerErrorCode,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
+import { clearTerminalState } from './terminal-state-cache.js';
 
 // Reconnection settings (same as app-websocket.ts)
 const INITIAL_RETRY_DELAY = 1000;
@@ -109,6 +110,7 @@ export interface TerminalWorkerCallbacks {
   onExit: (exitCode: number, signal: string | null) => void;
   onActivity?: (state: AgentActivityState) => void;
   onError?: (message: string, code?: WorkerErrorCode) => void;
+  onOutputTruncated?: (message: string) => void;
 }
 
 // Callbacks for git-diff workers
@@ -249,7 +251,12 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
 /**
  * Handle incoming WebSocket message for terminal/agent workers.
  */
-function handleTerminalMessage(msg: WorkerServerMessage, callbacks: TerminalWorkerCallbacks): void {
+function handleTerminalMessage(
+  msg: WorkerServerMessage,
+  callbacks: TerminalWorkerCallbacks,
+  sessionId: string,
+  workerId: string
+): void {
   switch (msg.type) {
     case 'output':
       callbacks.onOutput(msg.data, msg.offset);
@@ -265,6 +272,14 @@ function handleTerminalMessage(msg: WorkerServerMessage, callbacks: TerminalWork
       break;
     case 'error':
       callbacks.onError?.(msg.message, msg.code);
+      break;
+    case 'output-truncated':
+      // Clear terminal cache since offsets are now invalid after truncation
+      clearTerminalState(sessionId, workerId).catch((err) => {
+        console.error('[WorkerWS] Failed to clear terminal cache on truncation:', err);
+      });
+      // Notify the terminal component about the truncation
+      callbacks.onOutputTruncated?.(msg.message);
       break;
     default: {
       // Exhaustive check: TypeScript will error if a new message type is added
@@ -338,7 +353,7 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
           console.error('[WorkerWS] Invalid worker message type:', parsed);
           return;
         }
-        handleTerminalMessage(parsed, currentCallbacks);
+        handleTerminalMessage(parsed, currentCallbacks, currentConn.sessionId, currentConn.workerId);
       }
     } catch (e) {
       console.error('[WorkerWS] Failed to parse message:', e);

@@ -9,6 +9,7 @@ interface UseTerminalWebSocketOptions {
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
   onActivity?: (state: AgentActivityState) => void;
+  onOutputTruncated?: (message: string) => void;
 }
 
 export interface WorkerError {
@@ -29,7 +30,7 @@ export function useTerminalWebSocket(
   workerId: string,
   options: UseTerminalWebSocketOptions
 ): UseTerminalWebSocketReturn {
-  const { onOutput, onHistory, onExit, onConnectionChange, onActivity } = options;
+  const { onOutput, onHistory, onExit, onConnectionChange, onActivity, onOutputTruncated } = options;
 
   // Error state for worker activation failures
   const [error, setError] = useState<WorkerError | null>(null);
@@ -55,6 +56,7 @@ export function useTerminalWebSocket(
         onExit,
         onActivity,
         onError: handleError,
+        onOutputTruncated,
       });
     },
     disconnect: ({ sessionId, workerId }) => {
@@ -75,8 +77,9 @@ export function useTerminalWebSocket(
       onExit,
       onActivity,
       onError: handleError,
+      onOutputTruncated,
     });
-  }, [sessionId, workerId, onOutput, onHistory, onExit, onActivity, handleError]);
+  }, [sessionId, workerId, onOutput, onHistory, onExit, onActivity, handleError, onOutputTruncated]);
 
   // Notify connection changes
   useEffect(() => {

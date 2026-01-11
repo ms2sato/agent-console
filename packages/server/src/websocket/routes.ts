@@ -17,6 +17,7 @@ import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnecti
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
+import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 
 const logger = createLogger('websocket');
 
@@ -26,6 +27,19 @@ const appClients = new Set<WSContext>();
 // Clients still syncing initial state - broadcasts are queued until sync completes
 const syncingClients = new Set<WSContext>();
 const clientQueues = new Map<WSContext, AppServerMessage[]>();
+
+// Queue messages for clients that are still syncing initial state
+// Messages will be replayed after sync completes to prevent lost events
+const syncingClientQueues = new Map<WSContext, AppServerMessage[]>();
+
+// Maximum number of messages to queue per client to prevent memory issues
+const MAX_SYNC_QUEUE_SIZE = 100;
+
+// Track Worker WebSocket connections by session for session deletion notification
+const workerConnectionsBySession = new Map<string, Set<WSContext>>();
+
+// Track Worker WebSocket connections by session+worker for per-worker notifications (e.g., output truncation)
+const workerConnections = new Map<string, Set<WSContext>>();
 
 /**
  * Safely get the WebSocket ready state from a WSContext.
@@ -45,6 +59,7 @@ function getWebSocketReadyState(client: WSContext): number | undefined {
 function cleanupClient(client: WSContext): void {
   appClients.delete(client);
   syncingClients.delete(client);
+  syncingClientQueues.delete(client);
   clientQueues.delete(client);
 }
 
@@ -58,11 +73,17 @@ export function broadcastToApp(msg: AppServerMessage): void {
   const deadClients: WSContext[] = [];
 
   for (const client of appClients) {
-    // Queue messages for clients still syncing initial state
+    // Queue messages for clients that are still syncing initial state
     if (syncingClients.has(client)) {
-      const queue = clientQueues.get(client) ?? [];
-      queue.push(msg);
-      clientQueues.set(client, queue);
+      const queue = syncingClientQueues.get(client);
+      if (queue) {
+        // Limit queue size to prevent memory issues
+        if (queue.length < MAX_SYNC_QUEUE_SIZE) {
+          queue.push(msg);
+        } else {
+          logger.warn({ queueSize: queue.length }, 'Sync queue full, dropping message');
+        }
+      }
       continue;
     }
 
@@ -90,6 +111,80 @@ export function broadcastToApp(msg: AppServerMessage): void {
   }
 }
 
+/**
+ * Notify all Worker WebSocket connections for a session that the session has been deleted.
+ * Sends error message with SESSION_DELETED code, exit message, and closes the connections.
+ * Called by SessionManager before deleting the session.
+ */
+export function notifySessionDeleted(sessionId: string): void {
+  const connections = workerConnectionsBySession.get(sessionId);
+  if (!connections || connections.size === 0) {
+    logger.debug({ sessionId }, 'No worker connections to notify for session deletion');
+    return;
+  }
+
+  const connectionCount = connections.size;
+
+  for (const ws of connections) {
+    try {
+      // Send error message first so client knows what went wrong
+      const errorMsg: WorkerServerMessage = {
+        type: 'error',
+        message: 'Session has been deleted',
+        code: 'SESSION_DELETED',
+      };
+      ws.send(JSON.stringify(errorMsg));
+
+      // Then send exit message for proper cleanup
+      const exitMsg: WorkerServerMessage = { type: 'exit', exitCode: 1, signal: null };
+      ws.send(JSON.stringify(exitMsg));
+
+      // Close the WebSocket
+      ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Session deleted');
+    } catch (err) {
+      // Connection may already be closed, log and continue
+      logger.debug({ sessionId, err }, 'Error notifying worker connection of session deletion');
+    }
+  }
+
+  // Remove the session from tracking
+  workerConnectionsBySession.delete(sessionId);
+
+  logger.info({ sessionId, notifiedConnections: connectionCount }, 'Notified worker connections of session deletion');
+}
+
+/**
+ * Notify all Worker WebSocket connections for a specific worker that output was truncated.
+ * Sends output-truncated message to inform the client that history was trimmed.
+ *
+ * Registered as callback in setupWebSocketRoutes() to avoid circular dependency.
+ * Called by WorkerOutputFileManager when output file exceeds size limits.
+ */
+function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void {
+  const key = `${sessionId}:${workerId}`;
+  const connections = workerConnections.get(key);
+  if (!connections || connections.size === 0) {
+    logger.debug({ sessionId, workerId }, 'No worker connections to notify for output truncation');
+    return;
+  }
+
+  const msg: WorkerServerMessage = {
+    type: 'output-truncated',
+    message: 'Output history truncated due to size limits',
+  };
+  const msgStr = JSON.stringify(msg);
+
+  for (const ws of connections) {
+    try {
+      ws.send(msgStr);
+    } catch (e) {
+      logger.warn({ sessionId, workerId, err: e }, 'Failed to send truncation notification');
+    }
+  }
+
+  logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
@@ -97,6 +192,10 @@ export async function setupWebSocketRoutes(
   app: Hono,
   upgradeWebSocket: UpgradeWebSocketFn
 ) {
+  // Register output truncation callback to avoid circular dependency
+  // worker-output-file.ts needs to notify clients but can't import routes.ts directly
+  setOutputTruncatedCallback(notifyWorkerOutputTruncated);
+
   // Get properly initialized SessionManager (with SQLite repository and JobQueue)
   const sessionManager = getSessionManager();
 
@@ -227,6 +326,7 @@ export async function setupWebSocketRoutes(
           // This ensures lifecycle events that occur during sync are properly queued
           appClients.add(ws);
           syncingClients.add(ws);
+          syncingClientQueues.set(ws, []);
 
           // Send all sync operations
           Promise.all([
@@ -252,7 +352,20 @@ export async function setupWebSocketRoutes(
               logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
             }),
           ]).then(() => {
-            // Remove from syncing set to start receiving broadcasts
+            // Replay queued messages that were broadcast during sync
+            const queuedMessages = syncingClientQueues.get(ws);
+            if (queuedMessages && queuedMessages.length > 0) {
+              logger.debug({ count: queuedMessages.length }, 'Replaying queued messages after sync');
+              for (const queuedMsg of queuedMessages) {
+                try {
+                  ws.send(JSON.stringify(queuedMsg));
+                } catch (e) {
+                  logger.warn({ err: e }, 'Failed to send queued message');
+                  break; // Stop if connection has issues
+                }
+              }
+            }
+            syncingClientQueues.delete(ws);
             syncingClients.delete(ws);
 
             // Flush queued messages that arrived during sync
@@ -271,8 +384,9 @@ export async function setupWebSocketRoutes(
 
             logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
-            // On error, remove from syncing set (client will be fully removed on close/error)
+            // On error, clean up syncing state (client will be fully removed on close/error)
             syncingClients.delete(ws);
+            syncingClientQueues.delete(ws);
             clientQueues.delete(ws);
             logger.error({ err }, 'Failed to send initial sync');
           });
@@ -417,6 +531,23 @@ export async function setupWebSocketRoutes(
         onOpen(_event: unknown, ws: WSContext) {
           const connectionStartTime = performance.now();
           logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
+
+          // Track this connection for session deletion notification
+          let sessionConnections = workerConnectionsBySession.get(sessionId);
+          if (!sessionConnections) {
+            sessionConnections = new Set();
+            workerConnectionsBySession.set(sessionId, sessionConnections);
+          }
+          sessionConnections.add(ws);
+
+          // Track this connection for per-worker notifications (e.g., output truncation)
+          const workerKey = `${sessionId}:${workerId}`;
+          let workerConns = workerConnections.get(workerKey);
+          if (!workerConns) {
+            workerConns = new Set();
+            workerConnections.set(workerKey, workerConns);
+          }
+          workerConns.add(ws);
 
           const session = sessionManager.getSession(sessionId);
           if (!session) {
@@ -613,8 +744,27 @@ export async function setupWebSocketRoutes(
           // PTY-based worker message handling (input, resize, image)
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
-        onClose() {
+        onClose(_event: unknown, ws: WSContext) {
           logger.info({ sessionId, workerId, connectionId }, 'Worker WebSocket disconnected');
+
+          // Remove from session connection tracking
+          const sessionConnections = workerConnectionsBySession.get(sessionId);
+          if (sessionConnections) {
+            sessionConnections.delete(ws);
+            if (sessionConnections.size === 0) {
+              workerConnectionsBySession.delete(sessionId);
+            }
+          }
+
+          // Remove from per-worker connection tracking
+          const workerKey = `${sessionId}:${workerId}`;
+          const workerConns = workerConnections.get(workerKey);
+          if (workerConns) {
+            workerConns.delete(ws);
+            if (workerConns.size === 0) {
+              workerConnections.delete(workerKey);
+            }
+          }
 
           // Check if this was a git-diff worker
           const session = sessionManager.getSession(sessionId);
@@ -631,8 +781,27 @@ export async function setupWebSocketRoutes(
             sessionManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
           }
         },
-        onError(event: Event) {
+        onError(event: Event, ws: WSContext) {
           logger.error({ sessionId, workerId, connectionId, event }, 'Worker WebSocket error');
+
+          // Remove from session connection tracking
+          const sessionConnections = workerConnectionsBySession.get(sessionId);
+          if (sessionConnections) {
+            sessionConnections.delete(ws);
+            if (sessionConnections.size === 0) {
+              workerConnectionsBySession.delete(sessionId);
+            }
+          }
+
+          // Remove from per-worker connection tracking
+          const workerKey = `${sessionId}:${workerId}`;
+          const workerConns = workerConnections.get(workerKey);
+          if (workerConns) {
+            workerConns.delete(ws);
+            if (workerConns.size === 0) {
+              workerConnections.delete(workerKey);
+            }
+          }
 
           // Clean up resources on error to prevent leaks
           const session = sessionManager.getSession(sessionId);
