@@ -157,17 +157,31 @@ export class SlackHandler implements OutboundServiceHandler {
   /**
    * POST a message to a Slack webhook URL.
    * Handles HTTP errors consistently.
+   * Uses a 10 second timeout to prevent hanging indefinitely.
    */
   private async postToSlack(webhookUrl: string, message: SlackMessage): Promise<void> {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(message),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Slack API error: ${response.status} - ${errorText}`);
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(message),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Slack API error: ${response.status} - ${errorText}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Slack webhook request timed out after 10 seconds');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

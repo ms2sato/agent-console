@@ -192,7 +192,9 @@ export class NotificationManager {
     };
 
     // Errors are sent immediately without debouncing
-    this.sendIfStateChanged(session, worker, event);
+    // Use sendIfTriggerEnabled instead of sendIfStateChanged because
+    // multiple different error messages should all be sent (not deduplicated)
+    this.sendIfTriggerEnabled(session, worker, event);
   }
 
   /**
@@ -347,6 +349,7 @@ export class NotificationManager {
     const existingTimer = this.debounceTimers.get(key);
     if (existingTimer) {
       clearTimeout(existingTimer);
+      this.debounceTimers.delete(key);
     }
 
     // Apply debouncing if configured
@@ -426,6 +429,34 @@ export class NotificationManager {
   }
 
   /**
+   * Send notification if trigger is enabled (no deduplication).
+   * Used for events like worker:error where each occurrence should be sent,
+   * but we still respect the trigger enabled/disabled setting.
+   */
+  private sendIfTriggerEnabled(
+    session: SessionInfo,
+    worker: WorkerInfo,
+    event: NotificationEvent
+  ): void {
+    // Check if this trigger is enabled
+    if (!this.isTriggerEnabled(event.type)) {
+      logger.debug(
+        { sessionId: session.id, eventType: event.type },
+        'Notification trigger disabled, skipping'
+      );
+      return;
+    }
+
+    // Send notification asynchronously with error handling
+    this.sendNotification(session, worker, event).catch(error => {
+      logger.error(
+        { error, sessionId: session.id, workerId: worker.id, eventType: event.type },
+        'Failed to send notification'
+      );
+    });
+  }
+
+  /**
    * Send notification to repository's configured service handlers.
    * Async method that handles errors internally to prevent blocking callers.
    */
@@ -477,7 +508,7 @@ export class NotificationManager {
     event: NotificationEvent
   ): NotificationContext {
     const baseUrl = this.getBaseUrl();
-    const agentConsoleUrl = `${baseUrl}/sessions/${session.id}?workerId=${worker.id}`;
+    const agentConsoleUrl = `${baseUrl}/sessions/${encodeURIComponent(session.id)}?workerId=${encodeURIComponent(worker.id)}`;
 
     return {
       session: {

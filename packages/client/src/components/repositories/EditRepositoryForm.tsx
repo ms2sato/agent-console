@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -54,6 +54,16 @@ function SlackSettingsSection({ repositoryId }: SlackSettingsSectionProps) {
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [testError, setTestError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timer on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
 
   // Fetch existing Slack integration settings
   const { data: existingIntegration, isLoading } = useQuery({
@@ -109,19 +119,24 @@ function SlackSettingsSection({ repositoryId }: SlackSettingsSectionProps) {
   const testMutation = useMutation({
     mutationFn: () => testRepositorySlackIntegration(repositoryId),
     onMutate: () => {
+      // Clear any existing timer before starting a new test
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
       setTestStatus('sending');
       setTestError(null);
     },
     onSuccess: () => {
       setTestStatus('success');
       // Reset to idle after 3 seconds
-      setTimeout(() => setTestStatus('idle'), 3000);
+      timerRef.current = setTimeout(() => setTestStatus('idle'), 3000);
     },
     onError: (err) => {
       setTestStatus('error');
       setTestError(err instanceof Error ? err.message : 'Failed to send test notification');
       // Reset to idle after 5 seconds
-      setTimeout(() => setTestStatus('idle'), 5000);
+      timerRef.current = setTimeout(() => setTestStatus('idle'), 5000);
     },
   });
 
