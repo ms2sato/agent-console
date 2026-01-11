@@ -147,6 +147,10 @@ export async function setupWebSocketRoutes(
       logger.debug({ sessionId }, 'Broadcasting session-deleted');
       broadcastToApp({ type: 'session-deleted', sessionId });
     },
+    onWorkerActivated: (sessionId, workerId) => {
+      logger.debug({ sessionId, workerId }, 'Broadcasting worker-activated');
+      broadcastToApp({ type: 'worker-activated', sessionId, workerId });
+    },
   });
 
   // Set up agent lifecycle callbacks to broadcast to all app clients

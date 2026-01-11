@@ -16,12 +16,18 @@ export interface SessionWithActivity {
 /**
  * Get the highest priority activity state for a session.
  * A session's aggregated state is the highest priority state among all its workers.
+ * Hibernated sessions always return 'unknown' since their workers are not running.
  */
 function getSessionActivityState(
-  sessionId: string,
+  session: Session,
   workerActivityStates: Record<string, Record<string, AgentActivityState>>
 ): AgentActivityState {
-  const workerStates = workerActivityStates[sessionId];
+  // Hibernated sessions don't have active workers, return 'unknown'
+  if (session.activationState === 'hibernated') {
+    return 'unknown';
+  }
+
+  const workerStates = workerActivityStates[session.id];
   if (!workerStates) return 'unknown';
 
   const states = Object.values(workerStates);
@@ -35,7 +41,8 @@ function getSessionActivityState(
 
 /**
  * Hook that returns sessions filtered and sorted by activity state.
- * - Only includes sessions with activity state != 'unknown'
+ * - Only includes running sessions with activity state != 'unknown'
+ * - Hibernated sessions are excluded (users can wake them from Dashboard)
  * - Sorted by priority: asking > idle > active
  */
 export function useActiveSessionsWithActivity(
@@ -46,8 +53,9 @@ export function useActiveSessionsWithActivity(
     const sessionsWithActivity: SessionWithActivity[] = [];
 
     for (const session of sessions) {
-      const activityState = getSessionActivityState(session.id, workerActivityStates);
-      // Only include sessions with known activity state
+      const activityState = getSessionActivityState(session, workerActivityStates);
+      // Only include running sessions with known activity state
+      // Hibernated sessions are excluded from sidebar (can be accessed from Dashboard)
       if (activityState !== 'unknown') {
         sessionsWithActivity.push({ session, activityState });
       }

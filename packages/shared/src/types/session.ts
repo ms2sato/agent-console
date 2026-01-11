@@ -37,10 +37,14 @@ export type {
 
 export type SessionStatus = 'active' | 'inactive';
 
+// Whether any PTY worker in the session is currently running
+export type SessionActivationState = 'running' | 'hibernated';
+
 export interface SessionBase {
   id: string;
   locationPath: string;      // Working directory (always required)
   status: SessionStatus;
+  activationState: SessionActivationState;  // Whether any PTY worker has an active process
   createdAt: string;
   workers: Worker[];
   initialPrompt?: string;    // The prompt used to start the session
@@ -134,6 +138,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'repository-deleted': 13,
   'worktree-creation-completed': 14,
   'worktree-creation-failed': 15,
+  'worker-activated': 16,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -147,6 +152,7 @@ export type AppServerMessage =
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
   | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState }
+  | { type: 'worker-activated'; sessionId: string; workerId: string }
   | { type: 'agents-sync'; agents: AgentDefinition[] }
   | { type: 'agent-created'; agent: AgentDefinition }
   | { type: 'agent-updated'; agent: AgentDefinition }

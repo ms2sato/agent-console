@@ -251,3 +251,4 @@ export function AlertCircleIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+

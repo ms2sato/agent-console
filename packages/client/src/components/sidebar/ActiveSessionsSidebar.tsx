@@ -81,6 +81,7 @@ interface SessionItemProps {
 function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
+  const tooltipText = `${tooltip} (${getActivityLabel(activityState)})`;
 
   if (collapsed) {
     return (
@@ -89,7 +90,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
         className={`w-full p-3 flex justify-center hover:bg-slate-800 transition-colors ${
           isActive ? 'bg-slate-800' : ''
         }`}
-        title={`${tooltip} (${getActivityLabel(activityState)})`}
+        title={tooltipText}
       >
         <ActivityIndicator state={activityState} />
       </button>

@@ -1,16 +1,19 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
+import { useNavigate } from '@tanstack/react-router';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
-import { clearVisibilityTracking, requestHistory } from '../lib/worker-websocket.js';
+import { clearVisibilityTracking, requestHistory, disconnect } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import { deleteSession } from '../lib/api';
 import type { AgentActivityState } from '@agent-console/shared';
 import { ChevronDownIcon } from './Icons';
+import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
 /**
  * State for conditional rendering support.
@@ -37,6 +40,7 @@ export interface TerminalProps {
 }
 
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+  const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
@@ -56,6 +60,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // Track retrying state to trigger reconnection
+  const [isRetrying, setIsRetrying] = useState(false);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -102,6 +108,44 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current?.scrollToBottom();
     setShowScrollButton(false);
   }, []);
+
+  // Error recovery handlers
+  const handleRetry = useCallback(() => {
+    // Clear error and trigger reconnection
+    setWorkerError(null);
+    setStatus('connecting');
+    setIsRetrying(true);
+  }, []);
+
+  const handleDeleteSession = useCallback(async () => {
+    try {
+      await deleteSession(sessionId);
+      // Navigate to dashboard after deletion
+      navigate({ to: '/' });
+    } catch (e) {
+      console.error('[Terminal] Failed to delete session:', e);
+    }
+  }, [sessionId, navigate]);
+
+  // Handle retry by triggering reconnection
+  useEffect(() => {
+    if (isRetrying) {
+      // Disconnect and reconnect
+      disconnect(sessionId, workerId);
+      // Reset state for fresh connection
+      stateRef.current = {
+        isMounted: stateRef.current.isMounted,
+        pendingHistory: null,
+        restoredFromCache: false,
+        waitingForDiff: false,
+        cachedOffset: 0,
+        historyRequested: false,
+        currentWorkerId: workerId,
+      };
+      setIsRetrying(false);
+      // Connection will be re-established by usePersistentWebSocket hook
+    }
+  }, [isRetrying, sessionId, workerId]);
 
   const handleOutput = useCallback((data: string, offset: number) => {
     offsetRef.current = offset;
@@ -560,12 +604,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       <div className="flex-1 min-h-0 relative overflow-hidden">
         <div ref={containerRef} className="absolute inset-0 bg-slate-800 p-2" />
         {workerError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90">
-            <div className="bg-red-900/80 border border-red-700 rounded-lg p-6 max-w-md text-center">
-              <div className="text-red-400 text-lg font-medium mb-2">Worker Error</div>
-              <div className="text-gray-200">{workerError.message}</div>
-            </div>
-          </div>
+          <WorkerErrorRecovery
+            errorCode={workerError.code}
+            errorMessage={workerError.message}
+            onRetry={handleRetry}
+            onDeleteSession={handleDeleteSession}
+          />
         )}
         {/* Scroll to bottom button */}
         <button

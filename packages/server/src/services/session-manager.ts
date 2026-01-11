@@ -9,6 +9,7 @@ import type {
   TerminalWorker,
   GitDiffWorker,
   AgentActivityState,
+  SessionActivationState,
   CreateSessionRequest,
   CreateWorkerParams,
   WorkerErrorCode,
@@ -126,6 +127,7 @@ export interface SessionLifecycleCallbacks {
   onSessionCreated?: (session: Session) => void;
   onSessionUpdated?: (session: Session) => void;
   onSessionDeleted?: (sessionId: string) => void;
+  onWorkerActivated?: (sessionId: string, workerId: string) => void;
 }
 
 /**
@@ -1369,6 +1371,12 @@ export class SessionManager {
 
     logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');
 
+    // Notify listeners that a worker was activated
+    // This triggers UI updates for activation state indicators
+    this.sessionLifecycleCallbacks?.onWorkerActivated?.(sessionId, workerId);
+    // Also notify session update since activationState may have changed
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+
     return { success: true, worker: existingWorker };
   }
 
@@ -1584,11 +1592,35 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Compute the activation state for a session.
+   * - 'running' if any PTY worker (agent/terminal) has an active PTY process
+   * - 'hibernated' if all PTY workers have no active PTY process
+   * - 'running' if no PTY workers exist (only git-diff workers)
+   */
+  private computeActivationState(session: InternalSession): SessionActivationState {
+    const ptyWorkers = Array.from(session.workers.values()).filter(
+      (w): w is InternalAgentWorker | InternalTerminalWorker =>
+        w.type === 'agent' || w.type === 'terminal'
+    );
+
+    // If no PTY workers exist, default to 'running'
+    if (ptyWorkers.length === 0) {
+      return 'running';
+    }
+
+    // 'running' if any PTY worker has an active PTY, otherwise 'hibernated'
+    const hasActivePty = ptyWorkers.some((w) => w.pty !== null);
+    return hasActivePty ? 'running' : 'hibernated';
+  }
+
   private toPublicSession(session: InternalSession): Session {
     // session.workers is the source of truth (all workers loaded on init)
     const workers = Array.from(session.workers.values())
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map(w => this.toPublicWorker(w));
+
+    const activationState = this.computeActivationState(session);
 
     if (session.type === 'worktree') {
       // Get repository name from RepositoryManager if available
@@ -1608,6 +1640,7 @@ export class SessionManager {
         repositoryName,
         worktreeId: session.worktreeId,
         status: session.status,
+        activationState,
         createdAt: session.createdAt,
         workers,
         initialPrompt: session.initialPrompt,
@@ -1619,6 +1652,7 @@ export class SessionManager {
         type: 'quick',
         locationPath: session.locationPath,
         status: session.status,
+        activationState,
         createdAt: session.createdAt,
         workers,
         initialPrompt: session.initialPrompt,
@@ -1635,6 +1669,7 @@ export class SessionManager {
         name: worker.name,
         agentId: worker.agentId,
         createdAt: worker.createdAt,
+        activated: worker.pty !== null,
       } as AgentWorker;
     } else if (worker.type === 'terminal') {
       return {
@@ -1642,6 +1677,7 @@ export class SessionManager {
         type: 'terminal',
         name: worker.name,
         createdAt: worker.createdAt,
+        activated: worker.pty !== null,
       } as TerminalWorker;
     } else {
       return {
