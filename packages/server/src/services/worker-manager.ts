@@ -316,6 +316,12 @@ export class WorkerManager {
     worker.activityDetector = activityDetector;
     worker.agentId = agentId;
 
+    // Set initial activity state to match ActivityDetector's initial state ('idle').
+    // The onStateChange callback only fires on state *changes*, not on initialization,
+    // so we must explicitly set the initial state here.
+    worker.activityState = 'idle';
+    this.globalActivityCallback?.(sessionId, worker.id, 'idle');
+
     this.setupWorkerEventHandlers(worker, sessionId);
   }
 
