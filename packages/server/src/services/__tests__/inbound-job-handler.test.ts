@@ -1,30 +1,32 @@
-import { describe, expect, it, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, expect, it, mock, beforeEach } from 'bun:test';
 import type { ServiceParser } from '../inbound/service-parser.js';
 import type { InboundEventHandler } from '../inbound/handlers.js';
-import type { InboundEventNotification } from '../../database/schema.js';
+import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
+import { createInboundEventJobHandler } from '../inbound/job-handler.js';
 
 // Mock functions with proper return types
 const mockFindInboundEventNotification = mock<() => Promise<InboundEventNotification | null>>(
   async () => null
 );
-const mockCreatePendingNotification = mock(async () => ({}));
+const mockCreatePendingNotification = mock(
+  async (notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>) => ({
+    ...notification,
+    status: 'pending',
+    notified_at: null,
+  })
+);
 const mockMarkNotificationDelivered = mock(async () => {});
-
-mock.module('../../repositories/inbound-event-notification-repository.js', () => ({
+const notificationRepository = {
   findInboundEventNotification: mockFindInboundEventNotification,
   createPendingNotification: mockCreatePendingNotification,
   markNotificationDelivered: mockMarkNotificationDelivered,
-  NOTIFICATION_STATUS: {
+  notificationStatus: {
     PENDING: 'pending',
     DELIVERED: 'delivered',
   },
-}));
+} as const;
 
 describe('createInboundEventJobHandler', () => {
-  afterAll(() => {
-    mock.restore();
-  });
-
   beforeEach(() => {
     mockFindInboundEventNotification.mockClear();
     mockCreatePendingNotification.mockClear();
@@ -34,11 +36,6 @@ describe('createInboundEventJobHandler', () => {
   });
 
   it('dispatches to handlers and records notifications', async () => {
-    let importCounter = 0;
-    const { createInboundEventJobHandler } = await import(
-      `../inbound/job-handler.js?v=${++importCounter}`
-    );
-
     const parser: ServiceParser = {
       serviceId: 'github',
       authenticate: async () => true,
@@ -62,6 +59,7 @@ describe('createInboundEventJobHandler', () => {
       getServiceParser: () => parser,
       resolveTargets: async () => [{ sessionId: 'session-1' }],
       handlers: [handler],
+      notificationRepository,
     });
 
     await jobHandler({
@@ -79,11 +77,6 @@ describe('createInboundEventJobHandler', () => {
   });
 
   it('skips handler when notification already delivered', async () => {
-    let importCounter = 0;
-    const { createInboundEventJobHandler } = await import(
-      `../inbound/job-handler.js?v=${++importCounter}`
-    );
-
     // Simulate existing delivered notification
     mockFindInboundEventNotification.mockImplementation(async () => ({
       id: 'existing-notification',
@@ -122,6 +115,7 @@ describe('createInboundEventJobHandler', () => {
       getServiceParser: () => parser,
       resolveTargets: async () => [{ sessionId: 'session-1' }],
       handlers: [handler],
+      notificationRepository,
     });
 
     await jobHandler({
@@ -139,11 +133,6 @@ describe('createInboundEventJobHandler', () => {
   });
 
   it('marks pending notification as delivered without re-executing handler', async () => {
-    let importCounter = 0;
-    const { createInboundEventJobHandler } = await import(
-      `../inbound/job-handler.js?v=${++importCounter}`
-    );
-
     // Simulate existing pending notification (from previous failed attempt)
     mockFindInboundEventNotification.mockImplementation(async () => ({
       id: 'existing-notification',
@@ -182,6 +171,7 @@ describe('createInboundEventJobHandler', () => {
       getServiceParser: () => parser,
       resolveTargets: async () => [{ sessionId: 'session-1' }],
       handlers: [handler],
+      notificationRepository,
     });
 
     await jobHandler({
@@ -199,11 +189,6 @@ describe('createInboundEventJobHandler', () => {
   });
 
   it('marks notification as delivered even when handler returns false', async () => {
-    let importCounter = 0;
-    const { createInboundEventJobHandler } = await import(
-      `../inbound/job-handler.js?v=${++importCounter}`
-    );
-
     // Handler returns false (e.g., session not found, no action taken)
     const handlerMock = mock(async () => false);
     const handler: InboundEventHandler = {
@@ -229,6 +214,7 @@ describe('createInboundEventJobHandler', () => {
       getServiceParser: () => parser,
       resolveTargets: async () => [{ sessionId: 'session-1' }],
       handlers: [handler],
+      notificationRepository,
     });
 
     await jobHandler({

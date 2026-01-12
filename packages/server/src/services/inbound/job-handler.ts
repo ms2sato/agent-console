@@ -1,14 +1,9 @@
 import type { InboundEventType, SystemEvent } from '@agent-console/shared';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundEventJobPayload } from '../../jobs/index.js';
+import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
 import type { ServiceParser } from './service-parser.js';
 import type { InboundEventHandler, EventTarget } from './handlers.js';
-import {
-  findInboundEventNotification,
-  createPendingNotification,
-  markNotificationDelivered,
-  NOTIFICATION_STATUS,
-} from '../../repositories/inbound-event-notification-repository.js';
 
 const logger = createLogger('inbound-event-job');
 
@@ -57,6 +52,29 @@ export interface InboundEventJobDependencies {
   getServiceParser: (serviceId: string) => ServiceParser | null;
   resolveTargets: (event: SystemEvent) => Promise<EventTarget[]>;
   handlers: InboundEventHandler[];
+  notificationRepository: InboundEventNotificationRepository;
+}
+
+export interface InboundEventNotificationRepository {
+  findInboundEventNotification: (
+    jobId: string,
+    sessionId: string,
+    workerId: string,
+    handlerId: string
+  ) => Promise<InboundEventNotification | null>;
+  createPendingNotification: (
+    notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>
+  ) => Promise<InboundEventNotification>;
+  markNotificationDelivered: (
+    jobId: string,
+    sessionId: string,
+    workerId: string,
+    handlerId: string
+  ) => Promise<void>;
+  notificationStatus: {
+    PENDING: 'pending';
+    DELIVERED: 'delivered';
+  };
 }
 
 export function createInboundEventJobHandler(deps: InboundEventJobDependencies) {
@@ -111,7 +129,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
 
         // IDEMPOTENCY CHECK: Skip if notification already exists (delivered or pending)
         // This prevents duplicate handler execution on job retry
-        const existingNotification = await findInboundEventNotification(
+        const existingNotification = await deps.notificationRepository.findInboundEventNotification(
           job.jobId,
           target.sessionId,
           workerId,
@@ -119,7 +137,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
         );
 
         if (existingNotification) {
-          if (existingNotification.status === NOTIFICATION_STATUS.DELIVERED) {
+          if (existingNotification.status === deps.notificationRepository.notificationStatus.DELIVERED) {
             // Already delivered - skip this handler/target combination
             logger.debug(
               { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
@@ -134,14 +152,19 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
             { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
             'Found pending notification from previous attempt, marking as delivered'
           );
-          await markNotificationDelivered(job.jobId, target.sessionId, workerId, handler.handlerId);
+          await deps.notificationRepository.markNotificationDelivered(
+            job.jobId,
+            target.sessionId,
+            workerId,
+            handler.handlerId
+          );
           continue;
         }
 
         // ATOMIC SAFETY: Create pending notification BEFORE handler execution
         // This ensures that if handler succeeds but update fails, we don't retry the handler
         const notificationId = crypto.randomUUID();
-        await createPendingNotification({
+        await deps.notificationRepository.createPendingNotification({
           id: notificationId,
           job_id: job.jobId,
           session_id: target.sessionId,
@@ -180,7 +203,12 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
         // Always mark notification as delivered after handler completes
         // Handler returning false means "no action taken" (e.g., session not found),
         // not "failed" - we still want to prevent retry
-        await markNotificationDelivered(job.jobId, target.sessionId, workerId, handler.handlerId);
+        await deps.notificationRepository.markNotificationDelivered(
+          job.jobId,
+          target.sessionId,
+          workerId,
+          handler.handlerId
+        );
 
         if (handled) {
           logger.info(

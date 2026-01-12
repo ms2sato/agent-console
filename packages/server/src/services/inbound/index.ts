@@ -8,6 +8,12 @@ import { createInboundEventJobHandler } from './job-handler.js';
 import { createInboundHandlers } from './handlers.js';
 import { ServiceParserRegistry } from './parser-registry.js';
 import { resolveTargets as resolveTargetsImpl } from './resolve-targets.js';
+import {
+  createPendingNotification,
+  findInboundEventNotification,
+  markNotificationDelivered,
+  NOTIFICATION_STATUS,
+} from '../../repositories/inbound-event-notification-repository.js';
 
 export interface InboundIntegrationOptions {
   jobQueue: JobQueue;
@@ -57,6 +63,12 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
       getServiceParser: (serviceId) => parserRegistry.get(serviceId),
       resolveTargets,
       handlers,
+      notificationRepository: {
+        findInboundEventNotification,
+        createPendingNotification,
+        markNotificationDelivered,
+        notificationStatus: NOTIFICATION_STATUS,
+      },
     })
   );
 
