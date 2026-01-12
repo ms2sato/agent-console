@@ -27,6 +27,8 @@ const API_BASE = '/api';
 
 export interface ConfigResponse {
   homeDir: string;
+  /** Server process ID, used to detect server restarts */
+  serverPid: number;
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {

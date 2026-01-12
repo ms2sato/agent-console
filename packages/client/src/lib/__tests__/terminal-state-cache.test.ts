@@ -65,6 +65,22 @@ mock.module('idb-keyval', () => ({
   },
 }));
 
+// Mock localStorage
+const mockLocalStorage: Record<string, string> = {};
+
+Object.defineProperty(globalThis, 'localStorage', {
+  value: {
+    getItem: (key: string) => mockLocalStorage[key] ?? null,
+    setItem: (key: string, value: string) => { mockLocalStorage[key] = value; },
+    removeItem: (key: string) => { delete mockLocalStorage[key]; },
+    clear: () => { Object.keys(mockLocalStorage).forEach(key => delete mockLocalStorage[key]); },
+    get length() { return Object.keys(mockLocalStorage).length; },
+    key: (index: number) => Object.keys(mockLocalStorage)[index] ?? null,
+  } as Storage,
+  writable: true,
+  configurable: true,
+});
+
 // Import after mocking
 import {
   saveTerminalState,
@@ -72,11 +88,14 @@ import {
   clearTerminalState,
   cleanupOldStates,
   clearAllTerminalStates,
+  setCurrentServerPid,
+  getCurrentServerPid,
 } from '../terminal-state-cache';
 
 describe('terminal-state-cache', () => {
   beforeEach(() => {
     mockStore.clear();
+    localStorage.clear();
     getMockThrows = false;
     setMockThrows = false;
     delMockThrows = false;
@@ -85,6 +104,7 @@ describe('terminal-state-cache', () => {
 
   afterEach(() => {
     mockStore.clear();
+    localStorage.clear();
     getMockThrows = false;
     setMockThrows = false;
     delMockThrows = false;
@@ -323,6 +343,95 @@ describe('terminal-state-cache', () => {
       await saveTerminalState(sessionId, workerId, state);
 
       expect(mockStore.get(`terminal:${sessionId}:${workerId}`)).toEqual(state);
+    });
+  });
+
+  describe('serverPid management', () => {
+    it('should store and retrieve current server PID', async () => {
+      await setCurrentServerPid(12345);
+
+      expect(getCurrentServerPid()).toBe(12345);
+      expect(localStorage.getItem('agent-console:serverPid')).toBe('12345');
+    });
+
+    it('should return false when setting PID for the first time', async () => {
+      const result = await setCurrentServerPid(12345);
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false when PID matches stored value', async () => {
+      localStorage.setItem('agent-console:serverPid', '12345');
+
+      const result = await setCurrentServerPid(12345);
+
+      expect(result).toBe(false);
+    });
+
+    it('should return true and clear cache when PID changes (server restart)', async () => {
+      // Set up initial state
+      localStorage.setItem('agent-console:serverPid', '12345');
+      const state = createValidState();
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      const result = await setCurrentServerPid(67890);
+
+      expect(result).toBe(true);
+      expect(localStorage.getItem('agent-console:serverPid')).toBe('67890');
+      expect(getCurrentServerPid()).toBe(67890);
+      // Cache should be cleared
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should invalidate cache entry with mismatched serverPid during load', async () => {
+      // Set current server PID
+      await setCurrentServerPid(12345);
+
+      // Create a cached state with different serverPid
+      const staleState = createValidState({ serverPid: 99999 });
+      mockStore.set('terminal:session-1:worker-1', staleState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      expect(result).toBeNull();
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should load cache entry with matching serverPid', async () => {
+      // Set current server PID
+      await setCurrentServerPid(12345);
+
+      // Create a cached state with matching serverPid
+      const validState = createValidState({ serverPid: 12345 });
+      mockStore.set('terminal:session-1:worker-1', validState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      expect(result).toEqual(validState);
+    });
+
+    it('should load cache entry without serverPid (backward compatibility)', async () => {
+      // Set current server PID
+      await setCurrentServerPid(12345);
+
+      // Create a cached state without serverPid (old format)
+      const oldFormatState = createValidState();
+      // serverPid is optional, so this is valid
+      mockStore.set('terminal:session-1:worker-1', oldFormatState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      expect(result).toEqual(oldFormatState);
+    });
+
+    it('should load cache entry when current serverPid is not set', async () => {
+      // Don't set current server PID (simulates old client version)
+      const stateWithPid = createValidState({ serverPid: 12345 });
+      mockStore.set('terminal:session-1:worker-1', stateWithPid);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      expect(result).toEqual(stateWithPid);
     });
   });
 });
