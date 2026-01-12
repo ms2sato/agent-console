@@ -18,16 +18,20 @@ import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
+import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
 import { JobQueue as JobQueueClass } from './jobs/job-queue.js';
 import { registerJobHandlers } from './jobs/handlers.js';
 import { SqliteSessionRepository } from './repositories/sqlite-session-repository.js';
 import { SqliteRepositoryRepository } from './repositories/sqlite-repository-repository.js';
+import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { SessionManager as SessionManagerClass } from './services/session-manager.js';
 import { RepositoryManager as RepositoryManagerClass } from './services/repository-manager.js';
 import { NotificationManager as NotificationManagerClass } from './services/notifications/notification-manager.js';
 import { SlackHandler } from './services/notifications/slack-handler.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
+import { initializeInboundIntegration } from './services/inbound/index.js';
+import { AgentManager, resetAgentManager, setAgentManager } from './services/agent-manager.js';
 import { createLogger } from './lib/logger.js';
 
 const logger = createLogger('app-context');
@@ -60,7 +64,8 @@ export interface AppContext {
   /** System capabilities (VS Code availability, etc.) */
   systemCapabilities: SystemCapabilitiesService;
 
-  // Note: inboundIntegration is planned but not yet implemented
+  /** Inbound integration for processing external webhooks */
+  inboundIntegration: InboundIntegrationInstance;
 }
 
 /**
@@ -71,6 +76,8 @@ export interface CreateAppContextOptions {
   dbPath?: string;
   /** Job queue concurrency (default: 4) */
   jobConcurrency?: number;
+  /** WebSocket broadcast function for inbound integration. Required for UI notifications. */
+  broadcastToApp?: InboundIntegrationOptions['broadcastToApp'];
 }
 
 /**
@@ -130,7 +137,7 @@ export async function createAppContext(
   });
 
   // 6. Create notification services
-  const slackHandler = new SlackHandler();
+  const slackHandler = new SlackHandler({ db });
   const notificationManager = new NotificationManagerClass(slackHandler);
 
   // Wire notification callbacks
@@ -141,6 +148,14 @@ export async function createAppContext(
   // 7. Detect system capabilities
   const systemCapabilities = new SystemCapabilitiesServiceClass();
   await systemCapabilities.detect();
+  // 7. Initialize inbound integration
+  // Use provided broadcastToApp or no-op fallback (fallback used in tests)
+  const inboundIntegration = initializeInboundIntegration({
+    jobQueue,
+    sessionManager,
+    repositoryManager,
+    broadcastToApp: options?.broadcastToApp ?? (() => {}),
+  });
 
   logger.info('All services initialized');
 
@@ -151,6 +166,8 @@ export async function createAppContext(
     sessionManager,
     repositoryManager,
     notificationManager,
+    systemCapabilities,
+    inboundIntegration,
     systemCapabilities,
   };
 }
@@ -196,6 +213,10 @@ export async function createTestContext(
   const sessionRepository =
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const agentRepository = new SqliteAgentRepository(db);
+
+  const agentManager = await AgentManager.create(agentRepository);
+  setAgentManager(agentManager);
 
   // Create managers
   const sessionManager = await SessionManagerClass.create({
@@ -222,7 +243,7 @@ export async function createTestContext(
   // Use provided or create new notification manager
   const notificationManager =
     overrides?.notificationManager ??
-    new NotificationManagerClass(new SlackHandler());
+    new NotificationManagerClass(new SlackHandler({ db }));
 
   notificationManager.setSessionExistsCallback((sessionId) =>
     sessionManager.getSession(sessionId) !== undefined
@@ -236,6 +257,13 @@ export async function createTestContext(
     systemCapabilities = new SystemCapabilitiesServiceClass();
     await systemCapabilities.detect();
   }
+  // Initialize inbound integration
+  const inboundIntegration = initializeInboundIntegration({
+    jobQueue,
+    sessionManager,
+    repositoryManager,
+    broadcastToApp: () => {},
+  });
 
   return {
     db,
@@ -244,6 +272,8 @@ export async function createTestContext(
     sessionManager,
     repositoryManager,
     notificationManager,
+    systemCapabilities,
+    inboundIntegration,
     systemCapabilities,
   };
 }
@@ -305,6 +335,7 @@ export async function shutdownAppContext(
 
     resetSessionManager();
     resetRepositoryManager();
+    resetAgentManager();
     shutdownNotificationServices();
     resetSystemCapabilities();
   }

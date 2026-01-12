@@ -8,13 +8,12 @@ import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
-import { createAppContext, shutdownAppContext, type AppContext } from './app-context.js';
+import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
 // Import singleton setters to populate existing singletons from AppContext
 import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
 import { setNotificationManager } from './services/notifications/index.js';
 import { setSystemCapabilities } from './services/system-capabilities-service.js';
-import { initializeInboundIntegration } from './services/inbound/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -77,8 +76,9 @@ const isProduction = serverConfig.NODE_ENV === 'production';
 
 // Initialize all services via AppContext BEFORE creating the Hono app
 // This ensures services are available when routes are registered
+// Pass broadcastToApp to enable WebSocket notifications for inbound integration
 try {
-  appContext = await createAppContext();
+  appContext = await createAppContext({ broadcastToApp });
   logger.info('Application context initialized');
 } catch (error) {
   logger.fatal({ err: error }, 'Failed to initialize application context');
@@ -103,7 +103,7 @@ logger.info('Singletons populated from AppContext');
 // Create Hono app
 // Note: AppBindings type is available for routes that want to use c.get('appContext'),
 // but for Phase 1 we keep using the singleton shims for backward compatibility.
-const app = new Hono();
+const app = new Hono<AppBindings>();
 // Global error handler
 app.onError(onApiError);
 
@@ -129,12 +129,6 @@ app.route('/api', api);
 // Mount webhook routes
 app.route('/webhooks', webhooks);
 
-initializeInboundIntegration({
-  jobQueue: appContext.jobQueue,
-  sessionManager: appContext.sessionManager,
-  repositoryManager: appContext.repositoryManager,
-  broadcastToApp,
-});
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
 // WebSocket routes are not caught by the catch-all SPA handler
 await setupWebSocketRoutes(app, upgradeWebSocket);

@@ -247,6 +247,12 @@ export async function getAgentManager(): Promise<AgentManager> {
   return initializationPromise;
 }
 
+// For testing: set or clear the singleton
+export function setAgentManager(manager: AgentManager | null): void {
+  agentManagerInstance = manager;
+  initializationPromise = manager ? Promise.resolve(manager) : null;
+}
+
 // For testing: reset the singleton
 export function resetAgentManager(): void {
   agentManagerInstance = null;

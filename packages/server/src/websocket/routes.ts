@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { AppBindings } from '../app-context.js';
 import type {
   WorkerServerMessage,
   WorkerErrorCode,
@@ -197,7 +198,7 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
 type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
 
 export async function setupWebSocketRoutes(
-  app: Hono,
+  app: Hono<AppBindings>,
   upgradeWebSocket: UpgradeWebSocketFn
 ) {
   // Register output truncation callback to avoid circular dependency

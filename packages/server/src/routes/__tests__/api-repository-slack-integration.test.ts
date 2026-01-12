@@ -1,18 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { RepositorySlackIntegration } from '@agent-console/shared';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
-import { SqliteRepositoryRepository } from '../../repositories/index.js';
+import { resetRepositoryManager, setRepositoryManager } from '../../services/repository-manager.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
+import { createTestContext, shutdownAppContext } from '../../app-context.js';
 
 describe('Repository Slack Integration API', () => {
-  let app: Hono;
-  let repositoryRepository: SqliteRepositoryRepository;
-  const testRepositoryId = 'test-repo-123';
+  let app: Hono<AppBindings>;
+  let appContext: AppContext;
+  let testRepositoryId: string;
   const testRepoPath = '/test/path/to/repo';
   const testWebhookUrl = 'https://hooks.slack.com/services/T00/B00/xxx';
   const anotherWebhookUrl = 'https://hooks.slack.com/services/T11/B11/yyy';
@@ -20,48 +19,31 @@ describe('Repository Slack Integration API', () => {
   beforeEach(async () => {
     // Reset singletons to ensure clean state (in case previous test didn't clean up)
     resetRepositoryManager();
-    await resetJobQueue();
 
     // Setup memfs with mock git repository structure
     // This is required because RepositoryManager checks if path exists on filesystem
     const gitRepoFiles = createMockGitRepoFiles(testRepoPath);
     setupMemfs(gitRepoFiles);
 
-    // Initialize in-memory database
-    await initializeDatabase(':memory:');
+    appContext = await createTestContext();
+    setRepositoryManager(appContext.repositoryManager);
 
-    // Initialize the singleton job queue
-    const testJobQueue = initializeJobQueue();
-
-    // Create repository repository backed by in-memory SQLite
-    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
-
-    // Pre-populate test repository BEFORE initializing the manager.
-    // This is necessary because RepositoryManager loads repositories at initialization
-    // and caches them in memory. The getRepository() method only reads from cache.
-    await repositoryRepository.save({
-      id: testRepositoryId,
-      name: 'test-repo',
-      path: testRepoPath,
-      createdAt: new Date().toISOString(),
-    });
-
-    // Initialize repository manager singleton (will load the pre-created repository)
-    await initializeRepositoryManager({
-      repository: repositoryRepository,
-      jobQueue: testJobQueue,
-    });
+    const repo = await appContext.repositoryManager.registerRepository(testRepoPath);
+    testRepositoryId = repo.id;
 
     // Create Hono app with error handler
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', appContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });
 
   afterEach(async () => {
+    await shutdownAppContext(appContext, { resetSingletons: true });
     resetRepositoryManager();
-    await resetJobQueue();
-    await closeDatabase();
     cleanupMemfs();
   });
 

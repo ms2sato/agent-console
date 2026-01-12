@@ -7,13 +7,25 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getSystemCapabilities } from '../services/system-capabilities-service.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
+import type { AppBindings } from '../app-context.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('system-routes');
 
-const system = new Hono()
-  // Open a file or directory in the default application (Finder/Explorer)
-  .post('/open', vValidator(SystemOpenRequestSchema), async (c) => {
-    const { path } = c.req.valid('json');
+const system = new Hono<AppBindings>();
+
+// Get system health status including webhook configuration
+system.get('/health', (c) => {
+  return c.json({
+    webhookSecretConfigured: serverConfig.GITHUB_WEBHOOK_SECRET !== '',
+    appUrlConfigured: serverConfig.APP_URL !== '',
+  });
+});
+
+// Open a file or directory in the default application (Finder/Explorer)
+system.post('/open', vValidator(SystemOpenRequestSchema), async (c) => {
+  const { path } = c.req.valid('json');
 
     // Resolve to absolute path
     const absolutePath = resolvePath(path);
@@ -38,10 +50,11 @@ const system = new Hono()
       const message = error instanceof Error ? error.message : 'Failed to open path';
       throw new ValidationError(message);
     }
-  })
-  // Open a file or directory in VS Code
-  .post('/open-in-vscode', vValidator(SystemOpenVSCodeRequestSchema), async (c) => {
-    const { path } = c.req.valid('json');
+});
+
+// Open a file or directory in VS Code
+system.post('/open-in-vscode', vValidator(SystemOpenVSCodeRequestSchema), async (c) => {
+  const { path } = c.req.valid('json');
 
     // Check if VS Code is available
     const systemCapabilities = getSystemCapabilities();

@@ -4,7 +4,11 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { AgentManager, resetAgentManager, setAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -14,30 +18,30 @@ let importCounter = 0;
 
 // Shared mock PTY factory for the test module
 let ptyFactory: ReturnType<typeof createMockPtyFactory>;
+let db: Kysely<Database>;
 
 describe('SessionManager cleanup on initialization', () => {
   beforeEach(async () => {
-    // Close any existing database connection first
-    await closeDatabase();
-
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    // Initialize in-memory database (bypasses native file operations)
-    await initializeDatabase(':memory:');
-
     // Reset process mock tracking
     resetProcessMock();
 
     // Create fresh PTY factory
     ptyFactory = createMockPtyFactory();
+
+    db = await createDatabaseForTest();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    setAgentManager(agentManager);
   });
 
   afterEach(async () => {
-    await closeDatabase();
+    resetAgentManager();
+    await db.destroy();
     cleanupMemfs();
     delete process.env.AGENT_CONSOLE_HOME;
   });

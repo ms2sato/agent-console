@@ -6,6 +6,7 @@ import { validateSessions } from '../lib/api';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
+import { WebhookConfigBanner } from '../components/ui/WebhookConfigBanner';
 import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
 import { useAppWsState, useAppWsEvent } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
@@ -172,6 +173,7 @@ function RootLayout() {
           </div>
         </header>
         <ConnectionBanner connected={connected} />
+        <WebhookConfigBanner />
         <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
           <ActiveSessionsSidebar
             collapsed={collapsed}

@@ -4,13 +4,15 @@ import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
 import { JobQueue } from '../../jobs/index.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { resetSessionManager, initializeSessionManager } from '../session-manager.js';
-import { createSessionRepository, SqliteRepositoryRepository } from '../../repositories/index.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { SqliteRepositoryRepository } from '../../repositories/index.js';
 
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
+let db: Kysely<Database>;
 
 describe('RepositoryManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
@@ -19,9 +21,6 @@ describe('RepositoryManager', () => {
   let repositoryRepository: SqliteRepositoryRepository;
 
   beforeEach(async () => {
-    // Close any existing database connection first
-    await closeDatabase();
-
     // Set up memfs with config dir and a git repo
     const gitRepoFiles = createMockGitRepoFiles(TEST_REPO_DIR);
     setupMemfs({
@@ -30,18 +29,10 @@ describe('RepositoryManager', () => {
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    // Initialize in-memory database (needed for SessionManager singleton)
-    await initializeDatabase(':memory:');
-
-    // Reset session manager singleton (needed for unregisterRepository check)
-    resetSessionManager();
+    db = await createDatabaseForTest();
 
     // Create a test JobQueue with the shared database connection
-    testJobQueue = new JobQueue(getDatabase());
-
-    // Initialize session manager singleton (needed for unregisterRepository check)
-    const sessionRepository = await createSessionRepository();
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+    testJobQueue = new JobQueue(db);
 
     // Reset process mock
     resetProcessMock();
@@ -53,7 +44,7 @@ describe('RepositoryManager', () => {
 
     // Create production repository backed by in-memory SQLite
     // This tests the actual production code path instead of a mock
-    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    repositoryRepository = new SqliteRepositoryRepository(db);
   });
 
   afterEach(async () => {
@@ -62,7 +53,7 @@ describe('RepositoryManager', () => {
       await testJobQueue.stop();
       testJobQueue = null;
     }
-    await closeDatabase();
+    await db.destroy();
     cleanupMemfs();
   });
 

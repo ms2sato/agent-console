@@ -3,6 +3,27 @@
  * Manages a single WebSocket connection for real-time state synchronization.
  *
  * @see docs/websocket-reconnection.md for design rationale
+ *
+ * ## Known Limitations
+ *
+ * ### Missed Events During Disconnection
+ *
+ * Events that occur while the client is disconnected are lost. This affects:
+ * - Worker activity changes (active/idle/asking transitions)
+ * - Session lifecycle events (created/updated/deleted)
+ * - Inbound webhook event notifications
+ *
+ * When the client reconnects, it receives a full sync of current state via
+ * `sessions-sync`, but events that occurred during disconnection are not
+ * replayed. This means users may miss notifications for completed work or
+ * webhook deliveries.
+ *
+ * TODO: Implement event replay on reconnection
+ * - Track last seen event timestamp per client
+ * - Store recent events in a circular buffer on the server
+ * - Request missed events on reconnection with `request-sync`
+ * - Show "unread events" badge count in UI
+ * - See: https://github.com/ms2sato/agent-console/issues/XXX
  */
 import { APP_SERVER_MESSAGE_TYPES, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
 import { getAppWsUrl } from './websocket-url.js';

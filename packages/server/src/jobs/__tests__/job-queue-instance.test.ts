@@ -5,23 +5,27 @@ import {
   resetJobQueue,
   isJobQueueInitialized,
 } from '../job-queue-instance.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 
 describe('JobQueue Instance Management', () => {
+  let db: Kysely<Database>;
+
   beforeEach(async () => {
-    // Initialize in-memory database before each test
-    await initializeDatabase(':memory:');
+    await resetJobQueue();
+    db = await createDatabaseForTest();
   });
 
   afterEach(async () => {
     // Clean up after each test
     await resetJobQueue();
-    await closeDatabase();
+    await db.destroy();
   });
 
   describe('initializeJobQueue', () => {
     it('should create and return a JobQueue instance', () => {
-      const jobQueue = initializeJobQueue();
+      const jobQueue = initializeJobQueue({ db });
 
       expect(jobQueue).toBeDefined();
       expect(typeof jobQueue.enqueue).toBe('function');
@@ -30,19 +34,19 @@ describe('JobQueue Instance Management', () => {
     });
 
     it('should throw if already initialized', () => {
-      initializeJobQueue();
+      initializeJobQueue({ db });
 
       expect(() => initializeJobQueue()).toThrow('JobQueue already initialized');
     });
 
     it('should accept concurrency option', () => {
-      const jobQueue = initializeJobQueue({ concurrency: 2 });
+      const jobQueue = initializeJobQueue({ concurrency: 2, db });
 
       expect(jobQueue).toBeDefined();
     });
 
     it('should use default concurrency when options is empty object', () => {
-      const jobQueue = initializeJobQueue({});
+      const jobQueue = initializeJobQueue({ db });
 
       expect(jobQueue).toBeDefined();
     });
@@ -50,7 +54,7 @@ describe('JobQueue Instance Management', () => {
 
   describe('getJobQueue', () => {
     it('should return the initialized instance', () => {
-      const initialized = initializeJobQueue();
+      const initialized = initializeJobQueue({ db });
       const retrieved = getJobQueue();
 
       expect(retrieved).toBe(initialized);
@@ -75,13 +79,13 @@ describe('JobQueue Instance Management', () => {
     });
 
     it('should return true after initialization', () => {
-      initializeJobQueue();
+      initializeJobQueue({ db });
 
       expect(isJobQueueInitialized()).toBe(true);
     });
 
     it('should return false after reset', async () => {
-      initializeJobQueue();
+      initializeJobQueue({ db });
       await resetJobQueue();
 
       expect(isJobQueueInitialized()).toBe(false);
@@ -90,7 +94,7 @@ describe('JobQueue Instance Management', () => {
 
   describe('resetJobQueue', () => {
     it('should reset the instance', async () => {
-      initializeJobQueue();
+      initializeJobQueue({ db });
       expect(isJobQueueInitialized()).toBe(true);
 
       await resetJobQueue();
@@ -99,10 +103,10 @@ describe('JobQueue Instance Management', () => {
     });
 
     it('should allow re-initialization after reset', async () => {
-      initializeJobQueue();
+      initializeJobQueue({ db });
       await resetJobQueue();
 
-      const newInstance = initializeJobQueue();
+      const newInstance = initializeJobQueue({ db });
 
       expect(newInstance).toBeDefined();
       expect(isJobQueueInitialized()).toBe(true);
@@ -116,7 +120,7 @@ describe('JobQueue Instance Management', () => {
     });
 
     it('should call stop() on the instance', async () => {
-      const jobQueue = initializeJobQueue();
+      const jobQueue = initializeJobQueue({ db });
 
       // Spy on stop method
       const originalStop = jobQueue.stop.bind(jobQueue);

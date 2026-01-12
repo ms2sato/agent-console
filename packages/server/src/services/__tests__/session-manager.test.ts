@@ -4,8 +4,12 @@ import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-co
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/index.js';
+import { AgentManager, resetAgentManager, setAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -17,23 +21,22 @@ let testJobQueue: JobQueue | null = null;
 const ptyFactory = createMockPtyFactory(10000);
 
 let importCounter = 0;
+let db: Kysely<Database>;
 
 describe('SessionManager', () => {
   beforeEach(async () => {
-    // Close any existing database connection first
-    await closeDatabase();
-
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    // Initialize in-memory database (bypasses native file operations)
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    setAgentManager(agentManager);
 
     // Create a test JobQueue with the shared database connection
-    testJobQueue = new JobQueue(getDatabase());
+    testJobQueue = new JobQueue(db);
 
     // Reset process mock and mark current process as alive
     // This ensures sessions created with serverPid=process.pid are not cleaned up
@@ -50,7 +53,8 @@ describe('SessionManager', () => {
       await testJobQueue.stop();
       testJobQueue = null;
     }
-    await closeDatabase();
+    resetAgentManager();
+    await db.destroy();
     cleanupMemfs();
   });
 
