@@ -529,7 +529,7 @@ describe('SessionManager', () => {
   });
 
   describe('getWorkerActivityState', () => {
-    it('should return activity state', async () => {
+    it('should return idle state after PTY activation', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -542,8 +542,8 @@ describe('SessionManager', () => {
 
       const state = manager.getWorkerActivityState(session.id, workerId);
 
-      // Initial state is 'unknown' until activity is detected
-      expect(state).toBe('unknown');
+      // Initial state is 'idle' after PTY activation (ActivityDetector starts with 'idle')
+      expect(state).toBe('idle');
     });
 
     it('should return undefined for non-existent session', async () => {
@@ -555,6 +555,25 @@ describe('SessionManager', () => {
   });
 
   describe('setGlobalActivityCallback', () => {
+    it('should call global callback with idle state on PTY activation', async () => {
+      const manager = await getSessionManager();
+
+      const globalCallback = mock(() => {});
+      manager.setGlobalActivityCallback(globalCallback);
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const workerId = agentWorker.id;
+
+      // Global callback should have been called with 'idle' state on PTY activation
+      // (ActivityDetector starts with 'idle', so we notify immediately)
+      expect(globalCallback).toHaveBeenCalledWith(session.id, workerId, 'idle');
+    });
+
     it('should call global callback on activity state change', async () => {
       const manager = await getSessionManager();
 
