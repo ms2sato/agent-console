@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { describe, expect, it, mock, beforeEach, afterAll } from 'bun:test';
 import type { ServiceParser } from '../inbound/service-parser.js';
 import type { InboundEventHandler } from '../inbound/handlers.js';
 import type { InboundEventNotification } from '../../database/schema.js';
@@ -21,6 +21,10 @@ mock.module('../../repositories/inbound-event-notification-repository.js', () =>
 }));
 
 describe('createInboundEventJobHandler', () => {
+  afterAll(() => {
+    mock.restore();
+  });
+
   beforeEach(() => {
     mockFindInboundEventNotification.mockClear();
     mockCreatePendingNotification.mockClear();
