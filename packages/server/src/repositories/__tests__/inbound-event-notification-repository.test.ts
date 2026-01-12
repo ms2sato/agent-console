@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Kysely } from 'kysely';
-import { BunSqliteDialect } from 'kysely-bun-sqlite';
-import { Database as BunDatabase } from 'bun:sqlite';
+import type { Kysely } from 'kysely';
 import {
   createInboundEventNotification,
   createPendingNotification,
@@ -10,6 +8,7 @@ import {
   NOTIFICATION_STATUS,
 } from '../inbound-event-notification-repository.js';
 import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 
 const BASE_NOTIFICATION = {
   job_id: 'job-1',
@@ -22,41 +21,15 @@ const BASE_NOTIFICATION = {
 } as const;
 
 describe('inbound-event-notification-repository', () => {
-  let bunDb: BunDatabase;
   let db: Kysely<Database>;
 
   beforeEach(async () => {
-    bunDb = new BunDatabase(':memory:');
-    db = new Kysely<Database>({
-      dialect: new BunSqliteDialect({ database: bunDb }),
-    });
-
-    // Create table with v9 schema (status + created_at + nullable notified_at)
-    await db.schema
-      .createTable('inbound_event_notifications')
-      .addColumn('id', 'text', (col) => col.primaryKey())
-      .addColumn('job_id', 'text', (col) => col.notNull())
-      .addColumn('session_id', 'text', (col) => col.notNull())
-      .addColumn('worker_id', 'text', (col) => col.notNull())
-      .addColumn('handler_id', 'text', (col) => col.notNull())
-      .addColumn('event_type', 'text', (col) => col.notNull())
-      .addColumn('event_summary', 'text', (col) => col.notNull())
-      .addColumn('status', 'text', (col) => col.notNull().defaultTo('delivered'))
-      .addColumn('created_at', 'text', (col) => col.notNull())
-      .addColumn('notified_at', 'text')
-      .execute();
-
-    await db.schema
-      .createIndex('uniq_inbound_event_notifications_delivery')
-      .on('inbound_event_notifications')
-      .columns(['job_id', 'session_id', 'worker_id', 'handler_id'])
-      .unique()
-      .execute();
+    // Use createDatabaseForTest to get properly migrated schema
+    db = await createDatabaseForTest();
   });
 
   afterEach(async () => {
     await db.destroy();
-    bunDb.close();
   });
 
   describe('createInboundEventNotification (deprecated)', () => {
