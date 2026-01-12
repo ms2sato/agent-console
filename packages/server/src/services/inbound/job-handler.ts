@@ -71,10 +71,6 @@ export interface InboundEventNotificationRepository {
     workerId: string,
     handlerId: string
   ) => Promise<void>;
-  notificationStatus: {
-    PENDING: 'pending';
-    DELIVERED: 'delivered';
-  };
 }
 
 export function createInboundEventJobHandler(deps: InboundEventJobDependencies) {
@@ -137,7 +133,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
         );
 
         if (existingNotification) {
-          if (existingNotification.status === deps.notificationRepository.notificationStatus.DELIVERED) {
+          if (existingNotification.status === 'delivered') {
             // Already delivered - skip this handler/target combination
             logger.debug(
               { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },

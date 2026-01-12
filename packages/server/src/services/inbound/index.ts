@@ -12,7 +12,6 @@ import {
   createPendingNotification,
   findInboundEventNotification,
   markNotificationDelivered,
-  NOTIFICATION_STATUS,
 } from '../../repositories/inbound-event-notification-repository.js';
 
 export interface InboundIntegrationOptions {
@@ -67,7 +66,6 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
         findInboundEventNotification,
         createPendingNotification,
         markNotificationDelivered,
-        notificationStatus: NOTIFICATION_STATUS,
       },
     })
   );
