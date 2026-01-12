@@ -14,6 +14,9 @@ describe('Jobs API', () => {
   let db: Kysely<Database>;
 
   beforeEach(async () => {
+    // Reset any existing singleton first (parallel test safety)
+    await resetJobQueue();
+
     db = await createDatabaseForTest();
 
     // Initialize the singleton job queue
