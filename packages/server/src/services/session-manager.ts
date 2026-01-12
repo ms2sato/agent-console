@@ -1333,3 +1333,15 @@ export function isSessionManagerInitialized(): boolean {
 export function resetSessionManager(): void {
   sessionManagerInstance = null;
 }
+
+/**
+ * Set the SessionManager singleton from an existing instance.
+ * Used by AppContext to set the singleton without re-creating.
+ * @internal For AppContext initialization only.
+ */
+export function setSessionManager(instance: SessionManager): void {
+  if (sessionManagerInstance) {
+    throw new Error('SessionManager already initialized');
+  }
+  sessionManagerInstance = instance;
+}

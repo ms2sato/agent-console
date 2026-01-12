@@ -128,6 +128,39 @@ export async function closeDatabase(): Promise<void> {
 }
 
 /**
+ * Get the global database instance (for comparison purposes).
+ * @internal Used by AppContext to avoid double-destroy.
+ */
+export function getGlobalDatabase(): Kysely<Database> | null {
+  return db;
+}
+
+/**
+ * Create a standalone database for testing.
+ * Uses an in-memory SQLite database with all migrations applied.
+ * Does NOT modify the global `db` variable, ensuring test isolation.
+ *
+ * @returns A new Kysely database instance for testing
+ */
+export async function createDatabaseForTest(): Promise<Kysely<Database>> {
+  logger.debug('Creating in-memory database for test');
+
+  const bunDb = new BunDatabase(':memory:');
+
+  const database = new Kysely<Database>({
+    dialect: new BunSqliteDialect({ database: bunDb }),
+  });
+
+  // Enable foreign key constraints
+  await sql`PRAGMA foreign_keys = ON`.execute(database);
+
+  // Run schema migrations
+  await runMigrations(database);
+
+  return database;
+}
+
+/**
  * Run database migrations based on PRAGMA user_version.
  * Each migration increments the version number.
  */

@@ -62,3 +62,16 @@ export function shutdownNotificationServices(): void {
     notificationManager = null;
   }
 }
+
+/**
+ * Set the NotificationManager singleton from an existing instance.
+ * Used by AppContext to set the singleton without re-creating.
+ * @internal For AppContext initialization only.
+ */
+export function setNotificationManager(instance: NotificationManager): void {
+  if (notificationManager) {
+    throw new Error('NotificationManager already initialized');
+  }
+  notificationManager = instance;
+  logger.info('NotificationManager set from AppContext');
+}

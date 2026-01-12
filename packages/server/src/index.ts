@@ -6,13 +6,12 @@ import { setupWebSocketRoutes } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
-import { initializeDatabase, closeDatabase } from './database/connection.js';
 import { getConfigDir } from './lib/config.js';
-import { initializeJobQueue, registerJobHandlers, resetJobQueue } from './jobs/index.js';
-import { initializeSessionManager, getSessionManager } from './services/session-manager.js';
-import { initializeRepositoryManager, getRepositoryManager, isRepositoryManagerInitialized } from './services/repository-manager.js';
-import { initializeNotificationServices, shutdownNotificationServices } from './services/notifications/index.js';
-import { createSessionRepository } from './repositories/index.js';
+import { createAppContext, shutdownAppContext, type AppContext } from './app-context.js';
+// Import singleton setters to populate existing singletons from AppContext
+import { setSessionManager } from './services/session-manager.js';
+import { setRepositoryManager } from './services/repository-manager.js';
+import { setNotificationManager } from './services/notifications/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,13 +20,17 @@ const logger = createLogger('server');
 // Log server PID on startup for debugging
 logger.info({ pid: process.pid }, 'Server process starting');
 
+// Application context - initialized before server starts
+let appContext: AppContext | null = null;
+
 /**
- * Graceful shutdown: stop job queue, close database, and shutdown notification services.
+ * Graceful shutdown: stop all services and close connections.
  */
 async function shutdown(): Promise<void> {
-  shutdownNotificationServices();
-  await resetJobQueue();
-  await closeDatabase();
+  if (appContext) {
+    await shutdownAppContext(appContext);
+    appContext = null;
+  }
 }
 
 // Global error handlers to log crashes before process exits
@@ -64,10 +67,39 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-const app = new Hono();
+const PORT = Number(serverConfig.PORT);
 
 // Production mode: serve static files
 const isProduction = serverConfig.NODE_ENV === 'production';
+
+// Initialize all services via AppContext BEFORE creating the Hono app
+// This ensures services are available when routes are registered
+try {
+  appContext = await createAppContext();
+  logger.info('Application context initialized');
+} catch (error) {
+  logger.fatal({ err: error }, 'Failed to initialize application context');
+  console.error('\nAPPLICATION INITIALIZATION FAILED\n');
+  console.error('The application could not be initialized. This may be due to:');
+  console.error('  - Corrupted database file');
+  console.error('  - Insufficient disk space');
+  console.error('  - Permission issues\n');
+  console.error('To reset the database, delete the file:');
+  console.error(`  rm ${getConfigDir()}/data.db\n`);
+  process.exit(1);
+}
+
+// Populate existing singletons from AppContext for backward compatibility
+// This allows existing code using getSessionManager(), etc. to continue working
+setSessionManager(appContext.sessionManager);
+setRepositoryManager(appContext.repositoryManager);
+setNotificationManager(appContext.notificationManager);
+logger.info('Singletons populated from AppContext');
+
+// Create Hono app
+// Note: AppBindings type is available for routes that want to use c.get('appContext'),
+// but for Phase 1 we keep using the singleton shims for backward compatibility.
+const app = new Hono();
 
 // Global error handler
 app.onError(onApiError);
@@ -80,6 +112,10 @@ app.use(
   })
 );
 
+// Note: In Phase 2, we'll add middleware to inject AppContext into Hono request context:
+// app.use('*', async (c, next) => { c.set('appContext', appContext); await next(); });
+// For Phase 1, routes continue using singleton shims (getSessionManager(), etc.)
+
 // Health check
 app.get('/health', (c) => {
   return c.json({ status: 'ok' });
@@ -87,57 +123,6 @@ app.get('/health', (c) => {
 
 // Mount API routes
 app.route('/api', api);
-
-const PORT = Number(serverConfig.PORT);
-
-// Initialize database before starting server and setting up WebSocket routes
-try {
-  await initializeDatabase();
-  logger.info('Database initialized successfully');
-} catch (error) {
-  logger.fatal({ err: error }, 'Failed to initialize database');
-  console.error('\nDATABASE INITIALIZATION FAILED\n');
-  console.error('The database could not be initialized. This may be due to:');
-  console.error('  - Corrupted database file');
-  console.error('  - Insufficient disk space');
-  console.error('  - Permission issues\n');
-  console.error('To reset the database, delete the file:');
-  console.error(`  rm ${getConfigDir()}/data.db\n`);
-  process.exit(1);
-}
-
-// Initialize job queue after database initialization
-const jobQueue = initializeJobQueue();
-try {
-  registerJobHandlers(jobQueue);
-  await jobQueue.start();
-  logger.info('JobQueue initialized and started');
-} catch (error) {
-  logger.fatal({ err: error }, 'Failed to initialize job queue');
-  process.exit(1);
-}
-
-// Initialize services with explicit dependencies
-const sessionRepository = await createSessionRepository();
-await initializeSessionManager({ sessionRepository, jobQueue });
-await initializeRepositoryManager({ jobQueue });
-
-// Wire up callbacks between managers to resolve circular dependencies
-// Both managers need to call each other, but direct imports would create cycles
-const sessionManager = getSessionManager();
-const repositoryManager = getRepositoryManager();
-
-repositoryManager.setDependencyCallbacks({
-  getSessionsUsingRepository: (repoId) => sessionManager.getSessionsUsingRepository(repoId),
-});
-
-sessionManager.setRepositoryCallbacks({
-  getRepository: (repoId) => repositoryManager.getRepository(repoId),
-  isInitialized: () => isRepositoryManagerInitialized(),
-});
-
-initializeNotificationServices();
-logger.info('Services initialized');
 
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
 // WebSocket routes are not caught by the catch-all SPA handler
