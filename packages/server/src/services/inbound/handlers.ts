@@ -1,4 +1,8 @@
-import type { InboundEventType, InboundEventSummary, SystemEvent } from '@agent-console/shared';
+import type {
+  InboundEventType,
+  InboundEventSummary,
+  InboundSystemEvent,
+} from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
 
@@ -12,8 +16,13 @@ export interface InboundEventHandler {
   readonly handlerId: string;
   /** Event types this handler supports (inbound events only) */
   readonly supportedEvents: InboundEventType[];
-  /** Handle the event for a specific target. */
-  handle(event: SystemEvent, target: EventTarget): Promise<boolean>;
+  /**
+   * Handle the event for a specific target.
+   * @param event - The inbound event (already validated by job-handler)
+   * @param target - The target session/worker to notify
+   * @returns true if the handler performed an action, false if skipped
+   */
+  handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean>;
 }
 
 export interface InboundHandlerDependencies {
@@ -38,7 +47,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     this.sessionManager = sessionManager;
   }
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
 
@@ -49,7 +58,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     return this.sessionManager.writeWorkerInput(target.sessionId, workerId, message);
   }
 
-  private formatMessage(event: SystemEvent): string {
+  private formatMessage(event: InboundSystemEvent): string {
     const values = {
       type: event.type,
       source: event.source,
@@ -88,7 +97,7 @@ class DiffWorkerHandler implements InboundEventHandler {
     this.sessionManager = sessionManager;
   }
 
-  async handle(_event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
 
@@ -109,12 +118,12 @@ class UINotificationHandler implements InboundEventHandler {
     this.broadcastToApp = broadcastToApp;
   }
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     this.broadcastToApp({
       type: 'inbound-event',
       sessionId: target.sessionId,
       event: {
-        type: event.type as InboundEventType,
+        type: event.type,
         source: event.source,
         summary: event.summary,
         metadata: event.metadata,

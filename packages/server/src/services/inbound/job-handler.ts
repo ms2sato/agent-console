@@ -1,4 +1,8 @@
-import type { InboundEventType, SystemEvent } from '@agent-console/shared';
+import type {
+  InboundEventType,
+  InboundSystemEvent,
+  SystemEvent,
+} from '@agent-console/shared';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundEventJobPayload } from '../../jobs/index.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
@@ -44,8 +48,15 @@ const INBOUND_EVENT_TYPES: InboundEventType[] = [
   'pr:merged',
 ];
 
-function isInboundEventType(eventType: SystemEvent['type']): eventType is InboundEventType {
-  return INBOUND_EVENT_TYPES.includes(eventType as InboundEventType);
+/**
+ * Type guard to check if an event is an inbound event.
+ * Returns the event narrowed to InboundSystemEvent if the type matches.
+ */
+function asInboundEvent(event: SystemEvent): InboundSystemEvent | null {
+  if (INBOUND_EVENT_TYPES.includes(event.type as InboundEventType)) {
+    return event as InboundSystemEvent;
+  }
+  return null;
 }
 
 export interface InboundEventJobDependencies {
@@ -105,14 +116,14 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
       return;
     }
 
-    const inboundEventType = event.type;
-    if (!isInboundEventType(inboundEventType)) {
+    const inboundEvent = asInboundEvent(event);
+    if (!inboundEvent) {
       // Not an inbound event type - complete successfully
       logger.debug({ eventType: event.type }, 'Ignoring non-inbound event');
       return;
     }
 
-    const handlers = deps.handlers.filter((handler) => handler.supportedEvents.includes(inboundEventType));
+    const handlers = deps.handlers.filter((handler) => handler.supportedEvents.includes(inboundEvent.type));
     if (handlers.length === 0) {
       // No handlers - complete successfully
       logger.debug({ eventType: event.type }, 'No handlers registered for inbound event');
@@ -166,14 +177,14 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           session_id: target.sessionId,
           worker_id: workerId,
           handler_id: handler.handlerId,
-          event_type: event.type,
-          event_summary: event.summary,
+          event_type: inboundEvent.type,
+          event_summary: inboundEvent.summary,
           created_at: new Date().toISOString(),
         });
 
         let handled = false;
         try {
-          handled = await handler.handle(event, target);
+          handled = await handler.handle(inboundEvent, target);
         } catch (error) {
           // Handler execution failures are transient by default
           // (e.g., temporary network issues, WebSocket disconnection)
@@ -186,8 +197,8 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
               handlerId: handler.handlerId,
               sessionId: target.sessionId,
               workerId: workerId,
-              eventType: event.type,
-              eventSummary: event.summary,
+              eventType: inboundEvent.type,
+              eventSummary: inboundEvent.summary,
             },
             'Inbound event handler failed'
           );

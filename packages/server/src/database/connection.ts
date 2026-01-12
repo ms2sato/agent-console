@@ -207,6 +207,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 9) {
     await migrateToV9(database);
   }
+
+  if (currentVersion < 10) {
+    await migrateToV10(database);
+  }
 }
 
 /**
@@ -595,6 +599,81 @@ async function migrateToV9(database: Kysely<Database>): Promise<void> {
   });
 
   logger.info('Migration to v9 completed');
+}
+
+/**
+ * Migration v10: Add foreign key constraint to inbound_event_notifications.session_id.
+ *
+ * SQLite doesn't support adding constraints to existing tables, so we need to
+ * recreate the table. The entire migration is wrapped in a transaction.
+ *
+ * Note: This adds CASCADE delete - when a session is deleted, its notification
+ * records are automatically deleted.
+ */
+async function migrateToV10(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v10: Adding session_id foreign key to inbound_event_notifications');
+
+  await database.transaction().execute(async (trx) => {
+    // 1. Rename old table
+    await sql`ALTER TABLE inbound_event_notifications RENAME TO inbound_event_notifications_old`.execute(trx);
+
+    // 2. Create new table with foreign key constraint
+    await trx.schema
+      .createTable('inbound_event_notifications')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('job_id', 'text', (col) => col.notNull())
+      .addColumn('session_id', 'text', (col) =>
+        col.notNull().references('sessions.id').onDelete('cascade')
+      )
+      .addColumn('worker_id', 'text', (col) => col.notNull())
+      .addColumn('handler_id', 'text', (col) => col.notNull())
+      .addColumn('event_type', 'text', (col) => col.notNull())
+      .addColumn('event_summary', 'text', (col) => col.notNull())
+      .addColumn('status', 'text', (col) => col.notNull().defaultTo('delivered'))
+      .addColumn('created_at', 'text', (col) => col.notNull())
+      .addColumn('notified_at', 'text')
+      .execute();
+
+    // 3. Copy data from old table (only rows with valid session_id)
+    // This ensures referential integrity - orphaned records are dropped
+    await sql`
+      INSERT INTO inbound_event_notifications
+        (id, job_id, session_id, worker_id, handler_id, event_type, event_summary, status, created_at, notified_at)
+      SELECT
+        n.id, n.job_id, n.session_id, n.worker_id, n.handler_id, n.event_type, n.event_summary,
+        n.status, n.created_at, n.notified_at
+      FROM inbound_event_notifications_old n
+      INNER JOIN sessions s ON n.session_id = s.id
+    `.execute(trx);
+
+    // 4. Drop old table
+    await sql`DROP TABLE inbound_event_notifications_old`.execute(trx);
+
+    // 5. Recreate indexes
+    await trx.schema
+      .createIndex('idx_inbound_event_notifications_job')
+      .on('inbound_event_notifications')
+      .column('job_id')
+      .execute();
+
+    await trx.schema
+      .createIndex('idx_inbound_event_notifications_session_worker')
+      .on('inbound_event_notifications')
+      .columns(['session_id', 'worker_id'])
+      .execute();
+
+    await trx.schema
+      .createIndex('uniq_inbound_event_notifications_delivery')
+      .on('inbound_event_notifications')
+      .columns(['job_id', 'session_id', 'worker_id', 'handler_id'])
+      .unique()
+      .execute();
+
+    // Update schema version
+    await sql`PRAGMA user_version = 10`.execute(trx);
+  });
+
+  logger.info('Migration to v10 completed');
 }
 
 /**
