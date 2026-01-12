@@ -10,7 +10,7 @@ import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebS
 import { clearVisibilityTracking, disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import type { CachedState } from '../lib/terminal-state-cache.js';
 import { createTerminalStateSaver } from '../lib/terminal-state-saver.js';
 import { deleteSession } from '../lib/api.js';
@@ -120,12 +120,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     try {
       const serializedData = serializeAddon.serialize();
+      const serverPid = getCurrentServerPid();
       return {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
+        ...(serverPid !== null ? { serverPid } : {}),
       };
     } catch (e) {
       console.warn('[Terminal] Failed to serialize terminal state:', e);
@@ -143,6 +145,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     return createTerminalStateSaver(getTerminalSnapshot, persistTerminalSnapshot, { throttleMs: 1000 });
   }, [getTerminalSnapshot, persistTerminalSnapshot]);
 
+  // Clear pending throttled saves when stateSaver instance changes
   useEffect(() => {
     return () => {
       stateSaver.clear();
@@ -251,16 +254,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (connected) {
       // Reconnected: re-request history if we were waiting for it but lost connection
       // This handles the case where WebSocket disconnected during cache restore flow
-      if (stateRef.current.restoredFromCache && !stateRef.current.historyRequested) {
+      if (stateRef.current.waitingForDiff && !stateRef.current.historyRequested) {
         const fromOffset = stateRef.current.cachedOffset;
         stateRef.current.historyRequested = true;
-        stateRef.current.waitingForDiff = true;
         requestHistory(sessionId, workerId, fromOffset);
       }
     } else {
       // Disconnected: reset historyRequested flag so next reconnect can request history
       // Keep waitingForDiff and restoredFromCache so we know to re-request
       stateRef.current.historyRequested = false;
+
+      // Clear pending history to prevent processing stale data after reconnect
+      // When we reconnect, we'll request fresh history from the server
+      stateRef.current.pendingHistory = null;
     }
   }, [sessionId, workerId]);
 
@@ -314,17 +320,16 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   );
 
   // Sync connected value from hook to ref for use in async callbacks
-  // (The ref is also updated in handleConnectionChange, but this handles the initial value)
   useEffect(() => {
     connectedRef.current = connected;
   }, [connected]);
 
-  // Sync error from hook to local state
+  // Sync error from hook to local state for display
   useEffect(() => {
     setWorkerError(error);
   }, [error]);
 
-  // Initialize xterm.js
+  // Initialize xterm.js terminal
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -637,7 +642,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     stateSaver,
   ]);
 
-  // Send resize when connection is established
+  // Fit terminal and send resize when connection is established
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
       fitAddonRef.current.fit();
@@ -645,7 +650,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [connected, sendResize]);
 
-  // Flush terminal state when the page is being hidden or unloaded.
+  // Flush terminal state when page is being hidden or unloaded
   useEffect(() => {
     const handlePageHide = () => {
       saveCurrentTerminalState();
@@ -666,8 +671,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
   }, [saveCurrentTerminalState]);
 
-  // Request history when connection is established and we're waiting for it
-  // This handles both: diff after cache restoration, and full history when no cache
+  // Request history when connected and waiting for it
   useEffect(() => {
     if (connected && stateRef.current.waitingForDiff && !stateRef.current.historyRequested) {
       // Request history with the appropriate offset
@@ -679,7 +683,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [connected, sessionId, workerId]);
 
-  // Clean up visibility tracking on unmount to prevent stale reconnection
+  // Clean up visibility tracking on unmount
   useEffect(() => {
     return () => {
       clearVisibilityTracking(sessionId, workerId);

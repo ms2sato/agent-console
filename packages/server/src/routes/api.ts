@@ -6,6 +6,7 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
+import { getServerPid } from '../lib/config.js';
 
 const api = new Hono();
 
@@ -16,7 +17,10 @@ api.get('/', (c) => {
 
 // Get server config
 api.get('/config', (c) => {
-  return c.json({ homeDir: homedir() });
+  return c.json({
+    homeDir: homedir(),
+    serverPid: getServerPid(),
+  });
 });
 
 // Mount domain-specific routers
