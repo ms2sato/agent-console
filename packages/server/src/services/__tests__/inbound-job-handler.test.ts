@@ -20,11 +20,7 @@ const notificationRepository = {
   findInboundEventNotification: mockFindInboundEventNotification,
   createPendingNotification: mockCreatePendingNotification,
   markNotificationDelivered: mockMarkNotificationDelivered,
-  notificationStatus: {
-    PENDING: 'pending',
-    DELIVERED: 'delivered',
-  },
-} as const;
+};
 
 describe('createInboundEventJobHandler', () => {
   beforeEach(() => {

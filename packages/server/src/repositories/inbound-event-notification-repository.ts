@@ -145,17 +145,8 @@ export async function createInboundEventNotification(
 ): Promise<InboundEventNotification> {
   const db = dbOverride ?? getDatabase();
 
-  // Ensure all required fields are present for InboundEventNotification
   const completeNotification: InboundEventNotification = {
-    id: notification.id,
-    job_id: notification.job_id,
-    session_id: notification.session_id,
-    worker_id: notification.worker_id,
-    handler_id: notification.handler_id,
-    event_type: notification.event_type,
-    event_summary: notification.event_summary,
-    status: notification.status,
-    created_at: notification.created_at,
+    ...notification,
     notified_at: notification.notified_at ?? null,
   };
 
