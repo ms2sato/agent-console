@@ -1,15 +1,18 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, vi, beforeEach, afterEach, afterAll } from 'bun:test';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WebhookConfigBanner } from '../WebhookConfigBanner';
-import * as api from '../../../lib/api';
 
-// Mock the API module
-vi.mock('../../../lib/api', () => ({
-  fetchSystemHealth: vi.fn(),
-}));
+// Save original fetch for restoration
+const originalFetch = globalThis.fetch;
 
-const mockFetchSystemHealth = api.fetchSystemHealth as ReturnType<typeof vi.fn>;
+// Helper to create mock fetch response
+function createMockFetchResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -30,12 +33,14 @@ function renderWithProvider(ui: React.ReactElement) {
 }
 
 describe('WebhookConfigBanner', () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    // Reset mock implementation to avoid cross-test contamination
-    mockFetchSystemHealth.mockReset();
     // Clear localStorage for each test
     localStorage.clear();
+    // Set up fetch-level mock
+    mockFetch = vi.fn();
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -44,10 +49,20 @@ describe('WebhookConfigBanner', () => {
     cleanup();
   });
 
+  afterAll(() => {
+    // Restore original fetch
+    globalThis.fetch = originalFetch;
+  });
+
   it('renders warning when webhook secret is not configured', async () => {
-    mockFetchSystemHealth.mockResolvedValue({
-      webhookSecretConfigured: false,
-      appUrlConfigured: true,
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/system/health')) {
+        return Promise.resolve(createMockFetchResponse({
+          webhookSecretConfigured: false,
+          appUrlConfigured: true,
+        }));
+      }
+      return originalFetch(url);
     });
 
     renderWithProvider(<WebhookConfigBanner />);
@@ -55,19 +70,27 @@ describe('WebhookConfigBanner', () => {
     await waitFor(() => {
       expect(screen.getByText(/GitHub webhook secret not configured/i)).toBeDefined();
     });
+
+    // Verify fetch was called with correct URL
+    expect(mockFetch).toHaveBeenCalledWith('/api/system/health');
   });
 
   it('does not render when webhook secret is configured', async () => {
-    mockFetchSystemHealth.mockResolvedValue({
-      webhookSecretConfigured: true,
-      appUrlConfigured: true,
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/system/health')) {
+        return Promise.resolve(createMockFetchResponse({
+          webhookSecretConfigured: true,
+          appUrlConfigured: true,
+        }));
+      }
+      return originalFetch(url);
     });
 
     renderWithProvider(<WebhookConfigBanner />);
 
     // Wait for query to resolve
     await waitFor(() => {
-      expect(mockFetchSystemHealth).toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith('/api/system/health');
     });
 
     // Banner should not be visible
@@ -75,9 +98,14 @@ describe('WebhookConfigBanner', () => {
   });
 
   it('can be dismissed and persists dismissal state', async () => {
-    mockFetchSystemHealth.mockResolvedValue({
-      webhookSecretConfigured: false,
-      appUrlConfigured: true,
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/system/health')) {
+        return Promise.resolve(createMockFetchResponse({
+          webhookSecretConfigured: false,
+          appUrlConfigured: true,
+        }));
+      }
+      return originalFetch(url);
     });
 
     renderWithProvider(<WebhookConfigBanner />);
@@ -101,16 +129,21 @@ describe('WebhookConfigBanner', () => {
     // Set dismissal state before rendering
     localStorage.setItem('webhook-config-banner-dismissed', 'true');
 
-    mockFetchSystemHealth.mockResolvedValue({
-      webhookSecretConfigured: false,
-      appUrlConfigured: true,
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/system/health')) {
+        return Promise.resolve(createMockFetchResponse({
+          webhookSecretConfigured: false,
+          appUrlConfigured: true,
+        }));
+      }
+      return originalFetch(url);
     });
 
     renderWithProvider(<WebhookConfigBanner />);
 
     // Wait for potential render
     await waitFor(() => {
-      expect(mockFetchSystemHealth).toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith('/api/system/health');
     });
 
     // Banner should not appear even though webhook is not configured
@@ -118,9 +151,14 @@ describe('WebhookConfigBanner', () => {
   });
 
   it('contains a link to documentation', async () => {
-    mockFetchSystemHealth.mockResolvedValue({
-      webhookSecretConfigured: false,
-      appUrlConfigured: true,
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/system/health')) {
+        return Promise.resolve(createMockFetchResponse({
+          webhookSecretConfigured: false,
+          appUrlConfigured: true,
+        }));
+      }
+      return originalFetch(url);
     });
 
     renderWithProvider(<WebhookConfigBanner />);
