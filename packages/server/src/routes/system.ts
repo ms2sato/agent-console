@@ -6,8 +6,18 @@ import type { SystemOpenRequest } from '@agent-console/shared';
 import { SystemOpenRequestSchema } from '@agent-console/shared';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { serverConfig } from '../lib/server-config.js';
+import type { AppBindings } from '../app-context.js';
 
-const system = new Hono();
+const system = new Hono<AppBindings>();
+
+// Get system health status including webhook configuration
+system.get('/health', (c) => {
+  return c.json({
+    webhookSecretConfigured: serverConfig.GITHUB_WEBHOOK_SECRET !== '',
+    appUrlConfigured: serverConfig.APP_URL !== '',
+  });
+});
 
 // Open a file or directory in the default application (Finder/Explorer)
 system.post('/open', validateBody(SystemOpenRequestSchema), async (c) => {

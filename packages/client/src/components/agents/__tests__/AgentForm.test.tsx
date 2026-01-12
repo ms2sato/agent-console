@@ -355,6 +355,46 @@ describe('AgentForm', () => {
       expect(screen.getByText('Asking Patterns (optional)')).toBeTruthy();
     });
 
+    /**
+     * This test verifies that when Advanced Settings is collapsed (hidden),
+     * the headlessTemplate and askingPatternsInput fields do not block form submission.
+     * The form uses react-hook-form with mode: 'onBlur', and optional fields should
+     * allow empty values without validation errors when not touched.
+     */
+    it('should submit successfully when advanced settings are collapsed', async () => {
+      const user = userEvent.setup();
+      // Pre-fill commandTemplate to avoid userEvent curly brace issues
+      const initialData: AgentFormData = {
+        name: '',
+        commandTemplate: 'myagent {{prompt}}',
+        // These advanced fields are empty (default state)
+        headlessTemplate: '',
+        askingPatternsInput: '',
+      };
+      const { props } = renderAgentForm({ initialData });
+
+      // Verify advanced settings are collapsed
+      expect(screen.queryByPlaceholderText('e.g., aider --yes -m {{prompt}} --exit')).toBeNull();
+
+      // Only fill required fields (name is required, commandTemplate is pre-filled)
+      await user.type(screen.getByPlaceholderText('e.g., Aider'), 'My Agent');
+
+      // Submit without expanding or touching advanced settings
+      await user.click(screen.getByText('Add Agent'));
+
+      // Form should submit successfully
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as AgentFormData;
+      expect(formData.name).toBe('My Agent');
+      expect(formData.commandTemplate).toBe('myagent {{prompt}}');
+      // Advanced fields should be empty (not blocking submission)
+      expect(formData.headlessTemplate).toBe('');
+      expect(formData.askingPatternsInput).toBe('');
+    });
+
     it('should show advanced settings by default if initialData has headlessTemplate', () => {
       const initialData: AgentFormData = {
         name: 'Agent',

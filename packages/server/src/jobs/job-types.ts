@@ -26,6 +26,12 @@ export const JOB_TYPES = {
    * Payload: CleanupRepositoryPayload
    */
   CLEANUP_REPOSITORY: 'cleanup:repository',
+
+  /**
+   * Process an inbound integration webhook event.
+   * Payload: InboundEventJobPayload
+   */
+  INBOUND_EVENT_PROCESS: 'inbound-event:process',
 } as const;
 
 /**
@@ -54,3 +60,5 @@ export interface CleanupWorkerOutputPayload {
 export interface CleanupRepositoryPayload {
   repoDir: string;
 }
+
+export type { InboundEventJobPayload } from '@agent-console/shared';

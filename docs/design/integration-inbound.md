@@ -119,9 +119,13 @@ class AgentWorkerHandler implements InboundEventHandler {
   }
 
   private formatMessage(event: SystemEvent): string {
-    // Format: \n[Source] TYPE: Summary\nURL: ...\n
-    return `\n[${event.source}] ${event.type.toUpperCase()}: ${event.summary}\n` +
-           `URL: ${event.metadata.url ?? 'N/A'}\n`;
+    // Format: structured tag + key/value fields for reliable parsing.
+    // Example: [inbound:ci-failed] source=github repo=owner/repo branch=main url=... summary="..." intent=triage
+    const intent = event.type === 'ci:failed' ? 'triage' : 'inform';
+    return `\n[inbound:${event.type}] ` +
+      `source=${event.source} repo=${event.metadata.repositoryName ?? 'unknown'} ` +
+      `branch=${event.metadata.branch ?? 'unknown'} url=${event.metadata.url ?? 'N/A'} ` +
+      `summary="${event.summary}" intent=${intent}\n`;
   }
 }
 ```
@@ -571,6 +575,29 @@ interface InboundIntegrationConfig {
 # GitHub webhook secret
 GITHUB_WEBHOOK_SECRET=your-secret-here
 ```
+
+## Implementation Plan
+
+1. **Shared types and protocol updates**
+   - Add `InboundEventType`, `SystemEvent`, and `EventTarget` types under `packages/shared/src/types` (new `system-events.ts` or augment existing shared types).
+   - Extend `AppServerMessage` with `inbound-event` payload and document it in `docs/design/websocket-protocol.md`.
+2. **Database + repository layer**
+   - Add `inbound_event_notifications` table to `packages/server/src/database/schema.ts` and migration v7 in `packages/server/src/database/connection.ts`.
+   - Implement a repository for `inbound_event_notifications` with `create()` and `listBySession/Worker()` queries.
+3. **Inbound job + handler**
+   - Add `inbound-event:process` to `packages/server/src/jobs/job-types.ts` and register a handler in `packages/server/src/jobs/handlers.ts` that:
+     - rehydrates headers, parses the event, resolves targets, runs handlers, and writes notification history.
+4. **Service parsers + routing**
+   - Create `packages/server/src/services/inbound` with `ServiceParser` interface and `GitHubServiceParser` implementation (signature auth + event parsing).
+   - Add `POST /webhooks/github` route in `packages/server/src/routes` and mount in `packages/server/src/index.ts`.
+5. **Target resolution and handlers**
+   - Implement `resolveTargets()` using session + repository managers (runtime `git remote get-url origin`).
+   - Add handlers: `AgentWorkerHandler`, `DiffWorkerHandler`, `UINotificationHandler`, and a registry to filter by event type.
+6. **Client UI handling**
+   - Update `packages/client/src/hooks/useAppWs.ts` and any relevant UI to surface inbound event notifications.
+7. **Configuration + tests**
+   - Add `GITHUB_WEBHOOK_SECRET` to `packages/server/src/lib/server-config.ts` and update env filtering if needed.
+   - Add tests for webhook auth + parsing, job handler processing, and UI message handling.
 
 ## Future Extensions
 

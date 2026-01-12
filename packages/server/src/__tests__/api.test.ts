@@ -61,10 +61,17 @@ mock.module('../services/session-metadata-suggester.js', () => ({
 // Import singleton reset functions to ensure fresh state between tests
 import { resetRepositoryManager, initializeRepositoryManager } from '../services/repository-manager.js';
 import { resetSessionManager, initializeSessionManager } from '../services/session-manager.js';
-import { createSessionRepository } from '../repositories/index.js';
-import { resetAgentManager } from '../services/agent-manager.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
-import { JobQueue, resetJobQueue } from '../jobs/index.js';
+import {
+  SqliteAgentRepository,
+  SqliteRepositoryRepository,
+  SqliteSessionRepository,
+} from '../repositories/index.js';
+import { AgentManager, resetAgentManager, setAgentManager } from '../services/agent-manager.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
+import { createDatabaseForTest } from '../database/connection.js';
+import { initializeJobQueue, resetJobQueue, type JobQueue } from '../jobs/index.js';
+import type { AppBindings } from '../app-context.js';
 
 // =============================================================================
 // Test Setup
@@ -72,6 +79,7 @@ import { JobQueue, resetJobQueue } from '../jobs/index.js';
 
 // Import counter for cache busting
 let importCounter = 0;
+let db: Kysely<Database>;
 
 // Test repository path
 const TEST_REPO_PATH = '/test/test-repo';
@@ -106,18 +114,20 @@ let testJobQueue: JobQueue | null = null;
 
 describe('API Routes Integration', () => {
   beforeEach(async () => {
-    // Close any existing database connection and initialize fresh in-memory database
-    await closeDatabase();
+    // Reset any existing job queue singleton
     await resetJobQueue();
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
 
     // Reset service singletons to ensure fresh state for each test
     resetSessionManager();
     resetRepositoryManager();
     resetAgentManager();
 
-    // Create a test JobQueue with the shared database connection
-    testJobQueue = new JobQueue(getDatabase());
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    setAgentManager(agentManager);
+
+    // Initialize the singleton JobQueue for routes
+    testJobQueue = initializeJobQueue({ db });
 
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
@@ -170,7 +180,7 @@ describe('API Routes Integration', () => {
       await testJobQueue.stop();
       testJobQueue = null;
     }
-    await closeDatabase();
+    await db.destroy();
     cleanupMemfs();
   });
 
@@ -199,12 +209,13 @@ describe('API Routes Integration', () => {
     // Initialize managers with test JobQueue
     // This ensures cleanup operations have a valid jobQueue
     if (testJobQueue) {
-      const sessionRepository = await createSessionRepository();
+      const sessionRepository = new SqliteSessionRepository(db);
+      const repositoryRepository = new SqliteRepositoryRepository(db);
       await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
-      await initializeRepositoryManager({ jobQueue: testJobQueue });
+      await initializeRepositoryManager({ repository: repositoryRepository, jobQueue: testJobQueue });
     }
 
-    const app = new Hono();
+    const app = new Hono<AppBindings>();
     app.onError(onApiError);
     app.route('/api', api);
     return app;
@@ -1097,7 +1108,7 @@ describe('API Routes Integration', () => {
 
   describe('Worktrees API', () => {
     // Helper to register a test repo and return it
-    async function registerTestRepo(app: Hono): Promise<{ repo: Repository; repoPath: string }> {
+    async function registerTestRepo(app: Hono<AppBindings>): Promise<{ repo: Repository; repoPath: string }> {
       const repoPath = createUniqueRepoPath();
       setupTestGitRepo(repoPath);
 
@@ -2167,7 +2178,6 @@ describe('API Routes Integration', () => {
 
         // Directly write an inactive session to SQLite database (not in memory)
         // Using a "live" serverPid means it belongs to another server (not inherited by this one)
-        const db = getDatabase();
         const createdAt = new Date().toISOString();
         await db.insertInto('sessions').values({
           id: 'inactive-session-1',
@@ -2229,7 +2239,6 @@ describe('API Routes Integration', () => {
 
         // Add an inactive session directly to SQLite database (different ID, not in memory)
         // Using a "live" serverPid means it belongs to another server
-        const db = getDatabase();
         const createdAt = new Date().toISOString();
         await db.insertInto('sessions').values({
           id: 'inactive-session-2',
@@ -2375,6 +2384,23 @@ describe('API Routes Integration', () => {
           body: JSON.stringify({ path: '/non-existent/path' }),
         });
         expect(res.status).toBe(404);
+      });
+    });
+
+    describe('GET /api/system/health', () => {
+      it('should return system health status', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/system/health');
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as {
+          webhookSecretConfigured: boolean;
+          appUrlConfigured: boolean;
+        };
+        // In test environment, these are not configured
+        expect(typeof body.webhookSecretConfigured).toBe('boolean');
+        expect(typeof body.appUrlConfigured).toBe('boolean');
       });
     });
   });

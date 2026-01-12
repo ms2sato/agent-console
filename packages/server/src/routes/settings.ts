@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { serverConfig } from '../lib/server-config.js';
+import type { AppBindings } from '../app-context.js';
 
-const settings = new Hono();
+const settings = new Hono<AppBindings>();
 
 // ===========================================================================
 // Notification Settings

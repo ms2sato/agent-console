@@ -6,19 +6,9 @@
  */
 
 import type { IntegrationType } from './integration.js';
+import type { OutboundTriggerEventType } from './system-events.js';
 
 // === Outbound Event Types ===
-
-/**
- * Event types that can trigger outbound notifications.
- * These map to agent activity state changes and worker lifecycle events.
- */
-export type OutboundTriggerEventType =
-  | 'agent:waiting'   // Agent is asking a question
-  | 'agent:idle'      // Agent finished processing
-  | 'agent:active'    // Agent is actively processing
-  | 'worker:error'    // Worker encountered an error
-  | 'worker:exited';  // Worker process exited
 
 /**
  * Internal event format for outbound notifications.

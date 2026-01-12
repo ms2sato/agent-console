@@ -3,71 +3,54 @@ import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
 import {
-  initializeNotificationServices,
   shutdownNotificationServices,
   upsertRepositorySlackIntegration,
+  setNotificationManager,
 } from '../../services/notifications/index.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
-import { SqliteRepositoryRepository } from '../../repositories/index.js';
+import { resetRepositoryManager, setRepositoryManager } from '../../services/repository-manager.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
+import { createTestContext, shutdownAppContext } from '../../app-context.js';
 
 describe('Notifications API', () => {
-  let app: Hono;
-  let repositoryRepository: SqliteRepositoryRepository;
-  const testRepositoryId = 'test-repo-123';
+  let app: Hono<AppBindings>;
+  let appContext: AppContext;
+  let testRepositoryId: string;
   const testRepoPath = '/test/path/to/repo';
   const testWebhookUrl = 'https://hooks.slack.com/services/T00/B00/xxx';
 
   beforeEach(async () => {
     // Reset singletons to ensure clean state
     resetRepositoryManager();
-    await resetJobQueue();
     shutdownNotificationServices();
 
     // Setup memfs with mock git repository structure
     const gitRepoFiles = createMockGitRepoFiles(testRepoPath);
     setupMemfs(gitRepoFiles);
 
-    // Initialize in-memory database
-    await initializeDatabase(':memory:');
+    appContext = await createTestContext();
+    setRepositoryManager(appContext.repositoryManager);
+    setNotificationManager(appContext.notificationManager);
 
-    // Initialize the singleton job queue
-    const testJobQueue = initializeJobQueue();
-
-    // Create repository repository backed by in-memory SQLite
-    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
-
-    // Pre-populate test repository BEFORE initializing the manager
-    await repositoryRepository.save({
-      id: testRepositoryId,
-      name: 'test-repo',
-      path: testRepoPath,
-      createdAt: new Date().toISOString(),
-    });
-
-    // Initialize repository manager singleton
-    await initializeRepositoryManager({
-      repository: repositoryRepository,
-      jobQueue: testJobQueue,
-    });
-
-    // Initialize notification services
-    initializeNotificationServices();
+    // Register test repository so the repository manager has it in memory
+    const repo = await appContext.repositoryManager.registerRepository(testRepoPath);
+    testRepositoryId = repo.id;
 
     // Create app with API routes
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', appContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });
 
   afterEach(async () => {
     // Shutdown services
+    await shutdownAppContext(appContext, { resetSingletons: true });
     shutdownNotificationServices();
     resetRepositoryManager();
-    await resetJobQueue();
-    await closeDatabase();
     cleanupMemfs();
   });
 
@@ -99,7 +82,7 @@ describe('Notifications API', () => {
 
     it('should send test notification and return success', async () => {
       // Create Slack integration for the test repository
-      await upsertRepositorySlackIntegration(testRepositoryId, testWebhookUrl, true);
+      await upsertRepositorySlackIntegration(testRepositoryId, testWebhookUrl, true, appContext.db);
 
       // Mock the Slack webhook response
       fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
