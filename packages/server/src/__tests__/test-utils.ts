@@ -26,10 +26,19 @@ import { MockPty } from './utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
-import { initializeDatabase, closeDatabase } from '../database/connection.js';
-import { resetAgentManager } from '../services/agent-manager.js';
-import { resetRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager } from '../services/session-manager.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
+import { createDatabaseForTest } from '../database/connection.js';
+import { AgentManager, setAgentManager } from '../services/agent-manager.js';
+import { setRepositoryManager, RepositoryManager } from '../services/repository-manager.js';
+import { setSessionManager, SessionManager } from '../services/session-manager.js';
+import { resetJobQueue, initializeJobQueue } from '../jobs/index.js';
+import { SqliteAgentRepository, SqliteRepositoryRepository, SqliteSessionRepository } from '../repositories/index.js';
+import { NotificationManager } from '../services/notifications/notification-manager.js';
+import { SlackHandler } from '../services/notifications/slack-handler.js';
+import { setNotificationManager, shutdownNotificationServices } from '../services/notifications/index.js';
+import { initializeInboundIntegration } from '../services/inbound/index.js';
+import { shutdownAppContext, type AppBindings, type AppContext } from '../app-context.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -52,10 +61,8 @@ mock.module('../lib/pty-provider.js', () => ({
 // Database Setup (uses in-memory SQLite via DI)
 // =============================================================================
 
-// Tests use initializeDatabase(':memory:') to get an in-memory database.
-// This avoids native file system operations that would bypass memfs.
-// migration.test.ts uses real file system with temp directories and
-// doesn't import test-utils.ts, so it's not affected by this setup.
+let db: Kysely<Database> | null = null;
+let appContext: AppContext | null = null;
 
 // =============================================================================
 // Open Mock
@@ -78,13 +85,66 @@ let importCounter = 0;
  * Must be called in beforeEach with await.
  */
 export async function setupTestEnvironment(): Promise<void> {
+  await resetJobQueue();
+  shutdownNotificationServices();
+
   setupMemfs({
     [`${TEST_CONFIG_DIR}/.keep`]: '',
   });
   process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-  // Initialize in-memory database (bypasses native file operations)
-  await initializeDatabase(':memory:');
+  db = await createDatabaseForTest();
+  const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+  setAgentManager(agentManager);
+
+  // Initialize singleton job queue for routes that depend on it
+  const jobQueue = initializeJobQueue({ db });
+
+  // Build managers with explicit dependencies
+  const sessionRepository = new SqliteSessionRepository(db);
+  const repositoryRepository = new SqliteRepositoryRepository(db);
+  const sessionManager = await SessionManager.create({ sessionRepository, jobQueue });
+  const repositoryManager = await RepositoryManager.create({
+    repository: repositoryRepository,
+    jobQueue,
+  });
+
+  repositoryManager.setDependencyCallbacks({
+    getSessionsUsingRepository: (repoId) =>
+      sessionManager.getSessionsUsingRepository(repoId),
+  });
+
+  sessionManager.setRepositoryCallbacks({
+    getRepository: (repoId) => repositoryManager.getRepository(repoId),
+    isInitialized: () => true,
+  });
+
+  const notificationManager = new NotificationManager(new SlackHandler({ db }));
+  notificationManager.setSessionExistsCallback((sessionId) =>
+    sessionManager.getSession(sessionId) !== undefined
+  );
+
+  setSessionManager(sessionManager);
+  setRepositoryManager(repositoryManager);
+  setNotificationManager(notificationManager);
+
+  // Initialize inbound integration
+  const inboundIntegration = initializeInboundIntegration({
+    jobQueue,
+    sessionManager,
+    repositoryManager,
+    broadcastToApp: () => {},
+  });
+
+  appContext = {
+    db,
+    jobQueue,
+    sessionRepository,
+    sessionManager,
+    repositoryManager,
+    notificationManager,
+    inboundIntegration,
+  };
 
   // Reset PTY tracking
   mockPtyInstances.length = 0;
@@ -105,12 +165,25 @@ export async function setupTestEnvironment(): Promise<void> {
  * Must be called in afterEach with await.
  */
 export async function cleanupTestEnvironment(): Promise<void> {
-  // Reset singleton managers BEFORE closing database
-  // to ensure they don't hold references to destroyed DB connections
-  resetSessionManager();
-  resetRepositoryManager();
-  resetAgentManager();
-  await closeDatabase();
+  // Reset job queue first (not handled by shutdownAppContext)
+  await resetJobQueue();
+
+  // Shutdown AppContext which handles:
+  // - Stopping job queue
+  // - Disposing notification manager
+  // - Closing database
+  // - Resetting singletons (SessionManager, RepositoryManager, AgentManager, NotificationServices)
+  if (appContext) {
+    await shutdownAppContext(appContext, { resetSingletons: true });
+    appContext = null;
+  }
+
+  // Clean up test database if it wasn't part of AppContext
+  if (db) {
+    await db.destroy();
+    db = null;
+  }
+
   cleanupMemfs();
 }
 
@@ -118,12 +191,19 @@ export async function cleanupTestEnvironment(): Promise<void> {
  * Creates a fresh Hono app instance with all routes configured.
  * Uses cache-busting import to ensure fresh service instances.
  */
-export async function createTestApp(): Promise<Hono> {
+export async function createTestApp(): Promise<Hono<AppBindings>> {
   const suffix = `?v=${++importCounter}`;
   const { api } = await import(`../routes/api.js${suffix}`);
   const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-  const app = new Hono();
+  const app = new Hono<AppBindings>();
+  const context = appContext;
+  if (context) {
+    app.use('*', async (c, next) => {
+      c.set('appContext', context);
+      await next();
+    });
+  }
   app.onError(onApiError);
   app.route('/api', api);
   return app;

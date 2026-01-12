@@ -203,6 +203,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 8) {
     await migrateToV8(database);
   }
+
+  if (currentVersion < 9) {
+    await migrateToV9(database);
+  }
 }
 
 /**
@@ -515,6 +519,82 @@ async function migrateToV8(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 8`.execute(database);
 
   logger.info('Migration to v8 completed');
+}
+
+/**
+ * Migration v9: Add status and created_at columns to inbound_event_notifications.
+ * - status: 'pending' while handler executes, 'delivered' after success
+ * - created_at: timestamp when notification record was created
+ * - notified_at: changes from NOT NULL to nullable (set only on delivery)
+ *
+ * SQLite doesn't support ALTER COLUMN, so we need to recreate the table.
+ * The entire migration is wrapped in a transaction to prevent partial migration
+ * states if any step fails.
+ */
+async function migrateToV9(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v9: Adding status tracking to inbound_event_notifications');
+
+  // Wrap entire migration in a transaction for atomicity.
+  // SQLite supports DDL in transactions (RENAME, CREATE, INSERT, DROP).
+  await database.transaction().execute(async (trx) => {
+    // 1. Rename old table
+    await sql`ALTER TABLE inbound_event_notifications RENAME TO inbound_event_notifications_old`.execute(trx);
+
+    // 2. Create new table with updated schema
+    await trx.schema
+      .createTable('inbound_event_notifications')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('job_id', 'text', (col) => col.notNull())
+      .addColumn('session_id', 'text', (col) => col.notNull())
+      .addColumn('worker_id', 'text', (col) => col.notNull())
+      .addColumn('handler_id', 'text', (col) => col.notNull())
+      .addColumn('event_type', 'text', (col) => col.notNull())
+      .addColumn('event_summary', 'text', (col) => col.notNull())
+      .addColumn('status', 'text', (col) => col.notNull().defaultTo('delivered'))
+      .addColumn('created_at', 'text', (col) => col.notNull())
+      .addColumn('notified_at', 'text')
+      .execute();
+
+    // 3. Copy data from old table (existing records are already delivered)
+    await sql`
+      INSERT INTO inbound_event_notifications
+        (id, job_id, session_id, worker_id, handler_id, event_type, event_summary, status, created_at, notified_at)
+      SELECT
+        id, job_id, session_id, worker_id, handler_id, event_type, event_summary,
+        'delivered' as status,
+        notified_at as created_at,
+        notified_at
+      FROM inbound_event_notifications_old
+    `.execute(trx);
+
+    // 4. Drop old table
+    await sql`DROP TABLE inbound_event_notifications_old`.execute(trx);
+
+    // 5. Recreate indexes
+    await trx.schema
+      .createIndex('idx_inbound_event_notifications_job')
+      .on('inbound_event_notifications')
+      .column('job_id')
+      .execute();
+
+    await trx.schema
+      .createIndex('idx_inbound_event_notifications_session_worker')
+      .on('inbound_event_notifications')
+      .columns(['session_id', 'worker_id'])
+      .execute();
+
+    await trx.schema
+      .createIndex('uniq_inbound_event_notifications_delivery')
+      .on('inbound_event_notifications')
+      .columns(['job_id', 'session_id', 'worker_id', 'handler_id'])
+      .unique()
+      .execute();
+
+    // Update schema version within the transaction
+    await sql`PRAGMA user_version = 9`.execute(trx);
+  });
+
+  logger.info('Migration to v9 completed');
 }
 
 /**

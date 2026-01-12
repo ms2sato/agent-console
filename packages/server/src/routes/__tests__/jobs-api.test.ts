@@ -1,30 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import type { AppBindings } from '../../app-context.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 import { initializeJobQueue, resetJobQueue, type JobQueue } from '../../jobs/index.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
 
 describe('Jobs API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let testJobQueue: JobQueue;
+  let db: Kysely<Database>;
 
   beforeEach(async () => {
-    // Initialize in-memory database first
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
 
     // Initialize the singleton job queue
-    testJobQueue = initializeJobQueue();
+    testJobQueue = initializeJobQueue({ db });
 
     // Create Hono app with error handler
-    app = new Hono();
+    app = new Hono<AppBindings>();
     app.onError(onApiError);
     app.route('/api', api);
   });
 
   afterEach(async () => {
     await resetJobQueue();
-    await closeDatabase();
+    await db.destroy();
   });
 
   // ===========================================================================

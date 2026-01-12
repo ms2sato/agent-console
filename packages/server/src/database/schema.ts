@@ -201,8 +201,12 @@ export interface InboundEventNotificationsTable {
   event_type: string;
   /** Human-readable event summary */
   event_summary: string;
-  /** Timestamp when notification was delivered */
-  notified_at: string;
+  /** Notification status: 'pending' while handler executes, 'delivered' after success */
+  status: string;
+  /** Timestamp when notification was created (pending status) */
+  created_at: string;
+  /** Timestamp when notification was delivered (null until delivered) */
+  notified_at: string | null;
 }
 
 export type InboundEventNotification = Selectable<InboundEventNotificationsTable>;

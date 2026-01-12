@@ -1,15 +1,23 @@
 import type { ServiceParser } from './service-parser.js';
 
-const serviceParsers = new Map<string, ServiceParser>();
+/**
+ * Registry for service parsers.
+ *
+ * This class replaces the module-level singleton pattern to enable proper test isolation.
+ * Each test can create its own registry instance, avoiding global state pollution.
+ */
+export class ServiceParserRegistry {
+  private parsers = new Map<string, ServiceParser>();
 
-export function registerServiceParser(parser: ServiceParser): void {
-  serviceParsers.set(parser.serviceId, parser);
-}
+  register(parser: ServiceParser): void {
+    this.parsers.set(parser.serviceId, parser);
+  }
 
-export function getServiceParser(serviceId: string): ServiceParser | null {
-  return serviceParsers.get(serviceId) ?? null;
-}
+  get(serviceId: string): ServiceParser | null {
+    return this.parsers.get(serviceId) ?? null;
+  }
 
-export function resetServiceParsers(): void {
-  serviceParsers.clear();
+  clear(): void {
+    this.parsers.clear();
+  }
 }

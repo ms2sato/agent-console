@@ -6,8 +6,9 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
+import type { AppBindings } from '../app-context.js';
 
-const api = new Hono();
+const api = new Hono<AppBindings>();
 
 // API info
 api.get('/', (c) => {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { JOB_STATUS, JOB_TYPES, type Job, type JobStatus, type JobType } from '@agent-console/shared';
+import { JOB_STATUS, JOB_TYPES, type Job, type JobStatus, type JobType, type InboundEventJobPayload } from '@agent-console/shared';
 import { fetchJobs, fetchJobStats, retryJob, cancelJob, type FetchJobsParams } from '../../lib/api';
 import { formatTimestamp } from '../../lib/format';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
@@ -23,7 +23,7 @@ const JOB_TYPE_LABELS: Record<JobType, string> = {
   [JOB_TYPES.CLEANUP_SESSION_OUTPUTS]: 'Session Outputs Cleanup',
   [JOB_TYPES.CLEANUP_WORKER_OUTPUT]: 'Worker Output Cleanup',
   [JOB_TYPES.CLEANUP_REPOSITORY]: 'Repository Cleanup',
-  [JOB_TYPES.INBOUND_EVENT_PROCESS]: 'Inbound Event Processing',
+  [JOB_TYPES.INBOUND_EVENT_PROCESS]: 'Webhook Event',
 };
 
 function JobsPage() {
@@ -158,6 +158,36 @@ function JobsPage() {
           colorClass="text-red-400"
           isLoading={isLoadingStats}
         />
+      </div>
+
+      {/* Quick Filters */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => {
+            setTypeFilter('all');
+            setStatusFilter('all');
+          }}
+          className={`px-3 py-1.5 text-sm rounded transition-colors ${
+            typeFilter === 'all'
+              ? 'bg-indigo-600 text-white'
+              : 'bg-slate-700 text-gray-300 hover:bg-slate-600'
+          }`}
+        >
+          All Jobs
+        </button>
+        <button
+          onClick={() => {
+            setTypeFilter(JOB_TYPES.INBOUND_EVENT_PROCESS);
+            setStatusFilter('all');
+          }}
+          className={`px-3 py-1.5 text-sm rounded transition-colors ${
+            typeFilter === JOB_TYPES.INBOUND_EVENT_PROCESS
+              ? 'bg-indigo-600 text-white'
+              : 'bg-slate-700 text-gray-300 hover:bg-slate-600'
+          }`}
+        >
+          Webhook Events
+        </button>
       </div>
 
       {/* Filters */}
@@ -307,6 +337,10 @@ function JobRow({ job, onRetry, onCancel, isRetrying }: JobRowProps) {
   const canRetry = job.status === JOB_STATUS.STALLED;
   const canCancel = job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.STALLED;
 
+  // Extract webhook-specific info from payload
+  const isWebhookJob = job.type === JOB_TYPES.INBOUND_EVENT_PROCESS;
+  const webhookPayload = isWebhookJob ? (job.payload as InboundEventJobPayload) : null;
+
   return (
     <tr className="border-b border-slate-700/50 hover:bg-slate-800/50">
       <td className="py-3 px-4">
@@ -315,8 +349,13 @@ function JobRow({ job, onRetry, onCancel, isRetrying }: JobRowProps) {
           params={{ jobId: job.id }}
           className="font-mono text-xs text-blue-400 hover:underline"
         >
-          {job.type}
+          {JOB_TYPE_LABELS[job.type] ?? job.type}
         </Link>
+        {webhookPayload && (
+          <div className="text-xs text-gray-500 mt-0.5">
+            Source: {webhookPayload.service}
+          </div>
+        )}
       </td>
       <td className="py-3 px-4">
         <StatusBadge status={job.status} />

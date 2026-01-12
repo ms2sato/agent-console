@@ -35,10 +35,11 @@ import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js'
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('api:repositories');
 
-const repositories = new Hono();
+const repositories = new Hono<AppBindings>();
 
 async function withRepositoryRemote(repository: Repository): Promise<Repository> {
   const remoteUrl = await getRemoteUrl(repository.path);
@@ -153,7 +154,8 @@ repositories.delete('/:id', async (c) => {
   // Clean up Slack integration before deleting repository
   // This prevents orphaned integration records in the database
   try {
-    await deleteRepositorySlackIntegration(repoId);
+    const db = c.get('appContext')?.db;
+    await deleteRepositorySlackIntegration(repoId, db);
   } catch {
     // Ignore errors - integration may not exist, which is fine
     logger.debug({ repositoryId: repoId }, 'No Slack integration to cleanup for repository');
@@ -563,7 +565,8 @@ repositories.post('/:id/fetch', async (c) => {
 // Get Slack integration for a repository
 repositories.get('/:id/integrations/slack', async (c) => {
   const repositoryId = c.req.param('id');
-  const integration = await getRepositorySlackIntegration(repositoryId);
+  const db = c.get('appContext')?.db;
+  const integration = await getRepositorySlackIntegration(repositoryId, db);
 
   if (!integration) {
     throw new NotFoundError('Slack integration not found for this repository');
@@ -579,6 +582,7 @@ repositories.put(
   async (c) => {
     const repositoryId = c.req.param('id');
     const body = getValidatedBody<RepositorySlackIntegrationInput>(c);
+    const db = c.get('appContext')?.db;
 
     // Verify repository exists
     const repositoryManager = getRepositoryManager();
@@ -590,7 +594,8 @@ repositories.put(
     const integration = await upsertRepositorySlackIntegration(
       repositoryId,
       body.webhookUrl,
-      body.enabled
+      body.enabled,
+      db
     );
 
     return c.json(integration);
@@ -600,7 +605,8 @@ repositories.put(
 // Delete Slack integration for a repository
 repositories.delete('/:id/integrations/slack', async (c) => {
   const repositoryId = c.req.param('id');
-  const deleted = await deleteRepositorySlackIntegration(repositoryId);
+  const db = c.get('appContext')?.db;
+  const deleted = await deleteRepositorySlackIntegration(repositoryId, db);
 
   if (!deleted) {
     throw new NotFoundError('Slack integration not found for this repository');

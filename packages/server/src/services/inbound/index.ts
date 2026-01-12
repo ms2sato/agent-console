@@ -6,25 +6,39 @@ import type { InboundEventSummary } from '@agent-console/shared';
 import { GitHubServiceParser } from './github-service-parser.js';
 import { createInboundEventJobHandler } from './job-handler.js';
 import { createInboundHandlers } from './handlers.js';
-import { getServiceParser, registerServiceParser } from './parser-registry.js';
+import { ServiceParserRegistry } from './parser-registry.js';
 import { resolveTargets as resolveTargetsImpl } from './resolve-targets.js';
-
-let inboundInitialized = false;
 
 export interface InboundIntegrationOptions {
   jobQueue: JobQueue;
   sessionManager: SessionManager;
   repositoryManager: RepositoryManager;
   broadcastToApp: (message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => void;
+  /** Optional registry instance for testing. If not provided, a new registry is created. */
+  parserRegistry?: ServiceParserRegistry;
 }
 
-export function initializeInboundIntegration(options: InboundIntegrationOptions): void {
-  if (inboundInitialized) {
-    return;
-  }
-  inboundInitialized = true;
+/**
+ * Result of initializing inbound integration.
+ * Contains the parser registry for accessing service parsers.
+ */
+export interface InboundIntegrationInstance {
+  /** The parser registry used by this integration instance */
+  parserRegistry: ServiceParserRegistry;
+}
 
-  registerServiceParser(new GitHubServiceParser());
+/**
+ * Initialize inbound integration with dependency injection.
+ *
+ * This function no longer uses global state. Each call creates a fresh integration
+ * instance, making it suitable for use in tests without state pollution.
+ *
+ * @returns An instance containing the parser registry for accessing service parsers
+ */
+export function initializeInboundIntegration(options: InboundIntegrationOptions): InboundIntegrationInstance {
+  const parserRegistry = options.parserRegistry ?? new ServiceParserRegistry();
+
+  parserRegistry.register(new GitHubServiceParser());
 
   const handlers = createInboundHandlers({
     sessionManager: options.sessionManager,
@@ -40,9 +54,11 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
   options.jobQueue.registerHandler(
     JOB_TYPES.INBOUND_EVENT_PROCESS,
     createInboundEventJobHandler({
-      getServiceParser,
+      getServiceParser: (serviceId) => parserRegistry.get(serviceId),
       resolveTargets,
       handlers,
     })
   );
+
+  return { parserRegistry };
 }

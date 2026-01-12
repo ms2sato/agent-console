@@ -11,8 +11,9 @@ import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import type { AppBindings } from '../app-context.js';
 
-const agents = new Hono();
+const agents = new Hono<AppBindings>();
 
 // Get all agents
 agents.get('/', async (c) => {
