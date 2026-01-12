@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -11,6 +11,8 @@ import { clearVisibilityTracking, disconnect, requestHistory } from '../lib/work
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import type { CachedState } from '../lib/terminal-state-cache.js';
+import { createTerminalStateSaver } from '../lib/terminal-state-saver.js';
 import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
@@ -23,7 +25,7 @@ import { WorkerErrorRecovery } from './WorkerErrorRecovery';
  */
 interface TerminalState {
   isMounted: boolean;           // Is xterm.js initialized?
-  pendingHistory: string | null; // History that arrived before xterm.js was ready
+  pendingHistory: { data: string; offset: number } | null; // History that arrived before xterm.js was ready
   restoredFromCache: boolean;   // Was the terminal restored from cache? (skip server history if true)
   waitingForDiff: boolean;      // Are we waiting for a diff response after cache restoration?
   cachedOffset: number;         // The offset from the cached state (for diff requests)
@@ -83,7 +85,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     disconnect(sessionId, workerId);
     setWorkerError(null);
     setRetryCount((c) => c + 1);
-  }, [sessionId, workerId]);
+  }, []);
 
   // Handler for deleting session on unrecoverable errors
   const handleDeleteSession = useCallback(() => {
@@ -107,29 +109,53 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   /**
    * Save terminal state to IndexedDB cache.
-   * This is called after history is written to keep the cache fresh.
-   * Follows the same error handling pattern as the cleanup function.
+   * This is flushed after history writes and throttled during streaming output.
    */
-  const saveCurrentTerminalState = useCallback(() => {
+  const getTerminalSnapshot = useCallback((): CachedState | null => {
     const terminal = terminalRef.current;
     const serializeAddon = serializeAddonRef.current;
     if (!terminal || !serializeAddon) {
-      return;
+      return null;
     }
 
     try {
       const serializedData = serializeAddon.serialize();
-      saveTerminalState(sessionId, workerId, {
+      return {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
-      }).catch((e) => console.warn('[Terminal] Failed to save terminal state after history:', e));
+      };
     } catch (e) {
-      console.warn('[Terminal] Failed to serialize terminal state after history:', e);
+      console.warn('[Terminal] Failed to serialize terminal state:', e);
+      return null;
     }
   }, [sessionId, workerId]);
+
+  const persistTerminalSnapshot = useCallback((snapshot: CachedState) => {
+    return saveTerminalState(sessionId, workerId, snapshot).catch((e) => {
+      console.warn('[Terminal] Failed to save terminal state:', e);
+    });
+  }, [sessionId, workerId]);
+
+  const stateSaver = useMemo(() => {
+    return createTerminalStateSaver(getTerminalSnapshot, persistTerminalSnapshot, { throttleMs: 1000 });
+  }, [getTerminalSnapshot, persistTerminalSnapshot]);
+
+  useEffect(() => {
+    return () => {
+      stateSaver.clear();
+    };
+  }, [stateSaver]);
+
+  const saveCurrentTerminalState = useCallback(() => {
+    stateSaver.flush();
+  }, [stateSaver]);
+
+  const scheduleTerminalStateSave = useCallback(() => {
+    stateSaver.schedule();
+  }, [stateSaver]);
 
   const handleScrollToBottom = useCallback(() => {
     terminalRef.current?.scrollToBottom();
@@ -140,8 +166,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     offsetRef.current = offset;
     terminalRef.current?.write(data, () => {
       updateScrollButtonVisibility();
+      scheduleTerminalStateSave();
     });
-  }, [updateScrollButtonVisibility]);
+  }, [updateScrollButtonVisibility, scheduleTerminalStateSave]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
     // Update offset
@@ -194,7 +221,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // xterm.js not ready yet -> store temporarily
     if (!stateRef.current.isMounted) {
-      stateRef.current.pendingHistory = data;
+      stateRef.current.pendingHistory = { data, offset };
       return;
     }
 
@@ -339,6 +366,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Store current worker ID for race condition detection
     stateRef.current.currentWorkerId = workerId;
 
+    const consumePendingHistory = () => {
+      const pending = stateRef.current.pendingHistory;
+      if (!pending) {
+        return false;
+      }
+      stateRef.current.pendingHistory = null;
+      stateRef.current.historyRequested = true;
+      handleHistory(pending.data, pending.offset);
+      return true;
+    };
+
     // Try to restore terminal state from cache before processing server history
     // This eliminates flickering when switching between workers
     loadTerminalState(sessionId, workerId)
@@ -374,6 +412,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           // Use connectedRef.current to get the latest connected value
           // Set waitingForDiff so handleHistory knows to process the response
           stateRef.current.waitingForDiff = true;
+          if (consumePendingHistory()) {
+            return;
+          }
           if (connectedRef.current) {
             stateRef.current.historyRequested = true;
             requestHistory(sessionId, workerId, cached.offset);
@@ -385,6 +426,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           // Use connectedRef.current to get the latest connected value
           // Set waitingForDiff so handleHistory knows to process the response
           stateRef.current.waitingForDiff = true;
+          if (consumePendingHistory()) {
+            return;
+          }
           if (connectedRef.current) {
             stateRef.current.historyRequested = true;
             requestHistory(sessionId, workerId, 0);
@@ -412,6 +456,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         stateRef.current.cachedOffset = 0;
         // Set waitingForDiff so handleHistory knows to process the response
         stateRef.current.waitingForDiff = true;
+        if (consumePendingHistory()) {
+          return;
+        }
         if (connectedRef.current) {
           stateRef.current.historyRequested = true;
           requestHistory(sessionId, workerId, 0);
@@ -536,18 +583,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     return () => {
       // Save terminal state to cache before unmounting
       // This enables instant restoration when switching back to this worker
-      try {
-        const serializedData = serializeAddon.serialize();
-        saveTerminalState(sessionId, workerId, {
-          data: serializedData,
-          savedAt: Date.now(),
-          cols: terminal.cols,
-          rows: terminal.rows,
-          offset: offsetRef.current,
-        }).catch((e) => console.warn('[Terminal] Failed to save terminal state:', e));
-      } catch (e) {
-        console.warn('[Terminal] Failed to serialize terminal state:', e);
-      }
+      saveCurrentTerminalState();
+      stateSaver.clear();
 
       // Reset state for conditional rendering support
       stateRef.current = {
@@ -588,7 +625,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         terminal.dispose();
       }, 0);
     };
-  }, [sessionId, workerId, sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
+  }, [
+    sessionId,
+    workerId,
+    sendInput,
+    sendResize,
+    sendImage,
+    updateScrollButtonVisibility,
+    handleHistory,
+    saveCurrentTerminalState,
+    stateSaver,
+  ]);
 
   // Send resize when connection is established
   useEffect(() => {
@@ -597,6 +644,27 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       sendResize(terminalRef.current.cols, terminalRef.current.rows);
     }
   }, [connected, sendResize]);
+
+  // Flush terminal state when the page is being hidden or unloaded.
+  useEffect(() => {
+    const handlePageHide = () => {
+      saveCurrentTerminalState();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        saveCurrentTerminalState();
+      }
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [saveCurrentTerminalState]);
 
   // Request history when connection is established and we're waiting for it
   // This handles both: diff after cache restoration, and full history when no cache
