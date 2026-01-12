@@ -280,3 +280,15 @@ export function isRepositoryManagerInitialized(): boolean {
 export function resetRepositoryManager(): void {
   repositoryManagerInstance = null;
 }
+
+/**
+ * Set the RepositoryManager singleton from an existing instance.
+ * Used by AppContext to set the singleton without re-creating.
+ * @internal For AppContext initialization only.
+ */
+export function setRepositoryManager(instance: RepositoryManager): void {
+  if (repositoryManagerInstance) {
+    throw new Error('RepositoryManager already initialized');
+  }
+  repositoryManagerInstance = instance;
+}
