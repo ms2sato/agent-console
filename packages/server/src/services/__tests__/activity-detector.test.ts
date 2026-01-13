@@ -7,6 +7,7 @@ import { travel } from '../../test/time-travel.js';
 const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
   askingPatterns: [
     'Enter to select.*to navigate.*Esc to cancel',
+    'Esc to cancel.*Tab to add',
     'Do you want to.*\\?',
     '\\[y\\].*\\[n\\]',
     '\\[a\\].*always',
@@ -107,6 +108,16 @@ describe('ActivityDetector', () => {
       });
     });
 
+    it('should detect asking state from Bash command confirmation footer', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('Esc to cancel · Tab to add additional instructions');
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
     it('should detect asking state from Yes/No selection pattern', () => {
       travel(new Date('2025-01-01T00:00:00Z'), (c) => {
         detector.processOutput('[y] Yes  [n] No');
@@ -163,6 +174,26 @@ describe('ActivityDetector', () => {
 
         c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
+    it('should detect asking state even with many ANSI sequences (buffer overflow prevention)', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // Simulate prompt output
+        detector.processOutput('Do you want to proceed?\n❯ 1. Yes\n  2. No');
+
+        // Simulate TUI sending lots of ANSI sequences that would overflow buffer
+        // if raw data was stored instead of clean data
+        for (let i = 0; i < 50; i++) {
+          // Typical ANSI sequences: cursor move, color codes, clear line
+          detector.processOutput('\x1B[2K\x1B[1G\x1B[0;32m>\x1B[0m \x1B[1m1. Yes\x1B[0m\x1B[K\x1B[?25h');
+        }
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        // Should detect asking state because buffer contains clean text
+        // (ANSI stripped before adding to buffer)
         expect(detector.getState()).toBe('asking');
       });
     });
