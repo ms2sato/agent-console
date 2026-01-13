@@ -16,6 +16,10 @@ const ASKING_PATTERNS: string[] = [
   // Matches both "Enter to select · ↑/↓ to navigate" and "Enter to select, Tab to navigate"
   'Enter to select.*to navigate.*Esc to cancel',
 
+  // Bash command confirmation footer (different format from general prompts)
+  // Matches "Esc to cancel · Tab to add additional instructions"
+  'Esc to cancel.*Tab to add',
+
   // Permission prompts - Claude Code style
   'Do you want to.*\\?', // "Do you want to create/edit/run..." prompts
   '\\[y\\].*\\[n\\]', // Yes/No selection

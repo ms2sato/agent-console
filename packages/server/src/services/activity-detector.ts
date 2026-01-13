@@ -93,8 +93,8 @@ export class ActivityDetector {
       logger.trace({ charCount: cleanData.length, data: cleanData }, 'Received output');
     }
 
-    // Add to buffer for pattern analysis
-    this.buffer += data;
+    // Add to buffer for pattern analysis (use clean data to prevent ANSI overflow)
+    this.buffer += cleanData;
     if (this.buffer.length > this.bufferSize) {
       this.buffer = this.buffer.slice(-this.bufferSize);
     }
@@ -121,12 +121,16 @@ export class ActivityDetector {
     }
 
     // Debounce: analyze buffer for patterns after output stops
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+    // Only reset debounce timer if there's actual text content (not just ANSI sequences)
+    // This prevents TUI updates (cursor blink, etc.) from blocking pattern detection
+    if (cleanData.length > 0) {
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer);
+      }
+      this.debounceTimer = setTimeout(() => {
+        this.analyzeBuffer();
+      }, this.debounceMs);
     }
-    this.debounceTimer = setTimeout(() => {
-      this.analyzeBuffer();
-    }, this.debounceMs);
 
     // Schedule idle check when in active state
     this.scheduleIdleCheck();
@@ -181,11 +185,9 @@ export class ActivityDetector {
    * Rate-based detection handles active state; this handles asking patterns
    */
   private analyzeBuffer(): void {
-    // Strip ANSI codes for pattern matching
-    const cleanBuffer = this.buffer.replace(ANSI_REGEX, '');
-
+    // Buffer already contains clean data (ANSI stripped in processOutput)
     // Get last few lines for analysis
-    const lastPart = cleanBuffer.slice(-500);
+    const lastPart = this.buffer.slice(-500);
 
     // Check for asking patterns (permission prompts)
     if (this.hasAskingPattern(lastPart)) {
