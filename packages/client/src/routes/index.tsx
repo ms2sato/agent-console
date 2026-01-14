@@ -10,7 +10,7 @@ import {
   createSession,
   deleteSession,
   createWorktreeAsync,
-  deleteWorktree,
+  deleteWorktreeAsync,
   openPath,
 } from '../lib/api';
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
@@ -32,7 +32,7 @@ import {
 import { AddRepositoryForm } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import { useWorktreeCreationTasksContext } from './__root';
+import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext } from './__root';
 import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateRepositoryRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
@@ -686,6 +686,7 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
+  const { addTask, markAsFailed } = useWorktreeDeletionTasksContext();
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
@@ -695,29 +696,6 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     },
     onError: (error: Error) => {
       showError('Restore Failed', error.message);
-    },
-  });
-
-  const deleteWorktreeMutation = useMutation({
-    mutationFn: (force: boolean) => deleteWorktree(repositoryId, worktree.path, force),
-    onSuccess: () => {
-      // Emit session-deleted locally for immediate UI update if session exists
-      // WebSocket event will arrive later but will be processed idempotently
-      if (session) {
-        emitSessionDeleted(session.id);
-      }
-      queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      setDeleteConfirmType(null);
-    },
-    onError: (error: Error, force: boolean) => {
-      // If deletion failed without force and error mentions untracked/modified files, offer force delete
-      if (!force && error.message.includes('untracked')) {
-        setDeleteConfirmType('force');
-      } else {
-        setDeleteConfirmType(null);
-        showError('Delete Failed', error.message);
-      }
     },
   });
 
@@ -739,8 +717,43 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     setDeleteConfirmType('normal');
   };
 
-  const executeDelete = (force: boolean) => {
-    deleteWorktreeMutation.mutate(force);
+  const executeDelete = async (force: boolean) => {
+    // Generate task ID
+    const taskId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Use session ID if available, otherwise generate a synthetic one for the task
+    const effectiveSessionId = session?.id ?? `no-session-${taskId}`;
+    const sessionTitle = session?.title || worktree.branch;
+
+    // Add task to sidebar
+    addTask({
+      id: taskId,
+      sessionId: effectiveSessionId,
+      sessionTitle,
+      repositoryId,
+      worktreePath: worktree.path,
+    });
+
+    // Close the dialog
+    setDeleteConfirmType(null);
+
+    // Emit session-deleted locally for immediate UI update if session exists
+    if (session) {
+      emitSessionDeleted(session.id);
+    }
+
+    try {
+      // Call async API
+      await deleteWorktreeAsync(repositoryId, worktree.path, taskId, force);
+      // Success/failure will be handled via WebSocket events
+    } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
+      const message = err instanceof Error ? err.message : 'Failed to delete worktree';
+      markAsFailed(taskId, message);
+    }
   };
 
   const statusColor = session
@@ -793,7 +806,6 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         {!worktree.isMain && (
           <button
             onClick={handleDeleteWorktree}
-            disabled={deleteWorktreeMutation.isPending}
             className="btn btn-danger text-xs"
           >
             Delete
@@ -820,7 +832,6 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         confirmLabel={deleteConfirmType === 'force' ? 'Force Delete' : 'Delete'}
         variant="danger"
         onConfirm={() => executeDelete(deleteConfirmType === 'force' || session !== undefined)}
-        isLoading={deleteWorktreeMutation.isPending}
       />
       <ErrorDialog {...errorDialogProps} />
     </div>

@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as WorktreeDeletionTasksTaskIdRouteImport } from './routes/worktree-deletion-tasks/$taskId'
 import { Route as WorktreeCreationTasksTaskIdRouteImport } from './routes/worktree-creation-tasks/$taskId'
 import { Route as SettingsRepositoriesRouteImport } from './routes/settings/repositories'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
@@ -47,6 +48,12 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   path: '/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorktreeDeletionTasksTaskIdRoute =
+  WorktreeDeletionTasksTaskIdRouteImport.update({
+    id: '/worktree-deletion-tasks/$taskId',
+    path: '/worktree-deletion-tasks/$taskId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const WorktreeCreationTasksTaskIdRoute =
   WorktreeCreationTasksTaskIdRouteImport.update({
     id: '/worktree-creation-tasks/$taskId',
@@ -90,6 +97,7 @@ export interface FileRoutesByFullPath {
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
+  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -104,6 +112,7 @@ export interface FileRoutesByTo {
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
+  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -119,6 +128,7 @@ export interface FileRoutesById {
   '/maintenance': typeof MaintenanceRoute
   '/settings/repositories': typeof SettingsRepositoriesRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
+  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/jobs/': typeof JobsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -135,6 +145,7 @@ export interface FileRouteTypes {
     | '/maintenance'
     | '/settings/repositories'
     | '/worktree-creation-tasks/$taskId'
+    | '/worktree-deletion-tasks/$taskId'
     | '/agents'
     | '/jobs'
     | '/settings'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/maintenance'
     | '/settings/repositories'
     | '/worktree-creation-tasks/$taskId'
+    | '/worktree-deletion-tasks/$taskId'
     | '/agents'
     | '/jobs'
     | '/settings'
@@ -163,6 +175,7 @@ export interface FileRouteTypes {
     | '/maintenance'
     | '/settings/repositories'
     | '/worktree-creation-tasks/$taskId'
+    | '/worktree-deletion-tasks/$taskId'
     | '/agents/'
     | '/jobs/'
     | '/settings/'
@@ -178,6 +191,7 @@ export interface RootRouteChildren {
   MaintenanceRoute: typeof MaintenanceRoute
   SettingsRepositoriesRoute: typeof SettingsRepositoriesRoute
   WorktreeCreationTasksTaskIdRoute: typeof WorktreeCreationTasksTaskIdRoute
+  WorktreeDeletionTasksTaskIdRoute: typeof WorktreeDeletionTasksTaskIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   JobsIndexRoute: typeof JobsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
@@ -223,6 +237,13 @@ declare module '@tanstack/react-router' {
       path: '/agents'
       fullPath: '/agents'
       preLoaderRoute: typeof AgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/worktree-deletion-tasks/$taskId': {
+      id: '/worktree-deletion-tasks/$taskId'
+      path: '/worktree-deletion-tasks/$taskId'
+      fullPath: '/worktree-deletion-tasks/$taskId'
+      preLoaderRoute: typeof WorktreeDeletionTasksTaskIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/worktree-creation-tasks/$taskId': {
@@ -282,6 +303,7 @@ const rootRouteChildren: RootRouteChildren = {
   MaintenanceRoute: MaintenanceRoute,
   SettingsRepositoriesRoute: SettingsRepositoriesRoute,
   WorktreeCreationTasksTaskIdRoute: WorktreeCreationTasksTaskIdRoute,
+  WorktreeDeletionTasksTaskIdRoute: WorktreeDeletionTasksTaskIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   JobsIndexRoute: JobsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,

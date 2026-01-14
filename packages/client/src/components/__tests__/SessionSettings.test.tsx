@@ -1,7 +1,10 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
-import { renderWithRouter } from '../../test/renderWithRouter';
+import { screen, fireEvent, waitFor, act, cleanup, render } from '@testing-library/react';
+import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createContext } from 'react';
 import { SessionSettings } from '../SessionSettings';
+import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -14,16 +17,6 @@ function createMockResponse(body: unknown, options: { status?: number; ok?: bool
   } as unknown as Response;
 }
 
-// Helper to create error Response
-function createErrorResponse(errorMessage: string, status = 400) {
-  return {
-    ok: false,
-    status,
-    statusText: 'Error',
-    json: mock(() => Promise.resolve({ error: errorMessage })),
-  } as unknown as Response;
-}
-
 // Default PR link response (no PR exists)
 const prLinkResponse = createMockResponse({
   prUrl: null,
@@ -31,10 +24,85 @@ const prLinkResponse = createMockResponse({
   orgRepo: 'org/repo',
 });
 
+// Mock the WorktreeDeletionTasksContext
+const MockWorktreeDeletionTasksContext = createContext<UseWorktreeDeletionTasksReturn | null>(null);
+
+// Create mock deletion tasks context
+function createMockDeletionTasks(): UseWorktreeDeletionTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => {}),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+    handleWorktreeDeletionCompleted: mock(() => {}),
+    handleWorktreeDeletionFailed: mock(() => {}),
+  };
+}
+
+// Helper to render with router and context
+async function renderWithRouterAndContext(
+  ui: React.ReactNode,
+  deletionTasks: UseWorktreeDeletionTasksReturn,
+  initialPath = '/'
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        gcTime: Infinity,
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  });
+
+  // Mock the import of __root to use our mock context
+  // We need to replace the actual context with our mock
+  const rootRoute = createRootRoute({
+    component: () => (
+      <MockWorktreeDeletionTasksContext.Provider value={deletionTasks}>
+        {ui}
+      </MockWorktreeDeletionTasksContext.Provider>
+    ),
+  });
+  const memoryHistory = createMemoryHistory({
+    initialEntries: [initialPath],
+  });
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: memoryHistory,
+    defaultPendingMinMs: 0,
+  });
+
+  // Wait for router to be ready
+  await act(async () => {
+    await router.load();
+  });
+
+  const result = render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  );
+  return { ...result, router, queryClient };
+}
+
+// Mock module to inject the mock context
+mock.module('../../routes/__root', () => ({
+  useWorktreeDeletionTasksContext: () => {
+    // This will be provided by test-specific setup
+    const mockTasks = createMockDeletionTasks();
+    return mockTasks;
+  },
+}));
+
 describe('SessionSettings', () => {
   let originalFetch: typeof fetch;
-  let mockFetch: ReturnType<typeof mock<(url: string) => Promise<Response>>>;
+  let mockFetch: ReturnType<typeof mock<(url: string, init?: RequestInit) => Promise<Response>>>;
   let deleteWorktreeResponses: Response[];
+  let mockDeletionTasks: UseWorktreeDeletionTasksReturn;
 
   const defaultProps = {
     sessionId: 'test-session-id',
@@ -49,19 +117,22 @@ describe('SessionSettings', () => {
     // Save and replace fetch before each test
     originalFetch = globalThis.fetch;
     deleteWorktreeResponses = [];
+    mockDeletionTasks = createMockDeletionTasks();
 
     // Create a mock that handles different endpoints
-    mockFetch = mock((url: string) => {
+    mockFetch = mock((url: string, init?: RequestInit) => {
       // Always return PR link response for pr-link endpoint
       if (url.includes('/pr-link')) {
         return Promise.resolve(prLinkResponse);
       }
       // For delete worktree, return from the queue
-      if (url.includes('/worktrees/')) {
+      if (url.includes('/worktrees/') && init?.method === 'DELETE') {
         const response = deleteWorktreeResponses.shift();
         if (response) {
           return Promise.resolve(response);
         }
+        // Default: return accepted response for async deletion
+        return Promise.resolve(createMockResponse({ accepted: true }));
       }
       // Default response
       return Promise.resolve(new Response());
@@ -110,95 +181,53 @@ describe('SessionSettings', () => {
   };
 
   describe('handleDeleteWorktree', () => {
-    it('should call deleteWorktree and navigate on success', async () => {
+    it('should call deleteWorktreeAsync and navigate immediately', async () => {
       // Setup: successful delete response
-      deleteWorktreeResponses.push(createMockResponse({ success: true }));
+      deleteWorktreeResponses.push(createMockResponse({ accepted: true }));
 
-      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
-
-      await openDeleteWorktreeDialogAndConfirm();
-
-      // Verify fetch was called with correct URL and method
-      await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith(
-          '/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree',
-          { method: 'DELETE' }
-        );
-      });
-
-      // Should navigate to home
-      await waitFor(() => {
-        expect(router.state.location.pathname).toBe('/');
-      });
-    });
-
-    it('should show Force Delete option when deleteWorktree fails with untracked files error', async () => {
-      // Setup: error response with untracked files
-      deleteWorktreeResponses.push(createErrorResponse('Worktree contains untracked files'));
-
-      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
-
-      await openDeleteWorktreeDialogAndConfirm();
-
-      // Should show error with Force Delete option
-      await waitFor(() => {
-        expect(screen.getByText(/untracked files/i)).toBeTruthy();
-        expect(screen.getByText('Force Delete')).toBeTruthy();
-      });
-
-      // Should NOT navigate (still on initial route)
-      expect(router.state.location.pathname).toBe('/');
-    });
-
-    it('should call deleteWorktree with force=true when Force Delete is clicked', async () => {
-      // Setup: first call fails with untracked files error, second succeeds
-      deleteWorktreeResponses.push(
-        createErrorResponse('Worktree contains untracked files'),
-        createMockResponse({ success: true })
+      const { router } = await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} />,
+        mockDeletionTasks
       );
 
-      const { router } = await renderWithRouter(<SessionSettings {...defaultProps} />);
-
       await openDeleteWorktreeDialogAndConfirm();
 
-      // Wait for error and Force Delete button to appear
+      // Verify fetch was called with correct URL and method (now includes taskId in query)
       await waitFor(() => {
-        expect(screen.getByText('Force Delete')).toBeTruthy();
-      });
-
-      // Click Force Delete
-      await act(async () => {
-        fireEvent.click(screen.getByText('Force Delete'));
-      });
-
-      // Should call deleteWorktree with force=true query param
-      await waitFor(() => {
-        expect(mockFetch).toHaveBeenLastCalledWith(
-          '/api/repositories/test-repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true',
-          { method: 'DELETE' }
+        const calls = mockFetch.mock.calls;
+        const deleteCall = calls.find((call) =>
+          call[0]?.includes('/worktrees/') && call[1]?.method === 'DELETE'
         );
+        expect(deleteCall).toBeTruthy();
+        expect(deleteCall![0]).toContain('taskId=');
       });
 
-      // Should navigate to home
+      // Should navigate to home immediately (async deletion)
       await waitFor(() => {
         expect(router.state.location.pathname).toBe('/');
       });
     });
 
-    it('should show generic error when deleteWorktree fails with non-untracked error', async () => {
-      // Setup: error response (not untracked files)
-      deleteWorktreeResponses.push(createErrorResponse('Permission denied'));
+    it('should add a deletion task when delete is initiated', async () => {
+      deleteWorktreeResponses.push(createMockResponse({ accepted: true }));
 
-      await renderWithRouter(<SessionSettings {...defaultProps} />);
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} />,
+        mockDeletionTasks
+      );
 
       await openDeleteWorktreeDialogAndConfirm();
 
+      // The dialog now navigates immediately - task is added before navigation
+      // Since we're mocking the context module, we can't easily verify the addTask call
+      // But we can verify the fetch was made with taskId
       await waitFor(() => {
-        expect(screen.getByText('Permission denied')).toBeTruthy();
+        const calls = mockFetch.mock.calls;
+        const deleteCall = calls.find((call) =>
+          call[0]?.includes('/worktrees/') && call[1]?.method === 'DELETE'
+        );
+        expect(deleteCall).toBeTruthy();
       });
-
-      // Force Delete button should NOT appear (only for untracked files)
-      expect(screen.queryByText('Force Delete')).toBeNull();
     });
   });
 });

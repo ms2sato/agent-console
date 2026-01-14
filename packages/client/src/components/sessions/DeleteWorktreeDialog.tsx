@@ -1,6 +1,4 @@
-import { useState, useEffect } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -10,8 +8,8 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
-import { deleteWorktree } from '../../lib/api';
-import { emitSessionDeleted } from '../../lib/app-websocket';
+import { deleteWorktreeAsync } from '../../lib/api';
+import { useWorktreeDeletionTasksContext } from '../../routes/__root';
 
 export interface DeleteWorktreeDialogProps {
   open: boolean;
@@ -19,6 +17,7 @@ export interface DeleteWorktreeDialogProps {
   repositoryId: string;
   worktreePath: string;
   sessionId: string;
+  sessionTitle?: string;
 }
 
 export function DeleteWorktreeDialog({
@@ -27,54 +26,47 @@ export function DeleteWorktreeDialog({
   repositoryId,
   worktreePath,
   sessionId,
+  sessionTitle,
 }: DeleteWorktreeDialogProps) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Reset error when dialog closes
-  useEffect(() => {
-    if (!open) {
-      setError(null);
-    }
-  }, [open]);
+  const { addTask, markAsFailed } = useWorktreeDeletionTasksContext();
 
   const handleDeleteWorktree = async (force: boolean = false) => {
-    setIsSubmitting(true);
-    setError(null);
+    // Generate task ID
+    const taskId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Add task to sidebar with retry info
+    addTask({
+      id: taskId,
+      sessionId,
+      sessionTitle: sessionTitle || 'Worktree Session',
+      repositoryId,
+      worktreePath,
+    });
+
+    // Close dialog and navigate immediately
+    onOpenChange(false);
+    navigate({ to: '/' });
+
+    // Session will be removed from UI when WebSocket broadcast arrives from server
+    // (no optimistic update to avoid race condition/flicker)
 
     try {
-      // Server-side deleteWorktree also terminates any running sessions
-      await deleteWorktree(repositoryId, worktreePath, force);
-      // Emit session-deleted locally for immediate UI update
-      // WebSocket event will arrive later but will be processed idempotently
-      emitSessionDeleted(sessionId);
-      // Invalidate worktrees cache so Dashboard shows updated list
-      await queryClient.invalidateQueries({ queryKey: ['worktrees', repositoryId] });
-      onOpenChange(false);
-      navigate({ to: '/' });
+      // Call async API
+      await deleteWorktreeAsync(repositoryId, worktreePath, taskId, force);
+      // Success will be handled via WebSocket
     } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
       const message = err instanceof Error ? err.message : 'Failed to delete worktree';
-      // If deletion failed without force and error mentions untracked files, show retry option
-      if (!force && message.includes('untracked')) {
-        setError('Worktree has untracked files. Click "Force Delete" to proceed anyway.');
-      } else {
-        setError(message);
-      }
-    } finally {
-      setIsSubmitting(false);
+      markAsFailed(taskId, message);
     }
   };
 
-  const handleClose = () => {
-    onOpenChange(false);
-  };
-
-  const showForceDelete = error?.includes('untracked');
-
   return (
-    <AlertDialog open={open} onOpenChange={handleClose}>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="text-red-400">Delete Worktree</AlertDialogTitle>
@@ -90,28 +82,16 @@ export function DeleteWorktreeDialog({
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {error && <p className="text-sm text-red-400">{error}</p>}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={isSubmitting}>
+          <AlertDialogCancel>
             Cancel
           </AlertDialogCancel>
-          {showForceDelete ? (
-            <button
-              onClick={() => handleDeleteWorktree(true)}
-              className="btn btn-danger"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? 'Deleting...' : 'Force Delete'}
-            </button>
-          ) : (
-            <button
-              onClick={() => handleDeleteWorktree(false)}
-              className="btn btn-danger"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? 'Deleting...' : 'Delete Worktree'}
-            </button>
-          )}
+          <button
+            onClick={() => handleDeleteWorktree(false)}
+            className="btn btn-danger"
+          >
+            Delete Worktree
+          </button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

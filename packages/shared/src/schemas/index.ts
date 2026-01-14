@@ -40,12 +40,14 @@ export {
   CreateQuickSessionRequestSchema,
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
+  DeleteSessionRequestSchema,
   branchNamePattern,
   branchNameErrorMessage,
   type CreateWorktreeSessionRequest,
   type CreateQuickSessionRequest,
   type CreateSessionRequest,
   type UpdateSessionRequest,
+  type DeleteSessionRequest,
 } from './session.js';
 
 // Repository schemas

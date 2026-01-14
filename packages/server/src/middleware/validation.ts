@@ -46,3 +46,54 @@ export function getValidatedBody<T>(c: Context): T {
   }
   return val as T;
 }
+
+/**
+ * Valibot validation middleware for optional JSON body.
+ * If no body is provided, validates an empty object against the schema.
+ * Useful for DELETE endpoints that optionally accept a body.
+ */
+export function maybeValidateBody<TSchema extends v.GenericSchema>(schema: TSchema) {
+  return async (c: Context, next: Next) => {
+    let body: unknown = {};
+
+    // Try to parse JSON body, but allow empty body
+    const contentType = c.req.header('content-type');
+    if (contentType?.includes('application/json')) {
+      try {
+        body = await c.req.json();
+      } catch {
+        // Empty or invalid JSON - use empty object
+      }
+    }
+
+    const result = v.safeParse(schema, body);
+
+    if (!result.success) {
+      const firstIssue = result.issues[0];
+      const path = firstIssue?.path
+        ?.map((p) => ('key' in p ? String(p.key) : ''))
+        .filter(Boolean)
+        .join('.') || '';
+      const message = path
+        ? `${path}: ${firstIssue?.message}`
+        : firstIssue?.message || 'Validation failed';
+      throw new ValidationError(message);
+    }
+
+    c.set('validatedBody', result.output);
+    await next();
+  };
+}
+
+/**
+ * Get maybe-validated body from context
+ * Type-safe helper to retrieve validated data from maybeValidateBody middleware
+ * @throws ValidationError if called without maybeValidateBody middleware
+ */
+export function getMaybeValidatedBody<T>(c: Context): T {
+  const val = c.get('validatedBody');
+  if (val === undefined) {
+    throw new ValidationError('getMaybeValidatedBody called without maybeValidateBody middleware');
+  }
+  return val as T;
+}

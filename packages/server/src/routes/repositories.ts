@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { $ } from 'bun';
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import type {
   CreateRepositoryRequest,
@@ -381,6 +382,7 @@ repositories.post('/:id/worktrees', validateBody(CreateWorktreeRequestSchema), a
 });
 
 // Delete a worktree
+// Optionally accepts taskId query parameter for async WebSocket notification
 repositories.delete('/:id/worktrees/*', async (c) => {
   const repoId = c.req.param('id');
   const repositoryManager = getRepositoryManager();
@@ -414,9 +416,86 @@ repositories.delete('/:id/worktrees/*', async (c) => {
     throw new ValidationError('Invalid worktree path for this repository');
   }
 
-  // Check for force flag in query
+  // Check for force flag and taskId in query
   const force = c.req.query('force') === 'true';
+  const taskId = c.req.query('taskId');
 
+  // If taskId is provided, handle deletion asynchronously
+  if (taskId) {
+    // Find the associated session before returning accepted
+    const sessionManager = getSessionManager();
+    const allSessions = sessionManager.getAllSessions();
+    const targetSession = allSessions.find(session => session.locationPath === worktreePath);
+    const sessionId = targetSession?.id;
+
+    // Execute deletion in background (fire-and-forget)
+    (async () => {
+      const { broadcastToApp } = await import('../websocket/routes.js');
+
+      try {
+        // Try to remove worktree first
+        const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+
+        if (!result.success) {
+          // Worktree deletion failed - capture git status for diagnostics
+          let gitStatus: string | undefined;
+          try {
+            const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+            gitStatus = gitStatusResult.stdout.toString();
+          } catch {
+            // If git status fails, just omit the field
+          }
+
+          broadcastToApp({
+            type: 'worktree-deletion-failed',
+            taskId,
+            sessionId: sessionId || '',
+            error: result.error || 'Failed to remove worktree',
+            gitStatus,
+          });
+          logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
+          return;
+        }
+
+        // Worktree deletion succeeded - now clean up any associated sessions
+        if (sessionId) {
+          await sessionManager.deleteSession(sessionId);
+        }
+
+        broadcastToApp({
+          type: 'worktree-deletion-completed',
+          taskId,
+          sessionId: sessionId || '',
+        });
+        logger.info({ taskId, repoId, worktreePath, sessionId }, 'Worktree and session deletion completed');
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
+        logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
+
+        // Capture git status for diagnostics
+        let gitStatus: string | undefined;
+        try {
+          const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+          gitStatus = gitStatusResult.stdout.toString();
+        } catch {
+          // If git status fails, just omit the field
+        }
+
+        broadcastToApp({
+          type: 'worktree-deletion-failed',
+          taskId,
+          sessionId: sessionId || '',
+          error: errorMessage,
+          gitStatus,
+        });
+      }
+    })();
+
+    // Return accepted immediately (do not wait for deletion)
+    return c.json({ accepted: true }, 202);
+  }
+
+  // Synchronous deletion (backward compatible)
   // Try to remove worktree first
   const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 

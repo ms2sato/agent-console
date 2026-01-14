@@ -82,8 +82,16 @@ export const UpdateSessionRequestSchema = v.pipe(
   )
 );
 
+/**
+ * Schema for deleting a session.
+ * Quick sessions are deleted synchronously without task management.
+ * For worktree sessions with async deletion, use the worktree deletion endpoint instead.
+ */
+export const DeleteSessionRequestSchema = v.object({});
+
 // Inferred types from schemas
 export type CreateWorktreeSessionRequest = v.InferOutput<typeof CreateWorktreeSessionRequestSchema>;
 export type CreateQuickSessionRequest = v.InferOutput<typeof CreateQuickSessionRequestSchema>;
 export type CreateSessionRequest = v.InferOutput<typeof CreateSessionRequestSchema>;
 export type UpdateSessionRequest = v.InferOutput<typeof UpdateSessionRequestSchema>;
+export type DeleteSessionRequest = v.InferOutput<typeof DeleteSessionRequestSchema>;
