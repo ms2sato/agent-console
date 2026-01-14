@@ -129,11 +129,9 @@ function WorktreeDeletionTaskPage() {
         <div className="mb-6">
           <h2 className="text-sm font-medium text-gray-400 mb-2">Status</h2>
           <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${
-            isFailed
-              ? 'bg-red-500/20 text-red-400'
-              : isCompleted
-                ? 'bg-green-500/20 text-green-400'
-                : 'bg-red-500/20 text-red-400'
+            isCompleted
+              ? 'bg-green-500/20 text-green-400'
+              : 'bg-red-500/20 text-red-400'
           }`}>
             {isFailed ? (
               <>

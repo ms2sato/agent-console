@@ -65,12 +65,8 @@ export function DeleteWorktreeDialog({
     }
   };
 
-  const handleClose = () => {
-    onOpenChange(false);
-  };
-
   return (
-    <AlertDialog open={open} onOpenChange={handleClose}>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="text-red-400">Delete Worktree</AlertDialogTitle>
