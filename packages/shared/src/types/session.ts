@@ -4,6 +4,10 @@ import type {
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
 } from './worktree-creation.js';
+import type {
+  WorktreeDeletionCompletedPayload,
+  WorktreeDeletionFailedPayload,
+} from './worktree-deletion.js';
 
 // Forward declaration of Repository to avoid circular dependency
 // The full type is defined in @agent-console/shared/src/index.ts
@@ -22,6 +26,7 @@ export type {
   CreateQuickSessionRequest,
   CreateSessionRequest,
   UpdateSessionRequest,
+  DeleteSessionRequest,
 } from '../schemas/session.js';
 
 export type {
@@ -142,6 +147,8 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worktree-creation-completed': 14,
   'worktree-creation-failed': 15,
   'worker-activated': 16,
+  'worktree-deletion-completed': 17,
+  'worktree-deletion-failed': 18,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -165,7 +172,9 @@ export type AppServerMessage =
   | { type: 'repository-updated'; repository: Repository }
   | { type: 'repository-deleted'; repositoryId: string }
   | ({ type: 'worktree-creation-completed' } & WorktreeCreationCompletedPayload)
-  | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload);
+  | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload)
+  | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
+  | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload);
 
 /**
  * Valid message types for AppClientMessage.

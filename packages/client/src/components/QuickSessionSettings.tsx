@@ -8,6 +8,7 @@ import {
 
 interface QuickSessionSettingsProps {
   sessionId: string;
+  sessionTitle?: string;
   initialPrompt?: string;
 }
 
@@ -15,6 +16,7 @@ type DialogType = QuickMenuAction | null;
 
 export function QuickSessionSettings({
   sessionId,
+  sessionTitle,
   initialPrompt,
 }: QuickSessionSettingsProps) {
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
@@ -44,6 +46,7 @@ export function QuickSessionSettings({
         open={activeDialog === 'end-session'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
+        sessionTitle={sessionTitle}
       />
     </>
   );

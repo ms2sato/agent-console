@@ -562,6 +562,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           ) : (
             <QuickSessionSettings
               sessionId={sessionId}
+              sessionTitle={session.title}
               initialPrompt={session.initialPrompt}
             />
           )}

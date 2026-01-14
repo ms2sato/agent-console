@@ -153,6 +153,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+
 export interface UpdateSessionMetadataRequest {
   title?: string;
   branch?: string;
@@ -392,6 +393,32 @@ export async function deleteWorktree(
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to delete worktree');
   }
+}
+
+/**
+ * Delete a worktree asynchronously.
+ * The request includes a client-generated taskId for correlation.
+ * Returns immediately with `{ accepted: true }`.
+ * Listen to WebSocket for `worktree-deletion-completed` or `worktree-deletion-failed` events.
+ */
+export async function deleteWorktreeAsync(
+  repositoryId: string,
+  worktreePath: string,
+  taskId: string,
+  force: boolean = false
+): Promise<{ accepted: true }> {
+  const params = new URLSearchParams();
+  if (force) params.set('force', 'true');
+  params.set('taskId', taskId);
+  const url = `${API_BASE}/repositories/${repositoryId}/worktrees/${encodeURIComponent(worktreePath)}?${params.toString()}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to delete worktree');
+  }
+  return res.json();
 }
 
 export interface AgentsResponse {

@@ -76,6 +76,7 @@ export function SessionSettings({
         repositoryId={repositoryId}
         worktreePath={worktreePath}
         sessionId={sessionId}
+        sessionTitle={currentTitle}
       />
 
       <InitialPromptDialog

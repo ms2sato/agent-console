@@ -83,10 +83,12 @@ sessions.post('/', validateBody(CreateSessionRequestSchema), async (c) => {
   return c.json({ session }, 201);
 });
 
-// Delete a session
+// Delete a session (synchronous)
+// For worktree sessions with async deletion, use the worktree deletion endpoint instead.
 sessions.delete('/:id', async (c) => {
   const sessionId = c.req.param('id');
   const sessionManager = getSessionManager();
+
   const success = await sessionManager.deleteSession(sessionId);
 
   if (!success) {

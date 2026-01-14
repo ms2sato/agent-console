@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
-import type { AgentActivityState, WorktreeCreationTask } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask } from '@agent-console/shared';
 import { ChevronLeftIcon, ChevronRightIcon, AlertCircleIcon } from '../Icons';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
@@ -19,8 +19,12 @@ interface ActiveSessionsSidebarProps {
   onWidthChange: (width: number) => void;
   /** Worktree creation tasks in progress, completed, or failed */
   creationTasks?: WorktreeCreationTask[];
-  /** Called to remove a task (e.g., after navigating to completed session) */
-  onRemoveTask?: (taskId: string) => void;
+  /** Called to remove a creation task (e.g., after navigating to completed session) */
+  onRemoveCreationTask?: (taskId: string) => void;
+  /** Worktree deletion tasks in progress, completed, or failed */
+  worktreeDeletionTasks?: WorktreeDeletionTask[];
+  /** Called to remove a worktree deletion task */
+  onRemoveWorktreeDeletionTask?: (taskId: string) => void;
 }
 
 /**
@@ -183,6 +187,75 @@ function WorktreeCreationTaskItem({ task, collapsed, isActive, onClick }: Worktr
   );
 }
 
+interface WorktreeDeletionTaskItemProps {
+  task: WorktreeDeletionTask;
+  collapsed: boolean;
+  isActive: boolean;
+  onClick: () => void;
+}
+
+function WorktreeDeletionTaskItem({ task, collapsed, isActive, onClick }: WorktreeDeletionTaskItemProps) {
+  const isFailed = task.status === 'failed';
+  const isCompleted = task.status === 'completed';
+
+  // Same layout as SessionItem
+  const primary = task.sessionTitle || 'Worktree Session';
+  const secondary = isFailed
+    ? 'Delete failed'
+    : isCompleted
+      ? 'Deleted'
+      : 'Deleting...';
+  const tooltip = `${primary} - ${secondary}`;
+
+  // Render icon/indicator based on status
+  const renderIndicator = (className?: string) => {
+    if (isFailed) {
+      return <AlertCircleIcon className={`w-3 h-3 text-red-400 ${className ?? ''}`} />;
+    }
+    if (isCompleted) {
+      return (
+        <span className={`inline-block w-3 h-3 bg-gray-500 rounded-full ${className ?? ''}`} />
+      );
+    }
+    // Deleting - show red spinner
+    return <Spinner size="sm" className={`text-red-400 ${className ?? ''}`} />;
+  };
+
+  if (collapsed) {
+    return (
+      <button
+        onClick={onClick}
+        className={`w-full p-3 flex justify-center hover:bg-slate-800 transition-colors ${
+          isActive ? 'bg-slate-800' : ''
+        }`}
+        title={tooltip}
+      >
+        {renderIndicator()}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full p-3 text-left hover:bg-slate-800 transition-colors ${
+        isActive ? 'bg-slate-800' : ''
+      }`}
+      title={tooltip}
+    >
+      <div className="flex items-start gap-2">
+        {renderIndicator('mt-1.5 shrink-0')}
+        <div className="min-w-0 flex-1">
+          <div className="text-gray-400 text-sm font-medium truncate line-through">{primary}</div>
+          <div className={`text-xs truncate ${isFailed ? 'text-red-400' : 'text-gray-500'}`}>
+            {secondary}
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
 export function ActiveSessionsSidebar({
   collapsed,
   onToggle,
@@ -190,7 +263,9 @@ export function ActiveSessionsSidebar({
   width,
   onWidthChange,
   creationTasks = [],
-  onRemoveTask,
+  onRemoveCreationTask,
+  worktreeDeletionTasks = [],
+  onRemoveWorktreeDeletionTask,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -218,7 +293,12 @@ export function ActiveSessionsSidebar({
     : null;
 
   // Extract current task ID from path if on task detail page
-  const currentTaskId = location.pathname.startsWith('/worktree-creation-tasks/')
+  const currentCreationTaskId = location.pathname.startsWith('/worktree-creation-tasks/')
+    ? location.pathname.split('/')[2]
+    : null;
+
+  // Extract current deletion task ID from path if on deletion task detail page
+  const currentDeletionTaskId = location.pathname.startsWith('/worktree-deletion-tasks/')
     ? location.pathname.split('/')[2]
     : null;
 
@@ -226,13 +306,13 @@ export function ActiveSessionsSidebar({
     navigate({ to: '/sessions/$sessionId', params: { sessionId } });
   };
 
-  const handleTaskClick = (task: WorktreeCreationTask) => {
+  const handleCreationTaskClick = (task: WorktreeCreationTask) => {
     switch (task.status) {
       case 'completed':
         if (task.sessionId) {
           // Navigate to session and remove task
           navigate({ to: '/sessions/$sessionId', params: { sessionId: task.sessionId } });
-          onRemoveTask?.(task.id);
+          onRemoveCreationTask?.(task.id);
         } else {
           // Completed but no session - navigate to task detail page
           navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: task.id } });
@@ -246,6 +326,24 @@ export function ActiveSessionsSidebar({
       default: {
         const _exhaustive: never = task.status;
         throw new Error(`Unhandled task status: ${_exhaustive}`);
+      }
+    }
+  };
+
+  const handleDeletionTaskClick = (task: WorktreeDeletionTask) => {
+    switch (task.status) {
+      case 'deleting':
+      case 'failed':
+        // Navigate to task detail page
+        navigate({ to: '/worktree-deletion-tasks/$taskId', params: { taskId: task.id } });
+        break;
+      case 'completed':
+        // Dismiss on click
+        onRemoveWorktreeDeletionTask?.(task.id);
+        break;
+      default: {
+        const _exhaustive: never = task.status;
+        throw new Error(`Unhandled deletion task status: ${_exhaustive}`);
       }
     }
   };
@@ -335,22 +433,32 @@ export function ActiveSessionsSidebar({
 
       {/* Session and task list */}
       <div className="flex-1 overflow-y-auto">
+        {/* Worktree deletion tasks (displayed at the top) */}
+        {worktreeDeletionTasks.map((task) => (
+          <WorktreeDeletionTaskItem
+            key={`deletion-${task.id}`}
+            task={task}
+            collapsed={collapsed}
+            isActive={task.id === currentDeletionTaskId}
+            onClick={() => handleDeletionTaskClick(task)}
+          />
+        ))}
         {/* Worktree creation tasks (displayed above sessions) */}
         {creationTasks.map((task) => (
           <WorktreeCreationTaskItem
             key={task.id}
             task={task}
             collapsed={collapsed}
-            isActive={task.id === currentTaskId || (task.status === 'completed' && task.sessionId === currentSessionId)}
-            onClick={() => handleTaskClick(task)}
+            isActive={task.id === currentCreationTaskId || (task.status === 'completed' && task.sessionId === currentSessionId)}
+            onClick={() => handleCreationTaskClick(task)}
           />
         ))}
         {/* Separator when both tasks and sessions exist */}
-        {creationTasks.length > 0 && sessions.length > 0 && !collapsed && (
+        {(creationTasks.length > 0 || worktreeDeletionTasks.length > 0) && sessions.length > 0 && !collapsed && (
           <div className="border-t border-slate-700 my-1" />
         )}
         {/* Active sessions */}
-        {sessions.length === 0 && creationTasks.length === 0 ? (
+        {sessions.length === 0 && creationTasks.length === 0 && worktreeDeletionTasks.length === 0 ? (
           !collapsed && (
             <div className="p-3 text-gray-500 text-sm">No active sessions</div>
           )
