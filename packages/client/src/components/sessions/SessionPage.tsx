@@ -93,6 +93,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const [activityState, setActivityState] = useState<AgentActivityState>('unknown');
+  // Track all worker activity states for the session (for EndSessionDialog warning)
+  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
 
   // Tab management
@@ -146,10 +148,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   // Subscribe to app-websocket for real-time activity state updates
   // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
-  const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, state: AgentActivityState) => {
-    // Only process activity events for the current session and active worker
-    if (eventSessionId === sessionId && workerId === activeTabIdRef.current) {
-      setActivityState(state);
+  const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
+    // Only process activity events for the current session
+    if (eventSessionId !== sessionId) return;
+
+    // Update all worker activity states (for EndSessionDialog warning)
+    setWorkerActivityStates(prev => ({ ...prev, [workerId]: newState }));
+
+    // Update active tab's activity state (for status bar display)
+    if (workerId === activeTabIdRef.current) {
+      setActivityState(newState);
     }
   }, [sessionId]);
 
@@ -564,6 +572,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               sessionId={sessionId}
               sessionTitle={session.title}
               initialPrompt={session.initialPrompt}
+              session={session}
+              workerActivityStates={workerActivityStates}
             />
           )}
         </div>

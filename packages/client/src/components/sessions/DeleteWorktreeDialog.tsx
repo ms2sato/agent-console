@@ -9,7 +9,6 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { deleteWorktreeAsync } from '../../lib/api';
-import { emitSessionDeleted } from '../../lib/app-websocket';
 import { useWorktreeDeletionTasksContext } from '../../routes/__root';
 
 export interface DeleteWorktreeDialogProps {
@@ -52,8 +51,8 @@ export function DeleteWorktreeDialog({
     onOpenChange(false);
     navigate({ to: '/' });
 
-    // Emit session-deleted locally for immediate UI update
-    emitSessionDeleted(sessionId);
+    // Session will be removed from UI when WebSocket broadcast arrives from server
+    // (no optimistic update to avoid race condition/flicker)
 
     try {
       // Call async API

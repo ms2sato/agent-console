@@ -12,13 +12,16 @@ import {
 } from '../ui/alert-dialog';
 import { ButtonSpinner } from '../ui/Spinner';
 import { deleteSession } from '../../lib/api';
-import { emitSessionDeleted } from '../../lib/app-websocket';
+import type { Session, AgentActivityState } from '@agent-console/shared';
 
 export interface EndSessionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
   sessionTitle?: string;
+  session?: Session;
+  /** Activity states for workers in this session: { workerId: state } */
+  workerActivityStates?: Record<string, AgentActivityState>;
 }
 
 /**
@@ -30,9 +33,17 @@ export function EndSessionDialog({
   onOpenChange,
   sessionId,
   sessionTitle,
+  session,
+  workerActivityStates,
 }: EndSessionDialogProps) {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+
+  // Check if any agent workers are in 'active' or 'asking' state
+  const hasActiveWorkers = session && workerActivityStates && session.workers.some(
+    w => w.type === 'agent' &&
+      (workerActivityStates[w.id] === 'active' || workerActivityStates[w.id] === 'asking')
+  );
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteSession(sessionId),
@@ -40,8 +51,8 @@ export function EndSessionDialog({
       // Close dialog and navigate immediately
       onOpenChange(false);
       navigate({ to: '/' });
-      // Emit session-deleted locally for immediate UI update
-      emitSessionDeleted(sessionId);
+      // Session will be removed from UI when WebSocket broadcast arrives from server
+      // (no optimistic update to avoid race condition/flicker)
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : 'Failed to end session');
@@ -64,7 +75,7 @@ export function EndSessionDialog({
     <AlertDialog open={open} onOpenChange={handleClose}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>End Session</AlertDialogTitle>
+          <AlertDialogTitle className="text-red-400">End Session</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-2">
               <p>
@@ -74,8 +85,13 @@ export function EndSessionDialog({
                 </span>
                 ?
               </p>
+              {hasActiveWorkers && (
+                <p className="text-yellow-400 font-semibold">
+                  Warning: This session has active workers. Ending will stop all work in progress.
+                </p>
+              )}
               <p className="text-xs text-gray-500">
-                This will stop all workers and cannot be undone.
+                This will terminate all running workers and close their terminals.
               </p>
               {error && (
                 <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded">
