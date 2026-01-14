@@ -24,6 +24,8 @@ export interface WorktreeDeletionTask {
   status: WorktreeDeletionStatus;
   /** Error message when status is 'failed' */
   error?: string;
+  /** Git status output when status is 'failed' */
+  gitStatus?: string;
   /** ISO 8601 timestamp */
   createdAt: string;
 }
@@ -45,4 +47,6 @@ export interface WorktreeDeletionFailedPayload {
   taskId: string;
   sessionId: string;
   error: string;
+  /** Git status output to help users understand what files are causing the issue */
+  gitStatus?: string;
 }

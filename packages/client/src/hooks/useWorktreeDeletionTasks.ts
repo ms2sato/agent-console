@@ -107,7 +107,12 @@ export function useWorktreeDeletionTasks(): UseWorktreeDeletionTasksReturn {
       setTasks((prev) =>
         prev.map((t) =>
           t.id === payload.taskId
-            ? { ...t, status: 'failed' as const, error: payload.error }
+            ? {
+                ...t,
+                status: 'failed' as const,
+                error: payload.error,
+                gitStatus: payload.gitStatus,
+              }
             : t
         )
       );

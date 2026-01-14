@@ -161,6 +161,14 @@ function WorktreeDeletionTaskPage() {
             <div className="bg-slate-900 rounded p-3 text-sm text-red-400 font-mono whitespace-pre-wrap">
               {task.error}
             </div>
+            {task.gitStatus && (
+              <div className="mt-4">
+                <h3 className="text-sm font-medium text-gray-400 mb-2">Git Status</h3>
+                <pre className="bg-slate-900 p-3 rounded text-xs text-gray-300 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">
+                  {task.gitStatus}
+                </pre>
+              </div>
+            )}
             <p className="mt-2 text-xs text-gray-500">
               You can try force delete, which will remove the worktree even if there are
               uncommitted changes.

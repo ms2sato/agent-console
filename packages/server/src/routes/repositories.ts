@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { $ } from 'bun';
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import type {
   CreateRepositoryRequest,
@@ -436,12 +437,21 @@ repositories.delete('/:id/worktrees/*', async (c) => {
         const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
         if (!result.success) {
-          // Worktree deletion failed
+          // Worktree deletion failed - capture git status for diagnostics
+          let gitStatus: string | undefined;
+          try {
+            const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+            gitStatus = gitStatusResult.stdout.toString();
+          } catch {
+            // If git status fails, just omit the field
+          }
+
           broadcastToApp({
             type: 'worktree-deletion-failed',
             taskId,
             sessionId: sessionId || '',
             error: result.error || 'Failed to remove worktree',
+            gitStatus,
           });
           logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
           return;
@@ -461,11 +471,22 @@ repositories.delete('/:id/worktrees/*', async (c) => {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
         logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
+
+        // Capture git status for diagnostics
+        let gitStatus: string | undefined;
+        try {
+          const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+          gitStatus = gitStatusResult.stdout.toString();
+        } catch {
+          // If git status fails, just omit the field
+        }
+
         broadcastToApp({
           type: 'worktree-deletion-failed',
           taskId,
           sessionId: sessionId || '',
           error: errorMessage,
+          gitStatus,
         });
       }
     })();
