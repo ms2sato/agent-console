@@ -14,8 +14,13 @@ export const serverConfig = {
   NODE_ENV: process.env.NODE_ENV,
   /** Server's port binding */
   PORT: process.env.PORT || '3457',
-  /** Server's host binding (defaults to localhost for security) */
-  HOST: process.env.HOST || 'localhost',
+  /**
+   * Server's host binding.
+   * Defaults to 0.0.0.0 (all interfaces) to avoid IPv4/IPv6 resolution issues.
+   * On macOS, 'localhost' may resolve to IPv6 only (::1), causing browsers
+   * that connect via IPv4 to fail.
+   */
+  HOST: process.env.HOST || '0.0.0.0',
   /** Log level (trace, debug, info, warn, error, fatal) */
   LOG_LEVEL: process.env.LOG_LEVEL,
   /**

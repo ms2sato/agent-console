@@ -31,7 +31,8 @@ describe('server-config', () => {
 
       expect(serverConfig.NODE_ENV).toBeUndefined();
       expect(serverConfig.PORT).toBe('3457');
-      expect(serverConfig.HOST).toBe('localhost');
+      // Defaults to 0.0.0.0 to avoid IPv4/IPv6 resolution issues with 'localhost' on macOS
+      expect(serverConfig.HOST).toBe('0.0.0.0');
     });
 
     it('should use environment variable values when set', async () => {
@@ -46,13 +47,13 @@ describe('server-config', () => {
       expect(serverConfig.HOST).toBe('0.0.0.0');
     });
 
-    it('should fallback to localhost when HOST is empty string', async () => {
-      // Empty string should not bind to 0.0.0.0 for security
+    it('should fallback to default when HOST is empty string', async () => {
+      // Empty string is falsy, so it falls back to the default
       process.env.HOST = '';
 
       const { serverConfig } = await importServerConfig();
 
-      expect(serverConfig.HOST).toBe('localhost');
+      expect(serverConfig.HOST).toBe('0.0.0.0');
     });
   });
 
