@@ -798,26 +798,27 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           {worktree.isMain && (
             <span className="text-xs text-gray-500">(primary)</span>
           )}
+          {hasVSCode() && (
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  await openInVSCode(worktree.path);
+                } catch (err) {
+                  console.error('Failed to open in VS Code:', err);
+                }
+              }}
+              className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
+              title="Open in VS Code"
+            >
+              <VSCodeIcon className="w-4 h-4" />
+            </button>
+          )}
           {session && <ActivityBadge state={session.activityState} />}
         </div>
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
       <div className="flex gap-2 shrink-0">
-        {hasVSCode() && (
-          <button
-            onClick={async () => {
-              try {
-                await openInVSCode(worktree.path);
-              } catch (err) {
-                console.error('Failed to open in VS Code:', err);
-              }
-            }}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
-            title="Open in VS Code"
-          >
-            <VSCodeIcon className="w-4 h-4" />
-          </button>
-        )}
         {session ? (
           <Link
             to="/sessions/$sessionId"
