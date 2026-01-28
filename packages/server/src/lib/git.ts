@@ -303,7 +303,8 @@ export async function removeWorktree(
   const args = ['worktree', 'remove', worktreePath];
 
   if (options?.force) {
-    args.push('--force');
+    // --force twice: removes unclean worktrees AND locked worktrees
+    args.push('--force', '--force');
   }
 
   await git(args, cwd);
