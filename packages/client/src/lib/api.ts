@@ -500,7 +500,7 @@ export async function openPath(path: string): Promise<void> {
 }
 
 export async function openInVSCode(path: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/system/open-vscode`, {
+  const res = await fetch(`${API_BASE}/system/open-in-vscode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
