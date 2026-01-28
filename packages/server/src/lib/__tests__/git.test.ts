@@ -428,4 +428,46 @@ index abc1234..def5678 100644
       expect(spawnCalls[0].args).toEqual(['git', 'diff', '--numstat', 'abc123', 'def456']);
     });
   });
+
+  describe('removeWorktree', () => {
+    it('should call git worktree remove without --force by default', async () => {
+      setMockSpawnResult('');
+      const { removeWorktree } = await getGitModule();
+
+      await removeWorktree('/path/to/worktree', '/repo');
+
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', '/path/to/worktree']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('should call git worktree remove without --force when force is false', async () => {
+      setMockSpawnResult('');
+      const { removeWorktree } = await getGitModule();
+
+      await removeWorktree('/path/to/worktree', '/repo', { force: false });
+
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', '/path/to/worktree']);
+    });
+
+    it('should call git worktree remove with --force twice when force is true', async () => {
+      setMockSpawnResult('');
+      const { removeWorktree } = await getGitModule();
+
+      await removeWorktree('/path/to/worktree', '/repo', { force: true });
+
+      expect(spawnCalls.length).toBe(1);
+      // --force twice removes both unclean worktrees AND locked worktrees
+      expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', '/path/to/worktree', '--force', '--force']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('should throw GitError when removal fails', async () => {
+      setMockSpawnResult('', 128, "fatal: '/path/to/worktree' is not a working tree");
+      const { removeWorktree, GitError } = await getGitModule();
+
+      await expect(removeWorktree('/path/to/worktree', '/repo')).rejects.toBeInstanceOf(GitError);
+    });
+  });
 });
