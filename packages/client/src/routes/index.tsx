@@ -12,6 +12,7 @@ import {
   createWorktreeAsync,
   deleteWorktreeAsync,
   openPath,
+  openInVSCode,
 } from '../lib/api';
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
 import { emitSessionDeleted } from '../lib/app-websocket';
@@ -19,7 +20,8 @@ import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-w
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
-import { GitHubIcon } from '../components/Icons';
+import { GitHubIcon, VSCodeIcon } from '../components/Icons';
+import { hasVSCode } from '../lib/capabilities';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -623,6 +625,21 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
           <PathLink path={repository.path} className="text-xs text-gray-500" />
         </div>
         <div className="flex gap-2">
+          {hasVSCode() && (
+            <button
+              onClick={async () => {
+                try {
+                  await openInVSCode(repository.path);
+                } catch (err) {
+                  console.error('Failed to open in VS Code:', err);
+                }
+              }}
+              className="btn text-sm bg-slate-700 hover:bg-slate-600"
+              title="Open in VS Code"
+            >
+              <VSCodeIcon className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={() => setShowCreateWorktree(true)}
             className="btn btn-primary text-sm"
@@ -786,6 +803,21 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
       <div className="flex gap-2 shrink-0">
+        {hasVSCode() && (
+          <button
+            onClick={async () => {
+              try {
+                await openInVSCode(worktree.path);
+              } catch (err) {
+                console.error('Failed to open in VS Code:', err);
+              }
+            }}
+            className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
+            title="Open in VS Code"
+          >
+            <VSCodeIcon className="w-4 h-4" />
+          </button>
+        )}
         {session ? (
           <Link
             to="/sessions/$sessionId"

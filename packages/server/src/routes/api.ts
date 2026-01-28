@@ -6,6 +6,7 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
+import { getSystemCapabilities } from '../services/system-capabilities-service.js';
 
 const api = new Hono();
 
@@ -16,7 +17,11 @@ api.get('/', (c) => {
 
 // Get server config
 api.get('/config', (c) => {
-  return c.json({ homeDir: homedir() });
+  const systemCapabilities = getSystemCapabilities();
+  return c.json({
+    homeDir: homedir(),
+    capabilities: systemCapabilities.getCapabilities(),
+  });
 });
 
 // Mount domain-specific routers

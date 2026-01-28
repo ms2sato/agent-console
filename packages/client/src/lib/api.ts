@@ -27,6 +27,9 @@ const API_BASE = '/api';
 
 export interface ConfigResponse {
   homeDir: string;
+  capabilities: {
+    vscode: boolean;
+  };
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
@@ -493,6 +496,18 @@ export async function openPath(path: string): Promise<void> {
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(error.error || 'Failed to open path');
+  }
+}
+
+export async function openInVSCode(path: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/system/open-vscode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(error.error || 'Failed to open in VS Code');
   }
 }
 

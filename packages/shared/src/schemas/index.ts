@@ -79,7 +79,9 @@ export {
 // System schemas
 export {
   SystemOpenRequestSchema,
+  SystemOpenVSCodeRequestSchema,
   type SystemOpenRequest,
+  type SystemOpenVSCodeRequest,
 } from './system.js';
 
 // Notification schemas

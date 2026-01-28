@@ -65,6 +65,11 @@ import { createSessionRepository } from '../repositories/index.js';
 import { resetAgentManager } from '../services/agent-manager.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 import { JobQueue, resetJobQueue } from '../jobs/index.js';
+import {
+  SystemCapabilitiesService,
+  setSystemCapabilities,
+  resetSystemCapabilities,
+} from '../services/system-capabilities-service.js';
 
 // =============================================================================
 // Test Setup
@@ -115,6 +120,14 @@ describe('API Routes Integration', () => {
     resetSessionManager();
     resetRepositoryManager();
     resetAgentManager();
+    resetSystemCapabilities();
+
+    // Set up mock system capabilities
+    const mockCapabilities = new SystemCapabilitiesService();
+    // Manually set capabilities to avoid running which command
+    (mockCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = { vscode: true };
+    (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = 'code';
+    setSystemCapabilities(mockCapabilities);
 
     // Create a test JobQueue with the shared database connection
     testJobQueue = new JobQueue(getDatabase());
