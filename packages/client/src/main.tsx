@@ -5,6 +5,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
 import { fetchConfig } from './lib/api';
 import { setHomeDir } from './lib/path';
+import {
+  hasPendingSaves,
+  flush as flushSaveManager,
+} from './lib/terminal-state-save-manager';
 import './styles.css';
 
 // Create a new router instance
@@ -140,5 +144,15 @@ async function initApp() {
     </StrictMode>
   );
 }
+
+// Best-effort flush of pending terminal state saves on page unload
+// Note: Cannot await in beforeunload - this is a best-effort attempt
+window.addEventListener('beforeunload', () => {
+  if (hasPendingSaves()) {
+    flushSaveManager().catch((e) => {
+      console.error('[SaveManager] Failed to flush on beforeunload:', e);
+    });
+  }
+});
 
 initApp();
