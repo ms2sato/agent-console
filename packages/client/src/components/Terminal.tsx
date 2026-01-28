@@ -11,6 +11,11 @@ import { clearVisibilityTracking, disconnect, requestHistory } from '../lib/work
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import {
+  register as registerSaveManager,
+  unregister as unregisterSaveManager,
+  markDirty as markSaveManagerDirty,
+} from '../lib/terminal-state-save-manager.js';
 import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
@@ -141,7 +146,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current?.write(data, () => {
       updateScrollButtonVisibility();
     });
-  }, [updateScrollButtonVisibility]);
+    // Mark as dirty for idle-based save (replaces fire-and-forget saves)
+    markSaveManagerDirty(sessionId, workerId);
+  }, [sessionId, workerId, updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
     // Update offset
@@ -339,6 +346,23 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Store current worker ID for race condition detection
     stateRef.current.currentWorkerId = workerId;
 
+    // Register state getter with save manager for idle-based saves
+    const stateGetter = () => {
+      if (!terminalRef.current || !serializeAddonRef.current) return null;
+      try {
+        return {
+          data: serializeAddonRef.current.serialize(),
+          savedAt: Date.now(),
+          cols: terminalRef.current.cols,
+          rows: terminalRef.current.rows,
+          offset: offsetRef.current,
+        };
+      } catch {
+        return null;
+      }
+    };
+    registerSaveManager(sessionId, workerId, stateGetter);
+
     // Try to restore terminal state from cache before processing server history
     // This eliminates flickering when switching between workers
     loadTerminalState(sessionId, workerId)
@@ -534,20 +558,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
-      // Save terminal state to cache before unmounting
-      // This enables instant restoration when switching back to this worker
-      try {
-        const serializedData = serializeAddon.serialize();
-        saveTerminalState(sessionId, workerId, {
-          data: serializedData,
-          savedAt: Date.now(),
-          cols: terminal.cols,
-          rows: terminal.rows,
-          offset: offsetRef.current,
-        }).catch((e) => console.warn('[Terminal] Failed to save terminal state:', e));
-      } catch (e) {
-        console.warn('[Terminal] Failed to serialize terminal state:', e);
-      }
+      // Unregister from save manager - this triggers final save (async, best-effort)
+      unregisterSaveManager(sessionId, workerId)
+        .catch((e) => console.warn('[Terminal] Failed to save on unmount:', e));
 
       // Reset state for conditional rendering support
       stateRef.current = {
