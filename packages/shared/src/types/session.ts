@@ -94,6 +94,7 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
   'activity': 4,
   'error': 5,
   'output-truncated': 6,
+  'server-restarted': 7,
 } as const;
 
 export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
@@ -115,7 +116,8 @@ export type WorkerServerMessage =
   | { type: 'history'; data: string; offset: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode }
-  | { type: 'output-truncated'; message: string };
+  | { type: 'output-truncated'; message: string }
+  | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
 
 export interface WorkerActivityInfo {
   sessionId: string;

@@ -1,5 +1,6 @@
 import type { CachedState } from './terminal-state-cache';
 import { saveTerminalState as defaultSaveTerminalState } from './terminal-state-cache';
+import { isTruncationInProgress as defaultIsTruncationInProgress } from './worker-websocket';
 
 const DEFAULT_IDLE_SAVE_DELAY_MS = 60_000; // 1 minute
 
@@ -21,6 +22,16 @@ type SaveFunction = (
  * Current save function. Can be overridden for testing.
  */
 let saveFunction: SaveFunction = defaultSaveTerminalState;
+
+/**
+ * Truncation check function type for dependency injection.
+ */
+type TruncationCheckFunction = (sessionId: string, workerId: string) => boolean;
+
+/**
+ * Current truncation check function. Can be overridden for testing.
+ */
+let truncationCheckFunction: TruncationCheckFunction = defaultIsTruncationInProgress;
 
 interface WorkerSaveState {
   isDirty: boolean;
@@ -120,6 +131,14 @@ export async function unregister(
   // Wait for any pending save to complete
   if (workerState.pendingSave) {
     await workerState.pendingSave;
+  }
+
+  // Skip saving if truncation recovery is in progress
+  // This prevents saving stale state while the cache is being cleared
+  if (truncationCheckFunction(sessionId, workerId)) {
+    console.log('[SaveManager] Skipping save during truncation recovery');
+    registry.delete(key);
+    return;
   }
 
   // Save if dirty
@@ -316,6 +335,21 @@ export function setSaveFunction(fn: SaveFunction): void {
  */
 export function resetSaveFunction(): void {
   saveFunction = defaultSaveTerminalState;
+}
+
+/**
+ * Set a custom truncation check function (for testing).
+ * @param fn - The truncation check function to use
+ */
+export function setTruncationCheckFunction(fn: TruncationCheckFunction): void {
+  truncationCheckFunction = fn;
+}
+
+/**
+ * Reset the truncation check function to the default (for testing).
+ */
+export function resetTruncationCheckFunction(): void {
+  truncationCheckFunction = defaultIsTruncationInProgress;
 }
 
 // Export for reference

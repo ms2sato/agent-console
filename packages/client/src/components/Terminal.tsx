@@ -34,6 +34,7 @@ interface TerminalState {
   cachedOffset: number;         // The offset from the cached state (for diff requests)
   historyRequested: boolean;    // Has history been requested? (prevent duplicate requests)
   currentWorkerId: string;      // Current worker ID for race condition detection
+  mountGeneration: number;      // Counter for mount cycles to detect stale async operations
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
@@ -61,6 +62,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     cachedOffset: 0,
     historyRequested: false,
     currentWorkerId: workerId,
+    mountGeneration: 0,
   });
   const offsetRef = useRef<number>(0);
   const connectedRef = useRef(false);
@@ -345,10 +347,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     stateRef.current.isMounted = true;
     // Store current worker ID for race condition detection
     stateRef.current.currentWorkerId = workerId;
+    // Increment mount generation counter to detect stale async operations
+    const currentGeneration = ++stateRef.current.mountGeneration;
 
     // Register state getter with save manager for idle-based saves
     const stateGetter = () => {
       if (!terminalRef.current || !serializeAddonRef.current) return null;
+      // Don't save state if terminal hasn't been restored from cache or received history
+      // This prevents saving empty/partial state during rapid tab switching
+      if (!stateRef.current.restoredFromCache && !stateRef.current.historyRequested) {
+        return null;
+      }
       try {
         const serverPid = getCurrentServerPid();
         return {
@@ -369,13 +378,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // This eliminates flickering when switching between workers
     loadTerminalState(sessionId, workerId)
       .then(async (cached) => {
-        // Race condition check: abort if component unmounted or worker changed
+        // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
           console.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
           console.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
+          return;
+        }
+        if (stateRef.current.mountGeneration !== currentGeneration) {
+          console.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
         // Skip if history was already requested (React Strict Mode double-mount)
@@ -396,10 +409,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           offsetRef.current = cached.offset;
           // Mark as restored to skip full server history (we'll request diff instead)
           stateRef.current.restoredFromCache = true;
-          // Request diff: if already connected, send now; otherwise useEffect will handle it
-          // Use connectedRef.current to get the latest connected value
           // Set waitingForDiff so handleHistory knows to process the response
           stateRef.current.waitingForDiff = true;
+          // Request diff: if already connected, send now; otherwise useEffect will handle it
+          // Use connectedRef.current to get the latest connected value
+          // IMPORTANT: Set historyRequested BEFORE async operation to prevent duplicate requests
           if (connectedRef.current) {
             stateRef.current.historyRequested = true;
             requestHistory(sessionId, workerId, cached.offset);
@@ -407,10 +421,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         } else {
           // No cache - request full history from server (fromOffset: 0)
           stateRef.current.cachedOffset = 0;
-          // Request history: if already connected, send now; otherwise useEffect will handle it
-          // Use connectedRef.current to get the latest connected value
           // Set waitingForDiff so handleHistory knows to process the response
           stateRef.current.waitingForDiff = true;
+          // Request history: if already connected, send now; otherwise useEffect will handle it
+          // Use connectedRef.current to get the latest connected value
+          // IMPORTANT: Set historyRequested BEFORE async operation to prevent duplicate requests
           if (connectedRef.current) {
             stateRef.current.historyRequested = true;
             requestHistory(sessionId, workerId, 0);
@@ -421,13 +436,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         console.warn('[Terminal] Failed to load cached state:', e);
         setCacheError('Failed to load cached terminal state');
 
-        // Race condition check: abort if component unmounted or worker changed
+        // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
           console.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
           console.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
+          return;
+        }
+        if (stateRef.current.mountGeneration !== currentGeneration) {
+          console.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
         // Skip if history was already requested
@@ -438,6 +457,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         stateRef.current.cachedOffset = 0;
         // Set waitingForDiff so handleHistory knows to process the response
         stateRef.current.waitingForDiff = true;
+        // IMPORTANT: Set historyRequested BEFORE async operation to prevent duplicate requests
         if (connectedRef.current) {
           stateRef.current.historyRequested = true;
           requestHistory(sessionId, workerId, 0);
@@ -565,6 +585,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         .catch((e) => console.warn('[Terminal] Failed to save on unmount:', e));
 
       // Reset state for conditional rendering support
+      // Note: mountGeneration is NOT reset here - it's incremented on mount to detect stale operations
+      const currentMountGeneration = stateRef.current.mountGeneration;
       stateRef.current = {
         isMounted: false,
         pendingHistory: null,
@@ -573,6 +595,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         cachedOffset: 0,
         historyRequested: false,
         currentWorkerId: '',
+        mountGeneration: currentMountGeneration,
       };
       offsetRef.current = 0;
 
