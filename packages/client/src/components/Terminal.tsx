@@ -10,7 +10,7 @@ import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebS
 import { clearVisibilityTracking, disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -350,12 +350,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const stateGetter = () => {
       if (!terminalRef.current || !serializeAddonRef.current) return null;
       try {
+        const serverPid = getCurrentServerPid();
         return {
           data: serializeAddonRef.current.serialize(),
           savedAt: Date.now(),
           cols: terminalRef.current.cols,
           rows: terminalRef.current.rows,
           offset: offsetRef.current,
+          ...(serverPid !== null ? { serverPid } : {}),
         };
       } catch {
         return null;

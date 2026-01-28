@@ -21,6 +21,7 @@ api.get('/config', (c) => {
   return c.json({
     homeDir: homedir(),
     capabilities: systemCapabilities.getCapabilities(),
+    serverPid: process.pid,
   });
 });
 
