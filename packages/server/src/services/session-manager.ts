@@ -90,9 +90,12 @@ export interface SessionLifecycleCallbacks {
  * Provides detailed error information for specific failure cases.
  * Note: worker type is narrowed to 'agent' | 'terminal' since git-diff workers
  * don't support PTY restoration.
+ *
+ * @property wasRestored - true if PTY was activated (was hibernated), false if already active.
+ *   Used to notify clients about server restart so they can invalidate cached state.
  */
 export type RestoreWorkerResult =
-  | { success: true; worker: { type: 'agent' | 'terminal' } }
+  | { success: true; worker: { type: 'agent' | 'terminal' }; wasRestored: boolean }
   | { success: false; errorCode: WorkerErrorCode; message: string };
 
 /**
@@ -791,8 +794,8 @@ export class SessionManager {
       this.workerManager.killWorker(worker);
       await this.cleanupWorkerOutput(sessionId, workerId);
     } else {
-      // git-diff worker: stop file watcher (fire-and-forget)
-      void stopWatching(session.locationPath);
+      // git-diff worker: stop file watcher (synchronous operation)
+      stopWatching(session.locationPath);
     }
 
     // Clean up notification state (debounce timers, previous state)
@@ -932,6 +935,12 @@ export class SessionManager {
     const existingWorker = session.workers.get(workerId);
     if (!existingWorker || existingWorker.type !== 'agent') return null;
 
+    // Capture worker metadata before killing (needed for new worker creation)
+    const workerName = existingWorker.name;
+    const workerCreatedAt = existingWorker.createdAt;
+    const workerAgentId = existingWorker.agentId;
+    const locationPath = session.locationPath;
+
     // Kill existing worker
     this.workerManager.killWorker(existingWorker);
 
@@ -942,20 +951,29 @@ export class SessionManager {
     const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
     const newWorker = await this.workerManager.initializeAgentWorker({
       id: workerId,
-      name: existingWorker.name,
-      createdAt: existingWorker.createdAt,
-      agentId: existingWorker.agentId,
+      name: workerName,
+      createdAt: workerCreatedAt,
+      agentId: workerAgentId,
     });
     await this.workerManager.activateAgentWorkerPty(newWorker, {
       sessionId,
-      locationPath: session.locationPath,
+      locationPath,
       repositoryEnvVars,
-      agentId: existingWorker.agentId,
+      agentId: workerAgentId,
       continueConversation,
     });
 
-    session.workers.set(workerId, newWorker);
-    await this.persistSession(session);
+    // Re-check session still exists after async gap
+    // Session may have been deleted during async operations above
+    const currentSession = this.sessions.get(sessionId);
+    if (!currentSession) {
+      logger.warn({ sessionId, workerId }, 'Session deleted during worker restart, killing new worker');
+      this.workerManager.killWorker(newWorker);
+      return null;
+    }
+
+    currentSession.workers.set(workerId, newWorker);
+    await this.persistSession(currentSession);
 
     logger.info({ workerId, sessionId, continueConversation }, 'Agent worker restarted');
 
@@ -1001,7 +1019,7 @@ export class SessionManager {
 
     // If PTY is already active, return as-is (normal browser reload case)
     if (existingWorker.pty) {
-      return { success: true, worker: existingWorker };
+      return { success: true, worker: existingWorker, wasRestored: false };
     }
 
     // SECURITY: Verify session's locationPath still exists before activating PTY
@@ -1058,7 +1076,7 @@ export class SessionManager {
     // Notify listeners that the worker was activated (broadcasts to app clients)
     this.sessionLifecycleCallbacks?.onWorkerActivated?.(sessionId, workerId);
 
-    return { success: true, worker: existingWorker };
+    return { success: true, worker: existingWorker, wasRestored: true };
   }
 
   /**

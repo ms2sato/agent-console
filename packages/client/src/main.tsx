@@ -10,6 +10,7 @@ import {
   flush as flushSaveManager,
 } from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
+import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
 import './styles.css';
 
 // Create a new router instance
@@ -132,6 +133,16 @@ async function initApp() {
     const config = await fetchConfig();
     setHomeDir(config.homeDir);
     setCapabilities(config.capabilities);
+
+    // Set current server PID and handle cache invalidation if server has restarted
+    // This clears all terminal caches if the server PID has changed
+    await setCurrentServerPid(config.serverPid);
+
+    // Clean up expired terminal states (24 hours old)
+    // This runs after server PID check, so states from previous servers are already cleared
+    cleanupOldStates().catch((e) => {
+      console.warn('Failed to cleanup old terminal states:', e);
+    });
   } catch (e) {
     console.error('Failed to fetch config:', e);
     showConnectionError(e);

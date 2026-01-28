@@ -2,6 +2,60 @@ import { get, set, del, keys } from 'idb-keyval';
 
 const PREFIX = 'terminal:';
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const SERVER_PID_KEY = 'agent-console:serverPid';
+
+/**
+ * Current server PID stored in memory after initialization.
+ * Set by setCurrentServerPid() during app initialization.
+ */
+let currentServerPid: number | null = null;
+
+/**
+ * Get the current server PID from memory.
+ * Returns null if not yet initialized.
+ */
+export function getCurrentServerPid(): number | null {
+  return currentServerPid;
+}
+
+/**
+ * Reset currentServerPid to null.
+ * This function is intended for testing purposes only to ensure test isolation.
+ * @internal
+ */
+export function resetCurrentServerPid(): void {
+  currentServerPid = null;
+}
+
+/**
+ * Set the current server PID and handle cache invalidation if server has restarted.
+ * Call this during app initialization after fetching config from server.
+ *
+ * @param serverPid - The server's process ID from /api/config
+ * @returns true if cache was invalidated due to server restart
+ */
+export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
+  const storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  const storedPid = storedPidStr ? parseInt(storedPidStr, 10) : null;
+
+  currentServerPid = serverPid;
+
+  // Store the new PID
+  try {
+    localStorage.setItem(SERVER_PID_KEY, String(serverPid));
+  } catch (e) {
+    console.warn('[TerminalCache] Failed to persist serverPid to localStorage:', e);
+  }
+
+  // If stored PID exists and differs from current, server has restarted
+  if (storedPid !== null && !isNaN(storedPid) && storedPid !== serverPid) {
+    console.info(`[TerminalCache] Server restart detected (PID changed: ${storedPid} -> ${serverPid}), clearing all cached states`);
+    await clearAllTerminalStates();
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * Cached terminal state stored in IndexedDB.
@@ -17,6 +71,8 @@ export interface CachedState {
   rows: number;
   /** Server-side buffer offset for incremental history requests */
   offset: number;
+  /** Server process ID at time of save. Used to detect server restarts. */
+  serverPid?: number;
 }
 
 /**
@@ -77,8 +133,9 @@ export async function saveTerminalState(
  * - No entry exists for the given session/worker
  * - The entry has expired (older than MAX_AGE_MS)
  * - The entry is malformed
+ * - The entry's serverPid doesn't match the current server
  *
- * Expired entries are automatically deleted.
+ * Expired or stale entries are automatically deleted.
  *
  * @param sessionId - The session ID
  * @param workerId - The worker ID
@@ -103,6 +160,14 @@ export async function loadTerminalState(
     }
 
     if (isExpired(value)) {
+      await del(key);
+      return null;
+    }
+
+    // Validate serverPid if both are available
+    // If the cached state has a serverPid and it doesn't match current, invalidate
+    if (value.serverPid !== undefined && currentServerPid !== null && value.serverPid !== currentServerPid) {
+      console.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid}, current: ${currentServerPid}), removing:`, key);
       await del(key);
       return null;
     }

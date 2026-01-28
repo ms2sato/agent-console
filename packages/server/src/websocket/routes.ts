@@ -15,6 +15,7 @@ import { getNotificationManager } from '../services/notifications/index.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
+import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
@@ -40,6 +41,13 @@ const workerConnectionsBySession = new Map<string, Set<WSContext>>();
 
 // Track Worker WebSocket connections by session+worker for per-worker notifications (e.g., output truncation)
 const workerConnections = new Map<string, Set<WSContext>>();
+
+// Track connection IDs per WebSocket for cleanup on close/error
+// Maps WSContext to { sessionId, workerId, connectionId } for callback detachment
+const connectionMetadata = new Map<WSContext, { sessionId: string; workerId: string; connectionId: string }>();
+
+// Store the server PID at module load time for server restart detection
+const currentServerPid = getServerPid();
 
 /**
  * Safely get the WebSocket ready state from a WSContext.
@@ -448,8 +456,9 @@ export async function setupWebSocketRoutes(
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
       // 2. Register callbacks for NEW output (after the offset)
       // 3. Send history UP TO the offset we recorded
-      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number) {
-        logger.info({ sessionId, workerId, workerType }, 'Worker WebSocket connected');
+      // @param wasRestored - true if PTY was restored (was hibernated), false if already active
+      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number, wasRestored: boolean) {
+        logger.info({ sessionId, workerId, workerType, wasRestored }, 'Worker WebSocket connected');
 
         // Helper to safely send WebSocket messages with buffering
         let outputBuffer = '';
@@ -512,6 +521,19 @@ export async function setupWebSocketRoutes(
             safeSend({ type: 'activity', state });
           },
         });
+
+        // Store connection metadata for cleanup in onClose/onError
+        // This ensures callbacks are cleaned up even if close happens before connectionId is set in outer scope
+        if (connectionId) {
+          connectionMetadata.set(ws, { sessionId, workerId, connectionId });
+        }
+
+        // If worker was restored (PTY was hibernated and is now active), send server-restarted notification
+        // This tells the client to invalidate cached terminal state and request fresh history
+        if (wasRestored) {
+          safeSend({ type: 'server-restarted', serverPid: currentServerPid });
+          logger.info({ sessionId, workerId, serverPid: currentServerPid }, 'Sent server-restarted notification');
+        }
 
         // History is now sent on-demand via request-history message (Pull model)
         // Client should send request-history when the tab becomes visible and needs history
@@ -622,7 +644,7 @@ export async function setupWebSocketRoutes(
               return;
             }
 
-            await setupPtyWorkerHandlers(ws, result.worker.type, connectionStartTime);
+            await setupPtyWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);
@@ -774,7 +796,12 @@ export async function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose(_event: unknown, ws: WSContext) {
-          logger.info({ sessionId, workerId, connectionId }, 'Worker WebSocket disconnected');
+          // Get connection ID from metadata map as well as closure variable
+          // This ensures cleanup works even if close happens during async setup
+          const metadata = connectionMetadata.get(ws);
+          const effectiveConnectionId = connectionId || metadata?.connectionId;
+
+          logger.info({ sessionId, workerId, connectionId: effectiveConnectionId }, 'Worker WebSocket disconnected');
 
           // Remove from session connection tracking
           const sessionConnections = workerConnectionsBySession.get(sessionId);
@@ -794,6 +821,9 @@ export async function setupWebSocketRoutes(
               workerConnections.delete(workerKey);
             }
           }
+
+          // Clean up connection metadata
+          connectionMetadata.delete(ws);
 
           // Check if this was a git-diff worker
           const session = sessionManager.getSession(sessionId);
@@ -804,14 +834,19 @@ export async function setupWebSocketRoutes(
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff disconnection');
             });
-          } else if (connectionId) {
+          } else if (effectiveConnectionId) {
             // Detach this connection's callbacks but keep worker alive (only for PTY workers)
             // Other connections (browser tabs) will continue receiving output
-            sessionManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
+            sessionManager.detachWorkerCallbacks(sessionId, workerId, effectiveConnectionId);
           }
         },
         onError(event: Event, ws: WSContext) {
-          logger.error({ sessionId, workerId, connectionId, event }, 'Worker WebSocket error');
+          // Get connection ID from metadata map as well as closure variable
+          // This ensures cleanup works even if error happens during async setup
+          const metadata = connectionMetadata.get(ws);
+          const effectiveConnectionId = connectionId || metadata?.connectionId;
+
+          logger.error({ sessionId, workerId, connectionId: effectiveConnectionId, event }, 'Worker WebSocket error');
 
           // Remove from session connection tracking
           const sessionConnections = workerConnectionsBySession.get(sessionId);
@@ -832,6 +867,9 @@ export async function setupWebSocketRoutes(
             }
           }
 
+          // Clean up connection metadata
+          connectionMetadata.delete(ws);
+
           // Clean up resources on error to prevent leaks
           const session = sessionManager.getSession(sessionId);
           const worker = session?.workers.find(w => w.id === workerId);
@@ -841,9 +879,9 @@ export async function setupWebSocketRoutes(
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error cleaning up git-diff on WebSocket error');
             });
-          } else if (worker && connectionId) {
+          } else if (worker && effectiveConnectionId) {
             // Detach this connection's callbacks for PTY workers (agent/terminal)
-            sessionManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
+            sessionManager.detachWorkerCallbacks(sessionId, workerId, effectiveConnectionId);
           }
         },
       };

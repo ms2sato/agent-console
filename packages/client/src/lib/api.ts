@@ -30,6 +30,7 @@ export interface ConfigResponse {
   capabilities: {
     vscode: boolean;
   };
+  serverPid: number;
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
