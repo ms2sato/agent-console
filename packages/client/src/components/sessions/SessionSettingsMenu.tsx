@@ -9,9 +9,11 @@ import {
   TrashIcon,
   DocumentIcon,
   ExternalLinkIcon,
+  VSCodeIcon,
 } from '../Icons';
 import { Spinner } from '../ui/Spinner';
-import { openPath, fetchSessionPrLink } from '../../lib/api';
+import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
+import { hasVSCode } from '../../lib/capabilities';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'view-initial-prompt';
 
@@ -74,6 +76,15 @@ export function SessionSettingsMenu({
       await openPath(worktreePath);
     } catch (err) {
       console.error('Failed to open path:', err);
+    }
+  };
+
+  const handleOpenInVSCode = async () => {
+    setIsMenuOpen(false);
+    try {
+      await openInVSCode(worktreePath);
+    } catch (err) {
+      console.error('Failed to open in VS Code:', err);
     }
   };
 
@@ -154,6 +165,15 @@ export function SessionSettingsMenu({
               <FolderIcon />
               Open in Finder
             </button>
+            {hasVSCode() && (
+              <button
+                onClick={handleOpenInVSCode}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"
+              >
+                <VSCodeIcon />
+                Open in VS Code
+              </button>
+            )}
             <button
               onClick={handleCopyPath}
               className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-slate-700 hover:text-white flex items-center gap-2"

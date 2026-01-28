@@ -251,3 +251,11 @@ export function AlertCircleIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+
+export function VSCodeIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17.583 2.248L8.5 10.667 4.917 7.75l-1.75.833L6.333 12l-3.166 3.417 1.75.833 3.583-2.917 9.083 8.419 3.25-1.584V3.832l-3.25-1.584zM17.5 15.667l-5.25-3.667 5.25-3.667v7.334z" />
+    </svg>
+  );
+}

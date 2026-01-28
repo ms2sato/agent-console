@@ -12,6 +12,7 @@ import { createAppContext, shutdownAppContext, type AppContext } from './app-con
 import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
 import { setNotificationManager } from './services/notifications/index.js';
+import { setSystemCapabilities } from './services/system-capabilities-service.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -94,6 +95,7 @@ try {
 setSessionManager(appContext.sessionManager);
 setRepositoryManager(appContext.repositoryManager);
 setNotificationManager(appContext.notificationManager);
+setSystemCapabilities(appContext.systemCapabilities);
 logger.info('Singletons populated from AppContext');
 
 // Create Hono app

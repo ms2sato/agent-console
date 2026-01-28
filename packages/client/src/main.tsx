@@ -9,6 +9,7 @@ import {
   hasPendingSaves,
   flush as flushSaveManager,
 } from './lib/terminal-state-save-manager';
+import { setCapabilities } from './lib/capabilities';
 import './styles.css';
 
 // Create a new router instance
@@ -130,6 +131,7 @@ async function initApp() {
   try {
     const config = await fetchConfig();
     setHomeDir(config.homeDir);
+    setCapabilities(config.capabilities);
   } catch (e) {
     console.error('Failed to fetch config:', e);
     showConnectionError(e);

@@ -17,6 +17,7 @@ import type { SessionRepository } from './repositories/session-repository.js';
 import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
+import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
 import { JobQueue as JobQueueClass } from './jobs/job-queue.js';
 import { registerJobHandlers } from './jobs/handlers.js';
@@ -26,6 +27,7 @@ import { SessionManager as SessionManagerClass } from './services/session-manage
 import { RepositoryManager as RepositoryManagerClass } from './services/repository-manager.js';
 import { NotificationManager as NotificationManagerClass } from './services/notifications/notification-manager.js';
 import { SlackHandler } from './services/notifications/slack-handler.js';
+import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { createLogger } from './lib/logger.js';
 
 const logger = createLogger('app-context');
@@ -54,6 +56,9 @@ export interface AppContext {
 
   /** Notification orchestration for outbound integrations */
   notificationManager: NotificationManager;
+
+  /** System capabilities (VS Code availability, etc.) */
+  systemCapabilities: SystemCapabilitiesService;
 
   // Note: inboundIntegration is planned but not yet implemented
 }
@@ -133,6 +138,10 @@ export async function createAppContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
+  // 7. Detect system capabilities
+  const systemCapabilities = new SystemCapabilitiesServiceClass();
+  await systemCapabilities.detect();
+
   logger.info('All services initialized');
 
   return {
@@ -142,6 +151,7 @@ export async function createAppContext(
     sessionManager,
     repositoryManager,
     notificationManager,
+    systemCapabilities,
   };
 }
 
@@ -153,6 +163,8 @@ export interface CreateTestContextOptions {
   sessionRepository?: SessionRepository;
   /** Custom notification manager for mocking */
   notificationManager?: NotificationManager;
+  /** Custom system capabilities service for mocking */
+  systemCapabilities?: SystemCapabilitiesService;
   /** Skip job queue start (useful for isolated unit tests) */
   skipJobQueueStart?: boolean;
 }
@@ -216,6 +228,15 @@ export async function createTestContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
+  // Use provided or detect system capabilities
+  let systemCapabilities: SystemCapabilitiesService;
+  if (overrides?.systemCapabilities) {
+    systemCapabilities = overrides.systemCapabilities;
+  } else {
+    systemCapabilities = new SystemCapabilitiesServiceClass();
+    await systemCapabilities.detect();
+  }
+
   return {
     db,
     jobQueue,
@@ -223,6 +244,7 @@ export async function createTestContext(
     sessionManager,
     repositoryManager,
     notificationManager,
+    systemCapabilities,
   };
 }
 
@@ -279,10 +301,12 @@ export async function shutdownAppContext(
     const { resetSessionManager } = await import('./services/session-manager.js');
     const { resetRepositoryManager } = await import('./services/repository-manager.js');
     const { shutdownNotificationServices } = await import('./services/notifications/index.js');
+    const { resetSystemCapabilities } = await import('./services/system-capabilities-service.js');
 
     resetSessionManager();
     resetRepositoryManager();
     shutdownNotificationServices();
+    resetSystemCapabilities();
   }
 
   logger.info('Application context shut down');
