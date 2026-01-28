@@ -22,7 +22,15 @@ import type {
   RefreshDefaultBranchResponse,
   RemoteBranchStatus,
 } from '@agent-console/shared';
+import { api } from './api-client';
 
+// NOTE: The server uses a custom validation middleware (validateBody) that doesn't
+// expose body types to Hono's type inference. This means request bodies are not
+// type-checked by the RPC client - we manually use shared types for type safety.
+// The primary benefit of using Hono RPC is endpoint path type safety - typos in
+// paths like '/sesions' instead of '/sessions' will be caught at compile time.
+
+// Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
 const API_BASE = '/api';
 
 export interface ConfigResponse {
@@ -34,7 +42,7 @@ export interface ConfigResponse {
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
-  const res = await fetch(`${API_BASE}/config`);
+  const res = await api.config.$get();
   if (!res.ok) {
     throw new Error(`Failed to fetch config: ${res.statusText}`);
   }
@@ -48,21 +56,18 @@ export interface CreateSessionResponse {
 export async function createSession(
   request: CreateSessionRequest
 ): Promise<CreateSessionResponse> {
-  const res = await fetch(`${API_BASE}/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  });
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.sessions.$post as (opts: { json: CreateSessionRequest }) => Promise<Response>)({ json: request });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create session');
   }
-  return res.json();
+  return res.json() as Promise<CreateSessionResponse>;
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
   try {
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}`);
+    const res = await api.sessions[':id'].$get({ param: { id: sessionId } });
     if (res.status === 404) {
       return null;
     }
@@ -73,7 +78,7 @@ export async function getSession(sessionId: string): Promise<Session | null> {
     if (!res.ok) {
       throw new Error(`Failed to get session: ${res.statusText}`);
     }
-    const data = await res.json();
+    const data = (await res.json()) as { session: Session };
     return data.session;
   } catch (error) {
     // Network error - server is likely down
@@ -97,35 +102,36 @@ export interface WorkersResponse {
 }
 
 export async function fetchWorkers(sessionId: string): Promise<WorkersResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`);
+  const res = await api.sessions[':sessionId'].workers.$get({ param: { sessionId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch workers: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<WorkersResponse>;
 }
 
 export async function createWorker(
   sessionId: string,
   request: CreateWorkerRequest & { continueConversation?: boolean }
 ): Promise<CreateWorkerResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  type RequestType = CreateWorkerRequest & { continueConversation?: boolean };
+  const res = await (api.sessions[':sessionId'].workers.$post as (opts: { param: { sessionId: string }; json: RequestType }) => Promise<Response>)({
+    param: { sessionId },
+    json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create worker');
   }
-  return res.json();
+  return res.json() as Promise<CreateWorkerResponse>;
 }
 
 export async function deleteWorker(sessionId: string, workerId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}`, {
-    method: 'DELETE',
+  const res = await api.sessions[':sessionId'].workers[':workerId'].$delete({
+    param: { sessionId, workerId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to delete worker');
   }
 }
@@ -135,24 +141,23 @@ export async function restartAgentWorker(
   workerId: string,
   continueConversation: boolean = false
 ): Promise<{ worker: Worker }> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/restart`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ continueConversation }),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  type RestartRequest = { continueConversation: boolean };
+  const res = await (api.sessions[':sessionId'].workers[':workerId'].restart.$post as (opts: { param: { sessionId: string; workerId: string }; json: RestartRequest }) => Promise<Response>)({
+    param: { sessionId, workerId },
+    json: { continueConversation },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to restart worker');
   }
-  return res.json();
+  return res.json() as Promise<{ worker: Worker }>;
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
-    method: 'DELETE',
-  });
+  const res = await api.sessions[':id'].$delete({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to delete session');
   }
 }
@@ -173,16 +178,16 @@ export async function updateSessionMetadata(
   sessionId: string,
   updates: UpdateSessionMetadataRequest
 ): Promise<UpdateSessionMetadataResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.sessions[':id'].$patch as (opts: { param: { id: string }; json: UpdateSessionMetadataRequest }) => Promise<Response>)({
+    param: { id: sessionId },
+    json: updates,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to update session');
   }
-  return res.json();
+  return res.json() as Promise<UpdateSessionMetadataResponse>;
 }
 
 export interface RepositoriesResponse {
@@ -194,7 +199,7 @@ export interface CreateRepositoryResponse {
 }
 
 export async function fetchRepositories(): Promise<RepositoriesResponse> {
-  const res = await fetch(`${API_BASE}/repositories`);
+  const res = await api.repositories.$get();
   if (!res.ok) {
     throw new Error(`Failed to fetch repositories: ${res.statusText}`);
   }
@@ -202,22 +207,17 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
 }
 
 export async function registerRepository(path: string): Promise<CreateRepositoryResponse> {
-  const res = await fetch(`${API_BASE}/repositories`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  });
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories.$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to register repository');
   }
-  return res.json();
+  return res.json() as Promise<CreateRepositoryResponse>;
 }
 
 export async function unregisterRepository(repositoryId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
-    method: 'DELETE',
-  });
+  const res = await api.repositories[':id'].$delete({ param: { id: repositoryId } });
   if (!res.ok) {
     throw new Error(`Failed to unregister repository: ${res.statusText}`);
   }
@@ -236,16 +236,16 @@ export async function updateRepository(
   repositoryId: string,
   request: UpdateRepositoryRequest
 ): Promise<UpdateRepositoryResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories[':id'].$patch as (opts: { param: { id: string }; json: UpdateRepositoryRequest }) => Promise<Response>)({
+    param: { id: repositoryId },
+    json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to update repository');
   }
-  return res.json();
+  return res.json() as Promise<UpdateRepositoryResponse>;
 }
 
 export interface WorktreesResponse {
@@ -279,27 +279,27 @@ export interface CreateWorktreeAsyncResponse {
 }
 
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`);
+  const res = await api.repositories[':id'].worktrees.$get({ param: { id: repositoryId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch worktrees: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<WorktreesResponse>;
 }
 
 export async function fetchBranches(repositoryId: string): Promise<BranchesResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/branches`);
+  const res = await api.repositories[':id'].branches.$get({ param: { id: repositoryId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch branches: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<BranchesResponse>;
 }
 
 export async function fetchSessionBranches(sessionId: string): Promise<BranchesResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/branches`);
+  const res = await api.sessions[':sessionId'].branches.$get({ param: { sessionId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch session branches: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<BranchesResponse>;
 }
 
 export interface CommitInfo {
@@ -315,11 +315,15 @@ export interface BranchCommitsResponse {
 }
 
 export async function fetchBranchCommits(sessionId: string, baseRef: string): Promise<BranchCommitsResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/commits?base=${encodeURIComponent(baseRef)}`);
+  // Cast needed because the route has a query param but Hono RPC doesn't expose it
+  const res = await (api.sessions[':sessionId'].commits.$get as (opts: { param: { sessionId: string }; query: { base: string } }) => Promise<Response>)({
+    param: { sessionId },
+    query: { base: baseRef },
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch branch commits: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<BranchCommitsResponse>;
 }
 
 /**
@@ -330,16 +334,16 @@ export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest
 ): Promise<CreateWorktreeResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories[':id'].worktrees.$post as (opts: { param: { id: string }; json: CreateWorktreeRequest }) => Promise<Response>)({
+    param: { id: repositoryId },
+    json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create worktree');
   }
-  return res.json();
+  return res.json() as Promise<CreateWorktreeResponse>;
 }
 
 /**
@@ -352,16 +356,16 @@ export async function createWorktreeAsync(
   repositoryId: string,
   request: CreateWorktreeRequest
 ): Promise<CreateWorktreeAsyncResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories[':id'].worktrees.$post as (opts: { param: { id: string }; json: CreateWorktreeRequest }) => Promise<Response>)({
+    param: { id: repositoryId },
+    json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create worktree');
   }
-  return res.json();
+  return res.json() as Promise<CreateWorktreeAsyncResponse>;
 }
 
 export interface GitHubIssueResponse {
@@ -372,18 +376,23 @@ export async function fetchGitHubIssue(
   repositoryId: string,
   reference: string
 ): Promise<GitHubIssueResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/github-issue`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reference }),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories[':id']['github-issue'].$post as (opts: { param: { id: string }; json: { reference: string } }) => Promise<Response>)({
+    param: { id: repositoryId },
+    json: { reference },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to fetch GitHub issue');
   }
-  return res.json();
+  return res.json() as Promise<GitHubIssueResponse>;
 }
 
+/**
+ * Delete a worktree synchronously.
+ * NOTE: This endpoint uses manual fetch because the server route uses a wildcard pattern
+ * (`DELETE /:id/worktrees/*`) which Hono RPC client doesn't handle well.
+ */
 export async function deleteWorktree(
   repositoryId: string,
   worktreePath: string,
@@ -404,6 +413,9 @@ export async function deleteWorktree(
  * The request includes a client-generated taskId for correlation.
  * Returns immediately with `{ accepted: true }`.
  * Listen to WebSocket for `worktree-deletion-completed` or `worktree-deletion-failed` events.
+ *
+ * NOTE: This endpoint uses manual fetch because the server route uses a wildcard pattern
+ * (`DELETE /:id/worktrees/*`) which Hono RPC client doesn't handle well.
  */
 export async function deleteWorktreeAsync(
   repositoryId: string,
@@ -434,7 +446,7 @@ export interface AgentResponse {
 }
 
 export async function fetchAgents(): Promise<AgentsResponse> {
-  const res = await fetch(`${API_BASE}/agents`);
+  const res = await api.agents.$get();
   if (!res.ok) {
     throw new Error(`Failed to fetch agents: ${res.statusText}`);
   }
@@ -442,91 +454,78 @@ export async function fetchAgents(): Promise<AgentsResponse> {
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentResponse> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`);
+  const res = await api.agents[':id'].$get({ param: { id: agentId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch agent: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<AgentResponse>;
 }
 
 export async function registerAgent(request: CreateAgentRequest): Promise<AgentResponse> {
-  const res = await fetch(`${API_BASE}/agents`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  });
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.agents.$post as (opts: { json: CreateAgentRequest }) => Promise<Response>)({ json: request });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to register agent');
   }
-  return res.json();
+  return res.json() as Promise<AgentResponse>;
 }
 
 export async function updateAgent(
   agentId: string,
   request: UpdateAgentRequest
 ): Promise<AgentResponse> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.agents[':id'].$patch as (opts: { param: { id: string }; json: UpdateAgentRequest }) => Promise<Response>)({
+    param: { id: agentId },
+    json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to update agent');
   }
-  return res.json();
+  return res.json() as Promise<AgentResponse>;
 }
 
 export async function unregisterAgent(agentId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
-    method: 'DELETE',
-  });
+  const res = await api.agents[':id'].$delete({ param: { id: agentId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to unregister agent');
   }
 }
 
 export async function openPath(path: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/system/open`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  });
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.system.open.$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to open path');
   }
 }
 
 export async function openInVSCode(path: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/system/open-in-vscode`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  });
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.system['open-in-vscode'].$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to open in VS Code');
   }
 }
 
 // Session validation
 export async function validateSessions(): Promise<SessionsValidationResponse> {
-  const res = await fetch(`${API_BASE}/sessions/validate`);
+  const res = await api.sessions.validate.$get();
   if (!res.ok) {
     throw new Error(`Failed to validate sessions: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<SessionsValidationResponse>;
 }
 
 export async function deleteInvalidSession(sessionId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/invalid`, {
-    method: 'DELETE',
-  });
+  const res = await api.sessions[':id'].invalid.$delete({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to delete invalid session');
   }
 }
@@ -549,32 +548,31 @@ export interface FetchJobsParams {
 }
 
 export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse> {
-  const searchParams = new URLSearchParams();
+  // Build query object - only include defined values
+  const query: Record<string, string> = {};
   if (params?.status) {
-    searchParams.set('status', params.status);
+    query.status = params.status;
   }
   if (params?.type) {
-    searchParams.set('type', params.type);
+    query.type = params.type;
   }
   if (params?.limit !== undefined) {
-    searchParams.set('limit', String(params.limit));
+    query.limit = String(params.limit);
   }
   if (params?.offset !== undefined) {
-    searchParams.set('offset', String(params.offset));
+    query.offset = String(params.offset);
   }
 
-  const queryString = searchParams.toString();
-  const url = queryString ? `${API_BASE}/jobs?${queryString}` : `${API_BASE}/jobs`;
-
-  const res = await fetch(url);
+  const res = await api.jobs.$get({ query });
   if (!res.ok) {
     throw new Error(`Failed to fetch jobs: ${res.statusText}`);
   }
-  return res.json();
+  // Server returns JSONValue for payload but we expect JobPayload - use unknown bridge
+  return res.json() as unknown as Promise<JobsResponse>;
 }
 
 export async function fetchJobStats(): Promise<JobStats> {
-  const res = await fetch(`${API_BASE}/jobs/stats`);
+  const res = await api.jobs.stats.$get();
   if (!res.ok) {
     throw new Error(`Failed to fetch job stats: ${res.statusText}`);
   }
@@ -582,29 +580,26 @@ export async function fetchJobStats(): Promise<JobStats> {
 }
 
 export async function fetchJob(jobId: string): Promise<Job> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+  const res = await api.jobs[':id'].$get({ param: { id: jobId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch job: ${res.statusText}`);
   }
-  return res.json();
+  // Server returns JSONValue for payload but we expect JobPayload - use unknown bridge
+  return res.json() as unknown as Promise<Job>;
 }
 
 export async function retryJob(jobId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
-    method: 'POST',
-  });
+  const res = await api.jobs[':id'].retry.$post({ param: { id: jobId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to retry job');
   }
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}`, {
-    method: 'DELETE',
-  });
+  const res = await api.jobs[':id'].$delete({ param: { id: jobId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to cancel job');
   }
 }
@@ -614,14 +609,14 @@ export async function cancelJob(jobId: string): Promise<void> {
 // ===========================================================================
 
 export async function refreshDefaultBranch(repositoryId: string): Promise<RefreshDefaultBranchResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/refresh-default-branch`, {
-    method: 'POST',
+  const res = await api.repositories[':id']['refresh-default-branch'].$post({
+    param: { id: repositoryId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to refresh default branch');
   }
-  return res.json();
+  return res.json() as Promise<RefreshDefaultBranchResponse>;
 }
 
 // ===========================================================================
@@ -635,11 +630,11 @@ export interface SessionPrLinkResponse {
 }
 
 export async function fetchSessionPrLink(sessionId: string): Promise<SessionPrLinkResponse> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/pr-link`);
+  const res = await api.sessions[':sessionId']['pr-link'].$get({ param: { sessionId } });
   if (!res.ok) {
     throw new Error(`Failed to fetch session PR link: ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<SessionPrLinkResponse>;
 }
 
 // ===========================================================================
@@ -650,14 +645,14 @@ export async function getRemoteBranchStatus(
   repositoryId: string,
   branch: string
 ): Promise<RemoteBranchStatus> {
-  const res = await fetch(
-    `${API_BASE}/repositories/${repositoryId}/branches/${encodeURIComponent(branch)}/remote-status`
-  );
+  const res = await api.repositories[':id'].branches[':branch']['remote-status'].$get({
+    param: { id: repositoryId, branch },
+  });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to get remote branch status');
   }
-  return res.json();
+  return res.json() as Promise<RemoteBranchStatus>;
 }
 
 // ===========================================================================
@@ -680,15 +675,17 @@ export interface RepositorySlackIntegrationResponse {
 export async function fetchRepositorySlackIntegration(
   repositoryId: string
 ): Promise<RepositorySlackIntegrationResponse | null> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack`);
+  const res = await api.repositories[':id'].integrations.slack.$get({
+    param: { id: repositoryId },
+  });
   if (res.status === 404) {
     return null;
   }
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to fetch Slack integration');
   }
-  return res.json();
+  return res.json() as Promise<RepositorySlackIntegrationResponse>;
 }
 
 export interface UpdateRepositorySlackIntegrationRequest {
@@ -703,27 +700,27 @@ export async function updateRepositorySlackIntegration(
   repositoryId: string,
   data: UpdateRepositorySlackIntegrationRequest
 ): Promise<RepositorySlackIntegrationResponse> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  const res = await (api.repositories[':id'].integrations.slack.$put as (opts: { param: { id: string }; json: UpdateRepositorySlackIntegrationRequest }) => Promise<Response>)({
+    param: { id: repositoryId },
+    json: data,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to update Slack integration');
   }
-  return res.json();
+  return res.json() as Promise<RepositorySlackIntegrationResponse>;
 }
 
 /**
  * Send a test notification to the repository's Slack webhook.
  */
 export async function testRepositorySlackIntegration(repositoryId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/integrations/slack/test`, {
-    method: 'POST',
+  const res = await api.repositories[':id'].integrations.slack.test.$post({
+    param: { id: repositoryId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to send test notification');
   }
 }
@@ -738,9 +735,9 @@ export interface NotificationStatus {
 }
 
 export async function fetchNotificationStatus(): Promise<NotificationStatus> {
-  const res = await fetch(`${API_BASE}/settings/notifications/status`);
+  const res = await api.settings.notifications.status.$get();
   if (!res.ok) {
     throw new Error('Failed to fetch notification status');
   }
-  return res.json();
+  return res.json() as Promise<NotificationStatus>;
 }
