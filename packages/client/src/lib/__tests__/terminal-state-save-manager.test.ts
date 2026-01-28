@@ -1,25 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { CachedState } from '../terminal-state-cache';
-
-// Track saveTerminalState calls
-const saveTerminalStateCalls: Array<{
-  sessionId: string;
-  workerId: string;
-  state: CachedState;
-}> = [];
-
-// Mock terminal-state-cache module
-mock.module('../terminal-state-cache', () => ({
-  saveTerminalState: async (
-    sessionId: string,
-    workerId: string,
-    state: CachedState
-  ) => {
-    saveTerminalStateCalls.push({ sessionId, workerId, state });
-  },
-}));
-
-// Import after mocking
 import {
   register,
   unregister,
@@ -31,8 +11,26 @@ import {
   setIdleSaveDelay,
   resetIdleSaveDelay,
   getIdleSaveDelay,
+  setSaveFunction,
+  resetSaveFunction,
   DEFAULT_IDLE_SAVE_DELAY_MS,
 } from '../terminal-state-save-manager';
+
+// Track saveTerminalState calls
+const saveTerminalStateCalls: Array<{
+  sessionId: string;
+  workerId: string;
+  state: CachedState;
+}> = [];
+
+// Mock save function for testing
+const mockSaveTerminalState = async (
+  sessionId: string,
+  workerId: string,
+  state: CachedState
+): Promise<void> => {
+  saveTerminalStateCalls.push({ sessionId, workerId, state });
+};
 
 // Use a short delay for testing (50ms)
 const TEST_IDLE_DELAY_MS = 50;
@@ -42,12 +40,14 @@ describe('terminal-state-save-manager', () => {
     clearRegistry();
     saveTerminalStateCalls.length = 0;
     setIdleSaveDelay(TEST_IDLE_DELAY_MS);
+    setSaveFunction(mockSaveTerminalState);
   });
 
   afterEach(() => {
     clearRegistry();
     saveTerminalStateCalls.length = 0;
     resetIdleSaveDelay();
+    resetSaveFunction();
   });
 
   const createValidState = (

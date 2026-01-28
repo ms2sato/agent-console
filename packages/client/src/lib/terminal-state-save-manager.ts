@@ -1,5 +1,5 @@
 import type { CachedState } from './terminal-state-cache';
-import { saveTerminalState } from './terminal-state-cache';
+import { saveTerminalState as defaultSaveTerminalState } from './terminal-state-cache';
 
 const DEFAULT_IDLE_SAVE_DELAY_MS = 60_000; // 1 minute
 
@@ -7,6 +7,20 @@ const DEFAULT_IDLE_SAVE_DELAY_MS = 60_000; // 1 minute
  * Current idle save delay. Can be overridden for testing.
  */
 let idleSaveDelayMs = DEFAULT_IDLE_SAVE_DELAY_MS;
+
+/**
+ * Save function type for dependency injection.
+ */
+type SaveFunction = (
+  sessionId: string,
+  workerId: string,
+  state: CachedState
+) => Promise<void>;
+
+/**
+ * Current save function. Can be overridden for testing.
+ */
+let saveFunction: SaveFunction = defaultSaveTerminalState;
 
 interface WorkerSaveState {
   isDirty: boolean;
@@ -44,7 +58,7 @@ async function saveWorkerState(
     return;
   }
 
-  await saveTerminalState(sessionId, workerId, state);
+  await saveFunction(sessionId, workerId, state);
   workerState.isDirty = false;
 }
 
@@ -287,6 +301,21 @@ export function resetIdleSaveDelay(): void {
  */
 export function getIdleSaveDelay(): number {
   return idleSaveDelayMs;
+}
+
+/**
+ * Set a custom save function (for testing).
+ * @param fn - The save function to use
+ */
+export function setSaveFunction(fn: SaveFunction): void {
+  saveFunction = fn;
+}
+
+/**
+ * Reset the save function to the default (for testing).
+ */
+export function resetSaveFunction(): void {
+  saveFunction = defaultSaveTerminalState;
 }
 
 // Export for reference
