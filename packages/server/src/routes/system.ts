@@ -2,10 +2,9 @@ import { Hono } from 'hono';
 import { stat } from 'node:fs/promises';
 import { resolve as resolvePath, dirname } from 'node:path';
 import open from 'open';
-import type { SystemOpenRequest, SystemOpenVSCodeRequest } from '@agent-console/shared';
 import { SystemOpenRequestSchema, SystemOpenVSCodeRequestSchema } from '@agent-console/shared';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
-import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { vValidator } from '../middleware/validation.js';
 import { getSystemCapabilities } from '../services/system-capabilities-service.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -13,8 +12,8 @@ const logger = createLogger('system-routes');
 
 const system = new Hono()
   // Open a file or directory in the default application (Finder/Explorer)
-  .post('/open', validateBody(SystemOpenRequestSchema), async (c) => {
-    const { path } = getValidatedBody<SystemOpenRequest>(c);
+  .post('/open', vValidator(SystemOpenRequestSchema), async (c) => {
+    const { path } = c.req.valid('json');
 
     // Resolve to absolute path
     const absolutePath = resolvePath(path);
@@ -41,8 +40,8 @@ const system = new Hono()
     }
   })
   // Open a file or directory in VS Code
-  .post('/open-in-vscode', validateBody(SystemOpenVSCodeRequestSchema), async (c) => {
-    const { path } = getValidatedBody<SystemOpenVSCodeRequest>(c);
+  .post('/open-in-vscode', vValidator(SystemOpenVSCodeRequestSchema), async (c) => {
+    const { path } = c.req.valid('json');
 
     // Check if VS Code is available
     const systemCapabilities = getSystemCapabilities();

@@ -1,8 +1,4 @@
 import { Hono } from 'hono';
-import type {
-  CreateAgentRequest,
-  UpdateAgentRequest,
-} from '@agent-console/shared';
 import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
@@ -10,7 +6,7 @@ import {
 import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
-import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { vValidator } from '../middleware/validation.js';
 
 const agents = new Hono()
   // Get all agents
@@ -32,8 +28,8 @@ const agents = new Hono()
     return c.json({ agent });
   })
   // Register a new agent
-  .post('/', validateBody(CreateAgentRequestSchema), async (c) => {
-    const body = getValidatedBody<CreateAgentRequest>(c);
+  .post('/', vValidator(CreateAgentRequestSchema), async (c) => {
+    const body = c.req.valid('json');
     const agentManager = await getAgentManager();
 
     const agent = await agentManager.registerAgent(body);
@@ -41,9 +37,9 @@ const agents = new Hono()
     return c.json({ agent }, 201);
   })
   // Update an agent
-  .patch('/:id', validateBody(UpdateAgentRequestSchema), async (c) => {
+  .patch('/:id', vValidator(UpdateAgentRequestSchema), async (c) => {
     const agentId = c.req.param('id');
-    const body = getValidatedBody<UpdateAgentRequest>(c);
+    const body = c.req.valid('json');
     const agentManager = await getAgentManager();
 
     const agent = await agentManager.updateAgent(agentId, body);

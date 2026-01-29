@@ -24,12 +24,6 @@ import type {
 } from '@agent-console/shared';
 import { api } from './api-client';
 
-// NOTE: The server uses a custom validation middleware (validateBody) that doesn't
-// expose body types to Hono's type inference. This means request bodies are not
-// type-checked by the RPC client - we manually use shared types for type safety.
-// The primary benefit of using Hono RPC is endpoint path type safety - typos in
-// paths like '/sesions' instead of '/sessions' will be caught at compile time.
-
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
 const API_BASE = '/api';
 
@@ -56,8 +50,7 @@ export interface CreateSessionResponse {
 export async function createSession(
   request: CreateSessionRequest
 ): Promise<CreateSessionResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.sessions.$post as (opts: { json: CreateSessionRequest }) => Promise<Response>)({ json: request });
+  const res = await api.sessions.$post({ json: request });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create session');
@@ -113,9 +106,7 @@ export async function createWorker(
   sessionId: string,
   request: CreateWorkerRequest & { continueConversation?: boolean }
 ): Promise<CreateWorkerResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  type RequestType = CreateWorkerRequest & { continueConversation?: boolean };
-  const res = await (api.sessions[':sessionId'].workers.$post as (opts: { param: { sessionId: string }; json: RequestType }) => Promise<Response>)({
+  const res = await api.sessions[':sessionId'].workers.$post({
     param: { sessionId },
     json: request,
   });
@@ -141,9 +132,7 @@ export async function restartAgentWorker(
   workerId: string,
   continueConversation: boolean = false
 ): Promise<{ worker: Worker }> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  type RestartRequest = { continueConversation: boolean };
-  const res = await (api.sessions[':sessionId'].workers[':workerId'].restart.$post as (opts: { param: { sessionId: string; workerId: string }; json: RestartRequest }) => Promise<Response>)({
+  const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
     param: { sessionId, workerId },
     json: { continueConversation },
   });
@@ -178,8 +167,7 @@ export async function updateSessionMetadata(
   sessionId: string,
   updates: UpdateSessionMetadataRequest
 ): Promise<UpdateSessionMetadataResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.sessions[':id'].$patch as (opts: { param: { id: string }; json: UpdateSessionMetadataRequest }) => Promise<Response>)({
+  const res = await api.sessions[':id'].$patch({
     param: { id: sessionId },
     json: updates,
   });
@@ -207,8 +195,7 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
 }
 
 export async function registerRepository(path: string): Promise<CreateRepositoryResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.repositories.$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
+  const res = await api.repositories.$post({ json: { path } });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to register repository');
@@ -236,7 +223,8 @@ export async function updateRepository(
   repositoryId: string,
   request: UpdateRepositoryRequest
 ): Promise<UpdateRepositoryResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
+  // Cast needed: client-side UpdateRepositoryRequest allows null for optional fields,
+  // but vValidator infers string | undefined (without null)
   const res = await (api.repositories[':id'].$patch as (opts: { param: { id: string }; json: UpdateRepositoryRequest }) => Promise<Response>)({
     param: { id: repositoryId },
     json: request,
@@ -315,7 +303,7 @@ export interface BranchCommitsResponse {
 }
 
 export async function fetchBranchCommits(sessionId: string, baseRef: string): Promise<BranchCommitsResponse> {
-  // Cast needed because the route has a query param but Hono RPC doesn't expose it
+  // Cast needed: query params not exposed in Hono RPC type for this route
   const res = await (api.sessions[':sessionId'].commits.$get as (opts: { param: { sessionId: string }; query: { base: string } }) => Promise<Response>)({
     param: { sessionId },
     query: { base: baseRef },
@@ -334,8 +322,7 @@ export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest
 ): Promise<CreateWorktreeResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.repositories[':id'].worktrees.$post as (opts: { param: { id: string }; json: CreateWorktreeRequest }) => Promise<Response>)({
+  const res = await api.repositories[':id'].worktrees.$post({
     param: { id: repositoryId },
     json: request,
   });
@@ -343,7 +330,8 @@ export async function createWorktree(
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create worktree');
   }
-  return res.json() as Promise<CreateWorktreeResponse>;
+  // Server returns different shapes based on taskId presence; Hono RPC infers the async shape
+  return res.json() as unknown as Promise<CreateWorktreeResponse>;
 }
 
 /**
@@ -356,8 +344,7 @@ export async function createWorktreeAsync(
   repositoryId: string,
   request: CreateWorktreeRequest
 ): Promise<CreateWorktreeAsyncResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.repositories[':id'].worktrees.$post as (opts: { param: { id: string }; json: CreateWorktreeRequest }) => Promise<Response>)({
+  const res = await api.repositories[':id'].worktrees.$post({
     param: { id: repositoryId },
     json: request,
   });
@@ -376,8 +363,7 @@ export async function fetchGitHubIssue(
   repositoryId: string,
   reference: string
 ): Promise<GitHubIssueResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.repositories[':id']['github-issue'].$post as (opts: { param: { id: string }; json: { reference: string } }) => Promise<Response>)({
+  const res = await api.repositories[':id']['github-issue'].$post({
     param: { id: repositoryId },
     json: { reference },
   });
@@ -462,8 +448,7 @@ export async function fetchAgent(agentId: string): Promise<AgentResponse> {
 }
 
 export async function registerAgent(request: CreateAgentRequest): Promise<AgentResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.agents.$post as (opts: { json: CreateAgentRequest }) => Promise<Response>)({ json: request });
+  const res = await api.agents.$post({ json: request });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to register agent');
@@ -475,8 +460,7 @@ export async function updateAgent(
   agentId: string,
   request: UpdateAgentRequest
 ): Promise<AgentResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.agents[':id'].$patch as (opts: { param: { id: string }; json: UpdateAgentRequest }) => Promise<Response>)({
+  const res = await api.agents[':id'].$patch({
     param: { id: agentId },
     json: request,
   });
@@ -496,8 +480,7 @@ export async function unregisterAgent(agentId: string): Promise<void> {
 }
 
 export async function openPath(path: string): Promise<void> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.system.open.$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
+  const res = await api.system.open.$post({ json: { path } });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to open path');
@@ -505,8 +488,7 @@ export async function openPath(path: string): Promise<void> {
 }
 
 export async function openInVSCode(path: string): Promise<void> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.system['open-in-vscode'].$post as (opts: { json: { path: string } }) => Promise<Response>)({ json: { path } });
+  const res = await api.system['open-in-vscode'].$post({ json: { path } });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to open in VS Code');
@@ -700,8 +682,7 @@ export async function updateRepositorySlackIntegration(
   repositoryId: string,
   data: UpdateRepositorySlackIntegrationRequest
 ): Promise<RepositorySlackIntegrationResponse> {
-  // Cast needed because validateBody middleware doesn't expose body types to Hono's type inference
-  const res = await (api.repositories[':id'].integrations.slack.$put as (opts: { param: { id: string }; json: UpdateRepositorySlackIntegrationRequest }) => Promise<Response>)({
+  const res = await api.repositories[':id'].integrations.slack.$put({
     param: { id: repositoryId },
     json: data,
   });

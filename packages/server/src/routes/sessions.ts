@@ -1,11 +1,5 @@
 import { Hono } from 'hono';
 import { validateSessionPath } from '../lib/path-validator.js';
-import type {
-  CreateSessionRequest,
-  UpdateSessionRequest,
-  CreateWorkerRequest,
-  RestartWorkerRequest,
-} from '@agent-console/shared';
 import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
@@ -17,7 +11,7 @@ import { worktreeService } from '../services/worktree-service.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
-import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { vValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 
 const sessions = new Hono()
@@ -64,8 +58,8 @@ const sessions = new Hono()
     throw new NotFoundError('Session');
   })
   // Create a new session
-  .post('/', validateBody(CreateSessionRequestSchema), async (c) => {
-    const body = getValidatedBody<CreateSessionRequest>(c);
+  .post('/', vValidator(CreateSessionRequestSchema), async (c) => {
+    const body = c.req.valid('json');
 
     // Validate that locationPath is safe and exists
     const validation = await validateSessionPath(body.locationPath);
@@ -94,9 +88,9 @@ const sessions = new Hono()
   })
   // Update session metadata (title and/or branch)
   // If branch is changed, agent worker is automatically restarted
-  .patch('/:id', validateBody(UpdateSessionRequestSchema), async (c) => {
+  .patch('/:id', vValidator(UpdateSessionRequestSchema), async (c) => {
     const sessionId = c.req.param('id');
-    const body = getValidatedBody<UpdateSessionRequest>(c);
+    const body = c.req.valid('json');
     const { title, branch } = body;
 
     const updates: { title?: string; branch?: string } = {};
@@ -193,9 +187,9 @@ const sessions = new Hono()
     });
   })
   // Create a worker in a session
-  .post('/:sessionId/workers', validateBody(CreateWorkerRequestSchema), async (c) => {
+  .post('/:sessionId/workers', vValidator(CreateWorkerRequestSchema), async (c) => {
     const sessionId = c.req.param('sessionId');
-    const body = getValidatedBody<CreateWorkerRequest>(c);
+    const body = c.req.valid('json');
 
     const sessionManager = getSessionManager();
     const session = sessionManager.getSession(sessionId);
@@ -233,10 +227,10 @@ const sessions = new Hono()
     return c.json({ success: true });
   })
   // Restart an agent worker
-  .post('/:sessionId/workers/:workerId/restart', validateBody(RestartWorkerRequestSchema), async (c) => {
+  .post('/:sessionId/workers/:workerId/restart', vValidator(RestartWorkerRequestSchema), async (c) => {
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
-    const body = getValidatedBody<RestartWorkerRequest>(c);
+    const body = c.req.valid('json');
     const { continueConversation = false } = body;
 
     const sessionManager = getSessionManager();

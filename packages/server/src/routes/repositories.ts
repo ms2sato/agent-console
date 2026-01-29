@@ -2,13 +2,8 @@ import { Hono } from 'hono';
 import { $ } from 'bun';
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import type {
-  CreateRepositoryRequest,
-  UpdateRepositoryRequest,
-  FetchGitHubIssueRequest,
   GitHubIssueSummary,
   Repository,
-  RepositorySlackIntegrationInput,
-  CreateWorktreeRequest,
   BranchNameFallback,
   SetupCommandResult,
 } from '@agent-console/shared';
@@ -33,7 +28,7 @@ import {
 } from '../services/notifications/index.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
-import { validateBody, getValidatedBody } from '../middleware/validation.js';
+import { vValidator } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -56,8 +51,8 @@ const repositories = new Hono()
     return c.json({ repositories: repositoriesWithRemote });
   })
   // Register a repository
-  .post('/', validateBody(CreateRepositoryRequestSchema), async (c) => {
-    const body = getValidatedBody<CreateRepositoryRequest>(c);
+  .post('/', vValidator(CreateRepositoryRequestSchema), async (c) => {
+    const body = c.req.valid('json');
     const { path } = body;
     const repositoryManager = getRepositoryManager();
 
@@ -165,9 +160,9 @@ const repositories = new Hono()
     return c.json({ success: true });
   })
   // Update a repository
-  .patch('/:id', validateBody(UpdateRepositoryRequestSchema), async (c) => {
+  .patch('/:id', vValidator(UpdateRepositoryRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const body = getValidatedBody<UpdateRepositoryRequest>(c);
+    const body = c.req.valid('json');
     const repositoryManager = getRepositoryManager();
 
     const updated = await repositoryManager.updateRepository(repoId, body);
@@ -196,7 +191,7 @@ const repositories = new Hono()
     return c.json({ worktrees });
   })
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
-  .post('/:id/worktrees', validateBody(CreateWorktreeRequestSchema), async (c) => {
+  .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
     const repositoryManager = getRepositoryManager();
     const repo = repositoryManager.getRepository(repoId);
@@ -205,7 +200,7 @@ const repositories = new Hono()
       throw new NotFoundError('Repository');
     }
 
-    const body = getValidatedBody<CreateWorktreeRequest>(c);
+    const body = c.req.valid('json');
     const { taskId, mode, autoStartSession, agentId, initialPrompt, title } = body;
 
     // Validate agent exists before returning accepted (fail fast for invalid config)
@@ -509,7 +504,7 @@ const repositories = new Hono()
   // GitHub Issue Routes
   // ===========================================================================
   // Fetch a GitHub issue for a repository
-  .post('/:id/github-issue', validateBody(FetchGitHubIssueRequestSchema), async (c) => {
+  .post('/:id/github-issue', vValidator(FetchGitHubIssueRequestSchema), async (c) => {
     const repoId = c.req.param('id');
     const repositoryManager = getRepositoryManager();
     const repo = repositoryManager.getRepository(repoId);
@@ -518,7 +513,7 @@ const repositories = new Hono()
       throw new NotFoundError('Repository');
     }
 
-    const body = getValidatedBody<FetchGitHubIssueRequest>(c);
+    const body = c.req.valid('json');
 
     try {
       const issue: GitHubIssueSummary = await fetchGitHubIssue(body.reference, repo.path);
@@ -634,10 +629,10 @@ const repositories = new Hono()
   // Create or update Slack integration for a repository
   .put(
     '/:id/integrations/slack',
-    validateBody(RepositorySlackIntegrationInputSchema),
+    vValidator(RepositorySlackIntegrationInputSchema),
     async (c) => {
       const repositoryId = c.req.param('id');
-      const body = getValidatedBody<RepositorySlackIntegrationInput>(c);
+      const body = c.req.valid('json');
 
       // Verify repository exists
       const repositoryManager = getRepositoryManager();

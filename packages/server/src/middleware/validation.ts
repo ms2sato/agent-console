@@ -1,6 +1,30 @@
 import type { Context, Next } from 'hono';
+import { validator } from 'hono/validator';
 import * as v from 'valibot';
 import { ValidationError } from '../lib/errors.js';
+
+/**
+ * Hono-compatible Valibot validation middleware.
+ * Unlike validateBody, this integrates with Hono's type inference system,
+ * enabling full end-to-end type safety with Hono RPC.
+ */
+export function vValidator<TSchema extends v.GenericSchema>(schema: TSchema) {
+  return validator('json', (value) => {
+    const result = v.safeParse(schema, value);
+    if (!result.success) {
+      const firstIssue = result.issues[0];
+      const path = firstIssue?.path
+        ?.map((p) => ('key' in p ? String(p.key) : ''))
+        .filter(Boolean)
+        .join('.') || '';
+      const message = path
+        ? `${path}: ${firstIssue?.message}`
+        : firstIssue?.message || 'Validation failed';
+      throw new ValidationError(message);
+    }
+    return result.output as v.InferOutput<TSchema>;
+  });
+}
 
 /**
  * Valibot validation middleware for Hono
