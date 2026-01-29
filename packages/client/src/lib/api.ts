@@ -526,8 +526,7 @@ export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse>
   if (!res.ok) {
     throw new Error(`Failed to fetch jobs: ${res.statusText}`);
   }
-  // Server returns JSONValue for payload but we expect JobPayload - use unknown bridge
-  return res.json() as unknown as Promise<JobsResponse>;
+  return res.json();
 }
 
 export async function fetchJobStats(): Promise<JobStats> {
@@ -543,8 +542,7 @@ export async function fetchJob(jobId: string): Promise<Job> {
   if (!res.ok) {
     throw new Error(`Failed to fetch job: ${res.statusText}`);
   }
-  // Server returns JSONValue for payload but we expect JobPayload - use unknown bridge
-  return res.json() as unknown as Promise<Job>;
+  return res.json();
 }
 
 export async function retryJob(jobId: string): Promise<void> {
