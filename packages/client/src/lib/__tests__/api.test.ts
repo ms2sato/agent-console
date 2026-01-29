@@ -40,6 +40,37 @@ function createMockResponse(body: unknown, options: { status?: number; ok?: bool
   } as unknown as Response;
 }
 
+// Helper to get the URL from the fetch call (Hono RPC client may pass URL or Request object)
+function getLastFetchUrl(): string {
+  const calls = mockFetch.mock.calls as unknown[][];
+  const arg = calls[calls.length - 1]?.[0];
+  if (typeof arg === 'string') return arg;
+  if (arg instanceof URL) return arg.toString();
+  if (arg instanceof Request) return arg.url;
+  return String(arg);
+}
+
+// Helper to get the method from the fetch call
+function getLastFetchMethod(): string {
+  const calls = mockFetch.mock.calls as unknown[][];
+  const arg0 = calls[calls.length - 1]?.[0];
+  const arg1 = calls[calls.length - 1]?.[1] as { method?: string } | undefined;
+  if (arg0 instanceof Request) return arg0.method;
+  return arg1?.method || 'GET';
+}
+
+// Helper to get the body from the fetch call
+async function getLastFetchBody(): Promise<unknown> {
+  const calls = mockFetch.mock.calls as unknown[][];
+  const arg0 = calls[calls.length - 1]?.[0];
+  const arg1 = calls[calls.length - 1]?.[1] as { body?: string } | undefined;
+  if (arg0 instanceof Request) {
+    const text = await arg0.text();
+    return text ? JSON.parse(text) : undefined;
+  }
+  return arg1?.body ? JSON.parse(arg1.body) : undefined;
+}
+
 describe('API Client', () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -52,7 +83,8 @@ describe('API Client', () => {
 
       const result = await fetchConfig();
 
-      expect(fetch).toHaveBeenCalledWith('/api/config');
+      // Hono RPC client passes explicit options even for GET requests
+      expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/config');
       expect(result).toEqual(mockConfig);
     });
 
@@ -77,15 +109,14 @@ describe('API Client', () => {
         locationPath: '/path/to/worktree',
       });
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'worktree',
-          repositoryId: 'repo-1',
-          worktreeId: 'main',
-          locationPath: '/path/to/worktree',
-        }),
+      expect(getLastFetchUrl()).toContain('/api/sessions');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({
+        type: 'worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        locationPath: '/path/to/worktree',
       });
       expect(result).toEqual(mockSession);
     });
@@ -99,13 +130,12 @@ describe('API Client', () => {
         locationPath: '/path/to/project',
       });
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'quick',
-          locationPath: '/path/to/project',
-        }),
+      expect(getLastFetchUrl()).toContain('/api/sessions');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({
+        type: 'quick',
+        locationPath: '/path/to/project',
       });
       expect(result).toEqual(mockSession);
     });
@@ -174,9 +204,8 @@ describe('API Client', () => {
 
       await deleteSession('session-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id', {
-        method: 'DELETE',
-      });
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
   });
 
@@ -190,11 +219,10 @@ describe('API Client', () => {
 
       const result = await createWorker('session-id', { type: 'terminal', name: 'Shell 1' });
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'terminal', name: 'Shell 1' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ type: 'terminal', name: 'Shell 1' });
       expect(result).toEqual(mockWorker);
     });
   });
@@ -205,9 +233,8 @@ describe('API Client', () => {
 
       await deleteWorker('session-id', 'worker-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers/worker-id', {
-        method: 'DELETE',
-      });
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
   });
 
@@ -218,11 +245,10 @@ describe('API Client', () => {
 
       const result = await restartAgentWorker('session-id', 'worker-id', true);
 
-      expect(fetch).toHaveBeenCalledWith('/api/sessions/session-id/workers/worker-id/restart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ continueConversation: true }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/restart');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ continueConversation: true });
       expect(result).toEqual(mockWorker);
     });
   });
@@ -234,7 +260,8 @@ describe('API Client', () => {
 
       const result = await fetchRepositories();
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories');
+      // Hono RPC client passes explicit options even for GET requests
+      expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/repositories');
       expect(result).toEqual(mockRepos);
     });
   });
@@ -246,11 +273,10 @@ describe('API Client', () => {
 
       const result = await registerRepository('/path/to/repo');
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: '/path/to/repo' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/repositories');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ path: '/path/to/repo' });
       expect(result).toEqual(mockRepo);
     });
 
@@ -272,9 +298,8 @@ describe('API Client', () => {
 
       await unregisterRepository('repo-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id', {
-        method: 'DELETE',
-      });
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
   });
 
@@ -285,7 +310,8 @@ describe('API Client', () => {
 
       const result = await fetchWorktrees('repo-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees');
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/worktrees');
+      expect(getLastFetchMethod()).toBe('GET');
       expect(result).toEqual(mockWorktrees);
     });
   });
@@ -297,7 +323,8 @@ describe('API Client', () => {
 
       const result = await fetchBranches('repo-id');
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/branches');
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/branches');
+      expect(getLastFetchMethod()).toBe('GET');
       expect(result).toEqual(mockBranches);
     });
   });
@@ -305,19 +332,15 @@ describe('API Client', () => {
   describe('createWorktree (legacy sync)', () => {
     it('should create worktree successfully with custom mode', async () => {
       const { createWorktree } = await import('../api');
-      const mockResponse = {
-        worktree: { path: '/path/to/worktree', branch: 'feature-1' },
-        session: null,
-      };
+      const mockResponse = { accepted: true };
       mockFetch.mockResolvedValue(createMockResponse(mockResponse));
 
       const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/worktrees');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
       expect(result).toEqual(mockResponse);
     });
 
@@ -344,26 +367,24 @@ describe('API Client', () => {
 
       const result = await createWorktreeAsync('repo-id', { mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
 
-      expect(fetch).toHaveBeenCalledWith('/api/repositories/repo-id/worktrees', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/worktrees');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });
       expect(result).toEqual(mockResponse);
     });
   });
 
   describe('deleteWorktree', () => {
+    // NOTE: deleteWorktree still uses manual fetch because the server uses a wildcard route
     it('should delete worktree successfully', async () => {
       const { deleteWorktree } = await import('../api');
       mockFetch.mockResolvedValue(createMockResponse({ success: true }));
 
       await deleteWorktree('repo-id', '/path/to/worktree');
 
-      expect(fetch).toHaveBeenCalledWith(
-        '/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree',
-        { method: 'DELETE' }
-      );
+      expect(getLastFetchUrl()).toBe('/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
 
     it('should include force flag when specified', async () => {
@@ -372,10 +393,8 @@ describe('API Client', () => {
 
       await deleteWorktree('repo-id', '/path/to/worktree', true);
 
-      expect(fetch).toHaveBeenCalledWith(
-        '/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true',
-        { method: 'DELETE' }
-      );
+      expect(getLastFetchUrl()).toBe('/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
 
     it('should throw error on failure', async () => {
@@ -405,7 +424,8 @@ describe('API Client', () => {
 
       const result = await fetchAgents();
 
-      expect(fetch).toHaveBeenCalledWith('/api/agents');
+      // Hono RPC client passes explicit options even for GET requests
+      expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/agents');
       expect(result).toEqual(mockAgents);
     });
 
@@ -429,7 +449,8 @@ describe('API Client', () => {
 
       const result = await fetchAgent('claude-code');
 
-      expect(fetch).toHaveBeenCalledWith('/api/agents/claude-code');
+      expect(getLastFetchUrl()).toContain('/api/agents/claude-code');
+      expect(getLastFetchMethod()).toBe('GET');
       expect(result).toEqual(mockAgent);
     });
 
@@ -463,11 +484,10 @@ describe('API Client', () => {
 
       const result = await registerAgent({ name: 'New Agent', commandTemplate: 'new-cmd {{prompt}}' });
 
-      expect(fetch).toHaveBeenCalledWith('/api/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'New Agent', commandTemplate: 'new-cmd {{prompt}}' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/agents');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ name: 'New Agent', commandTemplate: 'new-cmd {{prompt}}' });
       expect(result).toEqual(mockAgent);
     });
 
@@ -496,11 +516,10 @@ describe('API Client', () => {
 
       const result = await updateAgent('agent-1', { name: 'Updated Agent' });
 
-      expect(fetch).toHaveBeenCalledWith('/api/agents/agent-1', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Updated Agent' }),
-      });
+      expect(getLastFetchUrl()).toContain('/api/agents/agent-1');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ name: 'Updated Agent' });
       expect(result).toEqual(mockAgent);
     });
 
@@ -526,9 +545,8 @@ describe('API Client', () => {
 
       await unregisterAgent('agent-1');
 
-      expect(fetch).toHaveBeenCalledWith('/api/agents/agent-1', {
-        method: 'DELETE',
-      });
+      expect(getLastFetchUrl()).toContain('/api/agents/agent-1');
+      expect(getLastFetchMethod()).toBe('DELETE');
     });
 
     it('should throw error when unregistering built-in agent', async () => {
