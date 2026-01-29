@@ -85,13 +85,21 @@ export type JobPayload =
   | CleanupRepositoryPayload;
 
 /**
+ * Error fallback when job payload JSON parsing fails (corrupted data).
+ */
+export interface JobPayloadParseError {
+  _parseError: true;
+  raw: string;
+}
+
+/**
  * A job record as stored and returned from the API.
  * Represents a background task in the job queue.
  */
 export interface Job {
   id: string;
   type: JobType;
-  payload: JobPayload;
+  payload: JobPayload | JobPayloadParseError;
   status: JobStatus;
   priority: number;
   attempts: number;
