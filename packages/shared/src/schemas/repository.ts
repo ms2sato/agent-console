@@ -131,8 +131,8 @@ export const DeleteWorktreeRequestSchema = v.object({
  * Schema for updating a repository
  */
 export const UpdateRepositoryRequestSchema = v.object({
-  setupCommand: v.optional(v.pipe(v.string(), v.trim())),
-  envVars: v.optional(v.pipe(v.string(), v.trim())),
+  setupCommand: v.nullish(v.pipe(v.string(), v.trim())),
+  envVars: v.nullish(v.pipe(v.string(), v.trim())),
 });
 
 /**

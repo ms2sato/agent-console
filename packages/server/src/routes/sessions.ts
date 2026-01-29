@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import * as v from 'valibot';
 import { validateSessionPath } from '../lib/path-validator.js';
 import {
   CreateSessionRequestSchema,
@@ -11,7 +12,7 @@ import { worktreeService } from '../services/worktree-service.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
-import { vValidator } from '../middleware/validation.js';
+import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 
 const sessions = new Hono()
@@ -143,18 +144,16 @@ const sessions = new Hono()
     return c.json(branches);
   })
   // Get commits created in this branch (since base commit)
-  .get('/:sessionId/commits', async (c) => {
+  .get('/:sessionId/commits',
+    vQueryValidator(v.object({ base: v.pipe(v.string(), v.minLength(1, 'base query parameter is required')) })),
+    async (c) => {
     const sessionId = c.req.param('sessionId');
-    const baseRef = c.req.query('base');
+    const { base: baseRef } = c.req.valid('query');
 
     const sessionManager = getSessionManager();
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
-    }
-
-    if (!baseRef) {
-      throw new ValidationError('base query parameter is required');
     }
 
     const { getBranchCommits } = await import('../lib/git.js');

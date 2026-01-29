@@ -59,6 +59,28 @@ export function validateBody<TSchema extends v.GenericSchema>(schema: TSchema) {
 }
 
 /**
+ * Hono-compatible Valibot validation middleware for query parameters.
+ * Integrates with Hono's type inference system for end-to-end type safety.
+ */
+export function vQueryValidator<TSchema extends v.GenericSchema>(schema: TSchema) {
+  return validator('query', (value) => {
+    const result = v.safeParse(schema, value);
+    if (!result.success) {
+      const firstIssue = result.issues[0];
+      const path = firstIssue?.path
+        ?.map((p) => ('key' in p ? String(p.key) : ''))
+        .filter(Boolean)
+        .join('.') || '';
+      const message = path
+        ? `${path}: ${firstIssue?.message}`
+        : firstIssue?.message || 'Validation failed';
+      throw new ValidationError(message);
+    }
+    return result.output as v.InferOutput<TSchema>;
+  });
+}
+
+/**
  * Get validated body from context
  * Type-safe helper to retrieve validated data
  * @throws ValidationError if called without validateBody middleware

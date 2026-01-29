@@ -11,16 +11,15 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   SessionsValidationResponse,
-  BranchNameFallback,
   GitHubIssueSummary,
   Job,
   JobsResponse,
   JobStats,
   JobStatus,
   JobType,
-  SetupCommandResult,
   RefreshDefaultBranchResponse,
   RemoteBranchStatus,
+  UpdateRepositoryRequest,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -210,11 +209,6 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
   }
 }
 
-export interface UpdateRepositoryRequest {
-  setupCommand?: string | null;
-  envVars?: string | null;
-}
-
 export interface UpdateRepositoryResponse {
   repository: Repository;
 }
@@ -223,9 +217,7 @@ export async function updateRepository(
   repositoryId: string,
   request: UpdateRepositoryRequest
 ): Promise<UpdateRepositoryResponse> {
-  // Cast needed: client-side UpdateRepositoryRequest allows null for optional fields,
-  // but vValidator infers string | undefined (without null)
-  const res = await (api.repositories[':id'].$patch as (opts: { param: { id: string }; json: UpdateRepositoryRequest }) => Promise<Response>)({
+  const res = await api.repositories[':id'].$patch({
     param: { id: repositoryId },
     json: request,
   });
@@ -246,21 +238,8 @@ export interface BranchesResponse {
   defaultBranch: string | null;
 }
 
-export interface CreateWorktreeResponse {
-  worktree: Worktree;
-  session: Session | null;
-  /** Present when AI-based branch name generation failed and a fallback name was used */
-  branchNameFallback?: BranchNameFallback;
-  /** Present when a setup command was configured and executed */
-  setupCommandResult?: SetupCommandResult;
-  /** True when useRemote was requested but fetch failed, falling back to local branch */
-  fetchFailed?: boolean;
-  /** Error message when fetchFailed is true */
-  fetchError?: string;
-}
-
 /**
- * Response for async worktree creation (when taskId is provided)
+ * Response for async worktree creation.
  */
 export interface CreateWorktreeAsyncResponse {
   accepted: true;
@@ -303,8 +282,7 @@ export interface BranchCommitsResponse {
 }
 
 export async function fetchBranchCommits(sessionId: string, baseRef: string): Promise<BranchCommitsResponse> {
-  // Cast needed: query params not exposed in Hono RPC type for this route
-  const res = await (api.sessions[':sessionId'].commits.$get as (opts: { param: { sessionId: string }; query: { base: string } }) => Promise<Response>)({
+  const res = await api.sessions[':sessionId'].commits.$get({
     param: { sessionId },
     query: { base: baseRef },
   });
@@ -321,7 +299,7 @@ export async function fetchBranchCommits(sessionId: string, baseRef: string): Pr
 export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest
-): Promise<CreateWorktreeResponse> {
+): Promise<CreateWorktreeAsyncResponse> {
   const res = await api.repositories[':id'].worktrees.$post({
     param: { id: repositoryId },
     json: request,
@@ -330,8 +308,7 @@ export async function createWorktree(
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to create worktree');
   }
-  // Server returns different shapes based on taskId presence; Hono RPC infers the async shape
-  return res.json() as unknown as Promise<CreateWorktreeResponse>;
+  return res.json() as Promise<CreateWorktreeAsyncResponse>;
 }
 
 /**

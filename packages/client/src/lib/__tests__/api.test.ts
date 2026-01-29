@@ -332,10 +332,7 @@ describe('API Client', () => {
   describe('createWorktree (legacy sync)', () => {
     it('should create worktree successfully with custom mode', async () => {
       const { createWorktree } = await import('../api');
-      const mockResponse = {
-        worktree: { path: '/path/to/worktree', branch: 'feature-1' },
-        session: null,
-      };
+      const mockResponse = { accepted: true };
       mockFetch.mockResolvedValue(createMockResponse(mockResponse));
 
       const result = await createWorktree('repo-id', { mode: 'custom', branch: 'feature-1', taskId: 'test-task-id' });

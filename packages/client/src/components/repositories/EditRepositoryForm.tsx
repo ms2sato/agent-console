@@ -3,10 +3,9 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as v from 'valibot';
-import type { Repository } from '@agent-console/shared';
+import type { Repository, UpdateRepositoryRequest } from '@agent-console/shared';
 import {
   updateRepository,
-  type UpdateRepositoryRequest,
   fetchRepositorySlackIntegration,
   updateRepositorySlackIntegration,
   testRepositorySlackIntegration,
