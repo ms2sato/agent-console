@@ -1,4 +1,4 @@
-import type { JobPayload, JobStatus as SharedJobStatus, JobType } from '@agent-console/shared';
+import type { JobPayload, JobPayloadParseError, JobStatus as SharedJobStatus, JobType } from '@agent-console/shared';
 import { Hono } from 'hono';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
@@ -13,7 +13,7 @@ const logger = createLogger('api:jobs');
 interface JobResponse {
   id: string;
   type: JobType;
-  payload: JobPayload;
+  payload: JobPayload | JobPayloadParseError;
   status: SharedJobStatus;
   priority: number;
   attempts: number;
@@ -26,13 +26,13 @@ interface JobResponse {
 }
 
 function toJobResponse(job: JobRecord): JobResponse {
-  let parsedPayload: JobPayload;
+  let parsedPayload: JobPayload | JobPayloadParseError;
   try {
     parsedPayload = JSON.parse(job.payload) as JobPayload;
   } catch (error) {
     // Log warning and include parse error indicator for debugging
     logger.warn({ jobId: job.id, err: error }, 'Failed to parse job payload');
-    parsedPayload = { _parseError: true, raw: job.payload } as unknown as JobPayload;
+    parsedPayload = { _parseError: true, raw: job.payload };
   }
 
   return {
