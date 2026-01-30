@@ -469,5 +469,58 @@ index abc1234..def5678 100644
 
       await expect(removeWorktree('/path/to/worktree', '/repo')).rejects.toBeInstanceOf(GitError);
     });
+
+    it('should throw GitError when removal fails without force even if .git error', async () => {
+      setMockSpawnResult('', 128, "fatal: '.git' does not exist");
+      const { removeWorktree, GitError } = await getGitModule();
+
+      await expect(removeWorktree('/path/to/worktree', '/repo')).rejects.toBeInstanceOf(GitError);
+    });
+
+    it('should fall back to manual cleanup when force is true and .git does not exist', async () => {
+      // First call fails with .git error, second call (worktree prune) succeeds
+      let callCount = 0;
+      (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+        spawnCalls.push({ args, options: options || {} });
+        callCount++;
+        if (callCount === 1) {
+          // First call: git worktree remove fails
+          return {
+            exited: Promise.resolve(128),
+            stdout: new ReadableStream({
+              start(controller) { controller.close(); },
+            }),
+            stderr: new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("fatal: '.git' does not exist"));
+                controller.close();
+              },
+            }),
+          };
+        }
+        // Second call: git worktree prune succeeds
+        return {
+          exited: Promise.resolve(0),
+          stdout: new ReadableStream({
+            start(controller) { controller.close(); },
+          }),
+          stderr: new ReadableStream({
+            start(controller) { controller.close(); },
+          }),
+        };
+      }) as typeof Bun.spawn;
+
+      // Mock fs.access and fs.rm via the worktree path not existing on disk
+      // Since /path/to/worktree doesn't exist, fs.access will reject and rm won't be called
+      const { removeWorktree } = await getGitModule();
+
+      await removeWorktree('/path/to/worktree', '/repo', { force: true });
+
+      // Should have called git worktree remove first, then git worktree prune
+      expect(spawnCalls.length).toBe(2);
+      expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', '/path/to/worktree', '--force', '--force']);
+      expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune']);
+      expect(spawnCalls[1].options.cwd).toBe('/repo');
+    });
   });
 });

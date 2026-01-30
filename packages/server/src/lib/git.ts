@@ -307,7 +307,26 @@ export async function removeWorktree(
     args.push('--force', '--force');
   }
 
-  await git(args, cwd);
+  try {
+    await git(args, cwd);
+  } catch (error) {
+    // When force is enabled and the .git file is missing (race condition where
+    // another process already partially cleaned up), fall back to manual cleanup.
+    if (
+      options?.force &&
+      error instanceof GitError &&
+      error.stderr.includes('.git')
+    ) {
+      const fs = await import('node:fs/promises');
+      const pathExists = await fs.access(worktreePath).then(() => true, () => false);
+      if (pathExists) {
+        await fs.rm(worktreePath, { recursive: true, force: true });
+      }
+      await git(['worktree', 'prune'], cwd);
+      return;
+    }
+    throw error;
+  }
 }
 
 // ============================================================
