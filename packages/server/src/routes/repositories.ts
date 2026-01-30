@@ -34,6 +34,14 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('api:repositories');
 
+// Guard against concurrent deletion of the same worktree
+const deletionsInProgress = new Set<string>();
+
+/** Get the deletion guard set. Exported for testing only. */
+export function _getDeletionsInProgress(): Set<string> {
+  return deletionsInProgress;
+}
+
 async function withRepositoryRemote(repository: Repository): Promise<Repository> {
   const remoteUrl = await getRemoteUrl(repository.path);
   return {
@@ -396,10 +404,17 @@ const repositories = new Hono()
       throw new ValidationError('Worktree path is outside managed directory');
     }
 
+    // Guard against concurrent deletion of the same worktree
+    if (deletionsInProgress.has(worktreePath)) {
+      return c.json({ error: 'Deletion already in progress' }, 409);
+    }
+
     // Verify this is actually a worktree of this repository
     if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
       throw new ValidationError('Invalid worktree path for this repository');
     }
+
+    deletionsInProgress.add(worktreePath);
 
     // Check for force flag and taskId in query
     const force = c.req.query('force') === 'true';
@@ -473,6 +488,8 @@ const repositories = new Hono()
             error: errorMessage,
             gitStatus,
           });
+        } finally {
+          deletionsInProgress.delete(worktreePath);
         }
       })();
 
@@ -481,24 +498,28 @@ const repositories = new Hono()
     }
 
     // Synchronous deletion (backward compatible)
-    // Try to remove worktree first
-    const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+    try {
+      // Try to remove worktree first
+      const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
-    if (!result.success) {
-      // Worktree deletion failed - don't touch sessions
-      throw new ValidationError(result.error || 'Failed to remove worktree');
-    }
-
-    // Worktree deletion succeeded - now clean up any associated sessions
-    const sessionManager = getSessionManager();
-    const sessions = sessionManager.getAllSessions();
-    for (const session of sessions) {
-      if (session.locationPath === worktreePath) {
-        await sessionManager.deleteSession(session.id);
+      if (!result.success) {
+        // Worktree deletion failed - don't touch sessions
+        throw new ValidationError(result.error || 'Failed to remove worktree');
       }
-    }
 
-    return c.json({ success: true });
+      // Worktree deletion succeeded - now clean up any associated sessions
+      const sessionManager = getSessionManager();
+      const sessions = sessionManager.getAllSessions();
+      for (const session of sessions) {
+        if (session.locationPath === worktreePath) {
+          await sessionManager.deleteSession(session.id);
+        }
+      }
+
+      return c.json({ success: true });
+    } finally {
+      deletionsInProgress.delete(worktreePath);
+    }
   })
   // ===========================================================================
   // GitHub Issue Routes
