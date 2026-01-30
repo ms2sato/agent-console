@@ -703,7 +703,10 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
-  const { addTask, markAsFailed } = useWorktreeDeletionTasksContext();
+  const { tasks: deletionTasks, addTask, markAsFailed } = useWorktreeDeletionTasksContext();
+  const isDeleting = deletionTasks.some(
+    (t) => t.worktreePath === worktree.path && t.status === 'deleting'
+  );
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
@@ -839,9 +842,10 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
         {!worktree.isMain && (
           <button
             onClick={handleDeleteWorktree}
+            disabled={isDeleting}
             className="btn btn-danger text-xs"
           >
-            Delete
+            {isDeleting ? 'Deleting...' : 'Delete'}
           </button>
         )}
       </div>

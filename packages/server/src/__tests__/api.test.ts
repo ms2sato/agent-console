@@ -1646,6 +1646,34 @@ describe('API Routes Integration', () => {
         // Path validation catches this as "outside managed directory" before checking if it's a worktree
         expect(body.error).toContain('outside managed directory');
       });
+
+      it('should return 409 when deletion is already in progress for the same worktree', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // The worktree path must be within the managed repositories directory
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
+
+        // Pre-populate the deletion guard to simulate an in-progress deletion
+        const { _getDeletionsInProgress } = await import('../routes/repositories.js');
+        const deletionsInProgress = _getDeletionsInProgress();
+        deletionsInProgress.add(worktreePath);
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as { error: string };
+          expect(body.error).toBe('Deletion already in progress');
+        } finally {
+          deletionsInProgress.clear();
+        }
+      });
     });
   });
 
