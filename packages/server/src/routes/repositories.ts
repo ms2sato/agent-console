@@ -409,12 +409,19 @@ const repositories = new Hono()
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
-    // Verify this is actually a worktree of this repository
-    if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
-      throw new ValidationError('Invalid worktree path for this repository');
-    }
-
+    // Add to guard immediately before any async operations to prevent race conditions
     deletionsInProgress.add(worktreePath);
+
+    // Verify this is actually a worktree of this repository
+    try {
+      if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
+        deletionsInProgress.delete(worktreePath);
+        throw new ValidationError('Invalid worktree path for this repository');
+      }
+    } catch (error) {
+      deletionsInProgress.delete(worktreePath);
+      throw error;
+    }
 
     // Check for force flag and taskId in query
     const force = c.req.query('force') === 'true';
@@ -430,9 +437,10 @@ const repositories = new Hono()
 
       // Execute deletion in background (fire-and-forget)
       (async () => {
-        const { broadcastToApp } = await import('../websocket/routes.js');
-
         try {
+          // Import broadcast function lazily to avoid circular dependencies
+          const { broadcastToApp } = await import('../websocket/routes.js');
+
           // Try to remove worktree first
           const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
@@ -472,22 +480,29 @@ const repositories = new Hono()
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
 
-          // Capture git status for diagnostics
-          let gitStatus: string | undefined;
+          // Try to broadcast failure - import may have been the cause of the error
           try {
-            const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
-            gitStatus = gitStatusResult.stdout.toString();
-          } catch {
-            // If git status fails, just omit the field
-          }
+            const { broadcastToApp } = await import('../websocket/routes.js');
 
-          broadcastToApp({
-            type: 'worktree-deletion-failed',
-            taskId,
-            sessionId: sessionId || '',
-            error: errorMessage,
-            gitStatus,
-          });
+            // Capture git status for diagnostics
+            let gitStatus: string | undefined;
+            try {
+              const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+              gitStatus = gitStatusResult.stdout.toString();
+            } catch {
+              // If git status fails, just omit the field
+            }
+
+            broadcastToApp({
+              type: 'worktree-deletion-failed',
+              taskId,
+              sessionId: sessionId || '',
+              error: errorMessage,
+              gitStatus,
+            });
+          } catch {
+            // If broadcast fails, we've already logged the error above
+          }
         } finally {
           deletionsInProgress.delete(worktreePath);
         }

@@ -318,10 +318,7 @@ export async function removeWorktree(
       error.stderr.includes('.git')
     ) {
       const fs = await import('node:fs/promises');
-      const pathExists = await fs.access(worktreePath).then(() => true, () => false);
-      if (pathExists) {
-        await fs.rm(worktreePath, { recursive: true, force: true });
-      }
+      await fs.rm(worktreePath, { recursive: true, force: true });
       await git(['worktree', 'prune'], cwd);
       return;
     }
