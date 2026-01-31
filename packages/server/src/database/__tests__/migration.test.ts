@@ -5,13 +5,15 @@
  * Uses in-memory SQLite database and memfs for JSON files.
  *
  * Note: These tests use migrateFromJson directly with ':memory:' database
- * because initializeDatabase(':memory:') skips JSON migration.
+ * because createDb() skips JSON migration.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { initializeDatabase, closeDatabase, migrateFromJson } from '../connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../schema.js';
+import { createDatabaseForTest, migrateFromJson } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -81,10 +83,14 @@ const TEST_AGENTS = [
 ];
 
 describe('migration', () => {
-  beforeEach(async () => {
-    // Close any existing database connection from previous tests
-    await closeDatabase();
+  let db: Kysely<Database> | null = null;
 
+  async function createDb(): Promise<Kysely<Database>> {
+    db = await createDatabaseForTest();
+    return db;
+  }
+
+  beforeEach(async () => {
     // Setup memfs with config directory
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
@@ -93,7 +99,10 @@ describe('migration', () => {
   });
 
   afterEach(async () => {
-    await closeDatabase();
+    if (db) {
+      await db.destroy();
+      db = null;
+    }
     cleanupMemfs();
   });
 
@@ -104,7 +113,7 @@ describe('migration', () => {
       fs.writeFileSync(reposJsonPath, JSON.stringify(TEST_REPOSITORIES));
 
       // Initialize in-memory database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
 
       // Manually trigger JSON migration (skipped for :memory: in initializeDatabase)
       await migrateFromJson(db);
@@ -127,7 +136,7 @@ describe('migration', () => {
       expect(fs.existsSync(reposJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify no data in database
@@ -137,7 +146,7 @@ describe('migration', () => {
 
     it('should skip if SQLite already has data', async () => {
       // First initialize database and add some data
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await db
         .insertInto('repositories')
         .values({
@@ -179,7 +188,7 @@ describe('migration', () => {
       fs.writeFileSync(reposJsonPath, JSON.stringify(legacyRepositories));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify repository was migrated with createdAt field
@@ -209,7 +218,7 @@ describe('migration', () => {
       fs.writeFileSync(reposJsonPath, JSON.stringify(mixedRepositories));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify repository uses createdAt (not registeredAt)
@@ -227,7 +236,7 @@ describe('migration', () => {
       fs.writeFileSync(agentsJsonPath, JSON.stringify(customAgents));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify only custom agent was migrated
@@ -247,7 +256,7 @@ describe('migration', () => {
       fs.writeFileSync(agentsJsonPath, JSON.stringify(TEST_AGENTS));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify only custom agent was migrated (built-in was filtered)
@@ -278,7 +287,7 @@ describe('migration', () => {
       fs.writeFileSync(agentsJsonPath, JSON.stringify(invalidAgents));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify only valid agent was migrated
@@ -303,7 +312,7 @@ describe('migration', () => {
       fs.writeFileSync(agentsJsonPath, JSON.stringify(legacyAgents));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify agent was migrated with createdAt field
@@ -335,7 +344,7 @@ describe('migration', () => {
       fs.writeFileSync(agentsJsonPath, JSON.stringify(mixedAgents));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify agent uses createdAt (not registeredAt)
@@ -350,7 +359,7 @@ describe('migration', () => {
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify no data in database
@@ -366,7 +375,7 @@ describe('migration', () => {
       fs.writeFileSync(sessionsJsonPath, JSON.stringify(TEST_SESSIONS));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify sessions were migrated
@@ -393,7 +402,7 @@ describe('migration', () => {
       expect(fs.existsSync(sessionsJsonPath)).toBe(false);
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify no data in database
@@ -403,7 +412,7 @@ describe('migration', () => {
 
     it('should skip if SQLite already has data', async () => {
       // First initialize database and add some data
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await db
         .insertInto('sessions')
         .values({
@@ -440,7 +449,7 @@ describe('migration', () => {
       fs.writeFileSync(sessionsJsonPath, 'not valid json {{{');
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
 
       // migrateFromJson should fail due to JSON parse error
       await expect(migrateFromJson(db)).rejects.toThrow();
@@ -452,7 +461,7 @@ describe('migration', () => {
       fs.writeFileSync(sessionsJsonPath, JSON.stringify([]));
 
       // Initialize database
-      const db = await initializeDatabase(':memory:');
+      const db = await createDb();
       await migrateFromJson(db);
 
       // Verify JSON file was renamed to .migrated

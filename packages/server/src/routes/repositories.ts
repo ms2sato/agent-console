@@ -31,6 +31,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js'
 import { vValidator } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('api:repositories');
 
@@ -50,7 +51,7 @@ async function withRepositoryRemote(repository: Repository): Promise<Repository>
   };
 }
 
-const repositories = new Hono()
+const repositories = new Hono<AppBindings>()
   // Get all repositories
   .get('/', async (c) => {
     const repositoryManager = getRepositoryManager();
@@ -152,7 +153,8 @@ const repositories = new Hono()
     // Clean up Slack integration before deleting repository
     // This prevents orphaned integration records in the database
     try {
-      await deleteRepositorySlackIntegration(repoId);
+      const db = c.get('appContext')?.db;
+      await deleteRepositorySlackIntegration(repoId, db);
     } catch {
       // Ignore errors - integration may not exist, which is fine
       logger.debug({ repositoryId: repoId }, 'No Slack integration to cleanup for repository');
@@ -654,7 +656,8 @@ const repositories = new Hono()
   // Get Slack integration for a repository
   .get('/:id/integrations/slack', async (c) => {
     const repositoryId = c.req.param('id');
-    const integration = await getRepositorySlackIntegration(repositoryId);
+    const db = c.get('appContext')?.db;
+    const integration = await getRepositorySlackIntegration(repositoryId, db);
 
     if (!integration) {
       throw new NotFoundError('Slack integration not found for this repository');
@@ -680,7 +683,8 @@ const repositories = new Hono()
       const integration = await upsertRepositorySlackIntegration(
         repositoryId,
         body.webhookUrl,
-        body.enabled
+        body.enabled,
+        c.get('appContext')?.db
       );
 
       return c.json(integration);
@@ -689,7 +693,8 @@ const repositories = new Hono()
   // Delete Slack integration for a repository
   .delete('/:id/integrations/slack', async (c) => {
     const repositoryId = c.req.param('id');
-    const deleted = await deleteRepositorySlackIntegration(repositoryId);
+    const db = c.get('appContext')?.db;
+    const deleted = await deleteRepositorySlackIntegration(repositoryId, db);
 
     if (!deleted) {
       throw new NotFoundError('Slack integration not found for this repository');

@@ -59,6 +59,8 @@ export const serverConfig = {
    * Example: APP_URL=https://agent-console.example.com
    */
   APP_URL: process.env.APP_URL || '',
+  /** GitHub webhook secret for inbound integrations */
+  GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',
 } as const;
 
 /**

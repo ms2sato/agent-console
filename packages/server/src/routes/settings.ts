@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { serverConfig } from '../lib/server-config.js';
-
+import type { AppBindings } from '../app-context.js';
 // ===========================================================================
 // Notification Settings
 // ===========================================================================
 
-const settings = new Hono()
+const settings = new Hono<AppBindings>()
   // Get notification configuration status
   .get('/notifications/status', (c) => {
     const baseUrl = serverConfig.APP_URL;

@@ -77,15 +77,12 @@ function setupMockSystemCapabilities(vscodeAvailable: boolean = true) {
 
 describe('Client-Server Boundary: System API', () => {
   let app: Hono;
-  let bridge: ReturnType<typeof createFetchBridge>;
+  let bridge: ReturnType<typeof createFetchBridge> | null = null;
 
   beforeEach(async () => {
     // Reset spawn tracking
     spawnCalls.length = 0;
     setupSpawnMock();
-
-    // Reset system capabilities singleton before setup
-    resetSystemCapabilities();
 
     // Set up test environment (memfs, database, etc.)
     await setupTestEnvironment();
@@ -101,6 +98,7 @@ describe('Client-Server Boundary: System API', () => {
 
     // Set up system capabilities BEFORE creating the app
     // because api.ts calls getSystemCapabilities() at import time for /api/config
+    resetSystemCapabilities();
     setupMockSystemCapabilities(true);
 
     // Create test app with all routes
@@ -111,7 +109,7 @@ describe('Client-Server Boundary: System API', () => {
   });
 
   afterEach(async () => {
-    bridge.restore();
+    bridge?.restore();
     resetSystemCapabilities();
     (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
     await cleanupTestEnvironment();

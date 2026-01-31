@@ -4,6 +4,8 @@
  * Provides explicit initialization and cleanup functions for the global job queue.
  * The job queue uses the same SQLite database as the rest of the application.
  */
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import { JobQueue } from './job-queue.js';
 import { getDatabase } from '../database/connection.js';
 import { createLogger } from '../lib/logger.js';
@@ -18,11 +20,14 @@ let jobQueueInstance: JobQueue | null = null;
  * @param options - Optional configuration
  * @returns The initialized JobQueue instance
  */
-export function initializeJobQueue(options?: { concurrency?: number }): JobQueue {
+export function initializeJobQueue(options?: {
+  concurrency?: number;
+  db?: Kysely<Database>;
+}): JobQueue {
   if (jobQueueInstance) {
     throw new Error('JobQueue already initialized');
   }
-  const db = getDatabase();
+  const db = options?.db ?? getDatabase();
   jobQueueInstance = new JobQueue(db, { concurrency: options?.concurrency ?? 4 });
   logger.info('JobQueue instance created');
   return jobQueueInstance;

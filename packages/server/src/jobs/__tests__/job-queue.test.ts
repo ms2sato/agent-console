@@ -1,24 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql } from 'kysely';
 import { JobQueue } from '../job-queue.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { Kysely } from 'kysely';
+import { createDatabaseForTest } from '../../database/connection.js';
 
 describe('JobQueue', () => {
   let jobQueue: JobQueue;
   let db: Kysely<Database>;
 
   beforeEach(async () => {
-    // Initialize database with migrations (creates jobs table via migration v3)
-    await initializeDatabase(':memory:');
-    db = getDatabase();
+    db = await createDatabaseForTest();
     jobQueue = new JobQueue(db);
   });
 
   afterEach(async () => {
     await jobQueue.stop();
-    await closeDatabase();
+    await db.destroy();
   });
 
   // ===========================================================================
@@ -676,28 +674,35 @@ describe('JobQueue', () => {
       expect((await jobQueue.getJob(job3))?.status).toBe('completed');
     });
 
-    it('should not allow duplicate claims when claimNextJob is called concurrently', async () => {
-      // Create a fresh queue
+    it('should not allow duplicate claims when processing concurrently at high load', async () => {
+      // Create a fresh queue with high concurrency to stress-test claim atomicity
       await jobQueue.stop();
-      jobQueue = new JobQueue(db, { concurrency: 1 });
+      jobQueue = new JobQueue(db, { concurrency: 10 });
 
-      // Create 3 jobs
-      await jobQueue.enqueue('test:job', { id: 1 });
-      await jobQueue.enqueue('test:job', { id: 2 });
-      await jobQueue.enqueue('test:job', { id: 3 });
+      // Track which jobs are processed and detect duplicates
+      const processedIds: number[] = [];
 
-      // Access private method for testing atomicity
-      const testAPI = jobQueue.__testOnly!;
-      const claimNextJob = testAPI.claimNextJob;
+      jobQueue.registerHandler<{ id: number }>('test:job', async (payload) => {
+        processedIds.push(payload.id);
+        // Simulate some work to increase chance of concurrent claims
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      });
 
-      // Call claimNextJob concurrently using Promise.all
-      const claims = await Promise.all([claimNextJob(), claimNextJob(), claimNextJob()]);
+      // Create many jobs to increase contention
+      const jobCount = 20;
+      for (let i = 0; i < jobCount; i++) {
+        await jobQueue.enqueue('test:job', { id: i });
+      }
 
-      // Each claim should return a unique job (no duplicates)
-      const claimedIds = claims.filter((c) => c !== null).map((c) => c!.id);
-      const uniqueIds = new Set(claimedIds);
+      await jobQueue.start();
 
-      expect(claimedIds.length).toBe(uniqueIds.size);
+      // Wait for all jobs to complete
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Each job should be processed exactly once (no duplicates)
+      const uniqueIds = new Set(processedIds);
+      expect(processedIds.length).toBe(uniqueIds.size);
+      expect(processedIds.length).toBe(jobCount);
     });
   });
 
@@ -870,7 +875,10 @@ describe('JobQueue', () => {
       expect(job).toBeNull();
     });
 
-    it('should clear retry timer when job is canceled', async () => {
+    it('should not retry after cancel even when scheduled for retry', async () => {
+      // This test verifies that canceling a job that is scheduled for retry
+      // prevents the retry from happening. This tests the observable behavior
+      // rather than internal timer state.
       let attempts = 0;
       jobQueue.registerHandler('retry-job', async () => {
         attempts++;
@@ -880,20 +888,24 @@ describe('JobQueue', () => {
       const id = await jobQueue.enqueue('retry-job', {}, { maxAttempts: 5 });
       await jobQueue.start();
 
-      // Wait for initial failure
+      // Wait for initial failure (job will be scheduled for retry)
       await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(attempts).toBe(1);
 
-      // Get the retry timers map
-      const testAPI = jobQueue.__testOnly!;
+      // Cancel the job while it's waiting for retry
+      const canceled = await jobQueue.cancelJob(id);
+      expect(canceled).toBe(true);
 
-      // Verify timer is set
-      expect(testAPI.retryTimers.has(id)).toBe(true);
+      // Wait well past the retry delay (default backoff is 1s for first retry)
+      // If the timer was not cleared, the handler would be called again
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      // Cancel the job
-      await jobQueue.cancelJob(id);
+      // Verify the job was never retried after cancellation
+      expect(attempts).toBe(1);
 
-      // Verify timer is cleared
-      expect(testAPI.retryTimers.has(id)).toBe(false);
+      // Verify the job is deleted (not just canceled but pending)
+      const job = await jobQueue.getJob(id);
+      expect(job).toBeNull();
     });
   });
 

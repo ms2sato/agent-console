@@ -1,11 +1,14 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { AgentActivityState, NotificationContext, RepositorySlackIntegration, OutboundTriggerEventType } from '@agent-console/shared';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../../database/schema.js';
+import { createDatabaseForTest } from '../../../database/connection.js';
 import * as repoSlackIntegrationService from '../repository-slack-integration-service.js';
 import { NotificationManager, type NotificationManagerOptions } from '../notification-manager.js';
 import type { SlackHandler } from '../slack-handler.js';
 
 describe('NotificationManager', () => {
+  let db: Kysely<Database>;
   // Mock SlackHandler with proper typing
   function createMockSlackHandler() {
     return {
@@ -64,7 +67,6 @@ describe('NotificationManager', () => {
 
   // Helper to create the parent repository record (required due to foreign key constraint)
   async function createTestRepository(repositoryId: string) {
-    const db = getDatabase();
     const now = new Date().toISOString();
     // Use ON CONFLICT to avoid duplicate key errors when called multiple times
     await db.insertInto('repositories').values({
@@ -77,12 +79,11 @@ describe('NotificationManager', () => {
   }
 
   beforeEach(async () => {
-    // Initialize in-memory database for each test
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
   });
 
   afterEach(async () => {
-    await closeDatabase();
+    await db.destroy();
   });
 
   // Helper to set up repository integration in the real database
@@ -92,7 +93,8 @@ describe('NotificationManager', () => {
     await repoSlackIntegrationService.create(
       integration.repositoryId,
       integration.webhookUrl,
-      integration.enabled
+      integration.enabled,
+      db
     );
   }
 
@@ -564,7 +566,8 @@ describe('NotificationManager', () => {
       await repoSlackIntegrationService.create(
         repoSlackIntegration.repositoryId,
         repoSlackIntegration.webhookUrl,
-        repoSlackIntegration.enabled
+        repoSlackIntegration.enabled,
+        db
       );
 
       const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {

@@ -47,6 +47,12 @@ export const JOB_TYPES = {
    * Payload: CleanupRepositoryPayload
    */
   CLEANUP_REPOSITORY: 'cleanup:repository',
+
+  /**
+   * Process an inbound integration webhook event.
+   * Payload: InboundEventJobPayload
+   */
+  INBOUND_EVENT_PROCESS: 'inbound-event:process',
 } as const;
 
 /**
@@ -77,12 +83,24 @@ export interface CleanupRepositoryPayload {
 }
 
 /**
+ * Payload for inbound-event:process job.
+ */
+export interface InboundEventJobPayload {
+  jobId: string;
+  service: string;
+  rawPayload: string;
+  headers: Record<string, string>;
+  receivedAt: string;
+}
+
+/**
  * Unified job payload type (union of all payload types).
  */
 export type JobPayload =
   | CleanupSessionOutputsPayload
   | CleanupWorkerOutputPayload
-  | CleanupRepositoryPayload;
+  | CleanupRepositoryPayload
+  | InboundEventJobPayload;
 
 /**
  * Error fallback when job payload JSON parsing fails (corrupted data).

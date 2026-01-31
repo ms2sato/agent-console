@@ -697,3 +697,20 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
   }
   return res.json() as Promise<NotificationStatus>;
 }
+
+// ===========================================================================
+// System Health
+// ===========================================================================
+
+export interface SystemHealth {
+  webhookSecretConfigured: boolean;
+  appUrlConfigured: boolean;
+}
+
+export async function fetchSystemHealth(): Promise<SystemHealth> {
+  const res = await fetch(`${API_BASE}/system/health`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch system health');
+  }
+  return res.json();
+}

@@ -22,28 +22,24 @@ mock.module('../../lib/pty-provider.js', () => ({
   },
 }));
 
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { JobQueue, resetJobQueue } from '../../jobs/index.js';
-import { createSessionRepository } from '../../repositories/index.js';
-import { initializeSessionManager, resetSessionManager, getSessionManager } from '../../services/session-manager.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
 import { resetAgentManager } from '../../services/agent-manager.js';
 import {
-  initializeNotificationServices,
-  shutdownNotificationServices,
   getNotificationManager,
+  setNotificationManager,
+  shutdownNotificationServices,
 } from '../../services/notifications/index.js';
+import { getSessionManager, resetSessionManager, setSessionManager } from '../../services/session-manager.js';
+import { resetRepositoryManager, setRepositoryManager } from '../../services/repository-manager.js';
+import { createTestContext, shutdownAppContext, type AppBindings, type AppContext } from '../../app-context.js';
 import { setupWebSocketRoutes } from '../routes.js';
 
 describe('WebSocket routes notifications', () => {
-  let testJobQueue: JobQueue | null = null;
+  let appContext: AppContext;
 
   beforeEach(async () => {
-    await closeDatabase();
-    await resetJobQueue();
-    resetSessionManager();
     resetRepositoryManager();
     resetAgentManager();
+    resetSessionManager();
     shutdownNotificationServices();
 
     setupMemfs({
@@ -55,32 +51,22 @@ describe('WebSocket routes notifications', () => {
     nextPtyPid = 10000;
 
     resetProcessMock();
-    await initializeDatabase(':memory:');
 
-    testJobQueue = new JobQueue(getDatabase());
-    const sessionRepository = await createSessionRepository();
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
-    await initializeRepositoryManager({ jobQueue: testJobQueue });
-    initializeNotificationServices();
+    appContext = await createTestContext();
+    setSessionManager(appContext.sessionManager);
+    setRepositoryManager(appContext.repositoryManager);
+    setNotificationManager(appContext.notificationManager);
   });
 
   afterEach(async () => {
-    shutdownNotificationServices();
-    resetSessionManager();
+    await shutdownAppContext(appContext, { resetSingletons: true });
     resetRepositoryManager();
     resetAgentManager();
-
-    if (testJobQueue) {
-      await testJobQueue.stop();
-      testJobQueue = null;
-    }
-
-    await closeDatabase();
     cleanupMemfs();
   });
 
   it('should include repository info for worktree session worker exits', async () => {
-    const app = new Hono();
+    const app = new Hono<AppBindings>();
     const upgradeWebSocket = (handler: (c: unknown) => unknown) => handler;
     await setupWebSocketRoutes(app, upgradeWebSocket);
 
@@ -113,7 +99,7 @@ describe('WebSocket routes notifications', () => {
   });
 
   it('should set repository info to null for quick session worker exits', async () => {
-    const app = new Hono();
+    const app = new Hono<AppBindings>();
     const upgradeWebSocket = (handler: (c: unknown) => unknown) => handler;
     await setupWebSocketRoutes(app, upgradeWebSocket);
 

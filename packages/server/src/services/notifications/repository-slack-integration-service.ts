@@ -4,6 +4,7 @@
  * This service provides CRUD operations for per-repository Slack webhook
  * configurations that override global notification settings.
  */
+import type { Kysely } from 'kysely';
 import { getDatabase } from '../../database/connection.js';
 import { createLogger } from '../../lib/logger.js';
 import type { RepositorySlackIntegration } from '@agent-console/shared';
@@ -11,6 +12,7 @@ import type {
   RepositorySlackIntegrationRow,
   NewRepositorySlackIntegration,
   RepositorySlackIntegrationUpdate,
+  Database,
 } from '../../database/schema.js';
 
 const logger = createLogger('repository-slack-integration-service');
@@ -30,15 +32,20 @@ function toRepositorySlackIntegration(row: RepositorySlackIntegrationRow): Repos
   };
 }
 
+function getDb(dbOverride?: Kysely<Database>): Kysely<Database> {
+  return dbOverride ?? getDatabase();
+}
+
 /**
  * Get Slack integration settings for a repository.
  * @param repositoryId - The repository ID to look up
  * @returns Integration settings if found, null otherwise
  */
 export async function getByRepositoryId(
-  repositoryId: string
+  repositoryId: string,
+  dbOverride?: Kysely<Database>
 ): Promise<RepositorySlackIntegration | null> {
-  const db = getDatabase();
+  const db = getDb(dbOverride);
   const row = await db
     .selectFrom('repository_slack_integrations')
     .selectAll()
@@ -63,9 +70,10 @@ export async function getByRepositoryId(
 export async function create(
   repositoryId: string,
   webhookUrl: string,
-  enabled: boolean = true
+  enabled: boolean = true,
+  dbOverride?: Kysely<Database>
 ): Promise<RepositorySlackIntegration> {
-  const db = getDatabase();
+  const db = getDb(dbOverride);
   const now = new Date().toISOString();
 
   const newIntegration: NewRepositorySlackIntegration = {
@@ -102,9 +110,10 @@ export async function create(
 export async function update(
   repositoryId: string,
   webhookUrl: string,
-  enabled?: boolean
+  enabled?: boolean,
+  dbOverride?: Kysely<Database>
 ): Promise<RepositorySlackIntegration> {
-  const db = getDatabase();
+  const db = getDb(dbOverride);
   const now = new Date().toISOString();
 
   const updates: RepositorySlackIntegrationUpdate = {
@@ -143,9 +152,10 @@ export async function update(
 export async function upsert(
   repositoryId: string,
   webhookUrl: string,
-  enabled: boolean = true
+  enabled: boolean = true,
+  dbOverride?: Kysely<Database>
 ): Promise<RepositorySlackIntegration> {
-  const db = getDatabase();
+  const db = getDb(dbOverride);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -179,8 +189,11 @@ export async function upsert(
  * @param repositoryId - The repository ID
  * @returns true if deleted, false if not found
  */
-export async function deleteIntegration(repositoryId: string): Promise<boolean> {
-  const db = getDatabase();
+export async function deleteIntegration(
+  repositoryId: string,
+  dbOverride?: Kysely<Database>
+): Promise<boolean> {
+  const db = getDb(dbOverride);
 
   const result = await db
     .deleteFrom('repository_slack_integrations')

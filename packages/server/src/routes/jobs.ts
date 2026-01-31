@@ -3,9 +3,9 @@ import { Hono } from 'hono';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
 import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('api:jobs');
-
 /**
  * Transform a JobRecord from database format (snake_case) to API response format (camelCase).
  * Also parses the payload JSON string.
@@ -51,7 +51,7 @@ function toJobResponse(job: JobRecord): JobResponse {
   };
 }
 
-const jobs = new Hono()
+const jobs = new Hono<AppBindings>()
   // Get jobs with optional filtering and pagination
   .get('/', async (c) => {
     const statusParam = c.req.query('status');

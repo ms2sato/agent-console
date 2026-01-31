@@ -7,10 +7,19 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getSystemCapabilities } from '../services/system-capabilities-service.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('system-routes');
 
-const system = new Hono()
+const system = new Hono<AppBindings>()
+  // Get system health status including webhook configuration
+  .get('/health', (c) => {
+    return c.json({
+      webhookSecretConfigured: serverConfig.GITHUB_WEBHOOK_SECRET !== '',
+      appUrlConfigured: serverConfig.APP_URL !== '',
+    });
+  })
   // Open a file or directory in the default application (Finder/Explorer)
   .post('/open', vValidator(SystemOpenRequestSchema), async (c) => {
     const { path } = c.req.valid('json');

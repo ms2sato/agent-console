@@ -13,6 +13,8 @@ import type {
   OutboundServiceHandler,
   NotificationContext,
 } from '@agent-console/shared';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
 import { getByRepositoryId } from './repository-slack-integration-service.js';
 
 const logger = createLogger('slack-handler');
@@ -55,11 +57,13 @@ interface SlackMessage {
  */
 export class SlackHandler implements OutboundServiceHandler {
   readonly integrationType = 'slack' as const;
+  private dbOverride?: Kysely<Database>;
 
   /**
    * Initialize the Slack handler.
    */
-  constructor() {
+  constructor(options?: { db?: Kysely<Database> }) {
+    this.dbOverride = options?.db;
     logger.info('Slack handler initialized');
   }
 
@@ -71,7 +75,7 @@ export class SlackHandler implements OutboundServiceHandler {
    * @returns true if Slack notifications can be sent for this repository
    */
   async canHandle(repositoryId: string): Promise<boolean> {
-    const integration = await getByRepositoryId(repositoryId);
+    const integration = await getByRepositoryId(repositoryId, this.dbOverride);
     return integration !== null && integration.enabled;
   }
 
@@ -120,7 +124,7 @@ export class SlackHandler implements OutboundServiceHandler {
    * Get webhook URL for a repository, throwing if not configured or disabled.
    */
   private async getWebhookUrl(repositoryId: string): Promise<string> {
-    const integration = await getByRepositoryId(repositoryId);
+    const integration = await getByRepositoryId(repositoryId, this.dbOverride);
     if (!integration || !integration.enabled) {
       throw new Error('Slack integration not configured or disabled');
     }
