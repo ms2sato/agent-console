@@ -28,7 +28,6 @@ import { WorkerErrorRecovery } from './WorkerErrorRecovery';
  */
 interface TerminalState {
   isMounted: boolean;           // Is xterm.js initialized?
-  pendingHistory: string | null; // History that arrived before xterm.js was ready
   cacheProcessed: boolean;      // Has loadTerminalState() completed (success or failure)?
   historyRequested: boolean;    // Has history been requested? (prevent duplicate requests)
   requestedWithOffset: number;  // The offset used when history was requested
@@ -55,7 +54,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const serializeAddonRef = useRef<SerializeAddon | null>(null);
   const stateRef = useRef<TerminalState>({
     isMounted: false,
-    pendingHistory: null,
     cacheProcessed: false,
     historyRequested: false,
     requestedWithOffset: 0,
@@ -156,11 +154,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     const terminal = terminalRef.current;
     if (!terminal) return;
-
-    if (!stateRef.current.isMounted) {
-      stateRef.current.pendingHistory = data;
-      return;
-    }
 
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
@@ -504,7 +497,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const currentMountGeneration = stateRef.current.mountGeneration;
       stateRef.current = {
         isMounted: false,
-        pendingHistory: null,
         cacheProcessed: false,
         historyRequested: false,
         requestedWithOffset: 0,
