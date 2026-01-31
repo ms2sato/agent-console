@@ -10,6 +10,7 @@ import { DiffIcon } from '../Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
+import { sendInput } from '../../lib/worker-websocket';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
 import type { Session, Worker, AgentWorker, AgentActivityState, WorkerMessage } from '@agent-console/shared';
@@ -464,6 +465,47 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
+  const injectMessagePrompt = useCallback(() => {
+    if (!activeTab || activeTab.workerType !== 'agent') return;
+
+    const otherWorkers = session.workers
+      .filter(w => w.id !== activeTab.id && w.type !== 'git-diff');
+
+    if (otherWorkers.length === 0) return;
+
+    const baseUrl = window.location.origin;
+    const workerList = otherWorkers
+      .map(w => `  - "${w.name}" (id: ${w.id})`)
+      .join('\n');
+
+    const prompt = `You can communicate with other workers in this session using the following REST API:
+
+**Send a message to another worker:**
+\`\`\`
+curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages \\
+  -H 'Content-Type: application/json' \\
+  -d '{"toWorkerId":"<WORKER_ID>","content":"<YOUR_MESSAGE>"}'
+\`\`\`
+
+**Read messages from other workers:**
+\`\`\`
+curl ${baseUrl}/api/sessions/${sessionId}/messages
+\`\`\`
+
+**List all workers in this session (to get updated worker IDs):**
+\`\`\`
+curl ${baseUrl}/api/sessions/${sessionId}/workers
+\`\`\`
+
+Currently available workers in this session:
+${workerList}
+
+Messages you send will be injected into the target worker's terminal as: [From ${activeTab.name}]: <your message>
+`;
+
+    sendInput(sessionId, activeTab.id, prompt);
+  }, [activeTab, session.workers, sessionId]);
+
   const handleTabClick = (tabId: string) => {
     // Use startTransition to mark this update as non-urgent
     // This keeps the UI responsive during the state update
@@ -610,6 +652,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {formatPath(session.locationPath)}
         </span>
+        {/* Inject message communication prompt button (only for agent tab with other workers) */}
+        {activeTab?.workerType === 'agent' && session.workers.filter(w => w.id !== activeTab.id && w.type !== 'git-diff').length > 0 && (
+          <button
+            onClick={injectMessagePrompt}
+            className="text-xs px-2 py-0.5 rounded font-medium bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 transition-colors"
+            title="Inject inter-worker message API instructions into this agent"
+          >
+            Msg Prompt
+          </button>
+        )}
         {/* Activity state indicator (only for agent tab) */}
         {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
