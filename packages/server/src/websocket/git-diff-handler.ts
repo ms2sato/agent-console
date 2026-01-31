@@ -145,28 +145,28 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
     _sessionId: string,
     workerId: string,
     locationPath: string,
-    currentBaseCommit: string,
     message: string
   ): Promise<void> {
     try {
       const parsed: GitDiffClientMessage = JSON.parse(message);
       const connectionKey = workerId;
       const state = activeConnections.get(connectionKey);
-      const currentTargetRef = state?.targetRef ?? 'working-dir';
+      if (!state) {
+        sendError(ws, 'No active connection for this worker');
+        return;
+      }
+      const currentTargetRef = state.targetRef;
 
       switch (parsed.type) {
         case 'refresh':
-          await sendDiffData(ws, locationPath, currentBaseCommit, currentTargetRef);
+          await sendDiffData(ws, locationPath, state.baseCommit, currentTargetRef);
           break;
 
         case 'set-base-commit': {
           // Resolve the ref to a commit hash
           const resolved = await resolveRef(parsed.ref, locationPath);
           if (resolved) {
-            // Update stored baseCommit
-            if (state) {
-              state.baseCommit = resolved;
-            }
+            state.baseCommit = resolved;
             await sendDiffData(ws, locationPath, resolved, currentTargetRef);
           } else {
             sendError(ws, `Invalid ref: ${parsed.ref}`);
@@ -189,11 +189,8 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
             }
           }
 
-          // Update stored targetRef
-          if (state) {
-            state.targetRef = targetRef;
-          }
-          await sendDiffData(ws, locationPath, currentBaseCommit, targetRef);
+          state.targetRef = targetRef;
+          await sendDiffData(ws, locationPath, state.baseCommit, targetRef);
           break;
         }
 

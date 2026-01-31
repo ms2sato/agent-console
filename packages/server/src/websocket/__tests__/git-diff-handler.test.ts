@@ -57,6 +57,18 @@ describe('GitDiffHandler', () => {
     handlers = createGitDiffHandlers(deps);
   });
 
+  /** Helper to establish a connection before sending messages */
+  async function connectWorker(baseCommit: string = 'base-commit'): Promise<void> {
+    await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', baseCommit);
+    sentMessages = [];
+    mockGetDiffData.mockClear();
+  }
+
+  /** Helper to send a message to the connected worker */
+  async function sendMessage(message: string): Promise<void> {
+    await handlers.handleMessage(mockWs, 'session-1', 'worker-1', '/repo/path', message);
+  }
+
   describe('handleConnection', () => {
     it('should send initial diff data on connection', async () => {
       await handlers.handleConnection(
@@ -144,29 +156,22 @@ describe('GitDiffHandler', () => {
   });
 
   describe('handleMessage', () => {
+    describe('without active connection', () => {
+      it('should send error when no connection exists', async () => {
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+        expect(sentMessages.length).toBe(1);
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('diff-error');
+        expect(sentMsg).toHaveProperty('error', 'No active connection for this worker');
+      });
+    });
+
     describe('refresh message', () => {
       it('should send updated diff data on refresh', async () => {
-        // First establish a connection to set up connection state
-        await handlers.handleConnection(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'current-base'
-        );
-        sentMessages = []; // Clear connection message
-        mockGetDiffData.mockClear();
+        await connectWorker('current-base');
 
-        const message = JSON.stringify({ type: 'refresh' });
-
-        await handlers.handleMessage(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'current-base',
-          message
-        );
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
 
         expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base', 'working-dir');
         expect(sentMessages.length).toBe(1);
@@ -178,27 +183,9 @@ describe('GitDiffHandler', () => {
 
     describe('set-base-commit message', () => {
       it('should resolve ref and send diff data for valid ref', async () => {
-        // First establish a connection to set up connection state
-        await handlers.handleConnection(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'old-base'
-        );
-        sentMessages = []; // Clear connection message
-        mockGetDiffData.mockClear();
+        await connectWorker('old-base');
 
-        const message = JSON.stringify({ type: 'set-base-commit', ref: 'main' });
-
-        await handlers.handleMessage(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'old-base',
-          message
-        );
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'main' }));
 
         expect(mockResolveRef).toHaveBeenCalledWith('main', '/repo/path');
         expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
@@ -208,37 +195,56 @@ describe('GitDiffHandler', () => {
       });
 
       it('should send error for invalid ref', async () => {
-        const message = JSON.stringify({ type: 'set-base-commit', ref: 'invalid-branch' });
+        await connectWorker('old-base');
 
-        await handlers.handleMessage(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'old-base',
-          message
-        );
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'invalid-branch' }));
 
         expect(mockResolveRef).toHaveBeenCalledWith('invalid-branch', '/repo/path');
         expect(mockGetDiffData).not.toHaveBeenCalled();
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-error');
-        expect(sentMsg).toHaveProperty('error');
         expect((sentMsg as { error: string }).error).toContain('Invalid ref');
+      });
+    });
+
+    describe('refresh after set-base-commit', () => {
+      it('should use updated base commit from state', async () => {
+        await connectWorker('old-base');
+
+        // Update base commit
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'main' }));
+        sentMessages = [];
+        mockGetDiffData.mockClear();
+
+        // Refresh should use updated base, not 'old-base'
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
+      });
+    });
+
+    describe('set-target-commit after set-base-commit', () => {
+      it('should use updated base commit when sending diff data', async () => {
+        await connectWorker('old-base');
+
+        // Update base commit
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'main' }));
+        sentMessages = [];
+        mockGetDiffData.mockClear();
+
+        // Set target should use updated base, not 'old-base'
+        await sendMessage(JSON.stringify({ type: 'set-target-commit', ref: 'HEAD' }));
+
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'resolved-commit-hash');
       });
     });
 
     describe('invalid message', () => {
       it('should send error for invalid JSON', async () => {
-        await handlers.handleMessage(
-          mockWs,
-          'session-1',
-          'worker-1',
-          '/repo/path',
-          'base',
-          'not valid json'
-        );
+        await connectWorker();
+
+        await sendMessage('not valid json');
 
         expect(sentMessages.length).toBe(1);
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);

@@ -446,8 +446,6 @@ export async function setupWebSocketRoutes(
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
 
-      // Track current baseCommit for git-diff workers (can be updated via set-base-commit message)
-      let currentGitDiffBaseCommit: string | null = null;
       // Track connection ID for this WebSocket (used to detach callbacks on close)
       let connectionId: string | null = null;
 
@@ -614,13 +612,12 @@ export async function setupWebSocketRoutes(
 
           // Handle git-diff workers differently
           if (worker.type === 'git-diff') {
-            currentGitDiffBaseCommit = (worker as GitDiffWorker).baseCommit;
             handleGitDiffConnection(
               ws,
               sessionId,
               workerId,
               session.locationPath,
-              currentGitDiffBaseCommit
+              (worker as GitDiffWorker).baseCommit
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff connection');
               // Send error to client and close WebSocket on critical connection errors
@@ -669,7 +666,6 @@ export async function setupWebSocketRoutes(
               sessionId,
               workerId,
               session.locationPath,
-              currentGitDiffBaseCommit || (worker as GitDiffWorker).baseCommit,
               data
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff message');
