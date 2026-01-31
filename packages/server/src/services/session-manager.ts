@@ -400,7 +400,11 @@ export class SessionManager {
 
         // Inject message into target worker's PTY
         const injectionText = `[From ${fromWorker.name}]: ${detected.content}\n`;
-        this.writeWorkerInput(sessionId, targetWorker.id, injectionText);
+        const injected = this.writeWorkerInput(sessionId, targetWorker.id, injectionText);
+        if (!injected) {
+          logger.warn({ sessionId, targetWorkerId: targetWorker.id }, 'Failed to inject worker message (PTY inactive)');
+          continue;
+        }
 
         // Store and broadcast
         this.messageService.addMessage(message);
@@ -424,9 +428,11 @@ export class SessionManager {
     const effectiveFromWorkerId = fromWorkerId ?? 'user';
     if (fromWorkerId) {
       const fromWorker = session.workers.get(fromWorkerId);
-      if (fromWorker) {
-        fromWorkerName = fromWorker.name;
+      if (!fromWorker) {
+        logger.warn({ sessionId, fromWorkerId }, 'Source worker not found');
+        return null;
       }
+      fromWorkerName = fromWorker.name;
     }
 
     const message: WorkerMessage = {
@@ -442,7 +448,11 @@ export class SessionManager {
 
     // Inject message into target worker's PTY
     const injectionText = `[From ${fromWorkerName}]: ${content}\n`;
-    this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+    const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+    if (!injected) {
+      logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
+      return null;
+    }
 
     // Store and broadcast
     this.messageService.addMessage(message);

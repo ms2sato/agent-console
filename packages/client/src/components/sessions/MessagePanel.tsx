@@ -1,47 +1,60 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { WorkerMessage, Worker } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
 
 interface MessagePanelProps {
   sessionId: string;
   workers: Worker[];
-  /** New message received via WebSocket */
+  activeWorkerId: string | null;
   newMessage: WorkerMessage | null;
 }
 
-export function MessagePanel({ sessionId, workers, newMessage }: MessagePanelProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<WorkerMessage[]>([]);
-  const [targetWorkerId, setTargetWorkerId] = useState('');
+export function MessagePanel({ sessionId, workers, activeWorkerId, newMessage }: MessagePanelProps) {
+  const agentWorkers = workers.filter(w => w.type === 'agent');
+
+  const [targetWorkerId, setTargetWorkerId] = useState(() => {
+    if (activeWorkerId && agentWorkers.some(w => w.id === activeWorkerId)) {
+      return activeWorkerId;
+    }
+    return agentWorkers[0]?.id ?? '';
+  });
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const unreadCount = useRef(0);
-  const [badge, setBadge] = useState(0);
+  const [hasUnread, setHasUnread] = useState(false);
 
-  // Clear unread badge when panel opens
+  // Update target when activeWorkerId changes to an agent worker
   useEffect(() => {
-    if (isOpen) {
-      unreadCount.current = 0;
-      setBadge(0);
-    }
-  }, [isOpen]);
-
-  // Handle new messages from WebSocket
-  useEffect(() => {
-    if (newMessage && newMessage.sessionId === sessionId) {
-      setMessages(prev => [...prev, newMessage]);
-      if (!isOpen) {
-        unreadCount.current++;
-        setBadge(unreadCount.current);
+    if (activeWorkerId && agentWorkers.some(w => w.id === activeWorkerId)) {
+      if (targetWorkerId !== activeWorkerId) {
+        setTargetWorkerId(activeWorkerId);
       }
     }
-  }, [newMessage, sessionId, isOpen]);
+  }, [activeWorkerId, agentWorkers, targetWorkerId]);
 
-  // Auto-scroll
+  // Reset target if it's no longer valid
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (targetWorkerId && !agentWorkers.some(w => w.id === targetWorkerId)) {
+      const newTarget = agentWorkers[0]?.id ?? '';
+      setTargetWorkerId(newTarget);
+    }
+  }, [targetWorkerId, agentWorkers]);
+
+  // Show unread indicator when new message arrives
+  useEffect(() => {
+    if (newMessage && newMessage.sessionId === sessionId) {
+      setHasUnread(true);
+    }
+  }, [newMessage, sessionId]);
+
+  // Reset unread indicator on session change
+  useEffect(() => {
+    setHasUnread(false);
+  }, [sessionId]);
+
+  const handleResize = useCallback((textarea: HTMLTextAreaElement) => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+  }, []);
 
   const handleSend = useCallback(async () => {
     if (!targetWorkerId || !content.trim()) return;
@@ -49,6 +62,7 @@ export function MessagePanel({ sessionId, workers, newMessage }: MessagePanelPro
     try {
       await sendWorkerMessage(sessionId, targetWorkerId, content.trim());
       setContent('');
+      setHasUnread(false);
     } catch (err) {
       console.error('Failed to send message:', err);
     } finally {
@@ -56,108 +70,68 @@ export function MessagePanel({ sessionId, workers, newMessage }: MessagePanelPro
     }
   }, [sessionId, targetWorkerId, content]);
 
-  // Filter to PTY workers only (agent + terminal, not git-diff)
-  const ptyWorkers = workers.filter(w => w.type === 'agent' || w.type === 'terminal');
-
-  // Set default target when workers change
-  useEffect(() => {
-    if (!targetWorkerId && ptyWorkers.length > 0) {
-      setTargetWorkerId(ptyWorkers[0].id);
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleSend();
     }
-  }, [targetWorkerId, ptyWorkers]);
+  }, [handleSend]);
 
-  const handleOpen = () => {
-    setIsOpen(true);
-    unreadCount.current = 0;
-    setBadge(0);
-  };
-
-  if (!isOpen) {
+  // No agent workers - show disabled state
+  if (agentWorkers.length === 0) {
     return (
-      <button
-        onClick={handleOpen}
-        className="fixed bottom-4 right-4 bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm z-50"
-      >
-        Messages
-        {badge > 0 && (
-          <span className="bg-blue-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center">
-            {badge}
-          </span>
-        )}
-      </button>
+      <div className="bg-slate-800 border-t border-slate-700 px-3 py-2 flex items-center gap-2">
+        <input
+          type="text"
+          disabled
+          placeholder="No agent workers available"
+          className="flex-1 bg-slate-700 text-gray-500 text-sm rounded px-2 py-1 border border-slate-600"
+        />
+      </div>
     );
   }
 
   return (
-    <div className="fixed bottom-0 right-4 w-96 max-h-[60vh] bg-slate-800 border border-slate-600 rounded-t-lg shadow-2xl flex flex-col z-50">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-600 shrink-0">
-        <span className="text-sm font-medium text-white">Worker Messages</span>
-        <button
-          onClick={() => setIsOpen(false)}
-          className="text-gray-400 hover:text-white text-sm"
+    <div className="bg-slate-800 border-t border-slate-700 px-3 py-2 flex items-center gap-2">
+      {/* Target worker select */}
+      <div className="relative">
+        <select
+          value={targetWorkerId}
+          onChange={e => setTargetWorkerId(e.target.value)}
+          className="bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600"
         >
-          Close
-        </button>
-      </div>
-
-      {/* Messages list */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-[120px] max-h-[40vh]">
-        {messages.length === 0 ? (
-          <div className="text-gray-500 text-sm text-center py-4">
-            No messages yet
-          </div>
-        ) : (
-          messages.map(msg => (
-            <div key={msg.id} className="text-sm">
-              <div className="flex items-center gap-1 text-xs text-gray-400">
-                <span className="font-medium text-blue-400">{msg.fromWorkerName}</span>
-                <span>&rarr;</span>
-                <span className="font-medium text-green-400">{msg.toWorkerName}</span>
-                <span className="ml-auto">
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </span>
-              </div>
-              <div className="text-gray-200 mt-0.5 whitespace-pre-wrap break-words bg-slate-700/50 rounded px-2 py-1">
-                {msg.content}
-              </div>
-            </div>
-          ))
+          {agentWorkers.map(w => (
+            <option key={w.id} value={w.id}>{w.name}</option>
+          ))}
+        </select>
+        {/* Unread indicator */}
+        {hasUnread && (
+          <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full" />
         )}
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* Send form */}
-      <div className="border-t border-slate-600 p-2 shrink-0">
-        <div className="flex gap-2 mb-2">
-          <select
-            value={targetWorkerId}
-            onChange={e => setTargetWorkerId(e.target.value)}
-            className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600"
-          >
-            {ptyWorkers.map(w => (
-              <option key={w.id} value={w.id}>{w.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-            placeholder="Send message to worker..."
-            className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500"
-          />
-          <button
-            onClick={handleSend}
-            disabled={sending || !content.trim() || !targetWorkerId}
-            className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded"
-          >
-            Send
-          </button>
-        </div>
-      </div>
+      {/* Message textarea */}
+      <textarea
+        value={content}
+        onChange={e => {
+          setContent(e.target.value);
+          handleResize(e.target);
+        }}
+        onKeyDown={handleKeyDown}
+        placeholder="Send message to worker... (Ctrl+Enter to send)"
+        rows={1}
+        className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"
+        style={{ maxHeight: '120px' }}
+      />
+
+      {/* Send button */}
+      <button
+        onClick={handleSend}
+        disabled={sending || !content.trim() || !targetWorkerId}
+        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
+      >
+        Send
+      </button>
     </div>
   );
 }

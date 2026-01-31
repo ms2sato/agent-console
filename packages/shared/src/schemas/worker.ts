@@ -39,9 +39,12 @@ const CreateGitDiffWorkerParamsSchema = v.object({
 });
 
 /**
- * Schema for API: only terminal workers can be created by client
+ * Schema for API: client can create terminal or agent workers
  */
-export const CreateWorkerRequestSchema = CreateTerminalWorkerParamsSchema;
+export const CreateWorkerRequestSchema = v.variant('type', [
+  CreateTerminalWorkerParamsSchema,
+  CreateAgentWorkerParamsSchema,
+]);
 
 /**
  * Schema for restarting a worker
@@ -56,6 +59,6 @@ export type CreateTerminalWorkerParams = v.InferOutput<typeof CreateTerminalWork
 export type CreateGitDiffWorkerParams = v.InferOutput<typeof CreateGitDiffWorkerParamsSchema>;
 export type CreateWorkerParams = CreateAgentWorkerParams | CreateTerminalWorkerParams | CreateGitDiffWorkerParams;
 
-// API types (client can only create terminal workers)
+// API types (client can create terminal or agent workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;

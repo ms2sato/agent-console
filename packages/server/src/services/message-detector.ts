@@ -9,7 +9,11 @@
  */
 
 // Same ANSI regex used by activity-detector.ts
-const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]{0,16}[ -/]{0,4}[@-~])/g;
+// Uses RegExp constructor to avoid raw ESC control character in source
+const ANSI_REGEX = new RegExp(
+  '\\x1B(?:[@-Z\\\\\\-_]|\\[[0-?]{0,16}[ -/]{0,4}[@-~])',
+  'g'
+);
 
 const MESSAGE_PATTERN = /<<<TO:([^>]+)>>>([\s\S]*?)<<<END>>>/g;
 
