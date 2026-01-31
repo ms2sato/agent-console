@@ -1,5 +1,6 @@
 import type { Worker, AgentActivityState } from './worker.js';
 import type { AgentDefinition } from './agent.js';
+import type { WorkerMessage } from './worker-message.js';
 import type {
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
@@ -151,6 +152,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worker-activated': 16,
   'worktree-deletion-completed': 17,
   'worktree-deletion-failed': 18,
+  'worker-message': 19,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -176,7 +178,8 @@ export type AppServerMessage =
   | ({ type: 'worktree-creation-completed' } & WorktreeCreationCompletedPayload)
   | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload)
   | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
-  | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload);
+  | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload)
+  | { type: 'worker-message'; message: WorkerMessage };
 
 /**
  * Valid message types for AppClientMessage.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorkerMessage } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -56,6 +56,8 @@ interface UseAppWsEventOptions {
   onWorktreeDeletionCompleted?: (payload: WorktreeDeletionCompletedPayload) => void;
   /** Called when async worktree deletion fails */
   onWorktreeDeletionFailed?: (payload: WorktreeDeletionFailedPayload) => void;
+  /** Called when an inter-worker message is sent */
+  onWorkerMessage?: (message: WorkerMessage) => void;
 }
 
 /**
@@ -160,6 +162,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'worktree-deletion-failed':
           console.log(`[WebSocket] worktree-deletion-failed: taskId=${msg.taskId}`);
           optionsRef.current.onWorktreeDeletionFailed?.(msg);
+          break;
+        case 'worker-message':
+          console.log(`[WebSocket] worker-message: ${msg.message.fromWorkerName} -> ${msg.message.toWorkerName}`);
+          optionsRef.current.onWorkerMessage?.(msg.message);
           break;
         default: {
           const _exhaustive: never = msg;

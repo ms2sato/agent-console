@@ -12,7 +12,8 @@ import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
-import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
+import type { Session, Worker, AgentWorker, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import { MessagePanel } from './MessagePanel';
 
 type PageState =
   | { type: 'loading' }
@@ -96,6 +97,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Track all worker activity states for the session (for EndSessionDialog warning)
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
+  const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -163,6 +165,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
+    onWorkerMessage: (message) => {
+      if (message.sessionId === sessionId) {
+        setLastMessage(message);
+      }
+    },
   });
 
   // Update page title and favicon based on state
@@ -621,6 +628,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         </span>
       </div>
       <ErrorDialog {...errorDialogProps} />
+      <MessagePanel
+        sessionId={sessionId}
+        workers={session.workers}
+        newMessage={lastMessage}
+      />
     </div>
   );
 }

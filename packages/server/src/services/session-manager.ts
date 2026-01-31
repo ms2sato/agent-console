@@ -10,6 +10,7 @@ import type {
   CreateWorkerParams,
   WorkerErrorCode,
   SessionActivationState,
+  WorkerMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -23,6 +24,7 @@ import type {
   WorkerCallbacks,
 } from './worker-types.js';
 import { WorkerManager } from './worker-manager.js';
+import { MessageService } from './message-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
@@ -44,7 +46,7 @@ import {
 } from '../lib/git.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
-import { notifySessionDeleted } from '../websocket/routes.js';
+import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
@@ -115,6 +117,7 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private workerManager: WorkerManager;
+  private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
   private jobQueue: JobQueue | null = null;
@@ -156,6 +159,7 @@ export class SessionManager {
   }) {
     const ptyProvider = options?.ptyProvider ?? bunPtyProvider;
     this.workerManager = new WorkerManager(ptyProvider);
+    this.setupMessageDetectionCallback();
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -345,6 +349,113 @@ export class SessionManager {
         this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
       }
     });
+  }
+
+  /**
+   * Set up the message detection callback to handle inter-worker messages.
+   * When an agent worker outputs a message pattern, this resolves the target
+   * worker and injects the message into its PTY.
+   */
+  private setupMessageDetectionCallback(): void {
+    this.workerManager.setGlobalMessageDetectedCallback((sessionId, fromWorkerId, detectedMessages) => {
+      const session = this.sessions.get(sessionId);
+      if (!session) return;
+
+      const fromWorker = session.workers.get(fromWorkerId);
+      if (!fromWorker) return;
+
+      for (const detected of detectedMessages) {
+        // Resolve target worker by name within the session
+        const targetWorker = Array.from(session.workers.values()).find(
+          (w) => w.name === detected.targetWorkerName
+        );
+
+        if (!targetWorker) {
+          logger.warn(
+            { sessionId, fromWorkerId, targetName: detected.targetWorkerName },
+            'Message target worker not found by name'
+          );
+          continue;
+        }
+
+        // Only PTY workers can receive messages
+        if (targetWorker.type === 'git-diff') {
+          logger.warn(
+            { sessionId, targetWorkerId: targetWorker.id, targetName: detected.targetWorkerName },
+            'Cannot send message to git-diff worker'
+          );
+          continue;
+        }
+
+        const message: WorkerMessage = {
+          id: crypto.randomUUID(),
+          sessionId,
+          fromWorkerId,
+          fromWorkerName: fromWorker.name,
+          toWorkerId: targetWorker.id,
+          toWorkerName: targetWorker.name,
+          content: detected.content,
+          timestamp: new Date().toISOString(),
+        };
+
+        // Inject message into target worker's PTY
+        const injectionText = `[From ${fromWorker.name}]: ${detected.content}\n`;
+        this.writeWorkerInput(sessionId, targetWorker.id, injectionText);
+
+        // Store and broadcast
+        this.messageService.addMessage(message);
+        broadcastToApp({ type: 'worker-message', message });
+      }
+    });
+  }
+
+  /**
+   * Get inter-worker message history for a session.
+   */
+  getMessages(sessionId: string): WorkerMessage[] {
+    return this.messageService.getMessages(sessionId);
+  }
+
+  /**
+   * Send a message from one worker (or user) to another via API.
+   * If fromWorkerId is null, the message is sent as "User".
+   */
+  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string): WorkerMessage | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const targetWorker = session.workers.get(toWorkerId);
+    if (!targetWorker || targetWorker.type === 'git-diff') return null;
+
+    let fromWorkerName = 'User';
+    const effectiveFromWorkerId = fromWorkerId ?? 'user';
+    if (fromWorkerId) {
+      const fromWorker = session.workers.get(fromWorkerId);
+      if (fromWorker) {
+        fromWorkerName = fromWorker.name;
+      }
+    }
+
+    const message: WorkerMessage = {
+      id: crypto.randomUUID(),
+      sessionId,
+      fromWorkerId: effectiveFromWorkerId,
+      fromWorkerName,
+      toWorkerId,
+      toWorkerName: targetWorker.name,
+      content,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Inject message into target worker's PTY
+    const injectionText = `[From ${fromWorkerName}]: ${content}\n`;
+    this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+
+    // Store and broadcast
+    this.messageService.addMessage(message);
+    broadcastToApp({ type: 'worker-message', message });
+
+    return message;
   }
 
   /**
@@ -548,6 +659,9 @@ export class SessionManager {
       } catch {
         // NotificationManager not initialized yet, skip
       }
+
+      // 2b. Clean up inter-worker message history
+      this.messageService.clearSession(id);
 
       // 3. Remove from in-memory map
       this.sessions.delete(id);
