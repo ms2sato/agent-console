@@ -29,9 +29,17 @@ import { resetGitMocks } from './utils/mock-git-helper.js';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
 import { createDatabaseForTest } from '../database/connection.js';
-import { AgentManager, setAgentManager } from '../services/agent-manager.js';
-import { setRepositoryManager, RepositoryManager } from '../services/repository-manager.js';
-import { setSessionManager, SessionManager } from '../services/session-manager.js';
+import { AgentManager, resetAgentManager, setAgentManager } from '../services/agent-manager.js';
+import {
+  resetRepositoryManager,
+  setRepositoryManager,
+  RepositoryManager,
+} from '../services/repository-manager.js';
+import {
+  resetSessionManager,
+  setSessionManager,
+  SessionManager,
+} from '../services/session-manager.js';
 import { resetJobQueue, initializeJobQueue } from '../jobs/index.js';
 import { SqliteAgentRepository, SqliteRepositoryRepository, SqliteSessionRepository } from '../repositories/index.js';
 import { NotificationManager } from '../services/notifications/notification-manager.js';
@@ -39,6 +47,11 @@ import { SlackHandler } from '../services/notifications/slack-handler.js';
 import { setNotificationManager, shutdownNotificationServices } from '../services/notifications/index.js';
 import { initializeInboundIntegration } from '../services/inbound/index.js';
 import { shutdownAppContext, type AppBindings, type AppContext } from '../app-context.js';
+import {
+  SystemCapabilitiesService,
+  setSystemCapabilities,
+  resetSystemCapabilities,
+} from '../services/system-capabilities-service.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -94,6 +107,7 @@ export async function setupTestEnvironment(): Promise<void> {
   process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
   db = await createDatabaseForTest();
+  resetAgentManager();
   const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
   setAgentManager(agentManager);
 
@@ -103,7 +117,9 @@ export async function setupTestEnvironment(): Promise<void> {
   // Build managers with explicit dependencies
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  resetSessionManager();
   const sessionManager = await SessionManager.create({ sessionRepository, jobQueue });
+  resetRepositoryManager();
   const repositoryManager = await RepositoryManager.create({
     repository: repositoryRepository,
     jobQueue,
@@ -127,6 +143,14 @@ export async function setupTestEnvironment(): Promise<void> {
   setSessionManager(sessionManager);
   setRepositoryManager(repositoryManager);
   setNotificationManager(notificationManager);
+  resetSystemCapabilities();
+
+  const systemCapabilities = new SystemCapabilitiesService();
+  (systemCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = {
+    vscode: true,
+  };
+  (systemCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = 'code';
+  setSystemCapabilities(systemCapabilities);
 
   // Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
@@ -144,6 +168,7 @@ export async function setupTestEnvironment(): Promise<void> {
     repositoryManager,
     notificationManager,
     inboundIntegration,
+    systemCapabilities,
   };
 
   // Reset PTY tracking

@@ -166,7 +166,6 @@ export async function createAppContext(
     sessionManager,
     repositoryManager,
     notificationManager,
-    systemCapabilities,
     inboundIntegration,
     systemCapabilities,
   };
@@ -272,7 +271,6 @@ export async function createTestContext(
     sessionManager,
     repositoryManager,
     notificationManager,
-    systemCapabilities,
     inboundIntegration,
     systemCapabilities,
   };
