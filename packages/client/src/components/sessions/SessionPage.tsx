@@ -487,11 +487,6 @@ curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages \\
   -d '{"toWorkerId":"<WORKER_ID>","content":"<YOUR_MESSAGE>"}'
 \`\`\`
 
-**Read messages from other workers:**
-\`\`\`
-curl ${baseUrl}/api/sessions/${sessionId}/messages
-\`\`\`
-
 **List all workers in this session (to get updated worker IDs):**
 \`\`\`
 curl ${baseUrl}/api/sessions/${sessionId}/workers

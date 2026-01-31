@@ -703,15 +703,6 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
 // Worker Messages
 // ===========================================================================
 
-export async function getWorkerMessages(sessionId: string): Promise<{ messages: WorkerMessage[] }> {
-  const url = `${API_BASE}/sessions/${sessionId}/messages`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch messages: ${res.statusText}`);
-  }
-  return res.json() as Promise<{ messages: WorkerMessage[] }>;
-}
-
 export async function sendWorkerMessage(
   sessionId: string,
   toWorkerId: string,

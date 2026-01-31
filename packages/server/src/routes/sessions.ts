@@ -119,17 +119,6 @@ const sessions = new Hono()
       ...(result.branch !== undefined && { branch: result.branch }),
     });
   })
-  // Get message history for a session
-  .get('/:sessionId/messages', async (c) => {
-    const sessionId = c.req.param('sessionId');
-    const sessionManager = getSessionManager();
-    const session = sessionManager.getSession(sessionId);
-    if (!session) {
-      throw new NotFoundError('Session');
-    }
-    const messages = sessionManager.getMessages(sessionId);
-    return c.json({ messages });
-  })
   // Send a message from user to a worker
   .post('/:sessionId/messages', vValidator(SendWorkerMessageRequestSchema), async (c) => {
     const sessionId = c.req.param('sessionId');

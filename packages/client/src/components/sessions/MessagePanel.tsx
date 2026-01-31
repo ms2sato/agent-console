@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { WorkerMessage, Worker } from '@agent-console/shared';
-import { getWorkerMessages, sendWorkerMessage } from '../../lib/api';
+import { sendWorkerMessage } from '../../lib/api';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -19,16 +19,13 @@ export function MessagePanel({ sessionId, workers, newMessage }: MessagePanelPro
   const unreadCount = useRef(0);
   const [badge, setBadge] = useState(0);
 
-  // Fetch initial messages when panel opens
+  // Clear unread badge when panel opens
   useEffect(() => {
     if (isOpen) {
-      getWorkerMessages(sessionId).then(res => {
-        setMessages(res.messages);
-        unreadCount.current = 0;
-        setBadge(0);
-      }).catch(console.error);
+      unreadCount.current = 0;
+      setBadge(0);
     }
-  }, [isOpen, sessionId]);
+  }, [isOpen]);
 
   // Handle new messages from WebSocket
   useEffect(() => {

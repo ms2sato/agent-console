@@ -410,13 +410,6 @@ export class SessionManager {
   }
 
   /**
-   * Get inter-worker message history for a session.
-   */
-  getMessages(sessionId: string): WorkerMessage[] {
-    return this.messageService.getMessages(sessionId);
-  }
-
-  /**
    * Send a message from one worker (or user) to another via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
