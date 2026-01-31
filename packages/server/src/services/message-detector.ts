@@ -54,7 +54,7 @@ export class MessageDetector {
     while ((match = MESSAGE_PATTERN.exec(this.buffer)) !== null) {
       messages.push({
         targetWorkerName: match[1].trim(),
-        content: match[2].trim(),
+        content: match[2],
       });
       lastIndex = MESSAGE_PATTERN.lastIndex;
     }

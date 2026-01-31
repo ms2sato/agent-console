@@ -692,9 +692,9 @@ Messages you send will be injected into the target worker's terminal as: [From $
           {showAddMenu && (
             <div className="absolute top-full left-0 mt-1 bg-slate-700 border border-slate-600 rounded shadow-lg z-50 min-w-[150px]">
               <button
-                onClick={() => {
-                  addTerminalTab();
+                onClick={async () => {
                   setShowAddMenu(false);
+                  await addTerminalTab();
                 }}
                 className="w-full text-left px-4 py-2 text-sm text-white hover:bg-slate-600"
               >
@@ -703,9 +703,9 @@ Messages you send will be injected into the target worker's terminal as: [From $
               {agents.map(agent => (
                 <button
                   key={agent.id}
-                  onClick={() => {
-                    addAgentTab(agent.id, agent.name);
+                  onClick={async () => {
                     setShowAddMenu(false);
+                    await addAgentTab(agent.id, agent.name);
                   }}
                   className="w-full text-left px-4 py-2 text-sm text-white hover:bg-slate-600"
                 >

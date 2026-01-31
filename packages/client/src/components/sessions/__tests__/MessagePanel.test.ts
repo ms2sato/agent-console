@@ -1,89 +1,46 @@
 import { describe, it, expect } from 'bun:test';
+import { getAgentWorkers, getInitialTargetWorkerId, canSend } from '../MessagePanel';
+import type { Worker } from '@agent-console/shared';
 
-/**
- * Tests for MessagePanel logic.
- * These test the core business rules without rendering the full component.
- */
-
-// Extracted logic from components/sessions/MessagePanel.tsx
-type WorkerType = 'agent' | 'terminal' | 'git-diff';
-
-interface WorkerInfo {
-  id: string;
-  type: WorkerType;
-  name: string;
+// Helper to create test worker objects with required fields
+function agentWorker(id: string, name: string): Worker {
+  return { id, type: 'agent', name, agentId: 'claude-code', createdAt: '2024-01-01', activated: true };
 }
 
-/**
- * Filter workers to only include agent workers (valid message targets).
- */
-function getAgentWorkers(workers: WorkerInfo[]): WorkerInfo[] {
-  return workers.filter(w => w.type === 'agent');
+function terminalWorker(id: string, name: string): Worker {
+  return { id, type: 'terminal', name, createdAt: '2024-01-01', activated: true };
 }
 
-/**
- * Determine the initial target worker for message sending.
- * Prefers the active worker if it's an agent, otherwise falls back to first agent worker.
- */
-function getInitialTargetWorkerId(
-  activeWorkerId: string | null,
-  agentWorkers: WorkerInfo[]
-): string {
-  if (activeWorkerId && agentWorkers.some(w => w.id === activeWorkerId)) {
-    return activeWorkerId;
-  }
-  return agentWorkers[0]?.id ?? '';
-}
-
-/**
- * Determine if the send action should be enabled.
- */
-function canSend(targetWorkerId: string, content: string, sending: boolean): boolean {
-  return !sending && content.trim().length > 0 && targetWorkerId.length > 0;
+function gitDiffWorker(id: string, name: string): Worker {
+  return { id, type: 'git-diff', name, createdAt: '2024-01-01', baseCommit: 'abc123' };
 }
 
 describe('MessagePanel logic', () => {
   describe('getAgentWorkers', () => {
     it('should filter out terminal workers', () => {
-      const workers: WorkerInfo[] = [
-        { id: 'w1', type: 'agent', name: 'Agent 1' },
-        { id: 'w2', type: 'terminal', name: 'Shell 1' },
-        { id: 'w3', type: 'agent', name: 'Agent 2' },
-      ];
+      const w1 = agentWorker('w1', 'Agent 1');
+      const w3 = agentWorker('w3', 'Agent 2');
+      const workers: Worker[] = [w1, terminalWorker('w2', 'Shell 1'), w3];
       const result = getAgentWorkers(workers);
-      expect(result).toEqual([
-        { id: 'w1', type: 'agent', name: 'Agent 1' },
-        { id: 'w3', type: 'agent', name: 'Agent 2' },
-      ]);
+      expect(result).toEqual([w1, w3]);
     });
 
     it('should filter out git-diff workers', () => {
-      const workers: WorkerInfo[] = [
-        { id: 'w1', type: 'agent', name: 'Agent 1' },
-        { id: 'w2', type: 'git-diff', name: 'Diff' },
-        { id: 'w3', type: 'agent', name: 'Agent 2' },
-      ];
+      const w1 = agentWorker('w1', 'Agent 1');
+      const w3 = agentWorker('w3', 'Agent 2');
+      const workers: Worker[] = [w1, gitDiffWorker('w2', 'Diff'), w3];
       const result = getAgentWorkers(workers);
-      expect(result).toEqual([
-        { id: 'w1', type: 'agent', name: 'Agent 1' },
-        { id: 'w3', type: 'agent', name: 'Agent 2' },
-      ]);
+      expect(result).toEqual([w1, w3]);
     });
 
     it('should return empty array when no agent workers exist', () => {
-      const workers: WorkerInfo[] = [
-        { id: 'w1', type: 'terminal', name: 'Shell 1' },
-        { id: 'w2', type: 'git-diff', name: 'Diff' },
-      ];
+      const workers: Worker[] = [terminalWorker('w1', 'Shell 1'), gitDiffWorker('w2', 'Diff')];
       const result = getAgentWorkers(workers);
       expect(result).toEqual([]);
     });
 
     it('should return all workers when all are agents', () => {
-      const workers: WorkerInfo[] = [
-        { id: 'w1', type: 'agent', name: 'Agent 1' },
-        { id: 'w2', type: 'agent', name: 'Agent 2' },
-      ];
+      const workers: Worker[] = [agentWorker('w1', 'Agent 1'), agentWorker('w2', 'Agent 2')];
       const result = getAgentWorkers(workers);
       expect(result).toEqual(workers);
     });
@@ -96,28 +53,19 @@ describe('MessagePanel logic', () => {
 
   describe('getInitialTargetWorkerId', () => {
     it('should return activeWorkerId when it is an agent worker', () => {
-      const agentWorkers: WorkerInfo[] = [
-        { id: 'agent1', type: 'agent', name: 'Agent 1' },
-        { id: 'agent2', type: 'agent', name: 'Agent 2' },
-      ];
+      const agentWorkers: Worker[] = [agentWorker('agent1', 'Agent 1'), agentWorker('agent2', 'Agent 2')];
       const result = getInitialTargetWorkerId('agent2', agentWorkers);
       expect(result).toBe('agent2');
     });
 
     it('should return first agent when active worker is non-agent (terminal)', () => {
-      const agentWorkers: WorkerInfo[] = [
-        { id: 'agent1', type: 'agent', name: 'Agent 1' },
-        { id: 'agent2', type: 'agent', name: 'Agent 2' },
-      ];
+      const agentWorkers: Worker[] = [agentWorker('agent1', 'Agent 1'), agentWorker('agent2', 'Agent 2')];
       const result = getInitialTargetWorkerId('terminal1', agentWorkers);
       expect(result).toBe('agent1');
     });
 
     it('should return first agent when active worker is non-agent (git-diff)', () => {
-      const agentWorkers: WorkerInfo[] = [
-        { id: 'agent1', type: 'agent', name: 'Agent 1' },
-        { id: 'agent2', type: 'agent', name: 'Agent 2' },
-      ];
+      const agentWorkers: Worker[] = [agentWorker('agent1', 'Agent 1'), agentWorker('agent2', 'Agent 2')];
       const result = getInitialTargetWorkerId('git-diff1', agentWorkers);
       expect(result).toBe('agent1');
     });
@@ -133,18 +81,13 @@ describe('MessagePanel logic', () => {
     });
 
     it('should return first agent when activeWorkerId is null', () => {
-      const agentWorkers: WorkerInfo[] = [
-        { id: 'agent1', type: 'agent', name: 'Agent 1' },
-        { id: 'agent2', type: 'agent', name: 'Agent 2' },
-      ];
+      const agentWorkers: Worker[] = [agentWorker('agent1', 'Agent 1'), agentWorker('agent2', 'Agent 2')];
       const result = getInitialTargetWorkerId(null, agentWorkers);
       expect(result).toBe('agent1');
     });
 
     it('should fall back to first agent when activeWorkerId does not match any agent', () => {
-      const agentWorkers: WorkerInfo[] = [
-        { id: 'agent1', type: 'agent', name: 'Agent 1' },
-      ];
+      const agentWorkers: Worker[] = [agentWorker('agent1', 'Agent 1')];
       const result = getInitialTargetWorkerId('unknown', agentWorkers);
       expect(result).toBe('agent1');
     });

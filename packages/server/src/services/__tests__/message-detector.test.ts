@@ -32,10 +32,10 @@ describe('MessageDetector', () => {
     expect(detector.processOutput('regular output')).toEqual([]);
   });
 
-  it('trims whitespace from target name and content', () => {
+  it('trims whitespace from target name but preserves content whitespace', () => {
     const detector = new MessageDetector();
     const result = detector.processOutput('<<<TO: Worker2 >>>  hello  <<<END>>>');
-    expect(result).toEqual([{ targetWorkerName: 'Worker2', content: 'hello' }]);
+    expect(result).toEqual([{ targetWorkerName: 'Worker2', content: '  hello  ' }]);
   });
 
   it('strips ANSI escape sequences before matching', () => {

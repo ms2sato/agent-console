@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
+import '../../../test/setup';
 
 const mockSendWorkerMessage = mock(() => Promise.resolve({ message: {} }));
 mock.module('../../../lib/api', () => ({

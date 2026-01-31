@@ -9,15 +9,33 @@ interface MessagePanelProps {
   newMessage: WorkerMessage | null;
 }
 
-export function MessagePanel({ sessionId, workers, activeWorkerId, newMessage }: MessagePanelProps) {
-  const agentWorkers = workers.filter(w => w.type === 'agent');
+/** Filter workers to only include agent workers (valid message targets). */
+export function getAgentWorkers(workers: Worker[]): Worker[] {
+  return workers.filter(w => w.type === 'agent');
+}
 
-  const [targetWorkerId, setTargetWorkerId] = useState(() => {
-    if (activeWorkerId && agentWorkers.some(w => w.id === activeWorkerId)) {
-      return activeWorkerId;
-    }
-    return agentWorkers[0]?.id ?? '';
-  });
+/** Determine the initial target worker for message sending. */
+export function getInitialTargetWorkerId(
+  activeWorkerId: string | null,
+  agentWorkers: Worker[]
+): string {
+  if (activeWorkerId && agentWorkers.some(w => w.id === activeWorkerId)) {
+    return activeWorkerId;
+  }
+  return agentWorkers[0]?.id ?? '';
+}
+
+/** Determine if the send action should be enabled. */
+export function canSend(targetWorkerId: string, content: string, sending: boolean): boolean {
+  return !sending && content.trim().length > 0 && targetWorkerId.length > 0;
+}
+
+export function MessagePanel({ sessionId, workers, activeWorkerId, newMessage }: MessagePanelProps) {
+  const agentWorkers = getAgentWorkers(workers);
+
+  const [targetWorkerId, setTargetWorkerId] = useState(() =>
+    getInitialTargetWorkerId(activeWorkerId, agentWorkers)
+  );
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
