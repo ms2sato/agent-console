@@ -7,8 +7,14 @@
  * - Non-blocking I/O
  */
 
-/** Default timeout for git operations (30 seconds) */
+/** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
+
+/** Timeout for network operations like fetch (60 seconds) */
+const NETWORK_GIT_TIMEOUT_MS = 60000;
+
+/** Timeout for heavy file operations like worktree add/remove (120 seconds) */
+const HEAVY_GIT_TIMEOUT_MS = 120000;
 
 export class GitError extends Error {
   constructor(
@@ -245,7 +251,7 @@ export async function getDefaultBranch(cwd: string): Promise<string | null> {
  */
 export async function refreshDefaultBranch(cwd: string): Promise<string> {
   // Update the remote HEAD reference
-  await git(['remote', 'set-head', 'origin', '-a'], cwd);
+  await git(['remote', 'set-head', 'origin', '-a'], cwd, NETWORK_GIT_TIMEOUT_MS);
 
   // Now get the updated default branch
   const defaultBranch = await getDefaultBranch(cwd);
@@ -289,7 +295,7 @@ export async function createWorktree(
     args.push(worktreePath, branch);
   }
 
-  await git(args, cwd);
+  await git(args, cwd, HEAVY_GIT_TIMEOUT_MS);
 }
 
 /**
@@ -308,7 +314,7 @@ export async function removeWorktree(
   }
 
   try {
-    await git(args, cwd);
+    await git(args, cwd, HEAVY_GIT_TIMEOUT_MS);
   } catch (error) {
     // When force is enabled and the .git file is missing (race condition where
     // another process already partially cleaned up), fall back to manual cleanup.
@@ -319,7 +325,7 @@ export async function removeWorktree(
     ) {
       const fs = await import('node:fs/promises');
       await fs.rm(worktreePath, { recursive: true, force: true });
-      await git(['worktree', 'prune'], cwd);
+      await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
       return;
     }
     throw error;
@@ -503,14 +509,14 @@ export interface CommitInfo {
  * Fetch a specific branch from remote origin.
  */
 export async function fetchRemote(branch: string, cwd: string): Promise<void> {
-  await git(['fetch', 'origin', branch], cwd);
+  await git(['fetch', 'origin', branch], cwd, NETWORK_GIT_TIMEOUT_MS);
 }
 
 /**
  * Fetch all branches from remote origin.
  */
 export async function fetchAllRemote(cwd: string): Promise<void> {
-  await git(['fetch', 'origin'], cwd);
+  await git(['fetch', 'origin'], cwd, NETWORK_GIT_TIMEOUT_MS);
 }
 
 /**
