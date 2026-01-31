@@ -342,6 +342,291 @@ describe('Scroll-to-bottom button structure expectations', () => {
  * - [ ] Reconnection after disconnect works correctly for visited tabs
  * - [ ] New output appears correctly while tab is invisible
  */
+/**
+ * Tests for Terminal state machine sync logic.
+ *
+ * These tests simulate the state machine that coordinates cache loading,
+ * WebSocket connection, and history requests in Terminal.tsx. The actual
+ * component cannot be rendered in tests due to xterm.js mocking issues,
+ * so we model the state transitions as pure functions.
+ */
+describe('Terminal state machine sync', () => {
+  /**
+   * Mirrors the TerminalState fields relevant to history sync in Terminal.tsx.
+   */
+  interface SimulatedState {
+    cacheProcessed: boolean;
+    historyRequested: boolean;
+    requestedWithOffset: number;
+    currentOffset: number;
+  }
+
+  function createInitialState(overrides?: Partial<SimulatedState>): SimulatedState {
+    return {
+      cacheProcessed: false,
+      historyRequested: false,
+      requestedWithOffset: 0,
+      currentOffset: 0,
+      ...overrides,
+    };
+  }
+
+  /**
+   * Simulates the useEffect that sends history requests (lines 555-562 of Terminal.tsx):
+   *   if (connected && cacheProcessed && !stateRef.current.historyRequested) { ... }
+   */
+  function evaluateHistoryRequest(state: SimulatedState, connected: boolean): {
+    shouldRequest: boolean;
+    requestOffset: number;
+  } {
+    if (connected && state.cacheProcessed && !state.historyRequested) {
+      return { shouldRequest: true, requestOffset: state.currentOffset };
+    }
+    return { shouldRequest: false, requestOffset: 0 };
+  }
+
+  /**
+   * Applies the side effects of evaluateHistoryRequest when shouldRequest is true.
+   */
+  function applyHistoryRequest(state: SimulatedState): SimulatedState {
+    const result = evaluateHistoryRequest(state, true);
+    if (!result.shouldRequest) return state;
+    return {
+      ...state,
+      historyRequested: true,
+      requestedWithOffset: result.requestOffset,
+    };
+  }
+
+  /**
+   * Simulates handleConnectionChange when disconnected (lines 196-199):
+   *   if (!connected) { stateRef.current.historyRequested = false; }
+   */
+  function handleDisconnect(state: SimulatedState): SimulatedState {
+    return { ...state, historyRequested: false };
+  }
+
+  /**
+   * Simulates handleOutputTruncated (lines 216-228):
+   *   offsetRef.current = 0; historyRequested = false; requestedWithOffset = 0;
+   *   if (connectedRef.current) { historyRequested = true; requestedWithOffset = 0; requestHistory(..., 0); }
+   */
+  function handleTruncation(state: SimulatedState, connected: boolean): {
+    state: SimulatedState;
+    immediateRequest: boolean;
+  } {
+    const resetState: SimulatedState = {
+      ...state,
+      currentOffset: 0,
+      historyRequested: false,
+      requestedWithOffset: 0,
+    };
+
+    if (connected) {
+      return {
+        state: { ...resetState, historyRequested: true, requestedWithOffset: 0 },
+        immediateRequest: true,
+      };
+    }
+    return { state: resetState, immediateRequest: false };
+  }
+
+  /**
+   * Simulates handleHistory decision (lines 165-184):
+   *   if (requestedWithOffset > 0) → append diff
+   *   else → full write
+   */
+  function determineHistoryAction(
+    requestedWithOffset: number,
+    hasData: boolean
+  ): 'append-diff' | 'full-write' | 'skip' {
+    if (requestedWithOffset > 0) {
+      // Had cache — append diff (even empty data triggers save)
+      return hasData ? 'append-diff' : 'skip';
+    }
+    // No cache — full history
+    return hasData ? 'full-write' : 'skip';
+  }
+
+  describe('cache hit -> diff append flow', () => {
+    it('should request history from cached offset and append diff', () => {
+      // 1. Cache loads with offset=1000
+      let state = createInitialState({ currentOffset: 1000 });
+
+      // 2. Cache processing completes
+      state = { ...state, cacheProcessed: true };
+
+      // 3. Connected = true -> should request history from offset 1000
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(1000);
+
+      // 4. Apply the request
+      state = applyHistoryRequest(state);
+      expect(state.historyRequested).toBe(true);
+      expect(state.requestedWithOffset).toBe(1000);
+
+      // 5. handleHistory arrives -> should append diff (not full write)
+      const action = determineHistoryAction(state.requestedWithOffset, true);
+      expect(action).toBe('append-diff');
+    });
+  });
+
+  describe('no cache -> full history flow', () => {
+    it('should request history from offset 0 and do full write', () => {
+      // 1. Cache miss, offset stays 0
+      let state = createInitialState({ currentOffset: 0 });
+
+      // 2. Cache processing completes (no data restored)
+      state = { ...state, cacheProcessed: true };
+
+      // 3. Connected = true -> should request from offset 0
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(0);
+
+      // 4. Apply the request
+      state = applyHistoryRequest(state);
+      expect(state.requestedWithOffset).toBe(0);
+
+      // 5. handleHistory arrives -> should do full write
+      const action = determineHistoryAction(state.requestedWithOffset, true);
+      expect(action).toBe('full-write');
+    });
+  });
+
+  describe('disconnect -> reconnect -> re-request with current offset', () => {
+    it('should re-request history after reconnection using current offset', () => {
+      // 1. Initial sync completes at offset 5000
+      let state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 0,
+        currentOffset: 5000,
+      });
+
+      // 2. Disconnect resets historyRequested
+      state = handleDisconnect(state);
+      expect(state.historyRequested).toBe(false);
+
+      // 3. Reconnect -> should re-request with current offset (5000)
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(5000);
+
+      // 4. Apply the request
+      state = applyHistoryRequest(state);
+      expect(state.historyRequested).toBe(true);
+      expect(state.requestedWithOffset).toBe(5000);
+
+      // 5. Diff arrives -> append mode since requestedWithOffset > 0
+      const action = determineHistoryAction(state.requestedWithOffset, true);
+      expect(action).toBe('append-diff');
+    });
+  });
+
+  describe('truncation -> reset -> full history', () => {
+    it('should reset offset and request full history when connected', () => {
+      // 1. Initial sync completed, offset at 3000
+      let state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 3000,
+      });
+
+      // 2. Truncation event while connected
+      const truncResult = handleTruncation(state, true);
+      state = truncResult.state;
+
+      // Truncation immediately requests history when connected
+      expect(truncResult.immediateRequest).toBe(true);
+      expect(state.currentOffset).toBe(0);
+      expect(state.historyRequested).toBe(true);
+      expect(state.requestedWithOffset).toBe(0);
+
+      // 3. handleHistory arrives -> full write since requestedWithOffset is 0
+      const action = determineHistoryAction(state.requestedWithOffset, true);
+      expect(action).toBe('full-write');
+    });
+
+    it('should defer history request when disconnected at truncation time', () => {
+      let state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 3000,
+      });
+
+      // Truncation while disconnected
+      const truncResult = handleTruncation(state, false);
+      state = truncResult.state;
+
+      expect(truncResult.immediateRequest).toBe(false);
+      expect(state.historyRequested).toBe(false);
+      expect(state.currentOffset).toBe(0);
+
+      // Later, reconnect -> useEffect fires and requests from offset 0
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(0);
+    });
+  });
+
+  describe('history request requires BOTH connected AND cacheProcessed', () => {
+    it('should not request when connected but cache not yet processed', () => {
+      const state = createInitialState({ cacheProcessed: false });
+
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(false);
+    });
+
+    it('should request once cache is also processed', () => {
+      const state = createInitialState({ cacheProcessed: true });
+
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+    });
+
+    it('should not request when cache processed but not connected', () => {
+      const state = createInitialState({ cacheProcessed: true });
+
+      const request = evaluateHistoryRequest(state, false);
+      expect(request.shouldRequest).toBe(false);
+    });
+
+    it('should request once connection is also established', () => {
+      const state = createInitialState({ cacheProcessed: true });
+
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+    });
+  });
+
+  describe('duplicate request prevention', () => {
+    it('should not send duplicate request when useEffect re-runs', () => {
+      let state = createInitialState({ cacheProcessed: true });
+
+      // First evaluation -> triggers request
+      const first = evaluateHistoryRequest(state, true);
+      expect(first.shouldRequest).toBe(true);
+      state = applyHistoryRequest(state);
+
+      // Second evaluation (useEffect re-run) -> historyRequested is true, no duplicate
+      const second = evaluateHistoryRequest(state, true);
+      expect(second.shouldRequest).toBe(false);
+    });
+
+    it('should not send duplicate even after cacheProcessed toggles', () => {
+      let state = createInitialState({ cacheProcessed: true });
+      state = applyHistoryRequest(state);
+
+      // Simulate hypothetical re-trigger: historyRequested remains true
+      expect(evaluateHistoryRequest(state, true).shouldRequest).toBe(false);
+    });
+  });
+});
+
 describe('Lazy history loading optimization', () => {
   let restoreWebSocket: () => void;
   let consoleLogSpy: ReturnType<typeof spyOn>;

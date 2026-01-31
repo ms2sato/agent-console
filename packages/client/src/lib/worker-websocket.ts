@@ -96,8 +96,6 @@ interface WorkerConnection {
   // Reconnection state
   retryCount: number;
   retryTimeout: ReturnType<typeof setTimeout> | null;
-  // History request debounce
-  historyRequestTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
   // Flag to indicate truncation recovery is in progress
@@ -133,19 +131,6 @@ const stateListeners = new Set<() => void>();
 
 // Default state for disconnected workers (cached to avoid infinite loop in useSyncExternalStore)
 const DEFAULT_DISCONNECTED_STATE: WorkerConnectionState = Object.freeze({ connected: false });
-
-// --- Visibility-based connection management ---
-
-// Track connections disconnected due to visibility change
-const visibilityDisconnectedKeys = new Set<string>();
-
-// Store connection info for reconnection after visibility change
-interface VisibilityDisconnectedInfo {
-  callbacks: WorkerCallbacks;
-  sessionId: string;
-  workerId: string;
-}
-const visibilityDisconnectedCallbacks = new Map<string, VisibilityDisconnectedInfo>();
 
 /**
  * Generate a unique key for a worker connection.
@@ -240,7 +225,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     callbacks,
     retryCount,
     retryTimeout: null,
-    historyRequestTimeout: null,
     sessionId,
     workerId,
     truncationInProgress: false,
@@ -452,12 +436,6 @@ export function connect(
       // Update callbacks for the new component instance
       existing.callbacks = callbacks;
 
-      // Clear any pending history request timeout (no longer used but kept for safety)
-      if (existing.historyRequestTimeout) {
-        clearTimeout(existing.historyRequestTimeout);
-        existing.historyRequestTimeout = null;
-      }
-
       return false;
     }
     // If socket is closing, abandon it and create new one
@@ -483,7 +461,6 @@ export function connect(
     callbacks,
     retryCount: 0,
     retryTimeout: null,
-    historyRequestTimeout: null,
     sessionId,
     workerId,
     truncationInProgress: false,
@@ -511,17 +488,9 @@ export function disconnect(sessionId: string, workerId: string): void {
       clearTimeout(conn.retryTimeout);
       conn.retryTimeout = null;
     }
-    // Cancel any pending history request
-    if (conn.historyRequestTimeout) {
-      clearTimeout(conn.historyRequestTimeout);
-      conn.historyRequestTimeout = null;
-    }
     if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
       conn.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
     }
-    // Clear visibility tracking data
-    visibilityDisconnectedKeys.delete(key);
-    visibilityDisconnectedCallbacks.delete(key);
     connections.delete(key);
   }
 }
@@ -667,105 +636,12 @@ export function disconnectSession(sessionId: string): void {
         clearTimeout(conn.retryTimeout);
         conn.retryTimeout = null;
       }
-      // Cancel any pending history request
-      if (conn.historyRequestTimeout) {
-        clearTimeout(conn.historyRequestTimeout);
-        conn.historyRequestTimeout = null;
-      }
       if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
         conn.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
       }
-      // Clear visibility tracking data
-      visibilityDisconnectedKeys.delete(key);
-      visibilityDisconnectedCallbacks.delete(key);
       connections.delete(key);
     }
   }
-}
-
-// --- Visibility change handler ---
-
-/**
- * Handle page visibility change.
- * Disconnects all worker WebSockets when page is hidden (to save resources).
- * Reconnects with full history when page becomes visible.
- *
- * NOTE: This function is currently disabled. See the event listener registration below.
- */
-// @ts-expect-error: Function intentionally unused - kept for potential re-enablement
-function _handleVisibilityChange(): void {
-  if (document.visibilityState === 'hidden') {
-    // Store connection info and disconnect all workers
-    for (const [key, conn] of connections.entries()) {
-      visibilityDisconnectedCallbacks.set(key, {
-        callbacks: conn.callbacks,
-        sessionId: conn.sessionId,
-        workerId: conn.workerId,
-      });
-      visibilityDisconnectedKeys.add(key);
-
-      // Cancel any pending reconnection
-      if (conn.retryTimeout) {
-        clearTimeout(conn.retryTimeout);
-        conn.retryTimeout = null;
-      }
-
-      // Close the WebSocket (use NORMAL_CLOSURE - browser WebSocket API doesn't allow 1001 GOING_AWAY)
-      if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
-        // Remove event handlers first to prevent onclose from triggering reconnect
-        conn.ws.onopen = null;
-        conn.ws.onmessage = null;
-        conn.ws.onerror = null;
-        conn.ws.onclose = null;
-        conn.ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE);
-      }
-
-      // Keep the connection entry with disconnected state (preserve listeners)
-      updateState(key, { connected: false });
-    }
-
-    console.log(`[WorkerWS] Page hidden, disconnected ${visibilityDisconnectedKeys.size} worker(s)`);
-  } else if (document.visibilityState === 'visible') {
-    // Reconnect workers that were disconnected due to visibility change
-    const keysToReconnect = [...visibilityDisconnectedKeys];
-    visibilityDisconnectedKeys.clear();
-
-    for (const key of keysToReconnect) {
-      const info = visibilityDisconnectedCallbacks.get(key);
-      if (!info) continue;
-
-      visibilityDisconnectedCallbacks.delete(key);
-
-      // Check if connection still exists (component may have unmounted)
-      const existingConn = connections.get(key);
-      if (!existingConn) {
-        console.log(`[WorkerWS] Skipping visibility reconnect for ${key}: connection no longer exists`);
-        continue;
-      }
-
-      console.log(`[WorkerWS] Page visible, reconnecting ${key}`);
-      reconnect(info.sessionId, info.workerId, info.callbacks);
-    }
-  }
-}
-
-// Register visibility change listener once
-if (typeof document !== 'undefined') {
-  // DISABLED: Preserve terminal history and avoid reconnection overhead
-  // Visibility disconnection was causing performance issues when switching browser tabs.
-  // Terminal history is preserved in xterm.js memory, so reconnection is unnecessary.
-  // To re-enable, uncomment and rename _handleVisibilityChange back to handleVisibilityChange:
-  // document.addEventListener('visibilitychange', _handleVisibilityChange);
-}
-
-/**
- * Clear visibility tracking for a specific worker.
- * Call this when Terminal component unmounts to prevent stale reconnection.
- */
-export function clearVisibilityTracking(sessionId: string, workerId: string): void {
-  const key = getConnectionKey(sessionId, workerId);
-  visibilityDisconnectedKeys.delete(key);
-  visibilityDisconnectedCallbacks.delete(key);
 }
 
 /**
@@ -778,16 +654,10 @@ export function _reset(): void {
     if (conn.retryTimeout) {
       clearTimeout(conn.retryTimeout);
     }
-    // Cancel any pending history request
-    if (conn.historyRequestTimeout) {
-      clearTimeout(conn.historyRequestTimeout);
-    }
     if (conn.ws.readyState !== WebSocket.CLOSED && conn.ws.readyState !== WebSocket.CLOSING) {
       conn.ws.close();
     }
   }
   connections.clear();
   stateListeners.clear();
-  visibilityDisconnectedKeys.clear();
-  visibilityDisconnectedCallbacks.clear();
 }
