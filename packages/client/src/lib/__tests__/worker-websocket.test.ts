@@ -3,7 +3,6 @@ import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import {
   connect,
   disconnectSession,
-  clearVisibilityTracking,
   _reset,
   type TerminalWorkerCallbacks,
 } from '../worker-websocket';
@@ -133,13 +132,6 @@ describe('worker-websocket', () => {
       // Verify new WebSocket URL does NOT contain fromOffset (always fetch full history)
       const ws2 = MockWebSocket.getLastInstance();
       expect(ws2?.url).not.toContain('fromOffset');
-    });
-  });
-
-  describe('clearVisibilityTracking', () => {
-    it('should handle clearing non-existent data gracefully', () => {
-      // Should not throw
-      expect(() => clearVisibilityTracking('non-existent', 'worker')).not.toThrow();
     });
   });
 
