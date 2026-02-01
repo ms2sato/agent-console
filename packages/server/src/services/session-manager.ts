@@ -376,7 +376,7 @@ export class SessionManager {
     };
 
     // Inject message into target worker's PTY
-    const injectionText = `[From ${fromWorkerName}]: ${content}`;
+    const injectionText = content;
     const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
     if (!injected) {
       logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');

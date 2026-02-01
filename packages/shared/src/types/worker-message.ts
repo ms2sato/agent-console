@@ -1,15 +1,9 @@
 /**
  * Inter-worker message types for multi-agent communication.
  *
- * Workers can send messages to other workers within the same session
- * by outputting a specific delimiter pattern. The server detects these
- * patterns and injects the message into the target worker's PTY input.
- *
- * Delimiter format in agent output:
- *   <<<TO:worker-name>>>message content<<<END>>>
- *
- * Injection format into target PTY:
- *   [From worker-name]: message content\n
+ * Users can send messages to workers within the same session
+ * via the MessagePanel UI. The server injects the message content
+ * directly into the target worker's PTY input.
  */
 
 export interface WorkerMessage {
