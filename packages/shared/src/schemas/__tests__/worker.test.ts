@@ -6,7 +6,7 @@ import {
 } from '../worker';
 
 describe('CreateWorkerRequestSchema', () => {
-  // CreateWorkerRequestSchema only accepts terminal workers (client API restriction)
+  // CreateWorkerRequestSchema accepts terminal and agent workers
 
   it('should accept terminal worker', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
@@ -40,10 +40,31 @@ describe('CreateWorkerRequestSchema', () => {
     }
   });
 
-  it('should reject agent worker (not allowed from client)', () => {
+  it('should accept agent worker with agentId', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
       type: 'agent',
       agentId: 'agent-123',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.type).toBe('agent');
+      if (result.output.type === 'agent') {
+        expect(result.output.agentId).toBe('agent-123');
+      }
+    }
+  });
+
+  it('should reject agent worker without agentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject agent worker with empty agentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: '',
     });
     expect(result.success).toBe(false);
   });

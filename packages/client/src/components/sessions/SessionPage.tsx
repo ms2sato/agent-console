@@ -10,9 +10,12 @@ import { DiffIcon } from '../Icons';
 import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
+import { sendInput } from '../../lib/worker-websocket';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
-import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
+import type { Session, Worker, AgentWorker, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import { MessagePanel } from './MessagePanel';
+import { useAgents } from '../AgentSelector';
 
 type PageState =
   | { type: 'loading' }
@@ -62,10 +65,13 @@ interface WorkerErrorFallbackProps {
 }
 
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
-  const typeLabel = workerType === 'git-diff' ? 'Diff View' :
-                    workerType === 'agent' ? 'Agent' :
-                    workerType === 'terminal' ? 'Terminal' :
-                    (() => { const _exhaustive: never = workerType; return _exhaustive; })();
+  let typeLabel: string;
+  switch (workerType) {
+    case 'git-diff': typeLabel = 'Diff View'; break;
+    case 'agent': typeLabel = 'Agent'; break;
+    case 'terminal': typeLabel = 'Terminal'; break;
+    default: { const _exhaustive: never = workerType; typeLabel = _exhaustive; }
+  }
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">
@@ -96,11 +102,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Track all worker activity states for the session (for EndSessionDialog warning)
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
+  const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const pendingWorkerIdRef = useRef<string | null>(null);
+
+  // Agent-add dropdown state
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const { agents } = useAgents();
 
   // Navigate to specific worker
   const navigateToWorker = useCallback((newWorkerId: string, replace: boolean = false) => {
@@ -138,10 +150,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setExitInfo(info);
   }, []);
 
-  const handleActivityChange = useCallback((newState: AgentActivityState) => {
-    setActivityState(newState);
-  }, []);
-
   // Track active tab for app-websocket activity filtering
   const activeTabIdRef = useRef<string | null>(null);
   activeTabIdRef.current = activeTabId;
@@ -161,8 +169,28 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   }, [sessionId]);
 
+  const handleSessionUpdated = useCallback((updatedSession: Session) => {
+    if (updatedSession.id === sessionId) {
+      const newTabs = workersToTabs(updatedSession.workers);
+      setTabs(newTabs);
+
+      if (state.type === 'active' || state.type === 'disconnected') {
+        setState({
+          ...state,
+          session: updatedSession,
+        });
+      }
+    }
+  }, [sessionId, state]);
+
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
+    onWorkerMessage: (message) => {
+      if (message.sessionId === sessionId) {
+        setLastMessage(message);
+      }
+    },
+    onSessionUpdated: handleSessionUpdated,
   });
 
   // Update page title and favicon based on state
@@ -185,6 +213,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setTabs([]);
     setActiveTabId(null);
     pendingWorkerIdRef.current = null;
+    setLastMessage(null);
   }, [sessionId]);
 
   // Initialize tabs when state becomes active
@@ -262,10 +291,59 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setTabs(prev => [...prev, newTab]);
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
+
+      // Update session.workers after successful creation
+      if (state.type === 'active') {
+        setState({
+          ...state,
+          session: {
+            ...state.session,
+            workers: [...state.session.workers, worker],
+          },
+        });
+      }
     } catch (error) {
       console.error('Failed to create terminal worker:', error);
+      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
     }
-  }, [state, sessionId, tabs, navigateToWorker]);
+  }, [state, sessionId, tabs, navigateToWorker, showError]);
+
+  // Add a new agent tab
+  const addAgentTab = useCallback(async (agentId: string, agentName: string) => {
+    if (state.type !== 'active') return;
+
+    try {
+      const { worker } = await createWorker(sessionId, {
+        type: 'agent',
+        agentId,
+        name: `${agentName} ${tabs.filter(t => t.workerType === 'agent').length + 1}`,
+      });
+
+      const newTab: Tab = {
+        id: worker.id,
+        workerType: 'agent',
+        name: worker.name,
+      };
+      pendingWorkerIdRef.current = worker.id;
+      setTabs(prev => [...prev, newTab]);
+      setActiveTabId(worker.id);
+      navigateToWorker(worker.id);
+
+      // Update session.workers after successful creation
+      if (state.type === 'active') {
+        setState({
+          ...state,
+          session: {
+            ...state.session,
+            workers: [...state.session.workers, worker],
+          },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to create agent worker:', error);
+      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [state, sessionId, tabs, navigateToWorker, showError]);
 
   // Close a tab (delete worker)
   const closeTab = useCallback(async (tabId: string) => {
@@ -294,10 +372,21 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         setActiveTabId(newActiveTabId);
         navigateToWorker(newActiveTabId);
       }
+
+      // Update session.workers after successful deletion
+      if (state.type === 'active') {
+        setState({
+          ...state,
+          session: {
+            ...state.session,
+            workers: state.session.workers.filter(w => w.id !== tabId),
+          },
+        });
+      }
     } catch (error) {
       console.error('Failed to delete worker:', error);
     }
-  }, [sessionId, tabs, activeTabId, navigateToWorker]);
+  }, [sessionId, tabs, activeTabId, navigateToWorker, state]);
 
   // Load session data
   useEffect(() => {
@@ -357,6 +446,58 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setState({ type: 'disconnected', session });
     }
   };
+
+  const injectMessagePrompt = useCallback(() => {
+    const currentTab = tabs.find(t => t.id === activeTabId);
+    if (!currentTab || currentTab.workerType !== 'agent') return;
+    if (state.type !== 'active' && state.type !== 'disconnected') return;
+
+    const otherWorkers = state.session.workers
+      .filter(w => w.id !== currentTab.id && w.type !== 'git-diff');
+
+    if (otherWorkers.length === 0) return;
+
+    const baseUrl = window.location.origin;
+    const workerList = otherWorkers
+      .map(w => `  - "${w.name}" (id: ${w.id})`)
+      .join('\n');
+
+    const prompt = `You can communicate with other workers in this session using the following REST API:
+
+**Send a message to another worker:**
+\`\`\`
+curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages \\
+  -H 'Content-Type: application/json' \\
+  -d '{"toWorkerId":"<WORKER_ID>","content":"<YOUR_MESSAGE>","fromWorkerId":"${currentTab.id}"}'
+\`\`\`
+
+**List all workers in this session (to get updated worker IDs):**
+\`\`\`
+curl ${baseUrl}/api/sessions/${sessionId}/workers
+\`\`\`
+
+Currently available workers in this session:
+${workerList}
+
+Messages you send will be injected into the target worker's terminal as: [From ${currentTab.name}]: <your message>
+`;
+
+    sendInput(sessionId, currentTab.id, prompt);
+  }, [tabs, activeTabId, state, sessionId]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(event.target as Node)) {
+        setShowAddMenu(false);
+      }
+    };
+
+    if (showAddMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showAddMenu]);
 
   // Loading state
   if (state.type === 'loading' || state.type === 'restarting') {
@@ -525,7 +666,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
-            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onActivityChange={activeTab.workerType === 'agent' ? setActivityState : undefined}
             hideStatusBar
           />
         )}
@@ -539,13 +680,41 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
         {tabButtons}
-        <button
-          onClick={addTerminalTab}
-          className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
-          title="Add shell tab"
-        >
-          +
-        </button>
+        {/* Add worker dropdown */}
+        <div className="relative" ref={addMenuRef}>
+          <button
+            onClick={() => setShowAddMenu(!showAddMenu)}
+            className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
+            title="Add worker"
+          >
+            +
+          </button>
+          {showAddMenu && (
+            <div className="absolute top-full left-0 mt-1 bg-slate-700 border border-slate-600 rounded shadow-lg z-50 min-w-[150px]">
+              <button
+                onClick={async () => {
+                  setShowAddMenu(false);
+                  await addTerminalTab();
+                }}
+                className="w-full text-left px-4 py-2 text-sm text-white hover:bg-slate-600"
+              >
+                Shell
+              </button>
+              {agents.map(agent => (
+                <button
+                  key={agent.id}
+                  onClick={async () => {
+                    setShowAddMenu(false);
+                    await addAgentTab(agent.id, agent.name);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-white hover:bg-slate-600"
+                >
+                  Agent: {agent.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Spacer */}
         <div className="flex-1" />
@@ -584,6 +753,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         {activeTabContent}
       </div>
 
+      {/* Message panel */}
+      <MessagePanel
+        sessionId={sessionId}
+        workers={session.workers}
+        activeWorkerId={activeTabId}
+        newMessage={lastMessage}
+      />
+
       {/* Status bar at bottom */}
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
@@ -603,6 +780,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {formatPath(session.locationPath)}
         </span>
+        {/* Inject message communication prompt button (only for agent tab with other workers) */}
+        {activeTab?.workerType === 'agent' && session.workers.filter(w => w.id !== activeTab.id && w.type !== 'git-diff').length > 0 && (
+          <button
+            onClick={injectMessagePrompt}
+            className="text-xs px-2 py-0.5 rounded font-medium bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 transition-colors"
+            title="Inject inter-worker message API instructions into this agent"
+          >
+            Msg Prompt
+          </button>
+        )}
         {/* Activity state indicator (only for agent tab) */}
         {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${

@@ -10,6 +10,7 @@ import type {
   CreateWorkerParams,
   WorkerErrorCode,
   SessionActivationState,
+  WorkerMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -23,6 +24,7 @@ import type {
   WorkerCallbacks,
 } from './worker-types.js';
 import { WorkerManager } from './worker-manager.js';
+import { MessageService } from './message-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
@@ -44,8 +46,9 @@ import {
 } from '../lib/git.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
-import { notifySessionDeleted } from '../websocket/routes.js';
+import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { JsonSessionRepository } from '../repositories/index.js';
@@ -115,6 +118,7 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private workerManager: WorkerManager;
+  private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
   private jobQueue: JobQueue | null = null;
@@ -348,6 +352,62 @@ export class SessionManager {
   }
 
   /**
+   * Send a message from one worker (or user) to another via API.
+   * If fromWorkerId is null, the message is sent as "User".
+   */
+  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string): WorkerMessage | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const targetWorker = session.workers.get(toWorkerId);
+    if (!targetWorker || targetWorker.type === 'git-diff') return null;
+
+    let fromWorkerName = 'User';
+    const effectiveFromWorkerId = fromWorkerId ?? 'user';
+    if (fromWorkerId) {
+      const fromWorker = session.workers.get(fromWorkerId);
+      if (!fromWorker) {
+        logger.warn({ sessionId, fromWorkerId }, 'Source worker not found');
+        return null;
+      }
+      fromWorkerName = fromWorker.name;
+    }
+
+    const message: WorkerMessage = {
+      id: crypto.randomUUID(),
+      sessionId,
+      fromWorkerId: effectiveFromWorkerId,
+      fromWorkerName,
+      toWorkerId,
+      toWorkerName: targetWorker.name,
+      content,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Inject message into target worker's PTY
+    let injectionText = `[From ${fromWorkerName}]: ${content}`;
+    if (fromWorkerId) {
+      const baseUrl = `http://localhost:${serverConfig.PORT}`;
+      injectionText += `\n\nTo reply, run: curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages -H 'Content-Type: application/json' -d '{"toWorkerId":"${fromWorkerId}","fromWorkerId":"${toWorkerId}","content":"YOUR_REPLY"}'`;
+    }
+    const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+    if (!injected) {
+      logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
+      return null;
+    }
+    // Delay Enter to allow TUI agents to process the text input first
+    setTimeout(() => {
+      this.writeWorkerInput(sessionId, toWorkerId, '\r');
+    }, 100);
+
+    // Store and broadcast
+    this.messageService.addMessage(message);
+    broadcastToApp({ type: 'worker-message', message });
+
+    return message;
+  }
+
+  /**
    * Set a global callback for all worker exit events (for notifications)
    */
   setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number) => void): void {
@@ -548,6 +608,9 @@ export class SessionManager {
       } catch {
         // NotificationManager not initialized yet, skip
       }
+
+      // 2b. Clean up inter-worker message history
+      this.messageService.clearSession(id);
 
       // 3. Remove from in-memory map
       this.sessions.delete(id);

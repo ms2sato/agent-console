@@ -1606,4 +1606,145 @@ describe('SessionManager', () => {
       expect(manager.writeWorkerInput(session2.id, workerId2, 'test')).toBe(true);
     });
   });
+
+  describe('sendMessage', () => {
+    it('should send a message from one worker to another and return the message', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Create a terminal worker as the target
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      expect(terminalWorker).not.toBeNull();
+
+      const result = manager.sendMessage(session.id, agentWorker.id, terminalWorker!.id, 'hello');
+
+      expect(result).not.toBeNull();
+      expect(result!.sessionId).toBe(session.id);
+      expect(result!.fromWorkerId).toBe(agentWorker.id);
+      expect(result!.fromWorkerName).toBe(agentWorker.name);
+      expect(result!.toWorkerId).toBe(terminalWorker!.id);
+      expect(result!.toWorkerName).toBe(terminalWorker!.name);
+      expect(result!.content).toBe('hello');
+    });
+
+    it('should send a message as User when fromWorkerId is null', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = manager.sendMessage(session.id, null, agentWorker.id, 'hello from user');
+
+      expect(result).not.toBeNull();
+      expect(result!.fromWorkerId).toBe('user');
+      expect(result!.fromWorkerName).toBe('User');
+      expect(result!.content).toBe('hello from user');
+    });
+
+    it('should return null when fromWorkerId references a non-existent worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = manager.sendMessage(session.id, 'non-existent-worker-id', agentWorker.id, 'hello');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when target worker PTY is inactive', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Create a terminal worker as the target
+      const terminalWorker = await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+      expect(terminalWorker).not.toBeNull();
+
+      // Simulate PTY exit on the terminal worker to make its PTY inactive
+      const terminalPtyIndex = ptyFactory.instances.length - 1;
+      ptyFactory.instances[terminalPtyIndex].simulateExit(0);
+
+      const result = manager.sendMessage(session.id, agentWorker.id, terminalWorker!.id, 'hello');
+
+      // writeWorkerInput returns false for inactive PTY, so sendMessage returns null
+      expect(result).toBeNull();
+    });
+
+    it('should return null for non-existent session', async () => {
+      const manager = await getSessionManager();
+
+      const result = manager.sendMessage('non-existent-session', null, 'some-worker', 'hello');
+
+      expect(result).toBeNull();
+    });
+
+    it('should set fromWorkerName to the sending agent name for agent-to-agent messages', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const firstAgent = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Create a second agent worker
+      const secondAgent = await manager.createWorker(session.id, {
+        type: 'agent',
+        name: 'Agent 2',
+        agentId: 'claude-code',
+      });
+      expect(secondAgent).not.toBeNull();
+
+      // Send message from first agent to second agent
+      const result = manager.sendMessage(session.id, firstAgent.id, secondAgent!.id, 'inter-agent message');
+
+      expect(result).not.toBeNull();
+      expect(result!.fromWorkerId).toBe(firstAgent.id);
+      expect(result!.fromWorkerName).toBe(firstAgent.name);
+      expect(result!.toWorkerId).toBe(secondAgent!.id);
+      expect(result!.toWorkerName).toBe(secondAgent!.name);
+      expect(result!.content).toBe('inter-agent message');
+    });
+
+    it('should return null for non-existent target worker', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = manager.sendMessage(session.id, null, 'non-existent-worker', 'hello');
+
+      expect(result).toBeNull();
+    });
+  });
 });

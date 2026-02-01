@@ -413,9 +413,11 @@ export class WorkerManager {
       // Mark worker as deactivated (PTY no longer running)
       worker.pty = null;
 
-      if (worker.type === 'agent' && worker.activityDetector) {
-        worker.activityDetector.dispose();
-        worker.activityDetector = null;
+      if (worker.type === 'agent') {
+        if (worker.activityDetector) {
+          worker.activityDetector.dispose();
+          worker.activityDetector = null;
+        }
       }
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
@@ -625,8 +627,10 @@ export class WorkerManager {
       if (worker.pty) worker.pty.kill();
 
       // Dispose activity detector for agent workers
-      if (worker.type === 'agent' && worker.activityDetector) {
-        worker.activityDetector.dispose();
+      if (worker.type === 'agent') {
+        if (worker.activityDetector) {
+          worker.activityDetector.dispose();
+        }
       }
     }
     // git-diff workers have no PTY to kill

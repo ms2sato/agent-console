@@ -1,3 +1,4 @@
+export * from './types/worker-message.js';
 export * from './types/agent.js';
 export * from './types/worker.js';
 export * from './types/session.js';

@@ -1,0 +1,25 @@
+import * as v from 'valibot';
+
+/**
+ * Schema for manually sending a message from one worker to another via API.
+ */
+export const SendWorkerMessageRequestSchema = v.object({
+  toWorkerId: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Target worker ID is required'),
+  ),
+  fromWorkerId: v.optional(v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Source worker ID must not be empty'),
+  )),
+  content: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Message content is required'),
+    v.maxLength(10000, 'Message content must be 10000 characters or less'),
+  ),
+});
+
+export type SendWorkerMessageRequest = v.InferOutput<typeof SendWorkerMessageRequestSchema>;
