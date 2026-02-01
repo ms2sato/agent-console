@@ -5,9 +5,22 @@
  */
 declare module '@anthropic-ai/claude-agent-sdk' {
   interface QueryOptions {
-    prompt: string;
-    options?: Record<string, unknown>;
+    cwd?: string;
+    includePartialMessages?: boolean;
+    abortController?: AbortController;
+    permissionMode?: string;
+    resume?: string;
+    allowedTools?: string[];
+    maxTurns?: number;
+    model?: string;
+    systemPrompt?: string;
+    hooks?: Record<string, unknown>;
   }
 
-  function query(options: QueryOptions): AsyncIterable<Record<string, unknown>>;
+  interface QueryInput {
+    prompt: string;
+    options?: QueryOptions;
+  }
+
+  function query(input: QueryInput): AsyncIterable<import('@agent-console/shared').SDKMessage>;
 }

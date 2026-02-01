@@ -30,6 +30,16 @@ function deriveActivityState(message: SDKMessage): AgentActivityState | null {
 }
 
 /**
+ * Runtime type guard for SDKMessage validation.
+ */
+function isSdkMessage(value: unknown): value is SDKMessage {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+    && typeof (value as { type?: unknown }).type === 'string';
+}
+
+/**
  * Broadcast a message to all connected clients of an SDK worker.
  */
 function broadcastToCallbacks(worker: InternalSdkWorker, fn: (callbacks: SdkWorkerCallbacks) => void): void {
@@ -84,7 +94,7 @@ export async function runSdkQuery(
     // Dynamic import to allow graceful handling when SDK is not installed
     const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
-    const queryOptions: Record<string, unknown> = {
+    const queryOptions: import('@anthropic-ai/claude-agent-sdk').QueryOptions = {
       cwd,
       includePartialMessages: true,
       abortController,
@@ -100,17 +110,20 @@ export async function runSdkQuery(
 
     const stream = query({
       prompt,
-      options: queryOptions as any,
+      options: queryOptions,
     });
 
-    for await (const message of stream) {
+    for await (const sdkMessage of stream) {
       if (abortController.signal.aborted) break;
 
-      const sdkMessage: SDKMessage = message as unknown as SDKMessage;
+      if (!isSdkMessage(sdkMessage)) {
+        logger.warn({ workerId: worker.id, message: sdkMessage }, 'Skipping invalid SDK message');
+        continue;
+      }
 
       // Capture session ID from system init message
-      if (sdkMessage.type === 'system' && sdkMessage.session_id) {
-        worker.sdkSessionId = sdkMessage.session_id as string;
+      if (sdkMessage.type === 'system' && typeof sdkMessage.session_id === 'string') {
+        worker.sdkSessionId = sdkMessage.session_id;
       }
 
       // Store message in history
