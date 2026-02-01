@@ -20,7 +20,7 @@ import {
 } from '../lib/git.js';
 import { readFile, stat } from 'fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { createLogger } from '../lib/logger.js';
 import { fileWatchIgnorePatterns } from '../lib/server-config.js';
 
@@ -519,8 +519,8 @@ export async function getDiffData(
  * Prevents path traversal attacks via malicious filePath parameter.
  */
 function isValidFilePath(filePath: string): boolean {
-  // Reject absolute paths
-  if (filePath.startsWith('/') || filePath.startsWith('\\')) {
+  // Reject absolute paths (including Windows drive-absolute)
+  if (isAbsolute(filePath)) {
     return false;
   }
   // Reject paths containing .. (path traversal)
@@ -708,6 +708,55 @@ export function stopWatching(repoPath: string): void {
 /**
  * Check if a repository is being watched.
  */
+/**
+ * Get specific lines from a file at a given ref.
+ *
+ * @param repoPath - Path to the git repository
+ * @param filePath - Path to the file (relative to repo root)
+ * @param startLine - Start line number (1-based, inclusive)
+ * @param endLine - End line number (1-based, inclusive)
+ * @param ref - 'working-dir' or a commit hash
+ * @returns Array of line contents
+ */
+export async function getFileLines(
+  repoPath: string,
+  filePath: string,
+  startLine: number,
+  endLine: number,
+  ref: GitDiffTarget
+): Promise<string[]> {
+  if (!isValidFilePath(filePath)) {
+    throw new Error(`Invalid file path: ${filePath}`);
+  }
+
+  let content: string;
+  if (ref === 'working-dir') {
+    try {
+      const buffer = await readFile(join(repoPath, filePath));
+      content = buffer.toString('utf-8');
+    } catch (error) {
+      throw new Error(`Failed to read ${filePath} from working directory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    const result = await gitSafe(['show', `${ref}:${filePath}`], repoPath);
+    if (result === null) {
+      throw new Error(`Failed to read ${filePath} at ref ${ref}`);
+    }
+    content = result;
+  }
+
+  const allLines = content.split('\n');
+  // Clamp to actual file length (1-based inclusive)
+  const clampedStart = Math.max(1, startLine);
+  const clampedEnd = Math.min(allLines.length, endLine);
+
+  if (clampedStart > clampedEnd) {
+    return [];
+  }
+
+  return allLines.slice(clampedStart - 1, clampedEnd);
+}
+
 export function isWatching(repoPath: string): boolean {
   return watchers.has(repoPath);
 }

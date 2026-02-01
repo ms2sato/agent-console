@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+
 import {
   calculateBaseCommit,
   resolveRef,
   getDiffData,
+  getFileLines,
 } from '../git-diff-service.js';
 
 describe('GitDiffService', () => {
@@ -244,6 +248,93 @@ describe('GitDiffService', () => {
       // Should still process the valid file
       expect(result.summary.files).toHaveLength(1);
       expect(result.summary.files[0].path).toBe('valid-file.ts');
+    });
+  });
+
+  describe('getFileLines', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = join('/tmp', `git-diff-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('working-dir: returns correct lines from file', async () => {
+      const content = 'line1\nline2\nline3\nline4\nline5\n';
+      writeFileSync(join(tmpDir, 'file.ts'), content);
+
+      const result = await getFileLines(tmpDir, 'file.ts', 2, 4, 'working-dir');
+
+      expect(result).toEqual(['line2', 'line3', 'line4']);
+    });
+
+    it('commit ref: returns correct lines via git show', async () => {
+      const content = 'alpha\nbeta\ngamma\ndelta\n';
+      mockGit.gitSafe.mockResolvedValue(content);
+
+      const result = await getFileLines('/repo/path', 'src/file.ts', 1, 2, 'abc123');
+
+      expect(mockGit.gitSafe).toHaveBeenCalledWith(['show', 'abc123:src/file.ts'], '/repo/path');
+      expect(result).toEqual(['alpha', 'beta']);
+    });
+
+    it('clamps out-of-bounds range', async () => {
+      const content = 'line1\nline2\nline3\n';
+      writeFileSync(join(tmpDir, 'file.ts'), content);
+
+      const result = await getFileLines(tmpDir, 'file.ts', 2, 100, 'working-dir');
+
+      // Content splits to ['line1', 'line2', 'line3', ''], so allLines.length=4
+      // clampedEnd = min(4, 100) = 4, slice(1, 4) = ['line2', 'line3', '']
+      expect(result).toEqual(['line2', 'line3', '']);
+    });
+
+    it('returns empty array when start > end after clamping', async () => {
+      const content = 'line1\nline2\nline3\n';
+      writeFileSync(join(tmpDir, 'file.ts'), content);
+
+      const result = await getFileLines(tmpDir, 'file.ts', 100, 200, 'working-dir');
+
+      expect(result).toEqual([]);
+    });
+
+    it('throws on invalid file path (path traversal)', async () => {
+      await expect(
+        getFileLines(tmpDir, '../etc/passwd', 1, 10, 'working-dir')
+      ).rejects.toThrow('Invalid file path');
+    });
+
+    it('throws on absolute path', async () => {
+      await expect(
+        getFileLines(tmpDir, '/etc/passwd', 1, 10, 'working-dir')
+      ).rejects.toThrow('Invalid file path');
+    });
+
+    it('throws when file does not exist in working-dir', async () => {
+      await expect(
+        getFileLines(tmpDir, 'nonexistent.ts', 1, 10, 'working-dir')
+      ).rejects.toThrow('Failed to read nonexistent.ts from working directory');
+    });
+
+    it('clamps negative startLine to 1', async () => {
+      const content = 'line1\nline2\nline3\n';
+      writeFileSync(join(tmpDir, 'file.ts'), content);
+
+      const result = await getFileLines(tmpDir, 'file.ts', -5, 2, 'working-dir');
+
+      expect(result).toEqual(['line1', 'line2']);
+    });
+
+    it('throws when git show returns null', async () => {
+      mockGit.gitSafe.mockResolvedValue(null);
+
+      await expect(
+        getFileLines('/repo/path', 'src/file.ts', 1, 5, 'abc123')
+      ).rejects.toThrow('Failed to read src/file.ts at ref abc123');
     });
   });
 

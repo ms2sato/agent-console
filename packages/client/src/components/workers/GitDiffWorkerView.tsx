@@ -23,7 +23,7 @@ interface GitDiffWorkerViewProps {
 }
 
 export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProps) {
-  const { diffData, error, loading, connected, refresh, setBaseCommit, setTargetCommit } = useGitDiffWorker({
+  const { diffData, error, loading, connected, refresh, setBaseCommit, setTargetCommit, expandedLines, requestFileLines } = useGitDiffWorker({
     sessionId,
     workerId,
   });
@@ -286,6 +286,8 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
               files={files}
               scrollToFile={scrollToFile}
               onFileVisible={handleFileVisible}
+              expandedLines={expandedLines}
+              onRequestExpand={requestFileLines}
             />
           </ErrorBoundary>
         </div>

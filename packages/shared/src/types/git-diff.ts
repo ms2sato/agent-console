@@ -73,6 +73,12 @@ export interface GitDiffFileDetail {
   rawDiff: string;
 }
 
+/** A chunk of expanded context lines for DiffViewer */
+export interface ExpandedLineChunk {
+  startLine: number;
+  lines: string[];
+}
+
 // ============================================================
 // WebSocket Messages for GitDiffWorker
 // ============================================================
@@ -84,6 +90,7 @@ export interface GitDiffFileDetail {
 export const GIT_DIFF_SERVER_MESSAGE_TYPES = {
   'diff-data': 1,
   'diff-error': 2,
+  'file-lines': 3,
 } as const;
 
 export type GitDiffServerMessageType = keyof typeof GIT_DIFF_SERVER_MESSAGE_TYPES;
@@ -91,10 +98,12 @@ export type GitDiffServerMessageType = keyof typeof GIT_DIFF_SERVER_MESSAGE_TYPE
 /** Server → Client messages */
 export type GitDiffServerMessage =
   | { type: 'diff-data'; data: GitDiffData }
-  | { type: 'diff-error'; error: string };
+  | { type: 'diff-error'; error: string }
+  | { type: 'file-lines'; path: string; startLine: number; lines: string[] };
 
 /** Client → Server messages */
 export type GitDiffClientMessage =
   | { type: 'refresh' }
   | { type: 'set-base-commit'; ref: string }
-  | { type: 'set-target-commit'; ref: GitDiffTarget };  // 'working-dir' or commit/branch ref
+  | { type: 'set-target-commit'; ref: GitDiffTarget }  // 'working-dir' or commit/branch ref
+  | { type: 'get-file-lines'; path: string; startLine: number; endLine: number; ref: GitDiffTarget };

@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
 
+
 describe('GitDiffHandler', () => {
   let mockWs: WSContext;
   let sentMessages: string[];
@@ -52,6 +53,7 @@ describe('GitDiffHandler', () => {
       resolveRef: mockResolveRef,
       startWatching: mockStartWatching,
       stopWatching: mockStopWatching,
+      getFileLines: mock(() => Promise.resolve([])),
     };
 
     handlers = createGitDiffHandlers(deps);
@@ -237,6 +239,144 @@ describe('GitDiffHandler', () => {
         await sendMessage(JSON.stringify({ type: 'set-target-commit', ref: 'HEAD' }));
 
         expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'resolved-commit-hash');
+      });
+    });
+
+    describe('get-file-lines message', () => {
+      it('sends file-lines response', async () => {
+        // Establish connection first
+        await handlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-1',
+          '/repo/path',
+          'base-commit'
+        );
+        sentMessages = [];
+
+        const deps = {
+          getDiffData: mockGetDiffData,
+          resolveRef: mockResolveRef,
+          startWatching: mockStartWatching,
+          stopWatching: mockStopWatching,
+          getFileLines: mock(() => Promise.resolve(['line1', 'line2', 'line3'])),
+        } satisfies GitDiffHandlerDependencies;
+        const localHandlers = createGitDiffHandlers(deps);
+
+        // Need to connect first to set up state
+        await localHandlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-2',
+          '/repo/path',
+          'base-commit'
+        );
+        sentMessages = [];
+
+        const message = JSON.stringify({
+          type: 'get-file-lines',
+          path: 'src/file.ts',
+          startLine: 1,
+          endLine: 3,
+          ref: 'working-dir',
+        });
+
+        await localHandlers.handleMessage(
+          mockWs,
+          'session-1',
+          'worker-2',
+          '/repo/path',
+          message
+        );
+
+        expect(sentMessages.length).toBe(1);
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('file-lines');
+        expect(sentMsg).toHaveProperty('path', 'src/file.ts');
+        expect(sentMsg).toHaveProperty('startLine', 1);
+        expect(sentMsg).toHaveProperty('lines', ['line1', 'line2', 'line3']);
+      });
+
+      it('sends error for path traversal attempt', async () => {
+        const deps: GitDiffHandlerDependencies = {
+          getDiffData: mockGetDiffData,
+          resolveRef: mockResolveRef,
+          startWatching: mockStartWatching,
+          stopWatching: mockStopWatching,
+          getFileLines: mock(() => Promise.reject(new Error('Invalid file path: ../etc/passwd'))),
+        };
+        const localHandlers = createGitDiffHandlers(deps);
+
+        await localHandlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-traversal',
+          '/repo/path',
+          'base-commit'
+        );
+        sentMessages = [];
+
+        const message = JSON.stringify({
+          type: 'get-file-lines',
+          path: '../etc/passwd',
+          startLine: 1,
+          endLine: 10,
+          ref: 'working-dir',
+        });
+
+        await localHandlers.handleMessage(
+          mockWs,
+          'session-1',
+          'worker-traversal',
+          '/repo/path',
+          message
+        );
+
+        expect(sentMessages.length).toBe(1);
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('diff-error');
+        expect((sentMsg as { error: string }).error).toContain('Invalid file path');
+      });
+
+      it('sends error on failure', async () => {
+        const deps: GitDiffHandlerDependencies = {
+          getDiffData: mockGetDiffData,
+          resolveRef: mockResolveRef,
+          startWatching: mockStartWatching,
+          stopWatching: mockStopWatching,
+          getFileLines: mock(() => Promise.reject(new Error('File not found'))),
+        };
+        const localHandlers = createGitDiffHandlers(deps);
+
+        await localHandlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-3',
+          '/repo/path',
+          'base-commit'
+        );
+        sentMessages = [];
+
+        const message = JSON.stringify({
+          type: 'get-file-lines',
+          path: 'src/missing.ts',
+          startLine: 1,
+          endLine: 5,
+          ref: 'working-dir',
+        });
+
+        await localHandlers.handleMessage(
+          mockWs,
+          'session-1',
+          'worker-3',
+          '/repo/path',
+          message
+        );
+
+        expect(sentMessages.length).toBe(1);
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('diff-error');
+        expect(sentMsg).toHaveProperty('error', 'File not found');
       });
     });
 
