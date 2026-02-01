@@ -156,6 +156,7 @@ describe('mappers', () => {
         pid: null,
         agent_id: null, // Missing required field
         base_commit: null,
+        sdk_session_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -173,6 +174,7 @@ describe('mappers', () => {
         pid: null,
         agent_id: null,
         base_commit: null, // Missing required field
+        sdk_session_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -190,6 +192,7 @@ describe('mappers', () => {
         pid: 1234,
         agent_id: 'claude-code-builtin',
         base_commit: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -209,6 +212,7 @@ describe('mappers', () => {
         pid: 5678,
         agent_id: null,
         base_commit: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -228,6 +232,7 @@ describe('mappers', () => {
         pid: null,
         agent_id: null,
         base_commit: 'abc123def456',
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);

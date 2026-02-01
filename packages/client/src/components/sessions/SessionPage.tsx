@@ -26,7 +26,7 @@ type PageState =
 // Tab representation - links to workers
 interface Tab {
   id: string;           // Worker ID
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: 'agent' | 'terminal' | 'git-diff' | 'sdk';
   name: string;
 }
 
@@ -57,7 +57,7 @@ function findFirstAgentWorker(workers: Worker[]): AgentWorker | undefined {
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: 'agent' | 'terminal' | 'git-diff' | 'sdk';
   workerName: string;
   onRetry: () => void;
 }
@@ -65,6 +65,7 @@ interface WorkerErrorFallbackProps {
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
   const typeLabel = workerType === 'git-diff' ? 'Diff View' :
                     workerType === 'agent' ? 'Agent' :
+                    workerType === 'sdk' ? 'Agent' :
                     workerType === 'terminal' ? 'Terminal' :
                     (() => { const _exhaustive: never = workerType; return _exhaustive; })();
 
@@ -560,7 +561,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
-            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onActivityChange={activeTab.workerType === 'agent' || activeTab.workerType === 'sdk' ? handleActivityChange : undefined}
             hideStatusBar
           />
         )}

@@ -49,8 +49,8 @@ export interface WorkersTable {
   id: string;
   /** Foreign key reference to sessions.id */
   session_id: string;
-  /** Worker type: 'agent', 'terminal', or 'git-diff' */
-  type: 'agent' | 'terminal' | 'git-diff';
+  /** Worker type: 'agent', 'terminal', 'git-diff', or 'sdk' */
+  type: 'agent' | 'terminal' | 'git-diff' | 'sdk';
   /** Display name for the worker */
   name: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */
@@ -63,6 +63,8 @@ export interface WorkersTable {
   agent_id: string | null;
   /** Base commit hash for git-diff workers (null for other worker types) */
   base_commit: string | null;
+  /** SDK session ID for SDK workers (null for other worker types) */
+  sdk_session_id: string | null;
 }
 
 // Helper types for queries

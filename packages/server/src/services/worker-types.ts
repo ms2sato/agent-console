@@ -5,7 +5,7 @@
  * Public API types (Worker, AgentWorker, etc.) are defined in @agent-console/shared.
  */
 
-import type { AgentActivityState } from '@agent-console/shared';
+import type { AgentActivityState, SDKMessage } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
 
@@ -78,6 +78,35 @@ export interface InternalGitDiffWorker extends InternalWorkerBase {
 }
 
 /**
+ * Callbacks for SDK worker events.
+ * Similar to WorkerCallbacks but with structured messages instead of raw output.
+ */
+export interface SdkWorkerCallbacks {
+  onMessage: (message: SDKMessage) => void;
+  onActivityChange: (state: AgentActivityState) => void;
+  onExit: (exitCode: number, signal: string | null) => void;
+}
+
+/**
+ * Internal SDK worker. Does not use PTY - uses Claude Code SDK query().
+ */
+export interface InternalSdkWorker extends InternalWorkerBase {
+  type: 'sdk';
+  agentId: string;
+  activityState: AgentActivityState;
+  /** SDK session ID for resume capability */
+  sdkSessionId: string | null;
+  /** AbortController for cancelling current query() */
+  abortController: AbortController | null;
+  /** Whether a query() is currently running */
+  isRunning: boolean;
+  /** In-memory message history */
+  messages: SDKMessage[];
+  /** Callbacks for connected WebSocket clients */
+  connectionCallbacks: Map<string, SdkWorkerCallbacks>;
+}
+
+/**
  * Union type for PTY-based workers.
  */
 export type InternalPtyWorker = InternalAgentWorker | InternalTerminalWorker;
@@ -85,4 +114,4 @@ export type InternalPtyWorker = InternalAgentWorker | InternalTerminalWorker;
 /**
  * Union type for all internal workers.
  */
-export type InternalWorker = InternalAgentWorker | InternalTerminalWorker | InternalGitDiffWorker;
+export type InternalWorker = InternalAgentWorker | InternalTerminalWorker | InternalGitDiffWorker | InternalSdkWorker;

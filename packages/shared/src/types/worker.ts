@@ -20,7 +20,12 @@ export interface GitDiffWorker extends WorkerBase {
   baseCommit: string;  // Comparison base commit hash (calculated at creation)
 }
 
-export type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
+export interface SdkWorker extends WorkerBase {
+  type: 'sdk';
+  agentId: string;  // References AgentDefinition.id (always claude-code for now)
+}
+
+export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | SdkWorker;
 
 // Agent activity state (detected by parsing output)
 export type AgentActivityState =

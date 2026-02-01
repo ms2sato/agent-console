@@ -7,6 +7,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedSdkWorker,
   PersistedWorktreeSession,
   PersistedQuickSession,
   PersistedRepository,
@@ -106,6 +107,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: worker.pid ?? null,
       agent_id: worker.agentId,
       base_commit: null,
+      sdk_session_id: null,
     };
   } else if (worker.type === 'terminal') {
     return {
@@ -113,6 +115,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: worker.pid ?? null,
       agent_id: null,
       base_commit: null,
+      sdk_session_id: null,
     };
   } else if (worker.type === 'git-diff') {
     return {
@@ -120,6 +123,15 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: null,
       agent_id: null,
       base_commit: worker.baseCommit,
+      sdk_session_id: null,
+    };
+  } else if (worker.type === 'sdk') {
+    return {
+      ...base,
+      pid: null,
+      agent_id: worker.agentId,
+      base_commit: null,
+      sdk_session_id: worker.sdkSessionId ?? null,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -129,7 +141,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
 /**
  * Valid worker types. Used for runtime validation of database values.
  */
-const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff'] as const;
+const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff', 'sdk'] as const;
 
 /**
  * Convert a database worker row to a persisted worker.
@@ -177,6 +189,18 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       createdAt: worker.created_at,
       baseCommit: worker.base_commit,
     } as PersistedGitDiffWorker;
+  } else if (worker.type === 'sdk') {
+    if (worker.agent_id === null || worker.agent_id === undefined) {
+      throw new DataIntegrityError('worker', worker.id, 'agent_id (missing required field)');
+    }
+    return {
+      id: worker.id,
+      type: 'sdk',
+      name: worker.name,
+      createdAt: worker.created_at,
+      agentId: worker.agent_id,
+      sdkSessionId: worker.sdk_session_id ?? null,
+    } as PersistedSdkWorker;
   } else {
     // This should never be reached due to the validation above,
     // but TypeScript needs this for exhaustive checking

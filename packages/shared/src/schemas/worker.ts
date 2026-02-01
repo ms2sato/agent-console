@@ -39,6 +39,18 @@ const CreateGitDiffWorkerParamsSchema = v.object({
 });
 
 /**
+ * Schema for creating an SDK worker (internal use only)
+ */
+const CreateSdkWorkerParamsSchema = v.object({
+  ...WorkerOptionsSchema.entries,
+  type: v.literal('sdk'),
+  agentId: v.pipe(
+    v.string(),
+    v.minLength(1, 'Agent ID is required')
+  ),
+});
+
+/**
  * Schema for API: only terminal workers can be created by client
  */
 export const CreateWorkerRequestSchema = CreateTerminalWorkerParamsSchema;
@@ -54,7 +66,8 @@ export const RestartWorkerRequestSchema = v.object({
 export type CreateAgentWorkerParams = v.InferOutput<typeof CreateAgentWorkerParamsSchema>;
 export type CreateTerminalWorkerParams = v.InferOutput<typeof CreateTerminalWorkerParamsSchema>;
 export type CreateGitDiffWorkerParams = v.InferOutput<typeof CreateGitDiffWorkerParamsSchema>;
-export type CreateWorkerParams = CreateAgentWorkerParams | CreateTerminalWorkerParams | CreateGitDiffWorkerParams;
+export type CreateSdkWorkerParams = v.InferOutput<typeof CreateSdkWorkerParamsSchema>;
+export type CreateWorkerParams = CreateAgentWorkerParams | CreateTerminalWorkerParams | CreateGitDiffWorkerParams | CreateSdkWorkerParams;
 
 // API types (client can only create terminal workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
