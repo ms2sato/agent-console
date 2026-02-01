@@ -286,7 +286,6 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-2',
           '/repo/path',
-          'base-commit',
           message
         );
 
@@ -330,7 +329,6 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-traversal',
           '/repo/path',
-          'base-commit',
           message
         );
 
@@ -372,7 +370,6 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-3',
           '/repo/path',
-          'base-commit',
           message
         );
 

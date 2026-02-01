@@ -67,7 +67,7 @@ Add `get-file-lines` case to the `switch` in `handleMessage()`:
 ## Files to Modify
 
 | File | Change |
-|------|--------|
+| ------ | -------- |
 | `packages/shared/src/types/git-diff.ts` | New message types |
 | `packages/server/src/services/git-diff-service.ts` | `getFileLines()` function |
 | `packages/server/src/websocket/git-diff-handler.ts` | Handle `get-file-lines` message |

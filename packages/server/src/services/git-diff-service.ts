@@ -20,7 +20,7 @@ import {
 } from '../lib/git.js';
 import { readFile, stat } from 'fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { createLogger } from '../lib/logger.js';
 import { fileWatchIgnorePatterns } from '../lib/server-config.js';
 
@@ -519,8 +519,8 @@ export async function getDiffData(
  * Prevents path traversal attacks via malicious filePath parameter.
  */
 function isValidFilePath(filePath: string): boolean {
-  // Reject absolute paths
-  if (filePath.startsWith('/') || filePath.startsWith('\\')) {
+  // Reject absolute paths (including Windows drive-absolute)
+  if (isAbsolute(filePath)) {
     return false;
   }
   // Reject paths containing .. (path traversal)
