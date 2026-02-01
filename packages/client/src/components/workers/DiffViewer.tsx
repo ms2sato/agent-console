@@ -1,7 +1,7 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { parsePatch } from 'diff';
 import { Highlight, themes, type Language } from 'prism-react-renderer';
-import type { GitDiffFile } from '@agent-console/shared';
+import type { GitDiffFile, ExpandedLineChunk } from '@agent-console/shared';
 
 // Import additional language support (ruby, bash, css, scss, less, typescript, javascript, sql)
 import '../../lib/prism-languages';
@@ -60,6 +60,8 @@ interface DiffViewerProps {
   files: GitDiffFile[];
   scrollToFile: string | null;
   onFileVisible?: (filePath: string) => void;
+  expandedLines?: Map<string, ExpandedLineChunk[]>;
+  onRequestExpand?: (path: string, startLine: number, endLine: number) => void;
 }
 
 /**
@@ -133,7 +135,7 @@ function sortFilesAsTree(files: GitDiffFile[]): GitDiffFile[] {
   return result;
 }
 
-export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: DiffViewerProps) {
+export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expandedLines, onRequestExpand }: DiffViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -335,7 +337,12 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible }: Diff
                   Binary file
                 </div>
               ) : parsedFile && parsedFile.hunks.length > 0 ? (
-                <FileHunks hunks={parsedFile.hunks} filePath={file.path} />
+                <FileHunks
+                  hunks={parsedFile.hunks}
+                  filePath={file.path}
+                  expandedChunks={expandedLines?.get(file.path)}
+                  onRequestExpand={onRequestExpand ? (startLine, endLine) => onRequestExpand(file.path, startLine, endLine) : undefined}
+                />
               ) : (
                 <div className="flex items-center justify-center py-8 text-gray-500">
                   {file.status === 'untracked' ? 'New file (untracked)' : 'No diff available'}
@@ -375,105 +382,247 @@ function FileStatusBadge({ status }: FileStatusBadgeProps) {
 interface FileHunksProps {
   hunks: ReturnType<typeof parsePatch>[0]['hunks'];
   filePath: string;
+  expandedChunks?: ExpandedLineChunk[];
+  onRequestExpand?: (startLine: number, endLine: number) => void;
 }
 
-function FileHunks({ hunks, filePath }: FileHunksProps) {
-  const language = getLanguageFromPath(filePath);
+const MAX_EXPAND_LINES = 20;
 
+/**
+ * Get expanded lines that fall within a given range (inclusive).
+ * Returns lines sorted by startLine.
+ */
+function getExpandedLinesInRange(
+  chunks: ExpandedLineChunk[] | undefined,
+  rangeStart: number,
+  rangeEnd: number
+): { lineNumber: number; content: string }[] {
+  if (!chunks || rangeStart > rangeEnd) return [];
+
+  const result: { lineNumber: number; content: string }[] = [];
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.lines.length; i++) {
+      const lineNum = chunk.startLine + i;
+      if (lineNum >= rangeStart && lineNum <= rangeEnd) {
+        result.push({ lineNumber: lineNum, content: chunk.lines[i] });
+      }
+    }
+  }
+  result.sort((a, b) => a.lineNumber - b.lineNumber);
+  return result;
+}
+
+function ExpandButton({ linesAvailable, onClick }: { linesAvailable: number; onClick: () => void }) {
+  const linesToShow = Math.min(linesAvailable, MAX_EXPAND_LINES);
   return (
-    <div>
-      {hunks.map((hunk, hunkIndex) => (
-        <div key={hunkIndex}>
-          {/* Hunk header */}
-          <div className="bg-blue-900/30 text-blue-300 px-4 py-1">
-            @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
-          </div>
-
-          {/* Hunk lines */}
-          <div>
-            {hunk.lines.map((line, lineIndex) => {
-              const lineType = line[0];
-              const content = line.slice(1);
-
-              // Calculate line numbers
-              let oldLineNum: number | null = null;
-              let newLineNum: number | null = null;
-
-              // Track current position in old and new files
-              let oldLine = hunk.oldStart;
-              let newLine = hunk.newStart;
-
-              // Calculate line numbers by walking through lines up to current position
-              for (let i = 0; i <= lineIndex; i++) {
-                const currentLineType = hunk.lines[i][0];
-
-                if (i === lineIndex) {
-                  if (currentLineType === ' ' || currentLineType === '-') {
-                    oldLineNum = oldLine;
-                  }
-                  if (currentLineType === ' ' || currentLineType === '+') {
-                    newLineNum = newLine;
-                  }
-                }
-
-                // Increment counters for next iteration
-                if (currentLineType === ' ') {
-                  oldLine++;
-                  newLine++;
-                } else if (currentLineType === '-') {
-                  oldLine++;
-                } else if (currentLineType === '+') {
-                  newLine++;
-                }
-              }
-
-              // Determine styling based on line type
-              let bgColor = '';
-              let prefixColor = 'text-gray-400';
-              let prefix = '';
-
-              if (lineType === '+') {
-                bgColor = 'bg-green-900/30';
-                prefixColor = 'text-green-300';
-                prefix = '+';
-              } else if (lineType === '-') {
-                bgColor = 'bg-red-900/30';
-                prefixColor = 'text-red-300';
-                prefix = '-';
-              } else {
-                bgColor = 'bg-slate-900';
-                prefixColor = 'text-gray-400';
-                prefix = ' ';
-              }
-
-              return (
-                <div
-                  key={lineIndex}
-                  className={`flex ${bgColor} hover:bg-slate-800/50`}
-                >
-                  {/* Old line number */}
-                  <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
-                    {oldLineNum !== null ? oldLineNum : ''}
-                  </div>
-
-                  {/* New line number */}
-                  <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
-                    {newLineNum !== null ? newLineNum : ''}
-                  </div>
-
-                  {/* Line content with syntax highlighting */}
-                  <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
-                    <span className={`select-none mr-2 ${prefixColor}`}>{prefix}</span>
-                    <HighlightedLine code={content} language={language} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+    <div
+      className="flex items-center justify-center py-1 bg-slate-800/50 hover:bg-slate-700/50 cursor-pointer border-y border-gray-800"
+      onClick={onClick}
+    >
+      <span className="text-xs text-blue-400">
+        Show {linesToShow} more lines
+      </span>
     </div>
   );
+}
+
+function ExpandedContextLine({ lineNumber, content, language }: { lineNumber: number; content: string; language: Language }) {
+  return (
+    <div className="flex bg-slate-900 hover:bg-slate-800/50">
+      <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
+        {lineNumber}
+      </div>
+      <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
+        {lineNumber}
+      </div>
+      <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
+        <span className="select-none mr-2 text-gray-400">{' '}</span>
+        <HighlightedLine code={content} language={language} />
+      </div>
+    </div>
+  );
+}
+
+function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand }: FileHunksProps) {
+  const language = getLanguageFromPath(filePath);
+
+  const elements: React.ReactNode[] = [];
+
+  for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
+    const hunk = hunks[hunkIndex];
+
+    // Calculate gap before this hunk
+    let gapStart: number;
+    let gapEnd: number;
+
+    if (hunkIndex === 0) {
+      gapStart = 1;
+      gapEnd = hunk.oldStart - 1;
+    } else {
+      const prevHunk = hunks[hunkIndex - 1];
+      gapStart = prevHunk.oldStart + prevHunk.oldLines;
+      gapEnd = hunk.oldStart - 1;
+    }
+
+    if (gapStart <= gapEnd && onRequestExpand) {
+      // Render any already-expanded lines in this gap
+      const expandedInGap = getExpandedLinesInRange(expandedChunks, gapStart, gapEnd);
+
+      if (expandedInGap.length > 0) {
+        elements.push(
+          <div key={`expanded-${hunkIndex}`}>
+            {expandedInGap.map((line) => (
+              <ExpandedContextLine
+                key={`exp-${line.lineNumber}`}
+                lineNumber={line.lineNumber}
+                content={line.content}
+                language={language}
+              />
+            ))}
+          </div>
+        );
+
+        // Check if there are still unexpanded lines in the gap
+        const lastExpandedLine = expandedInGap[expandedInGap.length - 1].lineNumber;
+        const firstExpandedLine = expandedInGap[0].lineNumber;
+
+        // Lines remaining before expanded chunk (for top-of-file gaps)
+        if (hunkIndex === 0 && firstExpandedLine > gapStart) {
+          const remainingBefore = firstExpandedLine - gapStart;
+          const requestStart = Math.max(gapStart, firstExpandedLine - MAX_EXPAND_LINES);
+          elements.splice(elements.length - 1, 0,
+            <ExpandButton
+              key={`expand-before-${hunkIndex}`}
+              linesAvailable={remainingBefore}
+              onClick={() => onRequestExpand(requestStart, firstExpandedLine - 1)}
+            />
+          );
+        }
+
+        // Lines remaining after expanded chunk
+        if (lastExpandedLine < gapEnd) {
+          const remaining = gapEnd - lastExpandedLine;
+          const requestEnd = Math.min(gapEnd, lastExpandedLine + MAX_EXPAND_LINES);
+          elements.push(
+            <ExpandButton
+              key={`expand-after-${hunkIndex}`}
+              linesAvailable={remaining}
+              onClick={() => onRequestExpand(lastExpandedLine + 1, requestEnd)}
+            />
+          );
+        }
+      } else {
+        // No expanded lines yet - show expand button
+        const totalGap = gapEnd - gapStart + 1;
+        if (hunkIndex === 0) {
+          // Top of file: expand upward (lines just before the first hunk)
+          const requestStart = Math.max(1, gapEnd - MAX_EXPAND_LINES + 1);
+          elements.push(
+            <ExpandButton
+              key={`expand-${hunkIndex}`}
+              linesAvailable={totalGap}
+              onClick={() => onRequestExpand(requestStart, gapEnd)}
+            />
+          );
+        } else {
+          // Between hunks: expand downward from previous hunk's end
+          const requestEnd = Math.min(gapEnd, gapStart + MAX_EXPAND_LINES - 1);
+          elements.push(
+            <ExpandButton
+              key={`expand-${hunkIndex}`}
+              linesAvailable={totalGap}
+              onClick={() => onRequestExpand(gapStart, requestEnd)}
+            />
+          );
+        }
+      }
+    }
+
+    // Render the hunk itself
+    elements.push(
+      <div key={`hunk-${hunkIndex}`}>
+        {/* Hunk header */}
+        <div className="bg-blue-900/30 text-blue-300 px-4 py-1">
+          @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
+        </div>
+
+        {/* Hunk lines */}
+        <div>
+          {hunk.lines.map((line, lineIndex) => {
+            const lineType = line[0];
+            const content = line.slice(1);
+
+            // Calculate line numbers
+            let oldLineNum: number | null = null;
+            let newLineNum: number | null = null;
+
+            let oldLine = hunk.oldStart;
+            let newLine = hunk.newStart;
+
+            for (let i = 0; i <= lineIndex; i++) {
+              const currentLineType = hunk.lines[i][0];
+
+              if (i === lineIndex) {
+                if (currentLineType === ' ' || currentLineType === '-') {
+                  oldLineNum = oldLine;
+                }
+                if (currentLineType === ' ' || currentLineType === '+') {
+                  newLineNum = newLine;
+                }
+              }
+
+              if (currentLineType === ' ') {
+                oldLine++;
+                newLine++;
+              } else if (currentLineType === '-') {
+                oldLine++;
+              } else if (currentLineType === '+') {
+                newLine++;
+              }
+            }
+
+            let bgColor = '';
+            let prefixColor = 'text-gray-400';
+            let prefix = '';
+
+            if (lineType === '+') {
+              bgColor = 'bg-green-900/30';
+              prefixColor = 'text-green-300';
+              prefix = '+';
+            } else if (lineType === '-') {
+              bgColor = 'bg-red-900/30';
+              prefixColor = 'text-red-300';
+              prefix = '-';
+            } else {
+              bgColor = 'bg-slate-900';
+              prefixColor = 'text-gray-400';
+              prefix = ' ';
+            }
+
+            return (
+              <div
+                key={lineIndex}
+                className={`flex ${bgColor} hover:bg-slate-800/50`}
+              >
+                <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
+                  {oldLineNum !== null ? oldLineNum : ''}
+                </div>
+                <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
+                  {newLineNum !== null ? newLineNum : ''}
+                </div>
+                <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
+                  <span className={`select-none mr-2 ${prefixColor}`}>{prefix}</span>
+                  <HighlightedLine code={content} language={language} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return <div>{elements}</div>;
 }
 
 interface HighlightedLineProps {

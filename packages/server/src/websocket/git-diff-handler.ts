@@ -2,6 +2,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
 import {
   getDiffData as getDiffDataImpl,
+  getFileLines as getFileLinesImpl,
   resolveRef as resolveRefImpl,
   startWatching as startWatchingImpl,
   stopWatching as stopWatchingImpl,
@@ -19,6 +20,7 @@ export interface GitDiffHandlerDependencies {
   resolveRef: (ref: string, repoPath: string) => Promise<string | null>;
   startWatching: (repoPath: string, onChange: () => void) => void;
   stopWatching: (repoPath: string) => void;
+  getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget) => Promise<string[]>;
 }
 
 // Default dependencies using real implementations
@@ -27,6 +29,7 @@ const defaultDependencies: GitDiffHandlerDependencies = {
   resolveRef: resolveRefImpl,
   startWatching: startWatchingImpl,
   stopWatching: stopWatchingImpl,
+  getFileLines: getFileLinesImpl,
 };
 
 // ============================================================
@@ -48,7 +51,7 @@ const activeConnections = new Map<string, ConnectionState>();
 // ============================================================
 
 export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = defaultDependencies) {
-  const { getDiffData, resolveRef, startWatching, stopWatching } = deps;
+  const { getDiffData, resolveRef, startWatching, stopWatching, getFileLines } = deps;
 
   /**
    * Send diff data to the client.
@@ -191,6 +194,23 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
 
           state.targetRef = targetRef;
           await sendDiffData(ws, locationPath, state.baseCommit, targetRef);
+          break;
+        }
+
+        case 'get-file-lines': {
+          try {
+            const lines = await getFileLines(locationPath, parsed.path, parsed.startLine, parsed.endLine, parsed.ref);
+            const msg: GitDiffServerMessage = {
+              type: 'file-lines',
+              path: parsed.path,
+              startLine: parsed.startLine,
+              lines,
+            };
+            ws.send(JSON.stringify(msg));
+          } catch (e) {
+            const error = e instanceof Error ? e.message : 'Failed to get file lines';
+            sendError(ws, error);
+          }
           break;
         }
 

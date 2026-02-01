@@ -21,6 +21,7 @@ import {
   type GitDiffData,
   type GitDiffTarget,
   type WorkerErrorCode,
+  type ExpandedLineChunk,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
 import { clearTerminalState } from './terminal-state-cache.js';
@@ -86,6 +87,7 @@ export interface WorkerConnectionState {
   diffData?: GitDiffData | null;
   diffError?: string | null;
   diffLoading?: boolean;
+  expandedLines?: Map<string, ExpandedLineChunk[]>;
 }
 
 // Internal connection data
@@ -310,13 +312,30 @@ function handleTerminalMessage(
 function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks: GitDiffWorkerCallbacks): void {
   switch (msg.type) {
     case 'diff-data':
-      updateState(key, { diffData: msg.data, diffError: null, diffLoading: false });
+      updateState(key, { diffData: msg.data, diffError: null, diffLoading: false, expandedLines: new Map() });
       callbacks.onDiffData?.(msg.data);
       break;
     case 'diff-error':
       updateState(key, { diffData: null, diffError: msg.error, diffLoading: false });
       callbacks.onDiffError?.(msg.error);
       break;
+    case 'file-lines': {
+      const conn = connections.get(key);
+      const currentExpanded = conn?.state.expandedLines ?? new Map<string, ExpandedLineChunk[]>();
+      const newMap = new Map(currentExpanded);
+      const chunks = newMap.get(msg.path) ?? [];
+      // Deduplicate: replace chunk with same startLine, otherwise append
+      const existingIndex = chunks.findIndex(c => c.startLine === msg.startLine);
+      if (existingIndex >= 0) {
+        const newChunks = [...chunks];
+        newChunks[existingIndex] = { startLine: msg.startLine, lines: msg.lines };
+        newMap.set(msg.path, newChunks);
+      } else {
+        newMap.set(msg.path, [...chunks, { startLine: msg.startLine, lines: msg.lines }]);
+      }
+      updateState(key, { expandedLines: newMap });
+      break;
+    }
     default: {
       // Exhaustive check: TypeScript will error if a new message type is added
       // but not handled in this switch statement
@@ -577,6 +596,10 @@ export function setBaseCommit(sessionId: string, workerId: string, ref: string):
 
 export function setTargetCommit(sessionId: string, workerId: string, ref: GitDiffTarget): boolean {
   return sendGitDiffMessage(sessionId, workerId, { type: 'set-target-commit', ref });
+}
+
+export function requestFileLines(sessionId: string, workerId: string, path: string, startLine: number, endLine: number, ref: GitDiffTarget): boolean {
+  return sendGitDiffMessage(sessionId, workerId, { type: 'get-file-lines', path, startLine, endLine, ref });
 }
 
 /**
