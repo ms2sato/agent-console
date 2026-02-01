@@ -1704,6 +1704,35 @@ describe('SessionManager', () => {
       expect(result).toBeNull();
     });
 
+    it('should set fromWorkerName to the sending agent name for agent-to-agent messages', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const firstAgent = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Create a second agent worker
+      const secondAgent = await manager.createWorker(session.id, {
+        type: 'agent',
+        name: 'Agent 2',
+        agentId: 'claude-code',
+      });
+      expect(secondAgent).not.toBeNull();
+
+      // Send message from first agent to second agent
+      const result = manager.sendMessage(session.id, firstAgent.id, secondAgent!.id, 'inter-agent message');
+
+      expect(result).not.toBeNull();
+      expect(result!.fromWorkerId).toBe(firstAgent.id);
+      expect(result!.fromWorkerName).toBe(firstAgent.name);
+      expect(result!.toWorkerId).toBe(secondAgent!.id);
+      expect(result!.toWorkerName).toBe(secondAgent!.name);
+      expect(result!.content).toBe('inter-agent message');
+    });
+
     it('should return null for non-existent target worker', async () => {
       const manager = await getSessionManager();
 

@@ -9,6 +9,11 @@ export const SendWorkerMessageRequestSchema = v.object({
     v.trim(),
     v.minLength(1, 'Target worker ID is required'),
   ),
+  fromWorkerId: v.optional(v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Source worker ID must not be empty'),
+  )),
   content: v.pipe(
     v.string(),
     v.trim(),

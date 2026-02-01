@@ -36,7 +36,6 @@ import type {
   Disposable,
 } from './worker-types.js';
 import { ActivityDetector } from './activity-detector.js';
-import { MessageDetector, type DetectedMessage } from './message-detector.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { getChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { expandTemplate } from '../lib/template.js';
@@ -132,15 +131,6 @@ export type GlobalWorkerExitCallback = (
 ) => void;
 
 /**
- * Callback type for detected inter-worker messages in agent output.
- */
-export type MessageDetectedCallback = (
-  sessionId: string,
-  fromWorkerId: string,
-  messages: DetectedMessage[]
-) => void;
-
-/**
  * Session info for notification events.
  * Minimal interface to avoid circular dependency with InternalSession.
  */
@@ -156,7 +146,6 @@ export class WorkerManager {
   private globalActivityCallback?: GlobalActivityCallback;
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
-  private globalMessageDetectedCallback?: MessageDetectedCallback;
 
   constructor(ptyProvider: PtyProvider) {
     this.ptyProvider = ptyProvider;
@@ -184,13 +173,6 @@ export class WorkerManager {
     this.globalWorkerExitCallback = callback;
   }
 
-  /**
-   * Set a global callback for detected inter-worker messages in agent output.
-   */
-  setGlobalMessageDetectedCallback(callback: MessageDetectedCallback): void {
-    this.globalMessageDetectedCallback = callback;
-  }
-
   // ========== Worker Initialization ==========
 
   /**
@@ -215,7 +197,6 @@ export class WorkerManager {
       outputOffset: 0,
       activityState: 'unknown',
       activityDetector: null,
-      messageDetector: null,
       connectionCallbacks: new Map(),
     };
 
@@ -333,7 +314,6 @@ export class WorkerManager {
 
     worker.pty = ptyProcess;
     worker.activityDetector = activityDetector;
-    worker.messageDetector = new MessageDetector();
     worker.agentId = agentId;
 
     // Set initial activity state to match ActivityDetector's initial state ('idle').
@@ -416,14 +396,6 @@ export class WorkerManager {
         worker.activityDetector.processOutput(data);
       }
 
-      // Detect inter-worker messages in agent output
-      if (worker.type === 'agent' && worker.messageDetector) {
-        const detectedMessages = worker.messageDetector.processOutput(data);
-        if (detectedMessages.length > 0) {
-          this.globalMessageDetectedCallback?.(sessionId, worker.id, detectedMessages);
-        }
-      }
-
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
       for (const callbacks of callbacksSnapshot) {
         callbacks.onData(data, worker.outputOffset);
@@ -445,10 +417,6 @@ export class WorkerManager {
         if (worker.activityDetector) {
           worker.activityDetector.dispose();
           worker.activityDetector = null;
-        }
-        if (worker.messageDetector) {
-          worker.messageDetector.dispose();
-          worker.messageDetector = null;
         }
       }
 
@@ -572,7 +540,6 @@ export class WorkerManager {
             agentId: pw.agentId,
             activityState: 'unknown',
             activityDetector: null,
-            messageDetector: null,
           };
           break;
         case 'terminal':
@@ -659,13 +626,10 @@ export class WorkerManager {
       // Kill PTY process
       if (worker.pty) worker.pty.kill();
 
-      // Dispose activity detector and message detector for agent workers
+      // Dispose activity detector for agent workers
       if (worker.type === 'agent') {
         if (worker.activityDetector) {
           worker.activityDetector.dispose();
-        }
-        if (worker.messageDetector) {
-          worker.messageDetector.dispose();
         }
       }
     }

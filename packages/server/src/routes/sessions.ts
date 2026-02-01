@@ -119,10 +119,10 @@ const sessions = new Hono()
       ...(result.branch !== undefined && { branch: result.branch }),
     });
   })
-  // Send a message from user to a worker
+  // Send a message to a worker (from user or another worker)
   .post('/:sessionId/messages', vValidator(SendWorkerMessageRequestSchema), async (c) => {
     const sessionId = c.req.param('sessionId');
-    const { toWorkerId, content } = c.req.valid('json');
+    const { toWorkerId, content, fromWorkerId } = c.req.valid('json');
 
     const sessionManager = getSessionManager();
     const session = sessionManager.getSession(sessionId);
@@ -130,7 +130,7 @@ const sessions = new Hono()
       throw new NotFoundError('Session');
     }
 
-    const message = sessionManager.sendMessage(sessionId, null, toWorkerId, content);
+    const message = sessionManager.sendMessage(sessionId, fromWorkerId ?? null, toWorkerId, content);
     if (!message) {
       throw new NotFoundError('Target worker');
     }

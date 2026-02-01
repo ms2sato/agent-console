@@ -468,7 +468,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 \`\`\`
 curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages \\
   -H 'Content-Type: application/json' \\
-  -d '{"toWorkerId":"<WORKER_ID>","content":"<YOUR_MESSAGE>"}'
+  -d '{"toWorkerId":"<WORKER_ID>","content":"<YOUR_MESSAGE>","fromWorkerId":"${currentTab.id}"}'
 \`\`\`
 
 **List all workers in this session (to get updated worker IDs):**

@@ -8,7 +8,6 @@
 import type { AgentActivityState } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
-import type { MessageDetector } from './message-detector.js';
 
 /**
  * Callbacks for worker lifecycle events (data, exit, activity changes).
@@ -60,7 +59,6 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
   agentId: string;
   activityState: AgentActivityState;
   activityDetector: ActivityDetector | null;  // null when pty is null
-  messageDetector: MessageDetector | null;  // null when pty is null
 }
 
 /**

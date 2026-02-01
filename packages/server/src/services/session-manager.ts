@@ -48,6 +48,7 @@ import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { JsonSessionRepository } from '../repositories/index.js';
@@ -159,7 +160,6 @@ export class SessionManager {
   }) {
     const ptyProvider = options?.ptyProvider ?? bunPtyProvider;
     this.workerManager = new WorkerManager(ptyProvider);
-    this.setupMessageDetectionCallback();
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -352,68 +352,6 @@ export class SessionManager {
   }
 
   /**
-   * Set up the message detection callback to handle inter-worker messages.
-   * When an agent worker outputs a message pattern, this resolves the target
-   * worker and injects the message into its PTY.
-   */
-  private setupMessageDetectionCallback(): void {
-    this.workerManager.setGlobalMessageDetectedCallback((sessionId, fromWorkerId, detectedMessages) => {
-      const session = this.sessions.get(sessionId);
-      if (!session) return;
-
-      const fromWorker = session.workers.get(fromWorkerId);
-      if (!fromWorker) return;
-
-      for (const detected of detectedMessages) {
-        // Resolve target worker by name within the session
-        const targetWorker = Array.from(session.workers.values()).find(
-          (w) => w.name === detected.targetWorkerName
-        );
-
-        if (!targetWorker) {
-          logger.warn(
-            { sessionId, fromWorkerId, targetName: detected.targetWorkerName },
-            'Message target worker not found by name'
-          );
-          continue;
-        }
-
-        // Only PTY workers can receive messages
-        if (targetWorker.type === 'git-diff') {
-          logger.warn(
-            { sessionId, targetWorkerId: targetWorker.id, targetName: detected.targetWorkerName },
-            'Cannot send message to git-diff worker'
-          );
-          continue;
-        }
-
-        const message: WorkerMessage = {
-          id: crypto.randomUUID(),
-          sessionId,
-          fromWorkerId,
-          fromWorkerName: fromWorker.name,
-          toWorkerId: targetWorker.id,
-          toWorkerName: targetWorker.name,
-          content: detected.content,
-          timestamp: new Date().toISOString(),
-        };
-
-        // Inject message into target worker's PTY
-        const injectionText = `[From ${fromWorker.name}]: ${detected.content}\n`;
-        const injected = this.writeWorkerInput(sessionId, targetWorker.id, injectionText);
-        if (!injected) {
-          logger.warn({ sessionId, targetWorkerId: targetWorker.id }, 'Failed to inject worker message (PTY inactive)');
-          continue;
-        }
-
-        // Store and broadcast
-        this.messageService.addMessage(message);
-        broadcastToApp({ type: 'worker-message', message });
-      }
-    });
-  }
-
-  /**
    * Send a message from one worker (or user) to another via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
@@ -447,12 +385,20 @@ export class SessionManager {
     };
 
     // Inject message into target worker's PTY
-    const injectionText = `[From ${fromWorkerName}]: ${content}\n`;
+    let injectionText = `[From ${fromWorkerName}]: ${content}`;
+    if (fromWorkerId) {
+      const baseUrl = `http://localhost:${serverConfig.PORT}`;
+      injectionText += `\n\nTo reply, run: curl -X POST ${baseUrl}/api/sessions/${sessionId}/messages -H 'Content-Type: application/json' -d '{"toWorkerId":"${fromWorkerId}","fromWorkerId":"${toWorkerId}","content":"YOUR_REPLY"}'`;
+    }
     const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
     if (!injected) {
       logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
       return null;
     }
+    // Delay Enter to allow TUI agents to process the text input first
+    setTimeout(() => {
+      this.writeWorkerInput(sessionId, toWorkerId, '\r');
+    }, 100);
 
     // Store and broadcast
     this.messageService.addMessage(message);
