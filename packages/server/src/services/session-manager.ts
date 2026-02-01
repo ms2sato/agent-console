@@ -10,6 +10,7 @@ import type {
   CreateWorkerParams,
   WorkerErrorCode,
   SessionActivationState,
+  WorkerMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -44,7 +45,8 @@ import {
 } from '../lib/git.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
-import { notifySessionDeleted } from '../websocket/routes.js';
+import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
+import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
@@ -115,6 +117,7 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private workerManager: WorkerManager;
+  private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
   private jobQueue: JobQueue | null = null;
@@ -348,6 +351,50 @@ export class SessionManager {
   }
 
   /**
+   * Send a message from the user to a worker via API.
+   * If fromWorkerId is null, the message is sent as "User".
+   */
+  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string): WorkerMessage | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const targetWorker = session.workers.get(toWorkerId);
+    if (!targetWorker || targetWorker.type === 'git-diff') return null;
+
+    const fromWorkerName = 'User';
+    const effectiveFromWorkerId = fromWorkerId ?? 'user';
+
+    const message: WorkerMessage = {
+      id: crypto.randomUUID(),
+      sessionId,
+      fromWorkerId: effectiveFromWorkerId,
+      fromWorkerName,
+      toWorkerId,
+      toWorkerName: targetWorker.name,
+      content,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Inject message into target worker's PTY
+    const injectionText = `[From ${fromWorkerName}]: ${content}`;
+    const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+    if (!injected) {
+      logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
+      return null;
+    }
+    // Delay Enter to allow TUI agents to process the text input first
+    setTimeout(() => {
+      this.writeWorkerInput(sessionId, toWorkerId, '\r');
+    }, 100);
+
+    // Store and broadcast
+    this.messageService.addMessage(message);
+    broadcastToApp({ type: 'worker-message', message });
+
+    return message;
+  }
+
+  /**
    * Set a global callback for all worker exit events (for notifications)
    */
   setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number) => void): void {
@@ -548,6 +595,9 @@ export class SessionManager {
       } catch {
         // NotificationManager not initialized yet, skip
       }
+
+      // 2b. Clean up inter-worker message history
+      this.messageService.clearSession(id);
 
       // 3. Remove from in-memory map
       this.sessions.delete(id);

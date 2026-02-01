@@ -6,6 +6,7 @@ import {
   UpdateSessionRequestSchema,
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
+  SendWorkerMessageRequestSchema,
 } from '@agent-console/shared';
 import { getSessionManager } from '../services/session-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
@@ -184,6 +185,24 @@ const sessions = new Hono()
       branchName,
       orgRepo,
     });
+  })
+  // Send a message to a worker
+  .post('/:sessionId/messages', vValidator(SendWorkerMessageRequestSchema), async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const { toWorkerId, content } = c.req.valid('json');
+
+    const sessionManager = getSessionManager();
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    const message = sessionManager.sendMessage(sessionId, null, toWorkerId, content);
+    if (!message) {
+      throw new ValidationError('Failed to send message (target worker not found or PTY inactive)');
+    }
+
+    return c.json({ message }, 201);
   })
   // Create a worker in a session
   .post('/:sessionId/workers', vValidator(CreateWorkerRequestSchema), async (c) => {

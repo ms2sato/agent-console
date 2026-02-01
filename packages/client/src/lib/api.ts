@@ -20,6 +20,7 @@ import type {
   RefreshDefaultBranchResponse,
   RemoteBranchStatus,
   UpdateRepositoryRequest,
+  WorkerMessage,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -696,4 +697,25 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
     throw new Error('Failed to fetch notification status');
   }
   return res.json() as Promise<NotificationStatus>;
+}
+
+// ===========================================================================
+// Worker Messages
+// ===========================================================================
+
+export async function sendWorkerMessage(
+  sessionId: string,
+  toWorkerId: string,
+  content: string,
+): Promise<{ message: WorkerMessage }> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ toWorkerId, content }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(error.error || 'Failed to send message');
+  }
+  return res.json() as Promise<{ message: WorkerMessage }>;
 }
