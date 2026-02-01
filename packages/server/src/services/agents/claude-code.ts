@@ -30,6 +30,9 @@ const ASKING_PATTERNS: string[] = [
   '\\[A\\].*\\[B\\]', // A/B selection
   '\\[1\\].*\\[2\\]', // Numbered selection
 
+  // Numbered selection menu with cursor indicator (permission prompts)
+  '❯\\s+\\d+\\.\\s', // "❯ 1. Yes" style selection menu
+
   // Selection box with prompt
   '╰─+╯\\s*>\\s*$', // Box bottom + prompt
 ];
