@@ -14,6 +14,7 @@ const CLAUDE_CODE_PATTERNS: AgentActivityPatterns = {
     'Allow.*\\?',
     '\\[A\\].*\\[B\\]',
     '\\[1\\].*\\[2\\]',
+    '❯\\s+\\d+\\.\\s',
     '╰─+╯\\s*>\\s*$',
   ],
 };
@@ -161,6 +162,16 @@ describe('ActivityDetector', () => {
     it('should detect asking state from numbered selection pattern', () => {
       travel(new Date('2025-01-01T00:00:00Z'), (c) => {
         detector.processOutput('[1] First choice  [2] Second choice');
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
+    it('should detect asking state from numbered selection menu with cursor', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        detector.processOutput('❯ 1. Yes\n  2. Yes, and don\'t ask again for www.npmjs.com\n  3. No, and tell Claude what to do differently (esc)');
 
         c.tick(TEST_TIMEOUTS.debounceMs + 50);
 
