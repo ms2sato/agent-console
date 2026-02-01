@@ -185,6 +185,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setTabs([]);
     setActiveTabId(null);
     pendingWorkerIdRef.current = null;
+    setConnectionStatus('connecting');
+    setActivityState('unknown');
+    setExitInfo(undefined);
+    setWorkerActivityStates({});
   }, [sessionId]);
 
   // Initialize tabs when state becomes active
@@ -460,7 +464,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const handleTabClick = (tabId: string) => {
     // Use startTransition to mark this update as non-urgent
     // This keeps the UI responsive during the state update
+    // Status resets are inside startTransition to render atomically with tab switch
     startTransition(() => {
+      const knownState = workerActivityStates[tabId];
+      setActivityState(knownState ?? 'unknown');
+      setExitInfo(undefined);
       setActiveTabId(tabId);
       navigateToWorker(tabId);
     });
