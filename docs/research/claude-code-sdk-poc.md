@@ -32,6 +32,19 @@ Run with: `cd poc/claude-code-sdk && bun install && bun run <script>.ts`
 | 11b | AskUserQuestion (PreToolUse modify) | `ask-user-hook.ts` | **Cannot inject answer** | `modify` with `answers` field does not change the tool_result |
 | 11c | AskUserQuestion (PreToolUse block) | `ask-user-block.ts` | **Works** | `{ decision: "block", reason: "user's answer" }` injects the answer as tool_result. Claude correctly interprets it |
 
+| 12 | SDK↔CLI session sharing | `session-share2.ts` | **Works** | CLI's `--resume <session_id>` can continue an SDK session. Same session store is shared internally |
+
+## Session Sharing Between SDK and CLI
+
+SDK and CLI share the same internal session store. A conversation started via SDK `query()` can be continued by CLI `--resume <session_id>`, and vice versa (`-c` also picks up the latest SDK session).
+
+**Switching challenge: history data format mismatch.**
+- SDK Worker stores structured `SDKMessage[]` (JSON with typed blocks)
+- PTY Worker stores raw terminal output bytes (ANSI escape sequences)
+- When switching from SDK→PTY mid-conversation, past SDK messages cannot be rendered in xterm.js
+- When switching from PTY→SDK, past terminal output cannot be parsed into structured messages
+- The conversation *context* (what Claude knows) is preserved, but the *display history* for the UI is incompatible between the two formats
+
 ## Message Flow
 
 A single `query()` call yields messages in this order:

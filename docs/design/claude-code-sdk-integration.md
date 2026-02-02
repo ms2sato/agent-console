@@ -177,6 +177,25 @@ No heuristic needed. Activity state maps directly from message flow:
 
 4. **Migration**: Full-stack implementation in one phase (SDK Worker + rich UI together).
 
+## SDK ↔ PTY Session Sharing
+
+SDK and CLI share the same internal session store (verified via POC #12). This enables switching between SDK Worker and PTY Agent Worker mid-conversation while preserving Claude's context.
+
+**How it works:**
+- SDK Worker creates a session → `session_id` is captured
+- PTY Agent Worker can be launched with `claude --resume <session_id>`
+- Claude retains full conversation context across the switch
+
+**Challenge: history data format mismatch.**
+- SDK Worker history = `SDKMessage[]` (structured JSON)
+- PTY Worker history = raw terminal bytes (ANSI)
+- These cannot be converted between each other
+- On switch, the UI must either:
+  - Show a "history before switch is not available in this view" placeholder
+  - Or keep both histories and show the appropriate one per worker type
+
+This is a UX design decision for a future phase. The backend plumbing (session_id sharing) is already feasible.
+
 ## Constraints and Risks
 
 - **SDK spawns child processes**: No reduction in process count. Memory/CPU profile is similar to current approach.
