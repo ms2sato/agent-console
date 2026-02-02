@@ -360,6 +360,70 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('sendMessage', () => {
+    it('should inject content only when no files provided', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello world');
+      expect(message).not.toBeNull();
+      expect(ptyFactory.instances[0].writtenData).toContain('hello world');
+    });
+
+    it('should inject content with file paths when files provided', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      expect(message).not.toBeNull();
+
+      // First part is sent immediately
+      const pty = ptyFactory.instances[0];
+      expect(pty.writtenData).toContain('check these');
+
+      // Wait for delayed parts (150ms * 3 = content, file1, file2, enter)
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(pty.writtenData).toContain('\r/tmp/file1.txt');
+      expect(pty.writtenData).toContain('\r/tmp/file2.txt');
+    });
+
+    it('should inject files only when content is empty', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
+      expect(message).not.toBeNull();
+
+      // First part (file path) is sent immediately
+      const pty = ptyFactory.instances[0];
+      expect(pty.writtenData).toContain('/tmp/file1.txt');
+
+      // Wait for final Enter
+      await new Promise(resolve => setTimeout(resolve, 300));
+    });
+
+    it('should return null for non-existent session', async () => {
+      const manager = await getSessionManager();
+      const result = manager.sendMessage('non-existent', null, 'worker-1', 'hello');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('resizeWorker', () => {
     it('should resize PTY', async () => {
       const manager = await getSessionManager();

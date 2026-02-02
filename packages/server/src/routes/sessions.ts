@@ -1,11 +1,18 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { validateSessionPath } from '../lib/path-validator.js';
 import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
+  SendWorkerMessageRequestSchema,
+  MAX_MESSAGE_FILES,
+  MAX_TOTAL_FILE_SIZE,
 } from '@agent-console/shared';
 import { getSessionManager } from '../services/session-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
@@ -14,6 +21,13 @@ import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
+
+const FILE_UPLOAD_DIR = join(tmpdir(), 'agent-console-uploads');
+try {
+  mkdirSync(FILE_UPLOAD_DIR, { recursive: true });
+} catch {
+  // Directory may already exist
+}
 
 const sessions = new Hono()
   // Validate all sessions
@@ -184,6 +198,74 @@ const sessions = new Hono()
       branchName,
       orgRepo,
     });
+  })
+  // Send a message to a worker (multipart/form-data for file upload support)
+  .post('/:sessionId/messages', async (c) => {
+    const sessionId = c.req.param('sessionId');
+
+    const body = await c.req.parseBody({ all: true });
+
+    const toWorkerId = typeof body.toWorkerId === 'string' ? body.toWorkerId : '';
+    const content = typeof body.content === 'string' ? body.content : '';
+
+    // Validate text fields with schema
+    const validated = v.parse(SendWorkerMessageRequestSchema, { toWorkerId, content });
+
+    // Extract files
+    const rawFiles = body.files;
+    const files: File[] = [];
+    if (rawFiles instanceof File) {
+      files.push(rawFiles);
+    } else if (Array.isArray(rawFiles)) {
+      for (const f of rawFiles) {
+        if (f instanceof File) {
+          files.push(f);
+        }
+      }
+    }
+
+    // Require at least content or files
+    if (!validated.content && files.length === 0) {
+      throw new ValidationError('Message must have content or at least one file');
+    }
+
+    // Validate file constraints
+    if (files.length > MAX_MESSAGE_FILES) {
+      throw new ValidationError(`Too many files (max ${MAX_MESSAGE_FILES})`);
+    }
+
+    let totalSize = 0;
+    for (const file of files) {
+      totalSize += file.size;
+    }
+    if (totalSize > MAX_TOTAL_FILE_SIZE) {
+      throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
+    }
+
+    // Save files to disk
+    const savedPaths: string[] = [];
+    for (const file of files) {
+      // Sanitize filename: remove directory separators to prevent path traversal
+      const sanitizedName = file.name.replace(/[/\\]/g, '_');
+      const uniqueName = `${randomUUID()}-${sanitizedName}`;
+      const filePath = join(FILE_UPLOAD_DIR, uniqueName);
+      const buffer = Buffer.from(await file.arrayBuffer());
+      writeFileSync(filePath, buffer);
+      savedPaths.push(filePath);
+    }
+
+    const sessionManager = getSessionManager();
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    const message = sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
+    if (!message) {
+      throw new ValidationError('Failed to send message (target worker not found or PTY inactive)');
+    }
+
+    return c.json({ message }, 201);
   })
   // Create a worker in a session
   .post('/:sessionId/workers', vValidator(CreateWorkerRequestSchema), async (c) => {

@@ -84,6 +84,12 @@ export {
   type SystemOpenVSCodeRequest,
 } from './system.js';
 
+// Message schemas
+export {
+  SendWorkerMessageRequestSchema,
+  type SendWorkerMessageRequest,
+} from './message.js';
+
 // Notification schemas
 export {
   RepositorySlackIntegrationInputSchema,

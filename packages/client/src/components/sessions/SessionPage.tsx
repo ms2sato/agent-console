@@ -12,7 +12,8 @@ import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
-import type { Session, Worker, AgentWorker, AgentActivityState } from '@agent-console/shared';
+import type { Session, Worker, AgentWorker, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import { MessagePanel } from './MessagePanel';
 
 type PageState =
   | { type: 'loading' }
@@ -96,6 +97,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Track all worker activity states for the session (for EndSessionDialog warning)
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
+  const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -161,8 +163,31 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   }, [sessionId]);
 
+  const handleSessionUpdated = useCallback((updatedSession: Session) => {
+    if (updatedSession.id === sessionId) {
+      const newTabs = workersToTabs(updatedSession.workers);
+      setTabs(newTabs);
+
+      setState(prev => {
+        if (prev.type === 'active' || prev.type === 'disconnected') {
+          return {
+            ...prev,
+            session: updatedSession,
+          };
+        }
+        return prev;
+      });
+    }
+  }, [sessionId]);
+
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
+    onWorkerMessage: (message) => {
+      if (message.sessionId === sessionId) {
+        setLastMessage(message);
+      }
+    },
+    onSessionUpdated: handleSessionUpdated,
   });
 
   // Update page title and favicon based on state
@@ -189,6 +214,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setActivityState('unknown');
     setExitInfo(undefined);
     setWorkerActivityStates({});
+    setLastMessage(null);
   }, [sessionId]);
 
   // Initialize tabs when state becomes active
@@ -268,8 +294,9 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       navigateToWorker(worker.id);
     } catch (error) {
       console.error('Failed to create terminal worker:', error);
+      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
     }
-  }, [state, sessionId, tabs, navigateToWorker]);
+  }, [state, sessionId, tabs, navigateToWorker, showError]);
 
   // Close a tab (delete worker)
   const closeTab = useCallback(async (tabId: string) => {
@@ -591,6 +618,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
         {activeTabContent}
       </div>
+
+      {/* Message panel - only shown for agent workers */}
+      {activeTab?.workerType === 'agent' && activeTabId && (
+        <MessagePanel
+          sessionId={sessionId}
+          targetWorkerId={activeTabId}
+          newMessage={lastMessage}
+          onError={showError}
+        />
+      )}
 
       {/* Status bar at bottom */}
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">

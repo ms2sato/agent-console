@@ -7,6 +7,7 @@ export * from './types/git-diff.js';
 export * from './types/job.js';
 export * from './types/integration.js';
 export * from './types/notification.js';
+export * from './types/worker-message.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
 
