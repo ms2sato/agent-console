@@ -5,7 +5,7 @@ mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
 }));
 
-import { fireEvent, cleanup, act, within, waitFor } from '@testing-library/react';
+import { fireEvent, cleanup, act, within } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MessagePanel } from '../MessagePanel';
 
@@ -195,9 +195,9 @@ describe('MessagePanel', () => {
       rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
     });
 
-    await waitFor(() => {
-      expect(textarea.style.height).toBe('auto');
-    });
+    // Re-query after rerender since DOM element may be replaced
+    const updatedTextarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    expect(updatedTextarea.style.height).toBe('auto');
   });
 
   it('Enter alone does NOT send', async () => {
