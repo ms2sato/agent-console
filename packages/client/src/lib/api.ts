@@ -707,15 +707,21 @@ export async function sendWorkerMessage(
   sessionId: string,
   toWorkerId: string,
   content: string,
+  files?: File[],
 ): Promise<{ message: WorkerMessage }> {
+  const formData = new FormData();
+  formData.append('toWorkerId', toWorkerId);
+  formData.append('content', content);
+  for (const file of files ?? []) {
+    formData.append('files', file);
+  }
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ toWorkerId, content }),
+    body: formData,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to send message');
+    const errorData = await res.json().catch(() => null) as { message?: string; error?: string } | null;
+    throw new Error(errorData?.message ?? errorData?.error ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<{ message: WorkerMessage }>;
 }

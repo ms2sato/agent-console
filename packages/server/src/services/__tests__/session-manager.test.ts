@@ -360,6 +360,60 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('sendMessage', () => {
+    it('should inject content only when no files provided', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello world');
+      expect(message).not.toBeNull();
+      expect(ptyFactory.instances[0].writtenData).toContain('hello world');
+    });
+
+    it('should inject content with file paths when files provided', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      expect(message).not.toBeNull();
+      const written = ptyFactory.instances[0].writtenData;
+      expect(written).toContain('check these\n[Files]\n/tmp/file1.txt\n/tmp/file2.txt');
+    });
+
+    it('should inject files only when content is empty', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
+      expect(message).not.toBeNull();
+      const written = ptyFactory.instances[0].writtenData;
+      expect(written).toContain('[Files]\n/tmp/file1.txt');
+      // Should not start with newline (no empty content prefix)
+      expect(written).not.toContain('\n[Files]');
+    });
+
+    it('should return null for non-existent session', async () => {
+      const manager = await getSessionManager();
+      const result = manager.sendMessage('non-existent', null, 'worker-1', 'hello');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('resizeWorker', () => {
     it('should resize PTY', async () => {
       const manager = await getSessionManager();

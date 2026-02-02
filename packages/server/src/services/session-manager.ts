@@ -354,7 +354,7 @@ export class SessionManager {
    * Send a message from the user to a worker via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
-  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string): WorkerMessage | null {
+  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, filePaths?: string[]): WorkerMessage | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -376,16 +376,40 @@ export class SessionManager {
     };
 
     // Inject message into target worker's PTY
-    const injectionText = content;
-    const injected = this.writeWorkerInput(sessionId, toWorkerId, injectionText);
+    // Send each part with delays so TUI agents can process input sequentially
+    const parts: string[] = [];
+    if (content) parts.push(content);
+    if (filePaths && filePaths.length > 0) {
+      parts.push(...filePaths);
+    }
+
+    if (parts.length === 0) {
+      logger.warn({ sessionId, toWorkerId }, 'No content or files to send');
+      return null;
+    }
+
+    const injected = this.writeWorkerInput(sessionId, toWorkerId, parts[0]);
     if (!injected) {
       logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
       return null;
     }
-    // Delay Enter to allow TUI agents to process the text input first
-    setTimeout(() => {
-      this.writeWorkerInput(sessionId, toWorkerId, '\r');
-    }, 100);
+
+    // Send remaining parts and final Enter with delays
+    // Use longer delays to ensure TUI processes each input before the next
+    const DELAY_MS = 150;
+    const sendQueue: Array<() => void> = [];
+
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i];
+      sendQueue.push(() => this.writeWorkerInput(sessionId, toWorkerId, `\r${part}`));
+    }
+    // Final Enter to submit
+    sendQueue.push(() => this.writeWorkerInput(sessionId, toWorkerId, '\r'));
+
+    // Execute queue with delays
+    sendQueue.forEach((fn, i) => {
+      setTimeout(fn, DELAY_MS * (i + 1));
+    });
 
     // Store and broadcast
     this.messageService.addMessage(message);
