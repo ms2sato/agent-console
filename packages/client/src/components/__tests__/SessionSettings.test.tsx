@@ -109,6 +109,7 @@ describe('SessionSettings', () => {
     repositoryId: 'test-repo-id',
     currentBranch: 'test-branch',
     worktreePath: '/path/to/worktree',
+    isMainWorktree: false,
     onBranchChange: mock(() => {}),
     onSessionRestart: mock(() => {}),
   };

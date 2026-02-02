@@ -595,6 +595,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               currentTitle={sessionTitle}
               initialPrompt={session.initialPrompt}
               worktreePath={session.locationPath}
+              isMainWorktree={session.isMainWorktree}
               onBranchChange={setBranchName}
               onTitleChange={setSessionTitle}
               onSessionRestart={() => {
