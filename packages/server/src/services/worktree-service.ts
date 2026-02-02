@@ -83,11 +83,11 @@ function generateRandomSuffix(length: number): string {
 
 /**
  * Find templates directory for a repository
- * Priority: 1. .git-wt/ in repo root  2. $AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/
+ * Priority: 1. .agent-console/ in repo root  2. $AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/
  */
 function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
   // Check repo-local templates
-  const localTemplates = path.join(repoPath, '.git-wt');
+  const localTemplates = path.join(repoPath, '.agent-console');
   if (fs.existsSync(localTemplates) && fs.statSync(localTemplates).isDirectory()) {
     return localTemplates;
   }

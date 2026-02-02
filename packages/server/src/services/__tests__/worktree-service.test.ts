@@ -202,6 +202,86 @@ detached
       expect(result.error).toBeDefined();
       expect(result.worktreePath).toBe('');
     });
+
+    describe('template copying', () => {
+      it('should copy template files from repo-local .agent-console/ directory', async () => {
+        // Setup: create /repo/.agent-console/ with a template file
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.createWorktree('/repo', 'feature-branch');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('CLAUDE.md');
+        // Verify the file was actually written to the worktree
+        const content = fs.readFileSync(`${result.worktreePath}/CLAUDE.md`, 'utf-8');
+        expect(content).toBe('hello world');
+      });
+
+      it('should fall back to global templates when .agent-console/ does not exist', async () => {
+        // Setup: create global templates dir (no /repo/.agent-console/)
+        // /repo must exist as a directory but without .agent-console
+        fs.mkdirSync('/repo', { recursive: true });
+        const globalTemplatesDir = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/templates`;
+        fs.mkdirSync(globalTemplatesDir, { recursive: true });
+        fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, '#!/bin/bash\necho setup');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.createWorktree('/repo', 'feature-branch');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('setup.sh');
+        const content = fs.readFileSync(`${result.worktreePath}/setup.sh`, 'utf-8');
+        expect(content).toBe('#!/bin/bash\necho setup');
+      });
+
+      it('should substitute template variables in copied files', async () => {
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync(
+          '/repo/.agent-console/config.txt',
+          'branch={{BRANCH}} num={{WORKTREE_NUM}}'
+        );
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.createWorktree('/repo', 'my-feature');
+
+        expect(result.error).toBeUndefined();
+        const content = fs.readFileSync(`${result.worktreePath}/config.txt`, 'utf-8');
+        expect(content).toContain('branch=my-feature');
+        expect(content).toMatch(/num=\d+/);
+      });
+
+      it('should copy nested directory structure', async () => {
+        fs.mkdirSync('/repo/.agent-console/.claude', { recursive: true });
+        fs.writeFileSync(
+          '/repo/.agent-console/.claude/settings.local.json',
+          '{"key": "value"}'
+        );
+        fs.writeFileSync('/repo/.agent-console/root-file.txt', 'root');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService();
+
+        const result = await service.createWorktree('/repo', 'feature-branch');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('.claude/settings.local.json');
+        expect(result.copiedFiles).toContain('root-file.txt');
+        // Verify nested file content
+        const nested = fs.readFileSync(
+          `${result.worktreePath}/.claude/settings.local.json`,
+          'utf-8'
+        );
+        expect(nested).toBe('{"key": "value"}');
+      });
+    });
   });
 
   describe('removeWorktree', () => {
