@@ -361,8 +361,14 @@ export class SessionManager {
     const targetWorker = session.workers.get(toWorkerId);
     if (!targetWorker || targetWorker.type === 'git-diff') return null;
 
-    const fromWorkerName = 'User';
-    const effectiveFromWorkerId = fromWorkerId ?? 'user';
+    let fromWorkerName = 'User';
+    let effectiveFromWorkerId = 'user';
+    if (fromWorkerId) {
+      const fromWorker = session.workers.get(fromWorkerId);
+      if (!fromWorker || fromWorker.type === 'git-diff') return null;
+      fromWorkerName = fromWorker.name;
+      effectiveFromWorkerId = fromWorkerId;
+    }
 
     const message: WorkerMessage = {
       id: crypto.randomUUID(),

@@ -168,14 +168,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       const newTabs = workersToTabs(updatedSession.workers);
       setTabs(newTabs);
 
-      if (state.type === 'active' || state.type === 'disconnected') {
-        setState({
-          ...state,
-          session: updatedSession,
-        });
-      }
+      setState(prev => {
+        if (prev.type === 'active' || prev.type === 'disconnected') {
+          return {
+            ...prev,
+            session: updatedSession,
+          };
+        }
+        return prev;
+      });
     }
-  }, [sessionId, state]);
+  }, [sessionId]);
 
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,

@@ -32,7 +32,7 @@ export class MessageService {
   }
 
   getMessages(sessionId: string): WorkerMessage[] {
-    return this.messagesBySession.get(sessionId) ?? [];
+    return [...(this.messagesBySession.get(sessionId) ?? [])];
   }
 
   clearSession(sessionId: string): void {
