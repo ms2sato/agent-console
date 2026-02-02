@@ -121,6 +121,21 @@ bun run typecheck  # Type check all packages
 bun run lint       # Lint all packages
 ```
 
+## Claude Code on the Web (Remote Environment)
+
+When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook (`.claude/hooks/gh-setup.sh`). The following setup is required in the Claude Code Web custom environment:
+
+- **GH_TOKEN**: Set in the custom environment variables (gh CLI recognizes this automatically)
+- **Network access**: If using custom network mode, add `release-assets.githubusercontent.com` to the allowlist
+
+**Important:** Due to the sandbox proxy, `gh` commands require the `-R owner/repo` flag explicitly. For this repository, always use `-R ms2sato/agent-console`:
+
+```bash
+gh issue list -R ms2sato/agent-console
+gh pr list -R ms2sato/agent-console
+gh pr view 123 -R ms2sato/agent-console
+```
+
 ## Project Structure
 
 Monorepo with Bun workspaces:
