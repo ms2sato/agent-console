@@ -164,6 +164,42 @@ describe('MessagePanel', () => {
     expect(container.querySelector('.bg-blue-500')).toBeNull();
   });
 
+  it('resets textarea height after sending', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    // Simulate expanded height
+    textarea.style.height = '100px';
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
+
+    expect(textarea.style.height).toBe('auto');
+  });
+
+  it('resets textarea height when targetWorkerId changes', async () => {
+    const { container, rerender } = await act(async () =>
+      renderWithRouter(<MessagePanel {...defaultProps} />),
+    );
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    textarea.style.height = '100px';
+
+    await act(async () => {
+      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
+    });
+
+    // Re-query after rerender since DOM element may be replaced
+    const updatedTextarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    expect(updatedTextarea.style.height).toBe('auto');
+  });
+
   it('Enter alone does NOT send', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);

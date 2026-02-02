@@ -31,6 +31,7 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Clear state when target worker changes
@@ -38,6 +39,9 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
     setContent('');
     setFiles([]);
     setHasUnread(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
   }, [targetWorkerId]);
 
   // Show unread indicator when new message arrives for this target worker
@@ -81,6 +85,9 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
       setContent('');
       setFiles([]);
       setHasUnread(false);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
     } catch (err) {
       console.error('Failed to send message:', err);
       onError?.('Failed to Send Message', err instanceof Error ? err.message : 'Unknown error');
@@ -121,6 +128,7 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
 
         {/* Message textarea */}
         <textarea
+          ref={textareaRef}
           value={content}
           onChange={e => {
             setContent(e.target.value);
