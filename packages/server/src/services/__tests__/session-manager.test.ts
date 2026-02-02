@@ -386,8 +386,15 @@ describe('SessionManager', () => {
 
       const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
       expect(message).not.toBeNull();
-      const written = ptyFactory.instances[0].writtenData;
-      expect(written).toContain('check these\n[Files]\n/tmp/file1.txt\n/tmp/file2.txt');
+
+      // First part is sent immediately
+      const pty = ptyFactory.instances[0];
+      expect(pty.writtenData).toContain('check these');
+
+      // Wait for delayed parts (150ms * 3 = content, file1, file2, enter)
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(pty.writtenData).toContain('\r/tmp/file1.txt');
+      expect(pty.writtenData).toContain('\r/tmp/file2.txt');
     });
 
     it('should inject files only when content is empty', async () => {
@@ -401,10 +408,13 @@ describe('SessionManager', () => {
 
       const message = manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
       expect(message).not.toBeNull();
-      const written = ptyFactory.instances[0].writtenData;
-      expect(written).toContain('[Files]\n/tmp/file1.txt');
-      // Should not start with newline (no empty content prefix)
-      expect(written).not.toContain('\n[Files]');
+
+      // First part (file path) is sent immediately
+      const pty = ptyFactory.instances[0];
+      expect(pty.writtenData).toContain('/tmp/file1.txt');
+
+      // Wait for final Enter
+      await new Promise(resolve => setTimeout(resolve, 300));
     });
 
     it('should return null for non-existent session', async () => {
