@@ -62,6 +62,7 @@ export interface WorktreeSession extends SessionBase {
   repositoryId: string;
   repositoryName: string;    // Human-readable repository name
   worktreeId: string;        // Worktree identifier (branch name)
+  isMainWorktree: boolean;   // Whether this session is on the main (non-added) worktree
 }
 
 export interface QuickSession extends SessionBase {

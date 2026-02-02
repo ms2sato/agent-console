@@ -4,6 +4,7 @@ import {
   EditSessionDialog,
   RestartSessionDialog,
   DeleteWorktreeDialog,
+  EndSessionDialog,
   InitialPromptDialog,
   type MenuAction,
 } from './sessions';
@@ -15,6 +16,7 @@ interface SessionSettingsProps {
   currentTitle?: string;
   initialPrompt?: string;
   worktreePath: string;
+  isMainWorktree: boolean;
   onBranchChange: (newBranch: string) => void;
   onTitleChange?: (newTitle: string) => void;
   onSessionRestart?: () => void;
@@ -29,6 +31,7 @@ export function SessionSettings({
   currentTitle,
   initialPrompt,
   worktreePath,
+  isMainWorktree,
   onBranchChange,
   onTitleChange,
   onSessionRestart,
@@ -49,6 +52,7 @@ export function SessionSettings({
         sessionId={sessionId}
         worktreePath={worktreePath}
         initialPrompt={initialPrompt}
+        isMainWorktree={isMainWorktree}
         onMenuAction={handleMenuAction}
       />
 
@@ -75,6 +79,13 @@ export function SessionSettings({
         onOpenChange={(open) => !open && closeDialog()}
         repositoryId={repositoryId}
         worktreePath={worktreePath}
+        sessionId={sessionId}
+        sessionTitle={currentTitle}
+      />
+
+      <EndSessionDialog
+        open={activeDialog === 'end-session'}
+        onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         sessionTitle={currentTitle}
       />

@@ -7,6 +7,7 @@ import {
   FolderIcon,
   CopyIcon,
   TrashIcon,
+  StopIcon,
   DocumentIcon,
   ExternalLinkIcon,
   VSCodeIcon,
@@ -15,12 +16,13 @@ import { Spinner } from '../ui/Spinner';
 import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
 import { hasVSCode } from '../../lib/capabilities';
 
-export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'view-initial-prompt';
+export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'end-session' | 'view-initial-prompt';
 
 export interface SessionSettingsMenuProps {
   sessionId: string;
   worktreePath: string;
   initialPrompt?: string;
+  isMainWorktree: boolean;
   onMenuAction: (action: MenuAction) => void;
 }
 
@@ -28,6 +30,7 @@ export function SessionSettingsMenu({
   sessionId,
   worktreePath,
   initialPrompt,
+  isMainWorktree,
   onMenuAction,
 }: SessionSettingsMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -182,13 +185,23 @@ export function SessionSettingsMenu({
               {copySuccess ? 'Copied!' : 'Copy Path'}
             </button>
             <div className="border-t border-slate-700 my-1" />
-            <button
-              onClick={() => handleMenuAction('delete-worktree')}
-              className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
-            >
-              <TrashIcon />
-              Delete Worktree
-            </button>
+            {isMainWorktree ? (
+              <button
+                onClick={() => handleMenuAction('end-session')}
+                className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
+              >
+                <StopIcon />
+                End Session
+              </button>
+            ) : (
+              <button
+                onClick={() => handleMenuAction('delete-worktree')}
+                className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
+              >
+                <TrashIcon />
+                Delete Worktree
+              </button>
+            )}
           </div>
         </div>
       )}

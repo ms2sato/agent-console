@@ -33,7 +33,7 @@ import { parseEnvVars } from '../lib/env-parser.js';
  * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
  */
 export interface SessionRepositoryCallbacks {
-  getRepository: (repositoryId: string) => { name: string; envVars?: string | null } | undefined;
+  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
   isInitialized: () => boolean;
 }
 import { getConfigDir, getServerPid } from '../lib/config.js';
@@ -1380,6 +1380,7 @@ export class SessionManager {
         repositoryId: session.repositoryId,
         repositoryName: repository?.name ?? 'Unknown',
         worktreeId: session.worktreeId,
+        isMainWorktree: repository?.path === session.locationPath,
       } as WorktreeSession;
     }
 

@@ -19,6 +19,7 @@ function createMockWorktreeSession(
     repositoryId: 'repo-1',
     repositoryName: 'my-repo',
     worktreeId: 'wt-1',
+    isMainWorktree: false,
     locationPath: '/path/to/worktree',
     title: 'test-branch',
     status: 'active' as const,
