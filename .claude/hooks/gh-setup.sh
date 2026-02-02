@@ -1,9 +1,10 @@
 #!/bin/bash
+set -euo pipefail
 # Setup gh CLI for Claude Code on the Web environment
 # This script runs as a SessionStart hook to install gh CLI when running remotely.
 
 # Only run in Claude Code on the Web environment
-if [ "$CLAUDE_CODE_REMOTE" != "true" ]; then
+if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
@@ -31,7 +32,7 @@ INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR"
 
 # Download and extract
-cd /tmp
+cd /tmp || exit 1
 curl -fsSL "$GH_URL" -o "$GH_TARBALL"
 tar xzf "$GH_TARBALL"
 cp "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" "$INSTALL_DIR/gh"
