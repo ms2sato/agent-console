@@ -13,24 +13,35 @@ Currently supports **[Claude Code](https://claude.ai/code)** as the default agen
 - **Unified Dashboard**: View and manage all repositories, worktrees, and agent sessions in one place
 - **Browser-based Terminal**: Full terminal access via [xterm.js](https://xtermjs.org) - no need for separate terminal windows
 - **Session Persistence**: Sessions continue running even when you close the browser tab (tmux-like behavior)
+- **Multiple Workers per Session**: Run agent and terminal workers side-by-side within a single session
+- **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI
-- **Real-time Updates**: WebSocket-based notifications for session and worktree changes
+- **Real-time Updates**: WebSocket-based notifications for session and worker lifecycle changes
+
+## Key Concepts
+
+- **Session**: A working context tied to a git worktree or arbitrary directory. Each session can have multiple workers.
+- **Worker**: A PTY process running within a session. Two types:
+  - **Agent Worker**: Runs an AI agent (e.g., Claude Code)
+  - **Terminal Worker**: A plain terminal shell
 
 ## Architecture
 
 ```
-Backend (Bun + Hono)               Frontend (React + Vite)
-┌──────────────────────────┐       ┌──────────────────────────┐
-│ Session Manager          │       │ Dashboard                │
-│ ├── PTY Process 1       │◄─────►│ xterm.js Terminal        │
-│ ├── PTY Process 2       │  WS   │ TanStack Router/Query    │
-│ └── PTY Process N       │       │                          │
-└──────────────────────────┘       └──────────────────────────┘
+Backend (Bun + Hono)                Frontend (React + Vite)
+┌──────────────────────────┐        ┌──────────────────────────┐
+│ SessionManager           │        │ Dashboard                │
+│ ├── Session1             │        │ ├── SessionList          │
+│ │   ├── AgentWorker     │◄──────►│ │   └── WorkerTabs       │
+│ │   └── TerminalWorker   │  WS   │ └── Terminal (xterm.js)  │
+│ └── Session2             │        │                          │
+│     └── AgentWorker      │        │                          │
+└──────────────────────────┘        └──────────────────────────┘
 ```
 
 ## Requirements
 
-- [Bun](https://bun.sh) >= 1.3.0
+- [Bun](https://bun.sh) >= 1.3.5
 
 ## Development
 
@@ -96,7 +107,7 @@ When creating a new worktree, Agent Console can automatically copy template file
 
 Templates are searched in the following order (first found wins):
 
-1. **Repository-local**: `.git-wt/` directory in the repository root
+1. **Repository-local**: `.agent-console/` directory in the repository root
 2. **Global**: `$AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/`
 
 The default `$AGENT_CONSOLE_HOME` is `~/.agent-console`.
