@@ -49,7 +49,7 @@ export function QuickSessionSettings({
       />
 
       <EndSessionDialog
-        open={activeDialog === 'end-session'}
+        open={activeDialog === 'stop-session'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         sessionTitle={sessionTitle}

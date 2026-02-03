@@ -5,7 +5,7 @@ import {
   StopIcon,
 } from '../Icons';
 
-export type QuickMenuAction = 'view-initial-prompt' | 'end-session';
+export type QuickMenuAction = 'view-initial-prompt' | 'stop-session';
 
 export interface QuickSessionSettingsMenuProps {
   initialPrompt?: string;
@@ -80,11 +80,11 @@ export function QuickSessionSettingsMenu({
               <div className="border-t border-slate-700 my-1" />
             )}
             <button
-              onClick={() => handleMenuAction('end-session')}
+              onClick={() => handleMenuAction('stop-session')}
               className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
             >
               <StopIcon />
-              End Session
+              Stop Session
             </button>
           </div>
         </div>
