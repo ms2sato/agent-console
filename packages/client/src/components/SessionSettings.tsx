@@ -84,7 +84,7 @@ export function SessionSettings({
       />
 
       <EndSessionDialog
-        open={activeDialog === 'end-session'}
+        open={activeDialog === 'stop-session'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         sessionTitle={currentTitle}

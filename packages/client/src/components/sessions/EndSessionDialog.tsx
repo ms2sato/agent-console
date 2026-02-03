@@ -55,7 +55,7 @@ export function EndSessionDialog({
       // (no optimistic update to avoid race condition/flicker)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to end session');
+      setError(err instanceof Error ? err.message : 'Failed to stop session');
     },
   });
 
@@ -75,11 +75,11 @@ export function EndSessionDialog({
     <AlertDialog open={open} onOpenChange={handleClose}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-red-400">End Session</AlertDialogTitle>
+          <AlertDialogTitle className="text-red-400">Stop Session</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-2">
               <p>
-                Are you sure you want to end{' '}
+                Are you sure you want to stop{' '}
                 <span className="font-medium text-gray-300">
                   {sessionTitle || 'this session'}
                 </span>
@@ -110,8 +110,8 @@ export function EndSessionDialog({
             className="btn btn-danger"
             disabled={deleteMutation.isPending}
           >
-            <ButtonSpinner isPending={deleteMutation.isPending} pendingText="Ending...">
-              End Session
+            <ButtonSpinner isPending={deleteMutation.isPending} pendingText="Stopping...">
+              Stop Session
             </ButtonSpinner>
           </button>
         </AlertDialogFooter>
