@@ -79,6 +79,7 @@ export async function handleSdkWorkerMessage(
   getWorker: () => InternalSdkWorker | null,
   runQuery: (workerId: string, prompt: string) => Promise<void>,
   cancelQuery: (workerId: string) => void,
+  restoreMessages?: () => Promise<SDKMessage[] | null>,
 ): Promise<void> {
   try {
     const parsed: SdkWorkerClientMessage = JSON.parse(message);
@@ -111,14 +112,22 @@ export async function handleSdkWorkerMessage(
           sendMessage(ws, { type: 'error', message: 'Worker not found' });
           return;
         }
+        // Restore messages from file if needed (lazy loading after server restart)
+        let allMessages = worker.messages;
+        if (allMessages.length === 0 && restoreMessages) {
+          const restored = await restoreMessages();
+          if (restored) {
+            allMessages = restored;
+          }
+        }
         // Send message history from cursor
         const lastUuid = parsed.lastUuid;
         let messages: SDKMessage[];
         if (lastUuid) {
-          const idx = worker.messages.findIndex(m => m.uuid === lastUuid);
-          messages = idx >= 0 ? worker.messages.slice(idx + 1) : worker.messages;
+          const idx = allMessages.findIndex(m => m.uuid === lastUuid);
+          messages = idx >= 0 ? allMessages.slice(idx + 1) : allMessages;
         } else {
-          messages = worker.messages;
+          messages = allMessages;
         }
         const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
         sendMessage(ws, {

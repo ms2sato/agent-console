@@ -17,6 +17,7 @@ import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
 import { handleSdkWorkerConnection, handleSdkWorkerMessage, handleSdkWorkerDisconnection } from './sdk-worker-handler.js';
 import { runSdkQuery, cancelSdkQuery } from '../services/sdk-query-runner.js';
+import { sdkMessageFileManager } from '../services/sdk-message-file-manager.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -727,6 +728,9 @@ export async function setupWebSocketRoutes(
                       globalActivityCallback: (wkId, state) => {
                         broadcastToApp({ type: 'worker-activity', sessionId, workerId: wkId, activityState: state });
                       },
+                      onPersistMessage: async (message) => {
+                        await sdkMessageFileManager.appendMessage(sessionId, wId, message);
+                      },
                     });
                   }
                 }
@@ -737,6 +741,7 @@ export async function setupWebSocketRoutes(
                   cancelSdkQuery(w as InternalSdkWorker);
                 }
               },
+              () => sessionManager.restoreSdkWorkerMessages(sessionId, workerId),
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling SDK worker message');
             });

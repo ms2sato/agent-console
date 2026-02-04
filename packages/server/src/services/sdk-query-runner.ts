@@ -64,6 +64,12 @@ function setActivityState(
 }
 
 /**
+ * Callback type for persisting SDK messages to storage.
+ * Receives the message after it's been validated and added to worker memory.
+ */
+export type PersistMessageCallback = (message: SDKMessage) => Promise<void>;
+
+/**
  * Run a Claude Code SDK query for the given worker.
  * Iterates the async generator and forwards messages to connected clients.
  *
@@ -77,6 +83,8 @@ export async function runSdkQuery(
   options?: {
     globalActivityCallback?: (workerId: string, state: AgentActivityState) => void;
     permissionMode?: string;
+    /** Callback to persist each message to file storage. Errors are logged but don't interrupt the query. */
+    onPersistMessage?: PersistMessageCallback;
   }
 ): Promise<void> {
   if (worker.isRunning) {
@@ -128,6 +136,13 @@ export async function runSdkQuery(
 
       // Store message in history
       worker.messages.push(sdkMessage);
+
+      // Persist message to file storage (fire-and-forget, errors are logged)
+      if (options?.onPersistMessage) {
+        options.onPersistMessage(sdkMessage).catch((err) => {
+          logger.error({ workerId: worker.id, err }, 'Failed to persist SDK message');
+        });
+      }
 
       // Broadcast to connected clients
       broadcastToCallbacks(worker, (cb) => cb.onMessage(sdkMessage));

@@ -11,6 +11,7 @@ import type {
   WorkerErrorCode,
   SessionActivationState,
   WorkerMessage,
+  SDKMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -50,6 +51,7 @@ import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { sdkMessageFileManager } from './sdk-message-file-manager.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { JsonSessionRepository } from '../repositories/index.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
@@ -798,6 +800,11 @@ export class SessionManager {
       await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId);
     }
 
+    // Initialize messages file for SDK workers
+    if (request.type === 'sdk') {
+      await sdkMessageFileManager.initializeWorkerFile(sessionId, workerId);
+    }
+
     await this.persistSession(session);
 
     logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
@@ -885,6 +892,8 @@ export class SessionManager {
       await this.cleanupWorkerOutput(sessionId, workerId);
     } else if (worker.type === 'sdk') {
       this.workerManager.killWorker(worker);
+      // Clean up SDK messages file
+      await sdkMessageFileManager.clearWorkerFile(sessionId, workerId);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -1035,6 +1044,37 @@ export class SessionManager {
     if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return 0;
 
     return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
+  }
+
+  /**
+   * Restore SDK worker messages from file storage.
+   * Called lazily when a client requests message history.
+   * If messages are already in memory, returns those directly.
+   * Otherwise, reads from file and populates the worker's message array.
+   * @param sessionId Session ID
+   * @param workerId Worker ID
+   * @returns Array of SDK messages, or null if worker not found or not an SDK worker
+   */
+  async restoreSdkWorkerMessages(sessionId: string, workerId: string): Promise<SDKMessage[] | null> {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type !== 'sdk') return null;
+
+    // If messages already in memory, return those
+    if (worker.messages.length > 0) {
+      return worker.messages;
+    }
+
+    // Try to restore from file
+    const messages = await sdkMessageFileManager.readMessages(sessionId, workerId);
+    if (messages.length > 0) {
+      worker.messages = messages;
+      logger.info(
+        { sessionId, workerId, messageCount: messages.length },
+        'Restored SDK worker messages from file'
+      );
+    }
+
+    return worker.messages;
   }
 
   async restartAgentWorker(
