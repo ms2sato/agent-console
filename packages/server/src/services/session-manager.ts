@@ -564,9 +564,10 @@ export class SessionManager {
     // Create initial workers in parallel
     // Note: Each createWorker calls persistSession internally
     const effectiveAgentId = request.agentId ?? CLAUDE_CODE_AGENT_ID;
+    const workerType = request.useSdk ? 'sdk' : 'agent';
     await Promise.all([
       this.createWorker(id, {
-        type: 'agent',
+        type: workerType,
         agentId: effectiveAgentId,
         // name is not specified; generateWorkerName will use the agent's name
       }, request.continueConversation ?? false, request.initialPrompt),

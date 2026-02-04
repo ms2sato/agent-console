@@ -133,6 +133,58 @@ describe('QuickSessionForm', () => {
         agentId: 'custom-agent',
       });
     });
+
+    it('should submit with useSdk: false by default', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Submit form without checking SDK mode
+      const submitButton = screen.getByText('Start');
+      await user.click(submitButton);
+
+      // Verify onSubmit was called with useSdk: false
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: false,
+      });
+    });
+
+    it('should submit with useSdk: true when SDK mode is enabled', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Enable SDK mode
+      const sdkCheckbox = screen.getByLabelText('Use SDK Mode');
+      await user.click(sdkCheckbox);
+
+      // Submit form
+      const submitButton = screen.getByText('Start');
+      await user.click(submitButton);
+
+      // Verify onSubmit was called with useSdk: true
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: true,
+      });
+    });
   });
 
   describe('validation errors', () => {

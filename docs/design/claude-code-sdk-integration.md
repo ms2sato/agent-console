@@ -196,6 +196,70 @@ SDK and CLI share the same internal session store (verified via POC #12). This e
 
 This is a UX design decision for a future phase. The backend plumbing (session_id sharing) is already feasible.
 
+## Frontend Component Architecture
+
+### Shared Input Component
+
+Extract the message input UI from `MessagePanel` into a reusable `MessageInput` component:
+
+```
+MessageInput (UI-only: textarea + send button + file attachment)
+├── MessagePanel uses → wired to REST API (sendWorkerMessage)
+└── SdkWorkerView uses → wired to WebSocket (user-message)
+```
+
+**`MessageInput` props:**
+```typescript
+interface MessageInputProps {
+  onSend: (content: string, files?: File[]) => Promise<void>;
+  placeholder?: string;
+  disabled?: boolean;
+  sending?: boolean;
+}
+```
+
+This keeps input UI consistent across different worker communication methods.
+
+### SDK Worker View Structure
+
+```
+SdkWorkerView
+├── Message list (SDKMessage[] rendering)
+│   ├── system → metadata display (model, tools, etc.)
+│   ├── assistant → text/Markdown, tool_use blocks, thinking (collapsible)
+│   ├── user → user's prompt
+│   ├── stream_event → live typing indicator (optional)
+│   └── result → cost/usage summary
+├── MessageInput (shared component)
+└── WebSocket connection hook (useSdkWorkerConnection)
+```
+
+### Minimal First Implementation
+
+For initial "working state", render messages as simple formatted text:
+- `assistant.text` → `<pre>` or basic Markdown
+- `tool_use` → JSON display
+- Rich rendering (syntax highlighting, collapsible thinking) → later phase
+
+## Implementation Status
+
+### Done (Server)
+- [x] Shared types (`SDKMessage`, `SdkWorker`, WS protocol types)
+- [x] SDK query runner (streaming, abort, resume, activity detection)
+- [x] Worker Manager (SDK worker init/kill)
+- [x] Session Manager (SDK worker creation flow)
+- [x] WebSocket handlers (user-message, cancel, request-history with uuid cursor)
+- [x] Database persistence (sdk_session_id column, migration v7)
+- [x] JSONL message file persistence (`SdkMessageFileManager`)
+
+### Not Yet Implemented
+- [ ] AskUserQuestion hook interception (PreToolUse block pattern)
+- [ ] Frontend: `MessageInput` shared component extraction
+- [ ] Frontend: `SdkWorkerView` component
+- [ ] Frontend: WebSocket connection hook for SDK workers
+- [ ] Frontend: IndexedDB caching for SDK messages
+- [ ] Frontend: SDK Worker creation UI option
+
 ## Constraints and Risks
 
 - **SDK spawns child processes**: No reduction in process count. Memory/CPU profile is similar to current approach.

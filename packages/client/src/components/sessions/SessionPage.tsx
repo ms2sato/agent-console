@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, startTransition } from 'react
 import { Link, useNavigate } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
+import { SdkWorkerView } from '../workers/SdkWorkerView';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
@@ -556,12 +557,18 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
           />
+        ) : activeTab.workerType === 'sdk' ? (
+          <SdkWorkerView
+            sessionId={sessionId}
+            workerId={activeTab.id}
+            onActivityChange={handleActivityChange}
+          />
         ) : (
           <Terminal
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
-            onActivityChange={activeTab.workerType === 'agent' || activeTab.workerType === 'sdk' ? handleActivityChange : undefined}
+            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
             hideStatusBar
           />
         )}
@@ -650,8 +657,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {formatPath(session.locationPath)}
         </span>
-        {/* Activity state indicator (only for agent tab) */}
-        {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
+        {/* Activity state indicator (only for agent/sdk tabs) */}
+        {(activeTab?.workerType === 'agent' || activeTab?.workerType === 'sdk') && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             activityState === 'asking' ? 'bg-yellow-500/20 text-yellow-400' :
             activityState === 'active' ? 'bg-blue-500/20 text-blue-400' :

@@ -30,6 +30,7 @@ export function QuickSessionForm({
       type: 'quick',
       locationPath: '/tmp',
       agentId: undefined,
+      useSdk: false,
     },
     mode: 'onBlur',
   });
@@ -66,6 +67,20 @@ export function QuickSessionForm({
               onChange={(value) => setValue('agentId', value)}
               className="flex-1"
             />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              {...register('useSdk')}
+              type="checkbox"
+              id="use-sdk"
+              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
+            />
+            <label htmlFor="use-sdk" className="text-sm text-gray-400">
+              Use SDK Mode
+            </label>
+            <span className="text-xs text-gray-500" title="Use Claude Code SDK for structured messages instead of PTY-based terminal">
+              (?)
+            </span>
           </div>
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
