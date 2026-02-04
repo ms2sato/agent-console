@@ -562,6 +562,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             onActivityChange={handleActivityChange}
+            onStatusChange={handleStatusChange}
           />
         ) : (
           <Terminal

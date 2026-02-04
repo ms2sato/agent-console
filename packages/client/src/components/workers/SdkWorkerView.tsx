@@ -3,13 +3,16 @@ import type { SDKMessage, AgentActivityState } from '@agent-console/shared';
 import { useSdkWorkerWebSocket, type SdkWorkerError } from '../../hooks/useSdkWorkerWebSocket';
 import { MessageInput } from '../sessions/MessageInput';
 
+type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
+
 interface SdkWorkerViewProps {
   sessionId: string;
   workerId: string;
   onActivityChange?: (state: AgentActivityState) => void;
+  onStatusChange?: (status: ConnectionStatus) => void;
 }
 
-export function SdkWorkerView({ sessionId, workerId, onActivityChange }: SdkWorkerViewProps) {
+export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusChange }: SdkWorkerViewProps) {
   const [messages, setMessages] = useState<SDKMessage[]>([]);
   const [lastUuid, setLastUuid] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -44,7 +47,8 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange }: SdkWork
   // Handle connection changes
   const handleConnectionChange = useCallback((isConnected: boolean) => {
     setConnected(isConnected);
-  }, []);
+    onStatusChange?.(isConnected ? 'connected' : 'disconnected');
+  }, [onStatusChange]);
 
   const { sendUserMessage, requestHistory, error: wsError } = useSdkWorkerWebSocket(
     sessionId,
