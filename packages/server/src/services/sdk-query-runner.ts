@@ -137,7 +137,11 @@ export async function runSdkQuery(
       // Store message in history
       worker.messages.push(sdkMessage);
 
-      // Persist message to file storage (fire-and-forget, errors are logged)
+      // Persist message to file storage.
+      // Intentionally fire-and-forget: we don't await here to avoid blocking
+      // the streaming response. File I/O latency should not delay message delivery
+      // to connected clients. Errors are logged but don't interrupt the query flow.
+      // See: docs/design/claude-code-sdk-integration.md "Fire-and-forget file writes"
       if (options?.onPersistMessage) {
         options.onPersistMessage(sdkMessage).catch((err) => {
           logger.error({ workerId: worker.id, err }, 'Failed to persist SDK message');
