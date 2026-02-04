@@ -51,6 +51,7 @@ describe('AppContext', () => {
         save: async () => {},
         saveAll: async () => {},
         delete: async () => {},
+        update: async () => false,
       };
 
       appContext = await createTestContext({

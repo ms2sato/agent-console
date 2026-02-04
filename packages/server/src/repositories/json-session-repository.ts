@@ -85,4 +85,23 @@ export class JsonSessionRepository implements SessionRepository {
     const filtered = sessions.filter((s) => s.id !== id);
     atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));
   }
+
+  async update(id: string, updates: Partial<PersistedSession>): Promise<boolean> {
+    const sessions = await this.findAll();
+    const index = sessions.findIndex((s) => s.id === id);
+
+    if (index < 0) {
+      return false;
+    }
+
+    // Merge updates with existing session while preserving the discriminated union type
+    const existing = sessions[index];
+    if (existing.type === 'worktree') {
+      sessions[index] = { ...existing, ...updates } as typeof existing;
+    } else {
+      sessions[index] = { ...existing, ...updates } as typeof existing;
+    }
+    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+    return true;
+  }
 }

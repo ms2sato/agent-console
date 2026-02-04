@@ -151,6 +151,33 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Pause a worktree session.
+ * Kills PTY processes but preserves session data in database for later resume.
+ * Only available for worktree sessions.
+ */
+export async function pauseSession(sessionId: string): Promise<void> {
+  const res = await api.sessions[':id'].pause.$post({ param: { id: sessionId } });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(error.error || 'Failed to pause session');
+  }
+}
+
+/**
+ * Resume a paused session.
+ * Loads session from database and restores workers with new PTY processes.
+ */
+export async function resumeSession(sessionId: string): Promise<Session> {
+  const res = await api.sessions[':id'].resume.$post({ param: { id: sessionId } });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(error.error || 'Failed to resume session');
+  }
+  const data = await res.json() as { session: Session };
+  return data.session;
+}
+
 
 export interface UpdateSessionMetadataRequest {
   title?: string;

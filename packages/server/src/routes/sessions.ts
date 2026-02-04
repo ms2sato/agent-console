@@ -101,6 +101,43 @@ const sessions = new Hono()
 
     return c.json({ success: true });
   })
+  // Pause a session (worktree sessions only)
+  // Kills PTY processes, removes from memory, preserves persistence
+  .post('/:id/pause', async (c) => {
+    const sessionId = c.req.param('id');
+    const sessionManager = getSessionManager();
+
+    // Check if session exists in memory first
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    // Quick sessions cannot be paused
+    if (session.type === 'quick') {
+      throw new ValidationError('Quick sessions cannot be paused. Use delete instead.');
+    }
+
+    const success = await sessionManager.pauseSession(sessionId);
+    if (!success) {
+      throw new NotFoundError('Session');
+    }
+
+    return c.json({ success: true });
+  })
+  // Resume a paused session
+  // Loads from DB, creates in-memory session, restores workers
+  .post('/:id/resume', async (c) => {
+    const sessionId = c.req.param('id');
+    const sessionManager = getSessionManager();
+
+    const session = await sessionManager.resumeSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    return c.json({ session });
+  })
   // Update session metadata (title and/or branch)
   // If branch is changed, agent worker is automatically restarted
   .patch('/:id', vValidator(UpdateSessionRequestSchema), async (c) => {

@@ -16,6 +16,9 @@ export type { InitialPromptDialogProps } from './InitialPromptDialog';
 export { EndSessionDialog } from './EndSessionDialog';
 export type { EndSessionDialogProps } from './EndSessionDialog';
 
+export { PauseSessionDialog } from './PauseSessionDialog';
+export type { PauseSessionDialogProps } from './PauseSessionDialog';
+
 export { SessionSettingsMenu } from './SessionSettingsMenu';
 export type { SessionSettingsMenuProps, MenuAction } from './SessionSettingsMenu';
 

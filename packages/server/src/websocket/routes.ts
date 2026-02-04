@@ -294,6 +294,14 @@ export async function setupWebSocketRoutes(
       logger.debug({ sessionId, workerId }, 'Broadcasting worker-activated');
       broadcastToApp({ type: 'worker-activated', sessionId, workerId });
     },
+    onSessionPaused: (sessionId) => {
+      logger.debug({ sessionId }, 'Broadcasting session-paused');
+      broadcastToApp({ type: 'session-paused', sessionId });
+    },
+    onSessionResumed: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-resumed');
+      broadcastToApp({ type: 'session-resumed', session });
+    },
   });
 
   // Set up PTY exit callback to broadcast session activation state changes

@@ -144,6 +144,45 @@ export class SqliteSessionRepository implements SessionRepository {
     logger.debug({ sessionId: id }, 'Session deleted');
   }
 
+  async update(id: string, updates: Partial<PersistedSession>): Promise<boolean> {
+    const now = new Date().toISOString();
+
+    // Build update object from provided fields
+    const updateValues: Record<string, unknown> = {
+      updated_at: now,
+    };
+
+    // Map PersistedSession fields to database column names
+    if (updates.serverPid !== undefined) {
+      updateValues.server_pid = updates.serverPid ?? null;
+    }
+    if (updates.title !== undefined) {
+      updateValues.title = updates.title ?? null;
+    }
+    if (updates.initialPrompt !== undefined) {
+      updateValues.initial_prompt = updates.initialPrompt ?? null;
+    }
+    if (updates.locationPath !== undefined) {
+      updateValues.location_path = updates.locationPath;
+    }
+    // worktreeId is only valid for worktree sessions
+    if ('worktreeId' in updates && updates.worktreeId !== undefined) {
+      updateValues.worktree_id = updates.worktreeId;
+    }
+
+    const result = await this.db
+      .updateTable('sessions')
+      .set(updateValues)
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    const updated = result.numUpdatedRows > 0n;
+    if (updated) {
+      logger.debug({ sessionId: id, updates: Object.keys(updateValues) }, 'Session updated');
+    }
+    return updated;
+  }
+
   // ========== Private Helper Methods ==========
 
   private async hydrate(session: Session): Promise<PersistedSession> {

@@ -44,4 +44,12 @@ export interface SessionRepository {
    * @param id - The session ID to delete
    */
   delete(id: string): Promise<void>;
+
+  /**
+   * Update specific fields of a session without replacing the entire session.
+   * @param id - The session ID to update
+   * @param updates - Partial session data to merge with existing session
+   * @returns true if session was found and updated, false if not found
+   */
+  update(id: string, updates: Partial<PersistedSession>): Promise<boolean>;
 }

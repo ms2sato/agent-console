@@ -9,6 +9,7 @@ import {
   unregisterRepository,
   createSession,
   deleteSession,
+  resumeSession,
   createWorktreeAsync,
   deleteWorktreeAsync,
   openPath,
@@ -135,6 +136,9 @@ function DashboardPage() {
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
   // Sessions from WebSocket (source of truth)
   const [wsSessions, setWsSessions] = useState<Session[]>([]);
+  // Track paused sessions: { worktreePath: sessionId }
+  // Used to show "Resume" button instead of "Restore" on dashboard
+  const [pausedSessions, setPausedSessions] = useState<Record<string, string>>({});
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
@@ -219,6 +223,67 @@ function DashboardPage() {
     delete lastNotificationTimeRef.current[sessionId];
     // Disconnect all worker WebSockets for this session
     disconnectWorkerWebSockets(sessionId);
+    // Remove from paused sessions if it was tracked there
+    setPausedSessions(prev => {
+      const next = { ...prev };
+      // Find and remove by sessionId
+      for (const [path, id] of Object.entries(next)) {
+        if (id === sessionId) {
+          delete next[path];
+          break;
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  // Handle session paused (removed from memory but preserved in DB)
+  const handleSessionPaused = useCallback((sessionId: string) => {
+    console.log(`[Session] Paused: ${sessionId}`);
+    // Find the session to get its worktree path before removing
+    const session = sessionsRef.current.find(s => s.id === sessionId);
+    if (session && session.type === 'worktree') {
+      // Track as paused session for "Resume" button
+      setPausedSessions(prev => ({
+        ...prev,
+        [session.locationPath]: sessionId,
+      }));
+    }
+    // Remove from active sessions (same as delete)
+    setWsSessions(prev => prev.filter(s => s.id !== sessionId));
+    sessionsRef.current = sessionsRef.current.filter(s => s.id !== sessionId);
+    // Clean up activity states
+    setWorkerActivityStates(prev => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    delete prevStatesRef.current[sessionId];
+    // Clean up notification tracking refs
+    Object.keys(activeStartTimeRef.current).forEach(key => {
+      if (key.startsWith(`${sessionId}:`)) {
+        delete activeStartTimeRef.current[key];
+      }
+    });
+    delete lastNotificationTimeRef.current[sessionId];
+    // Disconnect all worker WebSockets for this session
+    disconnectWorkerWebSockets(sessionId);
+  }, []);
+
+  // Handle session resumed (loaded from DB into memory)
+  const handleSessionResumed = useCallback((session: Session) => {
+    console.log(`[Session] Resumed: ${session.id}`);
+    // Remove from paused sessions
+    if (session.type === 'worktree') {
+      setPausedSessions(prev => {
+        const next = { ...prev };
+        delete next[session.locationPath];
+        return next;
+      });
+    }
+    // Add to active sessions (same as created)
+    setWsSessions(prev => [...prev, session]);
+    sessionsRef.current = [...sessionsRef.current, session];
   }, []);
 
   // Handle initial agent sync from WebSocket
@@ -381,6 +446,8 @@ function DashboardPage() {
     onSessionCreated: handleSessionCreated,
     onSessionUpdated: handleSessionUpdated,
     onSessionDeleted: handleSessionDeleted,
+    onSessionPaused: handleSessionPaused,
+    onSessionResumed: handleSessionResumed,
     onWorkerActivity: handleWorkerActivityUpdate,
     onAgentsSync: handleAgentsSync,
     onAgentCreated: handleAgentCreated,
@@ -506,6 +573,7 @@ function DashboardPage() {
               key={repo.id}
               repository={repo}
               sessions={sessions.filter((s) => s.type === 'worktree' && s.repositoryId === repo.id)}
+              pausedSessions={pausedSessions}
               onUnregister={() => setRepoToUnregister(repo)}
             />
           ))}
@@ -541,10 +609,12 @@ type SessionWithActivity = Session & {
 interface RepositoryCardProps {
   repository: Repository;
   sessions: SessionWithActivity[];
+  /** Map of worktree path to paused session ID */
+  pausedSessions: Record<string, string>;
   onUnregister: () => void;
 }
 
-function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardProps) {
+function RepositoryCard({ repository, sessions, pausedSessions, onUnregister }: RepositoryCardProps) {
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
   const [setupCommandFailure, setSetupCommandFailure] = useState<SetupCommandResult | null>(null);
@@ -670,6 +740,7 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
               key={worktree.path}
               worktree={worktree}
               session={sessions.find((s) => s.locationPath === worktree.path)}
+              pausedSessionId={pausedSessions[worktree.path]}
               repositoryId={repository.id}
             />
           ))}
@@ -694,10 +765,12 @@ function RepositoryCard({ repository, sessions, onUnregister }: RepositoryCardPr
 interface WorktreeRowProps {
   worktree: Worktree;
   session?: SessionWithActivity;
+  /** Session ID if this worktree has a paused session */
+  pausedSessionId?: string;
   repositoryId: string;
 }
 
-function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
+function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: WorktreeRowProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
@@ -719,6 +792,17 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     },
   });
 
+  const resumeSessionMutation = useMutation({
+    mutationFn: (sessionId: string) => resumeSession(sessionId),
+    onSuccess: (session) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
+    },
+    onError: (error: Error) => {
+      showError('Resume Failed', error.message);
+    },
+  });
+
   const handleRestoreSession = () => {
     restoreSessionMutation.mutate({
       type: 'worktree',
@@ -727,6 +811,12 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
       locationPath: worktree.path,
       continueConversation: true,
     });
+  };
+
+  const handleResumeSession = () => {
+    if (pausedSessionId) {
+      resumeSessionMutation.mutate(pausedSessionId);
+    }
   };
 
   const handleDeleteWorktree = () => {
@@ -780,7 +870,9 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
     ? session.status === 'active'
       ? 'bg-green-500'
       : 'bg-gray-500'
-    : 'bg-gray-600';
+    : pausedSessionId
+      ? 'bg-yellow-500'  // Paused session
+      : 'bg-gray-600';   // No session
 
   return (
     <div className="flex items-center gap-3 p-2 bg-slate-800 rounded">
@@ -830,6 +922,14 @@ function WorktreeRow({ worktree, session, repositoryId }: WorktreeRowProps) {
           >
             Open
           </Link>
+        ) : pausedSessionId ? (
+          <button
+            onClick={handleResumeSession}
+            disabled={resumeSessionMutation.isPending}
+            className="btn btn-primary text-xs"
+          >
+            {resumeSessionMutation.isPending ? 'Resuming...' : 'Resume'}
+          </button>
         ) : (
           <button
             onClick={handleRestoreSession}

@@ -28,6 +28,10 @@ interface UseAppWsEventOptions {
   onSessionUpdated?: (session: Session) => void;
   /** Called when a session is deleted */
   onSessionDeleted?: (sessionId: string) => void;
+  /** Called when a session is paused (removed from memory but preserved in DB) */
+  onSessionPaused?: (sessionId: string) => void;
+  /** Called when a paused session is resumed */
+  onSessionResumed?: (session: Session) => void;
   /** Called when worker activity state changes */
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   /** Called when a worker is activated (PTY started) */
@@ -107,6 +111,14 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'session-deleted':
           console.log(`[WebSocket] session-deleted: ${msg.sessionId}`);
           optionsRef.current.onSessionDeleted?.(msg.sessionId);
+          break;
+        case 'session-paused':
+          console.log(`[WebSocket] session-paused: ${msg.sessionId}`);
+          optionsRef.current.onSessionPaused?.(msg.sessionId);
+          break;
+        case 'session-resumed':
+          console.log(`[WebSocket] session-resumed: ${msg.session.id}`);
+          optionsRef.current.onSessionResumed?.(msg.session);
           break;
         case 'worker-activity':
           optionsRef.current.onWorkerActivity?.(msg.sessionId, msg.workerId, msg.activityState);
