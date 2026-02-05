@@ -1,5 +1,5 @@
 import type { Kysely } from 'kysely';
-import type { SessionRepository } from './session-repository.js';
+import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 import type { PersistedSession } from '../services/persistence-service.js';
 import type { Database, Session } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
@@ -142,6 +142,68 @@ export class SqliteSessionRepository implements SessionRepository {
     // Workers are deleted automatically via CASCADE
     await this.db.deleteFrom('sessions').where('id', '=', id).execute();
     logger.debug({ sessionId: id }, 'Session deleted');
+  }
+
+  async update(id: string, updates: SessionUpdateFields): Promise<boolean> {
+    const now = new Date().toISOString();
+
+    // Build update object from provided fields
+    const updateValues: Record<string, unknown> = {
+      updated_at: now,
+    };
+
+    // Map SessionUpdateFields to database column names
+    if (updates.serverPid !== undefined) {
+      updateValues.server_pid = updates.serverPid ?? null;
+    }
+    if (updates.title !== undefined) {
+      updateValues.title = updates.title ?? null;
+    }
+    if (updates.initialPrompt !== undefined) {
+      updateValues.initial_prompt = updates.initialPrompt ?? null;
+    }
+    if (updates.locationPath !== undefined) {
+      updateValues.location_path = updates.locationPath;
+    }
+    // worktreeId is only valid for worktree sessions
+    if (updates.worktreeId !== undefined) {
+      updateValues.worktree_id = updates.worktreeId;
+    }
+
+    const result = await this.db
+      .updateTable('sessions')
+      .set(updateValues)
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    const updated = result.numUpdatedRows > 0n;
+    if (updated) {
+      logger.debug({ sessionId: id, updates: Object.keys(updateValues) }, 'Session updated');
+    }
+    return updated;
+  }
+
+  async findPaused(): Promise<PersistedSession[]> {
+    const sessions = await this.db
+      .selectFrom('sessions')
+      .where('server_pid', 'is', null)
+      .selectAll()
+      .execute();
+
+    // Load workers for each session, skipping corrupted sessions
+    const results: PersistedSession[] = [];
+    for (const s of sessions) {
+      try {
+        results.push(await this.hydrate(s));
+      } catch (error) {
+        if (error instanceof DataIntegrityError) {
+          logger.warn({ sessionId: s.id, err: error }, 'Skipping corrupted paused session');
+          continue;
+        }
+        throw error;
+      }
+    }
+    return results;
   }
 
   // ========== Private Helper Methods ==========

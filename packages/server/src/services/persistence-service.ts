@@ -48,8 +48,13 @@ export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | P
 interface PersistedSessionBase {
   id: string;
   locationPath: string;
-  /** Server process ID that owns this session (undefined for orphaned sessions) */
-  serverPid?: number;
+  /**
+   * Server process ID that owns this session.
+   * - undefined: no update (when used in Partial<PersistedSession>)
+   * - null: explicitly cleared (paused session, not owned by any server)
+   * - number: owned by the server with this PID
+   */
+  serverPid?: number | null;
   createdAt: string;
   workers: PersistedWorker[];
   initialPrompt?: string;

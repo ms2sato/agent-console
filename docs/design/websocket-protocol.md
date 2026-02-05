@@ -21,6 +21,8 @@ Singleton WebSocket connection for app-wide state synchronization. Persists acro
 | `session-created` | `{ session: Session }` | New session created |
 | `session-updated` | `{ session: Session }` | Session updated (title, branch, etc.) |
 | `session-deleted` | `{ sessionId: string }` | Session deleted |
+| `session-paused` | `{ sessionId: string }` | Session paused (removed from memory, preserved in database) |
+| `session-resumed` | `{ session: Session }` | Session resumed (restored from database to memory) |
 | `worker-activity` | `{ sessionId, workerId, activityState }` | Worker activity state changed |
 
 ### Client → Server Messages

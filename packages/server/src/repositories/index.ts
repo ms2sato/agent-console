@@ -1,4 +1,4 @@
-export type { SessionRepository } from './session-repository.js';
+export type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 export { JsonSessionRepository } from './json-session-repository.js';
 export { SqliteSessionRepository } from './sqlite-session-repository.js';
 export { createSessionRepository, createJsonSessionRepository } from './repository-factory.js';
