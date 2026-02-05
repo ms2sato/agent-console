@@ -1674,7 +1674,7 @@ describe('SessionManager', () => {
 
       // serverPid should be null after pausing
       const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-      expect(savedDataAfter[0].serverPid).toBeUndefined();
+      expect(savedDataAfter[0].serverPid).toBeNull();
     });
 
     it('should call onSessionPaused callback', async () => {
@@ -1783,7 +1783,7 @@ describe('SessionManager', () => {
 
       // Verify serverPid is null after pausing
       const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-      expect(savedDataBefore[0].serverPid).toBeUndefined();
+      expect(savedDataBefore[0].serverPid).toBeNull();
 
       await manager.resumeSession(session.id);
 

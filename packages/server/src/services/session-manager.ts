@@ -785,7 +785,8 @@ export class SessionManager {
     this.sessions.delete(id);
 
     // Update DB: set serverPid = null (marks session as paused/not owned by any server)
-    await this.sessionRepository.update(id, { serverPid: undefined });
+    // Note: Must pass null explicitly, not undefined, because the update method checks !== undefined
+    await this.sessionRepository.update(id, { serverPid: null });
 
     logger.info({ sessionId: id }, 'Session paused');
 
