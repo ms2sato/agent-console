@@ -224,9 +224,11 @@ export class SessionManager {
       // Skip if already in memory (shouldn't happen, but safety check)
       if (this.sessions.has(session.id)) continue;
 
-      // If serverPid is alive, this session belongs to another active server
+      // If serverPid is alive AND belongs to a different server, this session belongs to another active server
       // Keep it in persistence unchanged
-      if (session.serverPid && isProcessAlive(session.serverPid)) {
+      // Note: We must check serverPid !== currentServerPid to handle PID reuse by the OS.
+      // If a previous server died and the OS reused its PID for this server, we should inherit the sessions.
+      if (session.serverPid && session.serverPid !== currentServerPid && isProcessAlive(session.serverPid)) {
         sessionsToSave.push(session);
         continue;
       }
