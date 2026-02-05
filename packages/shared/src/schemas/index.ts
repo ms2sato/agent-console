@@ -95,3 +95,19 @@ export {
   RepositorySlackIntegrationInputSchema,
   type RepositorySlackIntegrationInput,
 } from './notification.js';
+
+// SDK message schemas
+export {
+  SdkUserMessageSchema,
+  MessageParamSchema,
+  MessageContentSchema,
+  ContentBlockSchema,
+  TextBlockSchema,
+  ImageBlockSchema,
+  ToolUseBlockSchema,
+  ToolResultBlockSchema,
+  UuidSchema,
+  createSdkUserMessage,
+  type SdkUserMessageInput,
+  type UUID,
+} from './sdk-message.js';

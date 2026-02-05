@@ -1,5 +1,6 @@
 import type { WSContext } from 'hono/ws';
 import type { SDKMessage, SdkWorkerClientMessage, SdkWorkerServerMessage, AgentActivityState } from '@agent-console/shared';
+import { createSdkUserMessage } from '@agent-console/shared';
 import type { InternalSdkWorker, SdkWorkerCallbacks } from '../services/worker-types.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -97,15 +98,16 @@ export async function handleSdkWorkerMessage(
           return;
         }
 
-        // Create user message in SDKMessage format
-        const userMessage: SDKMessage = {
-          type: 'user',
-          uuid: crypto.randomUUID(),
-          message: {
-            role: 'user',
-            content: parsed.content,
-          },
-        };
+        // Get SDK session ID (may be null for first message)
+        // Use a placeholder if not available yet - SDK will assign one
+        const sdkSessionId = worker.sdkSessionId ?? '';
+
+        // Create validated user message using schema helper
+        const userMessage: SDKMessage = createSdkUserMessage(
+          parsed.content,
+          sdkSessionId,
+          { uuid: crypto.randomUUID() }
+        );
 
         // Store user message in memory
         worker.messages.push(userMessage);
