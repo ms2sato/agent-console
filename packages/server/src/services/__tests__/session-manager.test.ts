@@ -1628,6 +1628,70 @@ describe('SessionManager', () => {
       expect(manager.getSession(session.id)).toBeDefined();
     });
 
+    it('should not change session state when pause fails for quick session', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = await manager.pauseSession(session.id);
+      expect(result).toBe(false);
+
+      // Verify session exists and remains active
+      const retrievedSession = manager.getSession(session.id);
+      expect(retrievedSession).toBeDefined();
+      expect(retrievedSession?.status).toBe('active');
+    });
+
+    it('should return false when pausing an already paused session (not in memory)', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // First pause should succeed
+      const firstPauseResult = await manager.pauseSession(session.id);
+      expect(firstPauseResult).toBe(true);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Second pause should return false (session is not in memory)
+      const secondPauseResult = await manager.pauseSession(session.id);
+      expect(secondPauseResult).toBe(false);
+    });
+
+    it('should pause session with git-diff worker', async () => {
+      const manager = await getSessionManager();
+
+      // Create worktree session (automatically includes git-diff worker)
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Verify git-diff worker exists
+      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff');
+      expect(gitDiffWorker).toBeDefined();
+
+      // Pause should succeed
+      const result = await manager.pauseSession(session.id);
+      expect(result).toBe(true);
+
+      // Session should be removed from memory
+      expect(manager.getSession(session.id)).toBeUndefined();
+    });
+
     it('should kill workers and remove from memory for worktree session', async () => {
       const manager = await getSessionManager();
 
