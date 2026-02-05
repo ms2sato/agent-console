@@ -1920,13 +1920,25 @@ describe('SessionManager', () => {
 
       await managerForCreate.pauseSession(session.id);
 
-      // Create new manager with pathExists that returns false
+      // Create new manager with pathExists that returns true during initialization
+      // but false during resumeSession (simulating path deleted after init)
+      let initComplete = false;
+      const pathExistsOnlyDuringInit = async (_path: string): Promise<boolean> => {
+        if (!initComplete) {
+          return true; // Return true during initialization
+        }
+        return false; // Return false for subsequent calls (resumeSession)
+      };
+
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const managerWithMissingPath = await module.SessionManager.create({
         ptyProvider: ptyFactory.provider,
-        pathExists: async () => false,
+        pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
       });
+
+      // Mark initialization as complete so subsequent pathExists calls return false
+      initComplete = true;
 
       const result = await managerWithMissingPath.resumeSession(session.id);
       expect(result).toBeNull();

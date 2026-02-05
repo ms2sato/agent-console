@@ -299,9 +299,15 @@ function DashboardPage() {
         return next;
       });
     }
-    // Add to active sessions (same as created)
-    setWsSessions(prev => [...prev, session]);
-    sessionsRef.current = [...sessionsRef.current, session];
+    // Add/update active sessions (avoid duplicates)
+    setWsSessions(prev =>
+      prev.some(s => s.id === session.id)
+        ? prev.map(s => (s.id === session.id ? session : s))
+        : [...prev, session]
+    );
+    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+      ? sessionsRef.current.map(s => (s.id === session.id ? session : s))
+      : [...sessionsRef.current, session];
   }, []);
 
   // Handle initial agent sync from WebSocket

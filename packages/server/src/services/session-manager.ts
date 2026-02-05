@@ -224,6 +224,13 @@ export class SessionManager {
       // Skip if already in memory (shouldn't happen, but safety check)
       if (this.sessions.has(session.id)) continue;
 
+      // Paused sessions (serverPid === null) should remain paused until explicitly resumed
+      // Keep them in persistence unchanged, don't inherit into memory
+      if (session.serverPid === null) {
+        sessionsToSave.push(session);
+        continue;
+      }
+
       // If serverPid is alive AND belongs to a different server, this session belongs to another active server
       // Keep it in persistence unchanged
       // Note: We must check serverPid !== currentServerPid to handle PID reuse by the OS.
@@ -759,7 +766,8 @@ export class SessionManager {
       return false;
     }
 
-    // Kill all PTY workers (preserve output files)
+    // Kill all PTY workers (preserve output files) and clear PTY references
+    // Clearing PTY references ensures worker PIDs are saved as null in persistence
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
@@ -767,6 +775,8 @@ export class SessionManager {
       } else {
         // Kill PTY for agent/terminal workers (don't delete output files)
         this.workerManager.killWorker(worker);
+        // Clear PTY reference so toPersistedWorker will return pid: null
+        worker.pty = null;
       }
     }
 
@@ -781,12 +791,13 @@ export class SessionManager {
     // Clean up inter-worker message history
     this.messageService.clearSession(id);
 
-    // Remove from in-memory sessions Map
-    this.sessions.delete(id);
+    // Save session with serverPid = null and worker PIDs cleared
+    // Using save() instead of update() to persist the full session state including worker PID changes
+    const persistedSession = this.toPersistedSessionWithServerPid(session, null);
+    await this.sessionRepository.save(persistedSession);
 
-    // Update DB: set serverPid = null (marks session as paused/not owned by any server)
-    // Note: Must pass null explicitly, not undefined, because the update method checks !== undefined
-    await this.sessionRepository.update(id, { serverPid: null });
+    // Remove from in-memory sessions Map (after successful persistence)
+    this.sessions.delete(id);
 
     logger.info({ sessionId: id }, 'Session paused');
 
@@ -800,7 +811,7 @@ export class SessionManager {
    * Resume a paused session: load from DB, create in-memory session, restore workers.
    *
    * @param id - Session ID to resume
-   * @returns The resumed session, or null if not found in database
+   * @returns The resumed session, or null if not found in database or activation fails
    */
   async resumeSession(id: string): Promise<Session | null> {
     // Check if session is already active in memory
@@ -852,25 +863,45 @@ export class SessionManager {
     // Add to sessions Map
     this.sessions.set(id, internalSession);
 
+    // Track activated workers for cleanup on failure
+    const activatedWorkers: InternalPtyWorker[] = [];
+
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
-    for (const worker of workers.values()) {
-      if (worker.type === 'agent') {
-        await this.workerManager.activateAgentWorkerPty(worker, {
-          sessionId: id,
-          locationPath: persisted.locationPath,
-          repositoryEnvVars,
-          agentId: worker.agentId,
-          continueConversation: true,
-        });
-      } else if (worker.type === 'terminal') {
-        this.workerManager.activateTerminalWorkerPty(worker, {
-          sessionId: id,
-          locationPath: persisted.locationPath,
-          repositoryEnvVars,
-        });
+    try {
+      for (const worker of workers.values()) {
+        if (worker.type === 'agent') {
+          await this.workerManager.activateAgentWorkerPty(worker, {
+            sessionId: id,
+            locationPath: persisted.locationPath,
+            repositoryEnvVars,
+            agentId: worker.agentId,
+            continueConversation: true,
+          });
+          activatedWorkers.push(worker);
+        } else if (worker.type === 'terminal') {
+          this.workerManager.activateTerminalWorkerPty(worker, {
+            sessionId: id,
+            locationPath: persisted.locationPath,
+            repositoryEnvVars,
+          });
+          activatedWorkers.push(worker);
+        }
+        // git-diff workers don't need PTY activation
       }
-      // git-diff workers don't need PTY activation
+    } catch (err) {
+      // PTY activation failed - clean up and return null
+      logger.error({ sessionId: id, err }, 'Failed to activate PTY workers during session resume');
+
+      // Kill all workers that were successfully activated
+      for (const worker of activatedWorkers) {
+        this.workerManager.killWorker(worker);
+      }
+
+      // Remove session from memory
+      this.sessions.delete(id);
+
+      return null;
     }
 
     // Update DB: set serverPid = process.pid (marks session as owned by this server)
@@ -1563,6 +1594,14 @@ export class SessionManager {
   }
 
   private toPersistedSession(session: InternalSession): PersistedSession {
+    return this.toPersistedSessionWithServerPid(session, getServerPid());
+  }
+
+  /**
+   * Convert an internal session to persisted format with a specific serverPid.
+   * Used by pauseSession to save with serverPid = null.
+   */
+  private toPersistedSessionWithServerPid(session: InternalSession, serverPid: number | null): PersistedSession {
     // session.workers is the source of truth (all workers loaded on init)
     const workers: PersistedWorker[] = Array.from(session.workers.values()).map(w =>
       this.workerManager.toPersistedWorker(w)
@@ -1571,7 +1610,7 @@ export class SessionManager {
     const base = {
       id: session.id,
       locationPath: session.locationPath,
-      serverPid: getServerPid(),
+      serverPid,
       createdAt: session.createdAt,
       workers,
       initialPrompt: session.initialPrompt,

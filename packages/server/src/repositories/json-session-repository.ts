@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { PersistedSession } from '../services/persistence-service.js';
-import type { SessionRepository } from './session-repository.js';
+import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 
 /**
  * Write data to a file atomically using a unique temporary file.
@@ -86,7 +86,7 @@ export class JsonSessionRepository implements SessionRepository {
     atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));
   }
 
-  async update(id: string, updates: Partial<PersistedSession>): Promise<boolean> {
+  async update(id: string, updates: SessionUpdateFields): Promise<boolean> {
     const sessions = await this.findAll();
     const index = sessions.findIndex((s) => s.id === id);
 
@@ -94,13 +94,28 @@ export class JsonSessionRepository implements SessionRepository {
       return false;
     }
 
-    // Merge updates with existing session while preserving the discriminated union type
+    // Apply only the supported update fields explicitly
     const existing = sessions[index];
-    if (existing.type === 'worktree') {
-      sessions[index] = { ...existing, ...updates } as typeof existing;
-    } else {
-      sessions[index] = { ...existing, ...updates } as typeof existing;
+    const updated = { ...existing };
+
+    if (updates.serverPid !== undefined) {
+      updated.serverPid = updates.serverPid ?? undefined;
     }
+    if (updates.title !== undefined) {
+      updated.title = updates.title ?? undefined;
+    }
+    if (updates.initialPrompt !== undefined) {
+      updated.initialPrompt = updates.initialPrompt ?? undefined;
+    }
+    if (updates.locationPath !== undefined) {
+      updated.locationPath = updates.locationPath;
+    }
+    // worktreeId is only valid for worktree sessions
+    if (updates.worktreeId !== undefined && existing.type === 'worktree') {
+      (updated as typeof existing).worktreeId = updates.worktreeId;
+    }
+
+    sessions[index] = updated;
     atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
     return true;
   }

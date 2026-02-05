@@ -1,5 +1,5 @@
 import type { Kysely } from 'kysely';
-import type { SessionRepository } from './session-repository.js';
+import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 import type { PersistedSession } from '../services/persistence-service.js';
 import type { Database, Session } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
@@ -144,7 +144,7 @@ export class SqliteSessionRepository implements SessionRepository {
     logger.debug({ sessionId: id }, 'Session deleted');
   }
 
-  async update(id: string, updates: Partial<PersistedSession>): Promise<boolean> {
+  async update(id: string, updates: SessionUpdateFields): Promise<boolean> {
     const now = new Date().toISOString();
 
     // Build update object from provided fields
@@ -152,7 +152,7 @@ export class SqliteSessionRepository implements SessionRepository {
       updated_at: now,
     };
 
-    // Map PersistedSession fields to database column names
+    // Map SessionUpdateFields to database column names
     if (updates.serverPid !== undefined) {
       updateValues.server_pid = updates.serverPid ?? null;
     }
@@ -166,7 +166,7 @@ export class SqliteSessionRepository implements SessionRepository {
       updateValues.location_path = updates.locationPath;
     }
     // worktreeId is only valid for worktree sessions
-    if ('worktreeId' in updates && updates.worktreeId !== undefined) {
+    if (updates.worktreeId !== undefined) {
       updateValues.worktree_id = updates.worktreeId;
     }
 
