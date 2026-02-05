@@ -136,9 +136,9 @@ function DashboardPage() {
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
   // Sessions from WebSocket (source of truth)
   const [wsSessions, setWsSessions] = useState<Session[]>([]);
-  // Track paused sessions: { worktreePath: sessionId }
-  // Used to show "Resume" button instead of "Restore" on dashboard
-  const [pausedSessions, setPausedSessions] = useState<Record<string, string>>({});
+  /// Track paused sessions: { worktreePath: Session }
+  // Used to show "Resume" button instead of "Restore" on dashboard, and to display session title
+  const [pausedSessions, setPausedSessions] = useState<Record<string, Session>>({});
   // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   // Track previous states for detecting completion (active → idle)
@@ -175,10 +175,11 @@ function DashboardPage() {
     sessionsRef.current = activeSessions;
 
     // Build pausedSessions map from hibernated worktree sessions
-    const newPausedSessions: Record<string, string> = {};
+    // Store full session objects to preserve title and other metadata
+    const newPausedSessions: Record<string, Session> = {};
     for (const session of hibernatedSessions) {
       if (session.type === 'worktree') {
-        newPausedSessions[session.locationPath] = session.id;
+        newPausedSessions[session.locationPath] = session;
       }
     }
     setPausedSessions(newPausedSessions);
@@ -242,8 +243,8 @@ function DashboardPage() {
     setPausedSessions(prev => {
       const next = { ...prev };
       // Find and remove by sessionId
-      for (const [path, id] of Object.entries(next)) {
-        if (id === sessionId) {
+      for (const [path, pausedSession] of Object.entries(next)) {
+        if (pausedSession.id === sessionId) {
           delete next[path];
           break;
         }
@@ -258,10 +259,12 @@ function DashboardPage() {
     // Find the session to get its worktree path before removing
     const session = sessionsRef.current.find(s => s.id === sessionId);
     if (session && session.type === 'worktree') {
-      // Track as paused session for "Resume" button
+      // Track as paused session for "Resume" button, storing full session to preserve title
+      // Update activationState to 'hibernated' since it's now paused
+      const pausedSession: Session = { ...session, activationState: 'hibernated' };
       setPausedSessions(prev => ({
         ...prev,
-        [session.locationPath]: sessionId,
+        [session.locationPath]: pausedSession,
       }));
     }
     // Remove from active sessions (same as delete)
@@ -624,8 +627,8 @@ type SessionWithActivity = Session & {
 interface RepositoryCardProps {
   repository: Repository;
   sessions: SessionWithActivity[];
-  /** Map of worktree path to paused session ID */
-  pausedSessions: Record<string, string>;
+  /** Map of worktree path to paused session object */
+  pausedSessions: Record<string, Session>;
   onUnregister: () => void;
 }
 
@@ -755,7 +758,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister }: 
               key={worktree.path}
               worktree={worktree}
               session={sessions.find((s) => s.locationPath === worktree.path)}
-              pausedSessionId={pausedSessions[worktree.path]}
+              pausedSession={pausedSessions[worktree.path]}
               repositoryId={repository.id}
             />
           ))}
@@ -780,12 +783,12 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister }: 
 interface WorktreeRowProps {
   worktree: Worktree;
   session?: SessionWithActivity;
-  /** Session ID if this worktree has a paused session */
-  pausedSessionId?: string;
+  /** Full session object if this worktree has a paused session */
+  pausedSession?: Session;
   repositoryId: string;
 }
 
-function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: WorktreeRowProps) {
+function WorktreeRow({ worktree, session, pausedSession, repositoryId }: WorktreeRowProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
@@ -829,8 +832,8 @@ function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: Workt
   };
 
   const handleResumeSession = () => {
-    if (pausedSessionId) {
-      resumeSessionMutation.mutate(pausedSessionId);
+    if (pausedSession) {
+      resumeSessionMutation.mutate(pausedSession.id);
     }
   };
 
@@ -885,7 +888,7 @@ function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: Workt
     ? session.status === 'active'
       ? 'bg-green-500'
       : 'bg-gray-500'
-    : pausedSessionId
+    : pausedSession
       ? 'bg-yellow-500'  // Paused session
       : 'bg-gray-600';   // No session
 
@@ -898,13 +901,14 @@ function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: Workt
       <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium flex items-center gap-2">
-          {session?.title && (
+          {/* Show title from active session or paused session */}
+          {(session?.title || pausedSession?.title) && (
             <>
-              <span className="truncate" title={session.title}>{session.title}</span>
+              <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
               <span className="text-gray-500">-</span>
             </>
           )}
-          <span className={session?.title ? 'text-gray-400' : ''}>{worktree.branch}</span>
+          <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
           {worktree.isMain && (
             <span className="text-xs text-gray-500">(primary)</span>
           )}
@@ -937,7 +941,7 @@ function WorktreeRow({ worktree, session, pausedSessionId, repositoryId }: Workt
           >
             Open
           </Link>
-        ) : pausedSessionId ? (
+        ) : pausedSession ? (
           <button
             onClick={handleResumeSession}
             disabled={resumeSessionMutation.isPending}
