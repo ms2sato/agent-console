@@ -4,10 +4,11 @@ import {
   EditSessionDialog,
   RestartSessionDialog,
   DeleteWorktreeDialog,
-  EndSessionDialog,
+  PauseSessionDialog,
   InitialPromptDialog,
   type MenuAction,
 } from './sessions';
+import type { Session, AgentActivityState } from '@agent-console/shared';
 
 interface SessionSettingsProps {
   sessionId: string;
@@ -17,6 +18,9 @@ interface SessionSettingsProps {
   initialPrompt?: string;
   worktreePath: string;
   isMainWorktree: boolean;
+  session?: Session;
+  /** Activity states for workers in this session: { workerId: state } */
+  workerActivityStates?: Record<string, AgentActivityState>;
   onBranchChange: (newBranch: string) => void;
   onTitleChange?: (newTitle: string) => void;
   onSessionRestart?: () => void;
@@ -32,6 +36,8 @@ export function SessionSettings({
   initialPrompt,
   worktreePath,
   isMainWorktree,
+  session,
+  workerActivityStates,
   onBranchChange,
   onTitleChange,
   onSessionRestart,
@@ -83,11 +89,13 @@ export function SessionSettings({
         sessionTitle={currentTitle}
       />
 
-      <EndSessionDialog
-        open={activeDialog === 'stop-session'}
+      <PauseSessionDialog
+        open={activeDialog === 'pause'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         sessionTitle={currentTitle}
+        session={session}
+        workerActivityStates={workerActivityStates}
       />
 
       <InitialPromptDialog

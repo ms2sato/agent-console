@@ -7,7 +7,7 @@ import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
-import { getSession, createWorker, deleteWorker, restartAgentWorker, openPath, ServerUnavailableError } from '../../lib/api';
+import { getSession, createWorker, deleteWorker, restartAgentWorker, resumeSession, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
@@ -21,7 +21,8 @@ type PageState =
   | { type: 'disconnected'; session: Session }
   | { type: 'not_found' }
   | { type: 'server_unavailable' }
-  | { type: 'restarting' };
+  | { type: 'restarting' }
+  | { type: 'paused'; session: Session };
 
 // Tab representation - links to workers
 interface Tab {
@@ -98,6 +99,9 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
   const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
+  // State for resuming paused session
+  const [isResuming, setIsResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -180,6 +184,18 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   }, [sessionId]);
 
+  // Handle session paused (by another client or via settings menu)
+  const handleSessionPaused = useCallback((pausedSessionId: string) => {
+    if (pausedSessionId === sessionId) {
+      setState(prev => {
+        if (prev.type === 'active' || prev.type === 'disconnected') {
+          return { type: 'paused', session: prev.session };
+        }
+        return prev;
+      });
+    }
+  }, [sessionId]);
+
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
     onWorkerMessage: (message) => {
@@ -188,6 +204,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       }
     },
     onSessionUpdated: handleSessionUpdated,
+    onSessionPaused: handleSessionPaused,
   });
 
   // Update page title and favicon based on state
@@ -445,6 +462,53 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     );
   }
 
+  // Paused state - session was paused (by this or another client)
+  if (state.type === 'paused') {
+    const handleResume = async () => {
+      setIsResuming(true);
+      setResumeError(null);
+      try {
+        await resumeSession(sessionId);
+        // After resume, reload the page to reconnect
+        window.location.reload();
+      } catch (error) {
+        setResumeError(error instanceof Error ? error.message : 'Failed to resume session');
+        setIsResuming(false);
+      }
+    };
+
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="card text-center max-w-md">
+          <h2 className="text-xl font-semibold mb-4 text-yellow-400">Session Paused</h2>
+          <p className="text-gray-400 mb-2">
+            This session has been paused. Session data is preserved.
+          </p>
+          <p className="text-sm text-gray-500 mb-6 font-mono bg-slate-800 p-2 rounded">
+            {formatPath(state.session.locationPath)}
+          </p>
+          {resumeError && (
+            <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded mb-4">
+              {resumeError}
+            </p>
+          )}
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={handleResume}
+              disabled={isResuming}
+              className="btn btn-primary"
+            >
+              {isResuming ? 'Resuming...' : 'Resume Session'}
+            </button>
+            <Link to="/" className="btn bg-slate-600 hover:bg-slate-500 no-underline">
+              Dashboard
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Disconnected state - show reconnection UI
   if (state.type === 'disconnected') {
     return (
@@ -596,6 +660,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               initialPrompt={session.initialPrompt}
               worktreePath={session.locationPath}
               isMainWorktree={session.isMainWorktree}
+              session={session}
+              workerActivityStates={workerActivityStates}
               onBranchChange={setBranchName}
               onTitleChange={setSessionTitle}
               onSessionRestart={() => {

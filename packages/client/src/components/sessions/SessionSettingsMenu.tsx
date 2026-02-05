@@ -7,7 +7,7 @@ import {
   FolderIcon,
   CopyIcon,
   TrashIcon,
-  StopIcon,
+  PauseIcon,
   DocumentIcon,
   ExternalLinkIcon,
   VSCodeIcon,
@@ -16,7 +16,7 @@ import { Spinner } from '../ui/Spinner';
 import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
 import { hasVSCode } from '../../lib/capabilities';
 
-export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'stop-session' | 'view-initial-prompt';
+export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'view-initial-prompt';
 
 export interface SessionSettingsMenuProps {
   sessionId: string;
@@ -186,11 +186,11 @@ export function SessionSettingsMenu({
             </button>
             <div className="border-t border-slate-700 my-1" />
             <button
-              onClick={() => handleMenuAction('stop-session')}
-              className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
+              onClick={() => handleMenuAction('pause')}
+              className="w-full px-4 py-2 text-left text-sm text-yellow-400 hover:bg-slate-700 hover:text-yellow-300 flex items-center gap-2"
             >
-              <StopIcon />
-              Stop Session
+              <PauseIcon />
+              Pause
             </button>
             {!isMainWorktree && (
               <button

@@ -85,6 +85,8 @@ export interface SessionLifecycleCallbacks {
   onSessionUpdated?: (session: Session) => void;
   onSessionDeleted?: (sessionId: string) => void;
   onWorkerActivated?: (sessionId: string, workerId: string) => void;
+  onSessionPaused?: (sessionId: string) => void;
+  onSessionResumed?: (session: Session) => void;
 }
 
 /**
@@ -222,9 +224,18 @@ export class SessionManager {
       // Skip if already in memory (shouldn't happen, but safety check)
       if (this.sessions.has(session.id)) continue;
 
-      // If serverPid is alive, this session belongs to another active server
+      // Paused sessions (serverPid === null) should remain paused until explicitly resumed
+      // Keep them in persistence unchanged, don't inherit into memory
+      if (session.serverPid === null) {
+        sessionsToSave.push(session);
+        continue;
+      }
+
+      // If serverPid is alive AND belongs to a different server, this session belongs to another active server
       // Keep it in persistence unchanged
-      if (session.serverPid && isProcessAlive(session.serverPid)) {
+      // Note: We must check serverPid !== currentServerPid to handle PID reuse by the OS.
+      // If a previous server died and the OS reused its PID for this server, we should inherit the sessions.
+      if (session.serverPid && session.serverPid !== currentServerPid && isProcessAlive(session.serverPid)) {
         sessionsToSave.push(session);
         continue;
       }
@@ -652,6 +663,258 @@ export class SessionManager {
 
   getAllSessions(): Session[] {
     return Array.from(this.sessions.values()).map((s) => this.toPublicSession(s));
+  }
+
+  /**
+   * Get all paused sessions from persistence.
+   * Paused sessions are not in memory but exist in the database with serverPid = null.
+   * Used to include paused sessions in sessions-sync WebSocket messages.
+   *
+   * @returns Array of paused sessions converted to public Session format
+   */
+  async getAllPausedSessions(): Promise<Session[]> {
+    // Get paused sessions from database (those with serverPid = null)
+    const pausedPersisted = await this.sessionRepository.findPaused();
+
+    // Filter out any that are actually active in memory (shouldn't happen, but be safe)
+    const trulyPaused = pausedPersisted.filter((p) => !this.sessions.has(p.id));
+
+    return trulyPaused.map((p) => this.persistedToPublicSession(p));
+  }
+
+  /**
+   * Convert a persisted session to public Session format.
+   * Used for paused sessions that aren't in memory.
+   */
+  private persistedToPublicSession(p: PersistedSession): Session {
+    const workers: Worker[] = p.workers.map((w) => {
+      if (w.type === 'agent') {
+        return {
+          id: w.id,
+          type: 'agent' as const,
+          name: w.name,
+          agentId: w.agentId,
+          createdAt: w.createdAt,
+          activated: false, // Paused sessions have no active PTY
+        };
+      } else if (w.type === 'terminal') {
+        return {
+          id: w.id,
+          type: 'terminal' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+          activated: false, // Paused sessions have no active PTY
+        };
+      } else {
+        return {
+          id: w.id,
+          type: 'git-diff' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+          baseCommit: w.baseCommit,
+        };
+      }
+    });
+
+    const base = {
+      id: p.id,
+      locationPath: p.locationPath,
+      status: 'active' as const, // Session exists, it's just paused
+      activationState: 'hibernated' as const, // Paused sessions are always hibernated
+      createdAt: p.createdAt,
+      workers,
+      initialPrompt: p.initialPrompt,
+      title: p.title,
+    };
+
+    if (p.type === 'worktree') {
+      // Get repository name via callback to avoid circular dependency
+      const repository = this.repositoryCallbacks?.isInitialized()
+        ? this.repositoryCallbacks.getRepository(p.repositoryId)
+        : undefined;
+
+      return {
+        ...base,
+        type: 'worktree',
+        repositoryId: p.repositoryId,
+        repositoryName: repository?.name ?? 'Unknown',
+        worktreeId: p.worktreeId,
+        isMainWorktree: repository?.path === p.locationPath,
+      } as WorktreeSession;
+    }
+
+    return { ...base, type: 'quick' } as QuickSession;
+  }
+
+  /**
+   * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
+   * Only available for worktree sessions. Quick sessions should use deleteSession instead.
+   *
+   * @param id - Session ID to pause
+   * @returns true if session was paused, false if not found or is a quick session
+   */
+  async pauseSession(id: string): Promise<boolean> {
+    const session = this.sessions.get(id);
+    if (!session) {
+      logger.warn({ sessionId: id }, 'Cannot pause session: not found in memory');
+      return false;
+    }
+
+    // Quick sessions cannot be paused - they should be deleted instead
+    if (session.type === 'quick') {
+      logger.warn({ sessionId: id }, 'Cannot pause quick session: use delete instead');
+      return false;
+    }
+
+    // Kill all PTY workers (preserve output files) and clear PTY references
+    // Clearing PTY references ensures worker PIDs are saved as null in persistence
+    for (const worker of session.workers.values()) {
+      if (worker.type === 'git-diff') {
+        // Stop file watcher for git-diff workers
+        stopWatching(session.locationPath);
+      } else {
+        // Kill PTY for agent/terminal workers (don't delete output files)
+        this.workerManager.killWorker(worker);
+        // Clear PTY reference so toPersistedWorker will return pid: null
+        worker.pty = null;
+      }
+    }
+
+    // Clean up notification state (throttle timers, debounce timers)
+    try {
+      const notificationManager = getNotificationManager();
+      notificationManager.cleanupSession(id);
+    } catch {
+      // NotificationManager not initialized yet, skip
+    }
+
+    // Clean up inter-worker message history
+    this.messageService.clearSession(id);
+
+    // Save session with serverPid = null and worker PIDs cleared
+    // Using save() instead of update() to persist the full session state including worker PID changes
+    const persistedSession = this.toPersistedSessionWithServerPid(session, null);
+    await this.sessionRepository.save(persistedSession);
+
+    // Remove from in-memory sessions Map (after successful persistence)
+    this.sessions.delete(id);
+
+    logger.info({ sessionId: id }, 'Session paused');
+
+    // Call lifecycle callback
+    this.sessionLifecycleCallbacks?.onSessionPaused?.(id);
+
+    return true;
+  }
+
+  /**
+   * Resume a paused session: load from DB, create in-memory session, restore workers.
+   *
+   * @param id - Session ID to resume
+   * @returns The resumed session, or null if not found in database or activation fails
+   */
+  async resumeSession(id: string): Promise<Session | null> {
+    // Check if session is already active in memory
+    const existingSession = this.sessions.get(id);
+    if (existingSession) {
+      logger.debug({ sessionId: id }, 'Session already active, returning existing');
+      return this.toPublicSession(existingSession);
+    }
+
+    // Load from database
+    const persisted = await this.sessionRepository.findById(id);
+    if (!persisted) {
+      logger.warn({ sessionId: id }, 'Cannot resume session: not found in database');
+      return null;
+    }
+
+    // Validate that locationPath still exists
+    const pathExistsResult = await this.pathExists(persisted.locationPath);
+    if (!pathExistsResult) {
+      logger.warn({ sessionId: id, locationPath: persisted.locationPath },
+        'Cannot resume session: path no longer exists');
+      return null;
+    }
+
+    // Create in-memory InternalSession from persisted data
+    const workers = this.workerManager.restoreWorkersFromPersistence(persisted.workers);
+    const baseSession = {
+      id: persisted.id,
+      locationPath: persisted.locationPath,
+      status: 'active' as const,
+      createdAt: persisted.createdAt,
+      workers,
+      initialPrompt: persisted.initialPrompt,
+      title: persisted.title,
+    };
+
+    const internalSession: InternalSession = persisted.type === 'worktree'
+      ? {
+          ...baseSession,
+          type: 'worktree',
+          repositoryId: persisted.repositoryId,
+          worktreeId: persisted.worktreeId,
+        }
+      : {
+          ...baseSession,
+          type: 'quick',
+        };
+
+    // Add to sessions Map
+    this.sessions.set(id, internalSession);
+
+    // Track activated workers for cleanup on failure
+    const activatedWorkers: InternalPtyWorker[] = [];
+
+    // Restore all PTY workers with continueConversation: true
+    const repositoryEnvVars = this.getRepositoryEnvVars(id);
+    try {
+      for (const worker of workers.values()) {
+        if (worker.type === 'agent') {
+          await this.workerManager.activateAgentWorkerPty(worker, {
+            sessionId: id,
+            locationPath: persisted.locationPath,
+            repositoryEnvVars,
+            agentId: worker.agentId,
+            continueConversation: true,
+          });
+          activatedWorkers.push(worker);
+        } else if (worker.type === 'terminal') {
+          this.workerManager.activateTerminalWorkerPty(worker, {
+            sessionId: id,
+            locationPath: persisted.locationPath,
+            repositoryEnvVars,
+          });
+          activatedWorkers.push(worker);
+        }
+        // git-diff workers don't need PTY activation
+      }
+    } catch (err) {
+      // PTY activation failed - clean up and return null
+      logger.error({ sessionId: id, err }, 'Failed to activate PTY workers during session resume');
+
+      // Kill all workers that were successfully activated
+      for (const worker of activatedWorkers) {
+        this.workerManager.killWorker(worker);
+      }
+
+      // Remove session from memory
+      this.sessions.delete(id);
+
+      return null;
+    }
+
+    // Update DB: set serverPid = process.pid (marks session as owned by this server)
+    await this.sessionRepository.update(id, { serverPid: getServerPid() });
+
+    logger.info({ sessionId: id }, 'Session resumed');
+
+    const publicSession = this.toPublicSession(internalSession);
+
+    // Call lifecycle callback
+    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession);
+
+    return publicSession;
   }
 
   /**
@@ -1331,6 +1594,14 @@ export class SessionManager {
   }
 
   private toPersistedSession(session: InternalSession): PersistedSession {
+    return this.toPersistedSessionWithServerPid(session, getServerPid());
+  }
+
+  /**
+   * Convert an internal session to persisted format with a specific serverPid.
+   * Used by pauseSession to save with serverPid = null.
+   */
+  private toPersistedSessionWithServerPid(session: InternalSession, serverPid: number | null): PersistedSession {
     // session.workers is the source of truth (all workers loaded on init)
     const workers: PersistedWorker[] = Array.from(session.workers.values()).map(w =>
       this.workerManager.toPersistedWorker(w)
@@ -1339,7 +1610,7 @@ export class SessionManager {
     const base = {
       id: session.id,
       locationPath: session.locationPath,
-      serverPid: getServerPid(),
+      serverPid,
       createdAt: session.createdAt,
       workers,
       initialPrompt: session.initialPrompt,

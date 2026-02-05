@@ -154,6 +154,8 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worktree-deletion-completed': 17,
   'worktree-deletion-failed': 18,
   'worker-message': 19,
+  'session-paused': 20,
+  'session-resumed': 21,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -166,6 +168,8 @@ export type AppServerMessage =
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
+  | { type: 'session-paused'; sessionId: string }
+  | { type: 'session-resumed'; session: Session }
   | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState }
   | { type: 'worker-activated'; sessionId: string; workerId: string }
   | { type: 'agents-sync'; agents: AgentDefinition[] }
