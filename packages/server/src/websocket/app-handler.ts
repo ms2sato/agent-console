@@ -28,6 +28,7 @@ export function isValidClientMessage(msg: unknown): msg is AppClientMessage {
  */
 export interface AppHandlerDependencies {
   getAllSessions: () => Session[];
+  getAllPausedSessions: () => Promise<Session[]>;
   getWorkerActivityState: (sessionId: string, workerId: string) => AgentActivityState | undefined;
   getAllAgents: () => Promise<AgentDefinition[]>;
   getAllRepositories: () => Repository[];
@@ -40,16 +41,24 @@ export interface AppHandlerDependencies {
 
 /**
  * Build sessions-sync message payload.
+ * Includes both active sessions (in memory) and paused sessions (from database).
  * @internal Exported for testing
  */
-export function buildSessionsSyncMessage(
-  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getWorkerActivityState'>
-): { type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] } {
-  const allSessions = deps.getAllSessions();
+export async function buildSessionsSyncMessage(
+  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState'>
+): Promise<{ type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }> {
+  // Get active sessions from memory
+  const activeSessions = deps.getAllSessions();
 
-  // Collect activity states for all agent workers
+  // Get paused sessions from database
+  const pausedSessions = await deps.getAllPausedSessions();
+
+  // Combine both lists
+  const allSessions = [...activeSessions, ...pausedSessions];
+
+  // Collect activity states for all agent workers (only active sessions have activity states)
   const activityStates: WorkerActivityInfo[] = [];
-  for (const session of allSessions) {
+  for (const session of activeSessions) {
     for (const worker of session.workers) {
       if (worker.type === 'agent') {
         const state = deps.getWorkerActivityState(session.id, worker.id);
@@ -74,11 +83,11 @@ export function buildSessionsSyncMessage(
 /**
  * Send sessions-sync message to a specific client.
  */
-export function sendSessionsSync(
+export async function sendSessionsSync(
   ws: WSContext,
-  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getWorkerActivityState' | 'logger'>
-): void {
-  const syncMsg = buildSessionsSyncMessage(deps);
+  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState' | 'logger'>
+): Promise<void> {
+  const syncMsg = await buildSessionsSyncMessage(deps);
   ws.send(JSON.stringify(syncMsg));
   deps.logger.debug({ sessionCount: syncMsg.sessions.length }, 'Sent sessions-sync');
 }

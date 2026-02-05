@@ -183,6 +183,29 @@ export class SqliteSessionRepository implements SessionRepository {
     return updated;
   }
 
+  async findPaused(): Promise<PersistedSession[]> {
+    const sessions = await this.db
+      .selectFrom('sessions')
+      .where('server_pid', 'is', null)
+      .selectAll()
+      .execute();
+
+    // Load workers for each session, skipping corrupted sessions
+    const results: PersistedSession[] = [];
+    for (const s of sessions) {
+      try {
+        results.push(await this.hydrate(s));
+      } catch (error) {
+        if (error instanceof DataIntegrityError) {
+          logger.warn({ sessionId: s.id, err: error }, 'Skipping corrupted paused session');
+          continue;
+        }
+        throw error;
+      }
+    }
+    return results;
+  }
+
   // ========== Private Helper Methods ==========
 
   private async hydrate(session: Session): Promise<PersistedSession> {

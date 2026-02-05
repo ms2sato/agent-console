@@ -164,9 +164,24 @@ function DashboardPage() {
   const handleSessionsSync = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
 
-    // Update sessions list
-    setWsSessions(sessions);
-    sessionsRef.current = sessions;
+    // Separate active sessions from paused sessions by activationState
+    const activeSessions = sessions.filter(s => s.activationState === 'running');
+    const hibernatedSessions = sessions.filter(s => s.activationState === 'hibernated');
+
+    console.log(`[Sync] Active: ${activeSessions.length}, Paused: ${hibernatedSessions.length}`);
+
+    // Update active sessions list (only running sessions)
+    setWsSessions(activeSessions);
+    sessionsRef.current = activeSessions;
+
+    // Build pausedSessions map from hibernated worktree sessions
+    const newPausedSessions: Record<string, string> = {};
+    for (const session of hibernatedSessions) {
+      if (session.type === 'worktree') {
+        newPausedSessions[session.locationPath] = session.id;
+      }
+    }
+    setPausedSessions(newPausedSessions);
 
     // Build the full state first to avoid race condition
     const newActivityStates: Record<string, Record<string, AgentActivityState>> = {};

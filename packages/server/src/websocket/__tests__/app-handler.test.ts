@@ -42,20 +42,21 @@ describe('App Handler', () => {
   });
 
   describe('buildSessionsSyncMessage', () => {
-    it('should build message with empty sessions', () => {
+    it('should build message with empty sessions', async () => {
       const deps = {
         getAllSessions: () => [],
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
       };
 
-      const msg = buildSessionsSyncMessage(deps);
+      const msg = await buildSessionsSyncMessage(deps);
 
       expect(msg.type).toBe('sessions-sync');
       expect(msg.sessions).toEqual([]);
       expect(msg.activityStates).toEqual([]);
     });
 
-    it('should build message with sessions and activity states', () => {
+    it('should build message with sessions and activity states', async () => {
       const sessions: Session[] = [
         {
           id: 'session-1',
@@ -84,6 +85,7 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
           if (sessionId === 'session-1' && workerId === 'worker-1') return 'active';
           if (sessionId === 'session-2' && workerId === 'worker-3') return 'idle';
@@ -91,7 +93,7 @@ describe('App Handler', () => {
         },
       };
 
-      const msg = buildSessionsSyncMessage(deps);
+      const msg = await buildSessionsSyncMessage(deps);
 
       expect(msg.type).toBe('sessions-sync');
       expect(msg.sessions).toEqual(sessions);
@@ -108,7 +110,7 @@ describe('App Handler', () => {
       });
     });
 
-    it('should skip terminal workers', () => {
+    it('should skip terminal workers', async () => {
       const sessions: Session[] = [
         {
           id: 'session-1',
@@ -125,15 +127,16 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: (): AgentActivityState | undefined => 'active',
       };
 
-      const msg = buildSessionsSyncMessage(deps);
+      const msg = await buildSessionsSyncMessage(deps);
 
       expect(msg.activityStates).toEqual([]);
     });
 
-    it('should skip workers with undefined activity state', () => {
+    it('should skip workers with undefined activity state', async () => {
       const sessions: Session[] = [
         {
           id: 'session-1',
@@ -150,28 +153,83 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: (): AgentActivityState | undefined => undefined,
       };
 
-      const msg = buildSessionsSyncMessage(deps);
+      const msg = await buildSessionsSyncMessage(deps);
 
       expect(msg.activityStates).toEqual([]);
+    });
+
+    it('should include paused sessions from database', async () => {
+      const activeSessions: Session[] = [
+        {
+          id: 'active-session',
+          type: 'quick',
+          locationPath: '/path/active',
+          status: 'active',
+          activationState: 'running',
+          createdAt: '2024-01-01',
+          workers: [
+            { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-01', activated: true },
+          ],
+        },
+      ];
+
+      const pausedSessions: Session[] = [
+        {
+          id: 'paused-session',
+          type: 'worktree',
+          locationPath: '/path/paused',
+          status: 'active',
+          activationState: 'hibernated',
+          createdAt: '2024-01-02',
+          workers: [
+            { id: 'worker-2', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-02', activated: false },
+          ],
+          repositoryId: 'repo-1',
+          repositoryName: 'Test Repo',
+          worktreeId: 'feature-branch',
+          isMainWorktree: false,
+        },
+      ];
+
+      const deps = {
+        getAllSessions: () => activeSessions,
+        getAllPausedSessions: async () => pausedSessions,
+        getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
+          if (sessionId === 'active-session' && workerId === 'worker-1') return 'idle';
+          return undefined;
+        },
+      };
+
+      const msg = await buildSessionsSyncMessage(deps);
+
+      expect(msg.type).toBe('sessions-sync');
+      expect(msg.sessions).toHaveLength(2);
+      expect(msg.sessions.map(s => s.id)).toContain('active-session');
+      expect(msg.sessions.map(s => s.id)).toContain('paused-session');
+      // Activity states should only include active sessions
+      expect(msg.activityStates).toHaveLength(1);
+      expect(msg.activityStates[0].sessionId).toBe('active-session');
     });
   });
 
   describe('sendSessionsSync', () => {
-    it('should send sessions-sync message to WebSocket', () => {
+    it('should send sessions-sync message to WebSocket', async () => {
       const mockWs = {
         send: mock(),
       } as unknown as WSContext;
 
       const deps = {
         getAllSessions: () => [],
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         logger: { debug: mock(), warn: mock(), error: mock() },
       };
 
-      sendSessionsSync(mockWs, deps);
+      await sendSessionsSync(mockWs, deps);
 
       expect(mockWs.send).toHaveBeenCalledTimes(1);
       const sentData = JSON.parse((mockWs.send as ReturnType<typeof mock>).mock.calls[0][0]);
@@ -180,7 +238,7 @@ describe('App Handler', () => {
       expect(sentData.activityStates).toEqual([]);
     });
 
-    it('should log session count', () => {
+    it('should log session count', async () => {
       const mockWs = { send: mock() } as unknown as WSContext;
       const mockDebug = mock();
 
@@ -189,11 +247,32 @@ describe('App Handler', () => {
           { id: '1', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
           { id: '2', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
         ] as Session[],
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         logger: { debug: mockDebug, warn: mock(), error: mock() },
       };
 
-      sendSessionsSync(mockWs, deps);
+      await sendSessionsSync(mockWs, deps);
+
+      expect(mockDebug).toHaveBeenCalledWith({ sessionCount: 2 }, 'Sent sessions-sync');
+    });
+
+    it('should include paused sessions in count', async () => {
+      const mockWs = { send: mock() } as unknown as WSContext;
+      const mockDebug = mock();
+
+      const deps = {
+        getAllSessions: () => [
+          { id: '1', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
+        ] as Session[],
+        getAllPausedSessions: async () => [
+          { id: '2', type: 'quick', locationPath: '/', status: 'active', activationState: 'hibernated', createdAt: '', workers: [] },
+        ] as Session[],
+        getWorkerActivityState: () => undefined,
+        logger: { debug: mockDebug, warn: mock(), error: mock() },
+      };
+
+      await sendSessionsSync(mockWs, deps);
 
       expect(mockDebug).toHaveBeenCalledWith({ sessionCount: 2 }, 'Sent sessions-sync');
     });
@@ -210,6 +289,7 @@ describe('App Handler', () => {
 
       mockDeps = {
         getAllSessions: () => [],
+        getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         getAllAgents: async () => [],
         getAllRepositories: () => [],

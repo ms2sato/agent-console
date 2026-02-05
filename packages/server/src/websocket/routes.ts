@@ -344,6 +344,7 @@ export async function setupWebSocketRoutes(
   // Create dependency object for app handlers
   const appDeps = {
     getAllSessions: () => sessionManager.getAllSessions(),
+    getAllPausedSessions: () => sessionManager.getAllPausedSessions(),
     getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
     getAllAgents: async () => {
       const agentManager = await getAgentManager();

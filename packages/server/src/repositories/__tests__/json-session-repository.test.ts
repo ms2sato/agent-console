@@ -193,6 +193,58 @@ describe('JsonSessionRepository', () => {
     });
   });
 
+  describe('findPaused', () => {
+    it('should return sessions with null serverPid', async () => {
+      const testSessions = [
+        createTestSession({ id: 'session-1', serverPid: 1000 }),
+        createTestSession({ id: 'session-2', serverPid: undefined }),
+        createTestWorktreeSession({ id: 'session-3', serverPid: undefined }),
+        createTestSession({ id: 'session-4', serverPid: 2000 }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const sessions = await repository.findPaused();
+
+      expect(sessions.length).toBe(2);
+      expect(sessions.map((s) => s.id).sort()).toEqual(['session-2', 'session-3']);
+    });
+
+    it('should return empty array if no paused sessions', async () => {
+      const testSessions = [
+        createTestSession({ id: 'session-1', serverPid: 1000 }),
+        createTestSession({ id: 'session-2', serverPid: 2000 }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const sessions = await repository.findPaused();
+
+      expect(sessions).toEqual([]);
+    });
+
+    it("should return empty array when file doesn't exist", async () => {
+      const sessions = await repository.findPaused();
+
+      expect(sessions).toEqual([]);
+    });
+
+    it('should include workers in paused sessions', async () => {
+      const testSession = createTestWorktreeSession({
+        id: 'paused-session',
+        serverPid: undefined,
+        workers: [
+          createTestWorker({ id: 'worker-1', name: 'Agent Worker' }),
+        ],
+      });
+      fs.writeFileSync(sessionsFilePath, JSON.stringify([testSession], null, 2));
+
+      const sessions = await repository.findPaused();
+
+      expect(sessions.length).toBe(1);
+      expect(sessions[0].workers.length).toBe(1);
+      expect(sessions[0].workers[0].id).toBe('worker-1');
+    });
+  });
+
   describe('save', () => {
     it("should create new session when it doesn't exist", async () => {
       const newSession = createTestSession({ id: 'new-session' });

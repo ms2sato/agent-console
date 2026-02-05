@@ -52,4 +52,11 @@ export interface SessionRepository {
    * @returns true if session was found and updated, false if not found
    */
   update(id: string, updates: Partial<PersistedSession>): Promise<boolean>;
+
+  /**
+   * Find all paused sessions (those with serverPid = null).
+   * Paused sessions are not actively managed by any server instance.
+   * @returns Array of paused sessions
+   */
+  findPaused(): Promise<PersistedSession[]>;
 }

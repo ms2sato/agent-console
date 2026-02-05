@@ -48,6 +48,7 @@ describe('AppContext', () => {
         findAll: async () => [],
         findById: async () => null,
         findByServerPid: async () => [],
+        findPaused: async () => [],
         save: async () => {},
         saveAll: async () => {},
         delete: async () => {},

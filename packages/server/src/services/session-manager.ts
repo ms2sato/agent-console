@@ -657,6 +657,87 @@ export class SessionManager {
   }
 
   /**
+   * Get all paused sessions from persistence.
+   * Paused sessions are not in memory but exist in the database with serverPid = null.
+   * Used to include paused sessions in sessions-sync WebSocket messages.
+   *
+   * @returns Array of paused sessions converted to public Session format
+   */
+  async getAllPausedSessions(): Promise<Session[]> {
+    // Get paused sessions from database (those with serverPid = null)
+    const pausedPersisted = await this.sessionRepository.findPaused();
+
+    // Filter out any that are actually active in memory (shouldn't happen, but be safe)
+    const trulyPaused = pausedPersisted.filter((p) => !this.sessions.has(p.id));
+
+    return trulyPaused.map((p) => this.persistedToPublicSession(p));
+  }
+
+  /**
+   * Convert a persisted session to public Session format.
+   * Used for paused sessions that aren't in memory.
+   */
+  private persistedToPublicSession(p: PersistedSession): Session {
+    const workers: Worker[] = p.workers.map((w) => {
+      if (w.type === 'agent') {
+        return {
+          id: w.id,
+          type: 'agent' as const,
+          name: w.name,
+          agentId: w.agentId,
+          createdAt: w.createdAt,
+          activated: false, // Paused sessions have no active PTY
+        };
+      } else if (w.type === 'terminal') {
+        return {
+          id: w.id,
+          type: 'terminal' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+          activated: false, // Paused sessions have no active PTY
+        };
+      } else {
+        return {
+          id: w.id,
+          type: 'git-diff' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+          baseCommit: w.baseCommit,
+        };
+      }
+    });
+
+    const base = {
+      id: p.id,
+      locationPath: p.locationPath,
+      status: 'active' as const, // Session exists, it's just paused
+      activationState: 'hibernated' as const, // Paused sessions are always hibernated
+      createdAt: p.createdAt,
+      workers,
+      initialPrompt: p.initialPrompt,
+      title: p.title,
+    };
+
+    if (p.type === 'worktree') {
+      // Get repository name via callback to avoid circular dependency
+      const repository = this.repositoryCallbacks?.isInitialized()
+        ? this.repositoryCallbacks.getRepository(p.repositoryId)
+        : undefined;
+
+      return {
+        ...base,
+        type: 'worktree',
+        repositoryId: p.repositoryId,
+        repositoryName: repository?.name ?? 'Unknown',
+        worktreeId: p.worktreeId,
+        isMainWorktree: repository?.path === p.locationPath,
+      } as WorktreeSession;
+    }
+
+    return { ...base, type: 'quick' } as QuickSession;
+  }
+
+  /**
    * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
    * Only available for worktree sessions. Quick sessions should use deleteSession instead.
    *

@@ -333,6 +333,89 @@ describe('SqliteSessionRepository', () => {
     });
   });
 
+  describe('findPaused', () => {
+    it('should return sessions with null serverPid', async () => {
+      const sessions = [
+        createQuickSession({ id: 'session-1', serverPid: 1000 }),
+        createQuickSession({ id: 'session-2', serverPid: undefined }),
+        createWorktreeSession({ id: 'session-3', serverPid: undefined }),
+        createQuickSession({ id: 'session-4', serverPid: 2000 }),
+      ];
+
+      for (const session of sessions) {
+        await repository.save(session);
+      }
+
+      const found = await repository.findPaused();
+
+      expect(found.length).toBe(2);
+      expect(found.map((s) => s.id).sort()).toEqual(['session-2', 'session-3']);
+    });
+
+    it('should return empty array if no paused sessions', async () => {
+      const sessions = [
+        createQuickSession({ id: 'session-1', serverPid: 1000 }),
+        createQuickSession({ id: 'session-2', serverPid: 2000 }),
+      ];
+
+      for (const session of sessions) {
+        await repository.save(session);
+      }
+
+      const found = await repository.findPaused();
+
+      expect(found).toEqual([]);
+    });
+
+    it('should return empty array when no sessions exist', async () => {
+      const found = await repository.findPaused();
+      expect(found).toEqual([]);
+    });
+
+    it('should include workers for paused sessions', async () => {
+      const session = createWorktreeSession({
+        id: 'paused-session',
+        serverPid: undefined,
+        workers: [
+          createAgentWorker({ id: 'worker-1' }),
+          createTerminalWorker({ id: 'worker-2' }),
+        ],
+      });
+
+      await repository.save(session);
+
+      const found = await repository.findPaused();
+
+      expect(found.length).toBe(1);
+      expect(found[0].workers.length).toBe(2);
+      expect(found[0].workers.map((w) => w.id).sort()).toEqual(['worker-1', 'worker-2']);
+    });
+
+    it('should correctly hydrate worktree session metadata', async () => {
+      const session = createWorktreeSession({
+        id: 'paused-worktree',
+        serverPid: undefined,
+        repositoryId: 'repo-123',
+        worktreeId: 'feature-branch',
+        title: 'Feature Work',
+        initialPrompt: 'Implement feature X',
+      });
+
+      await repository.save(session);
+
+      const found = await repository.findPaused();
+
+      expect(found.length).toBe(1);
+      expect(found[0].type).toBe('worktree');
+      expect(found[0].title).toBe('Feature Work');
+      expect(found[0].initialPrompt).toBe('Implement feature X');
+      if (found[0].type === 'worktree') {
+        expect(found[0].repositoryId).toBe('repo-123');
+        expect(found[0].worktreeId).toBe('feature-branch');
+      }
+    });
+  });
+
   describe('save', () => {
     it('should insert new session', async () => {
       const session = createQuickSession({ id: 'new-session', title: 'New Session' });

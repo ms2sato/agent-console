@@ -104,4 +104,9 @@ export class JsonSessionRepository implements SessionRepository {
     atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
     return true;
   }
+
+  async findPaused(): Promise<PersistedSession[]> {
+    const sessions = await this.findAll();
+    return sessions.filter((s) => s.serverPid === null || s.serverPid === undefined);
+  }
 }
