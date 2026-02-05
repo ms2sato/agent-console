@@ -5,6 +5,54 @@ import { MessageInput } from '../sessions/MessageInput';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
+// Type definitions for SDK message content
+interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface ToolUseBlock {
+  type: 'tool_use';
+  name: string;
+  input: unknown;
+}
+
+interface ThinkingBlock {
+  type: 'thinking';
+  thinking: string;
+}
+
+type ContentBlock = TextBlock | ToolUseBlock | ThinkingBlock | { type: string };
+
+interface AssistantMessage {
+  role: 'assistant';
+  content: ContentBlock[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+}
+
+interface ResultMessage extends SDKMessage {
+  type: 'result';
+  subtype?: string;
+  is_error?: boolean;
+  duration_ms?: number;
+  total_cost_usd?: number;
+  num_turns?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+}
+
+interface SystemInitMessage extends SDKMessage {
+  type: 'system';
+  subtype?: string;
+  session_id?: string;
+  model?: string;
+}
+
 interface SdkWorkerViewProps {
   sessionId: string;
   workerId: string;
@@ -129,9 +177,7 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
 }
 
 /**
- * Render a single SDK message.
- * For MVP, we use simple formatting with JSON display.
- * This can be enhanced later with proper message type rendering.
+ * Render a single SDK message with appropriate formatting based on type.
  */
 function renderMessage(msg: SDKMessage, index: number): React.ReactNode {
   // Skip stream events for cleaner display
@@ -139,36 +185,269 @@ function renderMessage(msg: SDKMessage, index: number): React.ReactNode {
     return null;
   }
 
-  // Determine message styling based on type
-  const typeStyles = getTypeStyles(msg.type);
+  const key = msg.uuid ?? index;
+
+  switch (msg.type) {
+    case 'user':
+      return <UserMessage key={key} msg={msg} />;
+    case 'assistant':
+      return <AssistantMessageView key={key} msg={msg} />;
+    case 'result':
+      return <ResultMessageView key={key} msg={msg as ResultMessage} />;
+    case 'system':
+      return <SystemMessageView key={key} msg={msg as SystemInitMessage} />;
+    default:
+      // Fallback for unknown message types
+      return (
+        <div key={key} className="p-2 text-xs text-gray-500">
+          <details>
+            <summary className="cursor-pointer hover:text-gray-400">
+              {msg.type} message
+            </summary>
+            <pre className="mt-1 text-gray-600 whitespace-pre-wrap break-words">
+              {JSON.stringify(msg, null, 2)}
+            </pre>
+          </details>
+        </div>
+      );
+  }
+}
+
+/**
+ * Render user message - right-aligned with blue styling
+ */
+function UserMessage({ msg }: { msg: SDKMessage }) {
+  // User messages have content in a nested message object or as direct content
+  const content = extractUserContent(msg);
 
   return (
-    <div key={msg.uuid ?? index} className="p-2 border-b border-slate-700">
-      <div className={`text-xs mb-1 ${typeStyles.labelColor}`}>
-        {msg.type}
-        {msg.uuid && <span className="text-gray-600 ml-2">{msg.uuid.slice(0, 8)}...</span>}
+    <div className="flex justify-end mb-3">
+      <div className="max-w-[80%] bg-blue-600 text-white rounded-lg px-4 py-2">
+        <FormattedText text={content} />
       </div>
-      <pre className="text-sm text-gray-300 whitespace-pre-wrap break-words overflow-x-auto bg-slate-800 p-2 rounded">
-        {JSON.stringify(msg, null, 2)}
-      </pre>
     </div>
   );
 }
 
 /**
- * Get styling based on message type.
+ * Extract user message content from various formats
  */
-function getTypeStyles(type: string): { labelColor: string } {
-  switch (type) {
-    case 'user':
-      return { labelColor: 'text-blue-400' };
-    case 'assistant':
-      return { labelColor: 'text-green-400' };
-    case 'result':
-      return { labelColor: 'text-yellow-400' };
-    case 'error':
-      return { labelColor: 'text-red-400' };
-    default:
-      return { labelColor: 'text-gray-500' };
+function extractUserContent(msg: SDKMessage): string {
+  // Try message.content first (API format)
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as { content?: unknown };
+    if (typeof message.content === 'string') {
+      return message.content;
+    }
+    if (Array.isArray(message.content)) {
+      return extractTextFromContentBlocks(message.content as ContentBlock[]);
+    }
   }
+  // Try direct content
+  if (typeof msg.content === 'string') {
+    return msg.content;
+  }
+  // Fallback to JSON
+  return JSON.stringify(msg, null, 2);
+}
+
+/**
+ * Render assistant message - left-aligned with green accent
+ */
+function AssistantMessageView({ msg }: { msg: SDKMessage }) {
+  const content = extractAssistantContent(msg);
+  const toolUses = extractToolUses(msg);
+  const usage = extractUsage(msg);
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-start gap-2">
+        <div className="w-1 self-stretch bg-green-500 rounded-full shrink-0" />
+        <div className="flex-1 min-w-0">
+          {/* Main text content */}
+          {content && (
+            <div className="text-gray-200">
+              <FormattedText text={content} />
+            </div>
+          )}
+
+          {/* Tool uses */}
+          {toolUses.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {toolUses.map((tool, i) => (
+                <div key={i} className="text-xs bg-slate-800 rounded px-2 py-1 text-gray-400">
+                  <span className="text-purple-400">{tool.name}</span>
+                  <details className="inline ml-2">
+                    <summary className="cursor-pointer hover:text-gray-300">input</summary>
+                    <pre className="mt-1 text-gray-500 whitespace-pre-wrap break-words overflow-x-auto">
+                      {JSON.stringify(tool.input, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Usage info (small) */}
+          {usage && (
+            <div className="mt-1 text-xs text-gray-600">
+              {usage.input_tokens !== undefined && `in: ${usage.input_tokens}`}
+              {usage.output_tokens !== undefined && ` / out: ${usage.output_tokens}`}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Extract text content from assistant message
+ */
+function extractAssistantContent(msg: SDKMessage): string {
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as AssistantMessage;
+    if (Array.isArray(message.content)) {
+      return extractTextFromContentBlocks(message.content);
+    }
+  }
+  return '';
+}
+
+/**
+ * Extract text from content blocks array
+ */
+function extractTextFromContentBlocks(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((block): block is TextBlock => block.type === 'text')
+    .map(block => block.text)
+    .join('\n');
+}
+
+/**
+ * Extract tool uses from assistant message
+ */
+function extractToolUses(msg: SDKMessage): { name: string; input: unknown }[] {
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as AssistantMessage;
+    if (Array.isArray(message.content)) {
+      return message.content
+        .filter((block): block is ToolUseBlock => block.type === 'tool_use')
+        .map(block => ({ name: block.name, input: block.input }));
+    }
+  }
+  return [];
+}
+
+/**
+ * Extract usage info from assistant message
+ */
+function extractUsage(msg: SDKMessage): { input_tokens?: number; output_tokens?: number } | null {
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as AssistantMessage;
+    if (message.usage) {
+      return message.usage;
+    }
+  }
+  return null;
+}
+
+/**
+ * Render result message - compact summary
+ */
+function ResultMessageView({ msg }: { msg: ResultMessage }) {
+  const isError = msg.is_error;
+  const bgColor = isError ? 'bg-red-900/30' : 'bg-slate-800';
+  const borderColor = isError ? 'border-red-700' : 'border-slate-700';
+
+  return (
+    <div className={`mb-3 p-2 rounded ${bgColor} border ${borderColor}`}>
+      <div className="flex items-center justify-between text-xs">
+        <span className={isError ? 'text-red-400' : 'text-yellow-400'}>
+          {isError ? 'Error' : 'Completed'}
+          {msg.subtype && ` (${msg.subtype})`}
+        </span>
+        <div className="flex gap-3 text-gray-500">
+          {msg.num_turns !== undefined && (
+            <span>{msg.num_turns} turn{msg.num_turns !== 1 ? 's' : ''}</span>
+          )}
+          {msg.duration_ms !== undefined && (
+            <span>{(msg.duration_ms / 1000).toFixed(1)}s</span>
+          )}
+          {msg.total_cost_usd !== undefined && (
+            <span>${msg.total_cost_usd.toFixed(4)}</span>
+          )}
+        </div>
+      </div>
+      {msg.usage && (
+        <div className="text-xs text-gray-600 mt-1">
+          Tokens: {msg.usage.input_tokens ?? 0} in / {msg.usage.output_tokens ?? 0} out
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render system message - collapsible
+ */
+function SystemMessageView({ msg }: { msg: SystemInitMessage }) {
+  return (
+    <div className="mb-2 text-xs">
+      <details>
+        <summary className="cursor-pointer text-gray-500 hover:text-gray-400">
+          System: {msg.subtype ?? 'init'}
+          {msg.model && <span className="ml-2 text-gray-600">({msg.model})</span>}
+        </summary>
+        <div className="mt-1 pl-4 text-gray-600">
+          {msg.session_id && <div>Session: {msg.session_id}</div>}
+          <details className="mt-1">
+            <summary className="cursor-pointer hover:text-gray-500">Full details</summary>
+            <pre className="mt-1 whitespace-pre-wrap break-words overflow-x-auto">
+              {JSON.stringify(msg, null, 2)}
+            </pre>
+          </details>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/**
+ * Format text with basic support for code blocks and line breaks.
+ * This is a simple implementation - not full Markdown.
+ */
+function FormattedText({ text }: { text: string }) {
+  // Split by code blocks (```...```)
+  const parts = text.split(/(```[\s\S]*?```)/);
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('```') && part.endsWith('```')) {
+          // Code block
+          const content = part.slice(3, -3);
+          // Extract language hint if present
+          const newlineIndex = content.indexOf('\n');
+          const hasLang = newlineIndex > 0 && newlineIndex < 20 && !content.slice(0, newlineIndex).includes(' ');
+          const lang = hasLang ? content.slice(0, newlineIndex) : '';
+          const code = hasLang ? content.slice(newlineIndex + 1) : content;
+
+          return (
+            <pre key={i} className="my-2 p-2 bg-slate-900 rounded text-sm overflow-x-auto">
+              {lang && <div className="text-xs text-gray-500 mb-1">{lang}</div>}
+              <code className="text-gray-300">{code}</code>
+            </pre>
+          );
+        }
+
+        // Regular text - preserve line breaks
+        return (
+          <span key={i} className="whitespace-pre-wrap break-words">
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
 }

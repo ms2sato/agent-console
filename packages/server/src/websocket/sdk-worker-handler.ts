@@ -80,6 +80,7 @@ export async function handleSdkWorkerMessage(
   runQuery: (workerId: string, prompt: string) => Promise<void>,
   cancelQuery: (workerId: string) => void,
   restoreMessages?: () => Promise<SDKMessage[] | null>,
+  persistMessage?: (message: SDKMessage) => Promise<void>,
 ): Promise<void> {
   try {
     const parsed: SdkWorkerClientMessage = JSON.parse(message);
@@ -95,6 +96,30 @@ export async function handleSdkWorkerMessage(
           sendMessage(ws, { type: 'error', message: 'Worker is busy' });
           return;
         }
+
+        // Create user message in SDKMessage format
+        const userMessage: SDKMessage = {
+          type: 'user',
+          uuid: crypto.randomUUID(),
+          message: {
+            role: 'user',
+            content: parsed.content,
+          },
+        };
+
+        // Store user message in memory
+        worker.messages.push(userMessage);
+
+        // Persist user message to file
+        if (persistMessage) {
+          persistMessage(userMessage).catch((err) => {
+            log.error({ sessionId, workerId, err }, 'Failed to persist user message');
+          });
+        }
+
+        // Broadcast user message to connected clients
+        sendMessage(ws, { type: 'sdk-message', message: userMessage });
+
         // Run query in background (don't await - it streams messages via callbacks)
         runQuery(workerId, parsed.content).catch((err) => {
           log.error({ sessionId, workerId, err }, 'SDK query error');

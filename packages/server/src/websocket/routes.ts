@@ -742,6 +742,9 @@ export async function setupWebSocketRoutes(
                 }
               },
               () => sessionManager.restoreSdkWorkerMessages(sessionId, workerId),
+              async (message) => {
+                await sdkMessageFileManager.appendMessage(sessionId, workerId, message);
+              },
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling SDK worker message');
             });
