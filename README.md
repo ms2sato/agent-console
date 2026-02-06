@@ -59,6 +59,27 @@ The development server runs at:
 - Frontend: http://localhost:5173
 - Backend: http://localhost:3457
 
+### Environment Configuration
+
+When running multiple development instances (e.g., in different git worktrees), you can use a `.env` file to avoid port and data conflicts.
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env with your settings
+```
+
+Available variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3457` | Backend server port |
+| `CLIENT_PORT` | `5173` | Frontend dev server port |
+| `AGENT_CONSOLE_HOME` | `~/.agent-console-dev` | Data directory (DB, outputs) |
+
+Bun automatically loads `.env` files - no additional packages required.
+
 ### Build
 
 ```bash
