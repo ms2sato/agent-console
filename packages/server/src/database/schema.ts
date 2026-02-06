@@ -136,6 +136,8 @@ export interface AgentsTable {
   updated_at: Generated<string>;
   /** JSON-serialized activity patterns (optional) */
   activity_patterns: string | null;
+  /** Agent type identifier (e.g., 'claude-code', 'gemini', 'codex', 'unknown') (added in v8) */
+  agent_type: string;
 }
 
 /** Agent row as returned from SELECT queries */

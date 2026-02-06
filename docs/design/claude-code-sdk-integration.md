@@ -78,7 +78,25 @@ Worker
 └── GitDiffWorker (file watcher)    → unchanged
 ```
 
-During migration, both PTY-based and SDK-based agent workers should coexist. The agent definition could specify which mode to use.
+During migration, both PTY-based and SDK-based agent workers should coexist.
+
+### SDK Mode Availability
+
+SDK mode is only available for agents with `agentType === 'claude-code'`. This is enforced at the UI layer:
+
+- **QuickSessionForm**: The "Use SDK Mode" checkbox is only displayed when the selected agent has `agentType: 'claude-code'`
+- **Other agents**: Only PTY mode is available
+
+The `agentType` field identifies the underlying CLI tool:
+
+| agentType | SDK Mode | Description |
+|-----------|----------|-------------|
+| `'claude-code'` | Available | Claude Code CLI (`@anthropic-ai/claude-agent-sdk`) |
+| `'gemini'` | Not available | Gemini CLI |
+| `'codex'` | Not available | OpenAI Codex CLI |
+| `'unknown'` (default) | Not available | Custom or unspecified agent |
+
+See [custom-agent-design.md](./custom-agent-design.md) for the full `AgentDefinition` type.
 
 ## SDK Worker Lifecycle
 

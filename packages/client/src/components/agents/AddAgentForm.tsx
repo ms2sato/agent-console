@@ -34,6 +34,7 @@ export function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
     const askingPatterns = parseAskingPatterns(data.askingPatternsInput);
     registerMutation.mutate({
       name: data.name,
+      agentType: data.agentType,
       commandTemplate: data.commandTemplate,
       continueTemplate: data.continueTemplate || undefined,
       headlessTemplate: data.headlessTemplate || undefined,

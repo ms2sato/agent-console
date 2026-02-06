@@ -22,7 +22,7 @@ describe('SqliteAgentRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create agents table (v2 schema)
+    // Create agents table (v8 schema with agent_type)
     await db.schema
       .createTable('agents')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -35,6 +35,7 @@ describe('SqliteAgentRepository', () => {
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('activity_patterns', 'text')
+      .addColumn('agent_type', 'text', (col) => col.notNull().defaultTo('unknown'))
       .execute();
 
     repository = new SqliteAgentRepository(db);
@@ -325,6 +326,7 @@ describe('SqliteAgentRepository', () => {
           created_at: now,
           updated_at: now,
           activity_patterns: null,
+          agent_type: 'unknown',
         })
         .execute();
 

@@ -9,6 +9,36 @@ export type {
   UpdateAgentRequest,
 } from '../schemas/agent.js';
 
+// === AgentType Definition ===
+
+/**
+ * Single Source of Truth for agent types.
+ * Maps agent type identifiers to their human-readable labels.
+ * Add new agent types here - the type and array are derived from this object.
+ */
+export const AGENT_TYPE_LABELS = {
+  'claude-code': 'Claude Code',
+  'gemini': 'Gemini CLI',
+  'codex': 'Codex CLI',
+  'unknown': 'Unknown',
+} as const;
+
+/**
+ * Agent type identifier - identifies the underlying CLI tool.
+ * Used to enable agent-specific features (e.g., SDK mode for Claude Code).
+ */
+export type AgentType = keyof typeof AGENT_TYPE_LABELS;
+
+/**
+ * Array of all valid agent types. Derived from AGENT_TYPE_LABELS.
+ */
+export const AGENT_TYPES = Object.keys(AGENT_TYPE_LABELS) as AgentType[];
+
+/**
+ * Default agent type for custom agents when not specified.
+ */
+export const DEFAULT_AGENT_TYPE: AgentType = 'unknown';
+
 /**
  * Agent definition - stored and managed by AgentManager
  */
@@ -18,6 +48,13 @@ export interface AgentDefinition {
   description?: string;
   isBuiltIn: boolean;
   createdAt: string;
+
+  /**
+   * Agent type identifier - identifies the underlying CLI tool.
+   * Used to enable agent-specific features (e.g., SDK mode for Claude Code).
+   * Optional for backward compatibility - defaults to 'unknown' at persistence layer.
+   */
+  agentType?: AgentType;
 
   // === Templates ===
 

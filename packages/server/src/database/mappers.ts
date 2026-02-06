@@ -1,5 +1,5 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns } from '@agent-console/shared';
-import { computeCapabilities } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, AgentType } from '@agent-console/shared';
+import { computeCapabilities, DEFAULT_AGENT_TYPE } from '@agent-console/shared';
 import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow } from './schema.js';
 import type {
   PersistedSession,
@@ -329,6 +329,7 @@ export function toAgentRow(agent: AgentDefinition): NewAgent {
     created_at: agent.createdAt,
     updated_at: now,
     activity_patterns: agent.activityPatterns ? JSON.stringify(agent.activityPatterns) : null,
+    agent_type: agent.agentType ?? DEFAULT_AGENT_TYPE,
   };
 }
 
@@ -360,6 +361,7 @@ export function toAgentDefinition(row: AgentRow): AgentDefinition {
     isBuiltIn: row.is_built_in === 1,
     createdAt: row.created_at ?? new Date().toISOString(),
     activityPatterns,
+    agentType: row.agent_type as AgentType,
   };
 
   return {

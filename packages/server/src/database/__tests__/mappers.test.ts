@@ -637,6 +637,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        agent_type: 'unknown',
       };
 
       const agent = toAgentDefinition(row);
@@ -650,6 +651,7 @@ describe('mappers', () => {
       expect(agent.isBuiltIn).toBe(false);
       expect(agent.createdAt).toBe('2024-04-01T12:00:00.000Z');
       expect(agent.activityPatterns).toBeUndefined();
+      expect(agent.agentType).toBe('unknown');
     });
 
     it('should parse activityPatterns JSON', () => {
@@ -666,6 +668,7 @@ describe('mappers', () => {
         activity_patterns: JSON.stringify({
           askingPatterns: ['^Ask:', '^Input:'],
         }),
+        agent_type: 'unknown',
       };
 
       const agent = toAgentDefinition(row);
@@ -687,6 +690,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        agent_type: 'unknown',
       };
 
       const agentWithBoth = toAgentDefinition(rowWithBoth);
@@ -705,6 +709,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        agent_type: 'unknown',
       };
 
       const agentWithout = toAgentDefinition(rowWithout);

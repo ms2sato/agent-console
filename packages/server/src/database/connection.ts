@@ -199,6 +199,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 7) {
     await migrateToV7(database);
   }
+
+  if (currentVersion < 8) {
+    await migrateToV8(database);
+  }
 }
 
 /**
@@ -471,6 +475,25 @@ async function migrateToV7(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 7`.execute(database);
 
   logger.info('Migration to v7 completed');
+}
+
+/**
+ * Migration v8: Add agent_type column to agents table.
+ * Identifies the underlying CLI tool (e.g., 'claude-code', 'gemini', 'codex', 'unknown').
+ * Used to enable agent-specific features like SDK mode for Claude Code.
+ */
+async function migrateToV8(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v8: Adding agent_type column to agents');
+
+  await database.schema
+    .alterTable('agents')
+    .addColumn('agent_type', 'text', (col) => col.notNull().defaultTo('unknown'))
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 8`.execute(database);
+
+  logger.info('Migration to v8 completed');
 }
 
 /**
