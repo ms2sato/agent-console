@@ -121,6 +121,18 @@ bun run typecheck  # Type check all packages
 bun run lint       # Lint all packages
 ```
 
+**Before starting `bun run dev`:** Check `.env` for port configuration. Each worktree may use different ports to avoid conflicts:
+
+```bash
+cat .env  # Check PORT and CLIENT_PORT values
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 3457 | Backend server port |
+| `CLIENT_PORT` | 5173 | Frontend dev server port |
+| `AGENT_CONSOLE_HOME` | ~/.agent-console-dev | Data directory |
+
 ## Claude Code on the Web (Remote Environment)
 
 When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook (`.claude/hooks/gh-setup.sh`). The following setup is required in the Claude Code Web custom environment:
