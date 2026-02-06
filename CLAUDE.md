@@ -150,6 +150,26 @@ Monorepo with Bun workspaces:
 - Define shared types in `packages/shared`.
 - Always use `async/await`. Avoid fire-and-forget patterns (calling async functions without awaiting). See frontend-standards and backend-standards for detailed rules.
 
+## TypeScript Idioms
+
+### Enum-like definitions with labels
+
+When defining a set of related constants that need display labels (for UI, logs, etc.), define the labeled object first and derive the type from it:
+
+```typescript
+// ✅ Good: Object is Single Source of Truth
+const STATUS_LABELS = {
+  'pending': 'Pending',
+  'active': 'Active',
+  'completed': 'Completed',
+} as const;
+type Status = keyof typeof STATUS_LABELS;
+
+// ❌ Avoid: Type and labels defined separately (can drift)
+type Status = 'pending' | 'active' | 'completed';
+const STATUS_LABELS: Record<Status, string> = { ... };
+```
+
 ## Schema Validation (Valibot)
 
 **Always add `minLength(1)` before regex validation.** When an empty string reaches a regex, it fails with a confusing error message (e.g., "Invalid branch name" instead of "Branch name is required"). Users cannot understand what to fix.
