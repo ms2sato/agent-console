@@ -251,14 +251,19 @@ For initial "working state", render messages as simple formatted text:
 - [x] WebSocket handlers (user-message, cancel, request-history with uuid cursor)
 - [x] Database persistence (sdk_session_id column, migration v7)
 - [x] JSONL message file persistence (`SdkMessageFileManager`)
+- [x] User message persistence with SDK-compatible schema (`SdkUserMessageSchema`)
+
+### Done (Frontend)
+- [x] `SdkWorkerView` component with chat UI
+- [x] WebSocket connection hook (`useSdkWorkerWebSocket`)
+- [x] SDK Worker creation UI (Quick Start "Use SDK Mode" option)
+- [x] Message type-specific rendering (user, assistant, system, result)
+- [x] Connection status propagation (`onStatusChange` callback)
 
 ### Not Yet Implemented
 - [ ] AskUserQuestion hook interception (PreToolUse block pattern)
-- [ ] Frontend: `MessageInput` shared component extraction
-- [ ] Frontend: `SdkWorkerView` component
-- [ ] Frontend: WebSocket connection hook for SDK workers
-- [ ] Frontend: IndexedDB caching for SDK messages
-- [ ] Frontend: SDK Worker creation UI option
+- [ ] Frontend: `MessageInput` shared component extraction (low priority, refactoring)
+- [ ] Frontend: IndexedDB caching for SDK messages (low priority, performance optimization)
 
 ## Constraints and Risks
 
