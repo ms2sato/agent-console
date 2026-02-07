@@ -11,8 +11,14 @@ bun install
 
 echo "==> Installing plist..."
 COMMAND_PATH=$(which bun)
-PORT=${PORT:-6340}
+DEFAULT_PORT=$((6000 + $(id -u) % 1000))
+PORT=${PORT:-$DEFAULT_PORT}
 APP_URL=${APP_URL:-"http://localhost:$PORT"}
+
+echo ""
+echo "  Port: $PORT"
+echo "  URL:  $APP_URL"
+echo ""
 sed -e "s|{{HOME}}|$HOME|g" \
     -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
     -e "s|{{PORT}}|$PORT|g" \
