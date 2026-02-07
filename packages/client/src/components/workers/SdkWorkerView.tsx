@@ -98,7 +98,7 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
     onStatusChange?.(isConnected ? 'connected' : 'disconnected');
   }, [onStatusChange]);
 
-  const { sendUserMessage, requestHistory, error: wsError } = useSdkWorkerWebSocket(
+  const { sendUserMessage, cancelQuery, requestHistory, error: wsError } = useSdkWorkerWebSocket(
     sessionId,
     workerId,
     {
@@ -159,7 +159,7 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
           </div>
         ) : (
           <div className="space-y-2">
-            {messages.map((msg, index) => renderMessage(msg, index))}
+            {renderGroupedMessages(messages, sending)}
             <div ref={messagesEndRef} />
           </div>
         )}
@@ -168,6 +168,7 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
       {/* Input area */}
       <MessageInput
         onSend={handleSend}
+        onStop={cancelQuery}
         placeholder="Send message to SDK worker... (Ctrl+Enter to send)"
         disabled={!connected}
         sending={sending}
@@ -177,40 +178,288 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
 }
 
 /**
- * Render a single SDK message with appropriate formatting based on type.
+ * Group messages into conversation turns and render them.
+ * Each turn: user message → assistant messages (processing) → result
+ * All processing steps within a turn are grouped into a single collapsible section.
  */
-function renderMessage(msg: SDKMessage, index: number): React.ReactNode {
-  // Skip stream events for cleaner display
-  if (msg.type === 'stream_event') {
-    return null;
+function renderGroupedMessages(messages: SDKMessage[], isProcessing: boolean): React.ReactNode[] {
+  const result: React.ReactNode[] = [];
+  let i = 0;
+
+  // Find the last user message index to determine which turn is "current"
+  let lastUserMessageIndex = -1;
+  for (let j = messages.length - 1; j >= 0; j--) {
+    const m = messages[j];
+    if (m.type === 'user' && !isToolResultMessage(m)) {
+      const content = extractUserContent(m);
+      if (content.trim()) {
+        lastUserMessageIndex = j;
+        break;
+      }
+    }
   }
 
-  const key = msg.uuid ?? index;
+  while (i < messages.length) {
+    const msg = messages[i];
 
-  switch (msg.type) {
-    case 'user':
-      return <UserMessage key={key} msg={msg} />;
-    case 'assistant':
-      return <AssistantMessageView key={key} msg={msg} />;
-    case 'result':
-      return <ResultMessageView key={key} msg={msg as ResultMessage} />;
-    case 'system':
-      return <SystemMessageView key={key} msg={msg as SystemInitMessage} />;
-    default:
-      // Fallback for unknown message types
-      return (
-        <div key={key} className="p-2 text-xs text-gray-500">
-          <details>
-            <summary className="cursor-pointer hover:text-gray-400">
-              {msg.type} message
-            </summary>
-            <pre className="mt-1 text-gray-600 whitespace-pre-wrap break-words">
-              {JSON.stringify(msg, null, 2)}
-            </pre>
-          </details>
-        </div>
+    // Skip stream events
+    if (msg.type === 'stream_event') {
+      i++;
+      continue;
+    }
+
+    // Handle system messages independently
+    if (msg.type === 'system') {
+      result.push(<SystemMessageView key={msg.uuid ?? i} msg={msg as SystemInitMessage} />);
+      i++;
+      continue;
+    }
+
+    // Handle user messages - start of a conversation turn
+    if (msg.type === 'user') {
+      // Skip tool result messages
+      if (isToolResultMessage(msg)) {
+        i++;
+        continue;
+      }
+      // Skip empty user messages
+      const content = extractUserContent(msg);
+      if (!content.trim()) {
+        i++;
+        continue;
+      }
+
+      // Track if this is the last (current) user message turn
+      const isCurrentTurn = i === lastUserMessageIndex;
+
+      // Render user message
+      result.push(<UserMessage key={msg.uuid ?? `user-${i}`} msg={msg} />);
+      i++;
+
+      // Collect all assistant messages until result or next real user message
+      // Skip system messages, tool result user messages, and stream events
+      const assistantMessages: SDKMessage[] = [];
+      const interstitialSystemMessages: SDKMessage[] = [];
+      while (i < messages.length) {
+        const nextMsg = messages[i];
+        if (nextMsg.type === 'assistant') {
+          assistantMessages.push(nextMsg);
+          i++;
+        } else if (nextMsg.type === 'user' && isToolResultMessage(nextMsg)) {
+          // Skip tool result user messages
+          i++;
+        } else if (nextMsg.type === 'stream_event') {
+          i++;
+        } else if (nextMsg.type === 'system') {
+          // Collect system messages that appear during the turn
+          interstitialSystemMessages.push(nextMsg);
+          i++;
+        } else if (nextMsg.type === 'user') {
+          // Real user message - check if it's empty
+          const content = extractUserContent(nextMsg);
+          if (!content.trim()) {
+            i++;
+            continue;
+          }
+          break; // Non-empty user message ends this turn
+        } else {
+          break;
+        }
+      }
+
+      // Render any system messages that appeared during processing (usually none)
+      for (const sysMsg of interstitialSystemMessages) {
+        result.push(<SystemMessageView key={sysMsg.uuid ?? `sys-${result.length}`} msg={sysMsg as SystemInitMessage} />);
+      }
+
+      // Check if this turn has a result
+      const hasResult = i < messages.length && messages[i].type === 'result';
+
+      // Mark as "in progress" only if:
+      // 1. This is the current (last) turn
+      // 2. We're actively processing
+      // 3. This turn has no result yet
+      const turnInProgress = isCurrentTurn && isProcessing && !hasResult;
+
+      if (assistantMessages.length > 0) {
+        result.push(
+          <GroupedAssistantResponse
+            key={`response-${msg.uuid ?? i}`}
+            assistantMessages={assistantMessages}
+            inProgress={turnInProgress}
+          />
+        );
+      } else if (turnInProgress) {
+        // No assistant messages yet but we're processing - show processing indicator
+        result.push(<ProcessingIndicator key={`processing-${msg.uuid ?? i}`} />);
+      }
+
+      // Render result message if present
+      if (hasResult) {
+        result.push(<ResultMessageView key={messages[i].uuid ?? `result-${i}`} msg={messages[i] as ResultMessage} />);
+        i++;
+      }
+
+      continue;
+    }
+
+    // Handle orphan assistant messages (no preceding user message)
+    if (msg.type === 'assistant') {
+      result.push(
+        <GroupedAssistantResponse
+          key={`orphan-${msg.uuid ?? i}`}
+          assistantMessages={[msg]}
+        />
       );
+      i++;
+      continue;
+    }
+
+    // Handle orphan result messages
+    if (msg.type === 'result') {
+      result.push(<ResultMessageView key={msg.uuid ?? i} msg={msg as ResultMessage} />);
+      i++;
+      continue;
+    }
+
+    // Fallback for unknown message types
+    result.push(
+      <div key={msg.uuid ?? i} className="p-2 text-xs text-gray-500">
+        <details>
+          <summary className="cursor-pointer hover:text-gray-400">
+            {msg.type} message
+          </summary>
+          <pre className="mt-1 text-gray-600 whitespace-pre-wrap break-words">
+            {JSON.stringify(msg, null, 2)}
+          </pre>
+        </details>
+      </div>
+    );
+    i++;
   }
+
+  return result;
+}
+
+/**
+ * Processing indicator shown when waiting for assistant response
+ */
+function ProcessingIndicator() {
+  return (
+    <div className="mb-3">
+      <div className="flex items-start gap-2">
+        <div className="w-1 self-stretch bg-green-500 rounded-full shrink-0 animate-pulse" />
+        <div className="flex-1 min-w-0">
+          <div className="text-xs bg-slate-800/50 rounded border border-slate-700 px-2 py-1 text-gray-500 flex items-center gap-2">
+            <span className="inline-block w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full animate-spin" />
+            <span>Processing...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Render grouped assistant response - combines all assistant messages into one view
+ * with a single collapsible Processing section and the final text answer.
+ */
+function GroupedAssistantResponse({ assistantMessages, inProgress = false }: { assistantMessages: SDKMessage[]; inProgress?: boolean }) {
+  // Collect all processing steps from all assistant messages
+  const allThinkingBlocks: string[] = [];
+  const allToolUses: { name: string; input: unknown }[] = [];
+  const textParts: string[] = [];
+
+  for (const msg of assistantMessages) {
+    allThinkingBlocks.push(...extractThinkingBlocks(msg));
+    allToolUses.push(...extractToolUses(msg));
+    const text = extractAssistantContent(msg);
+    if (text.trim()) {
+      textParts.push(text);
+    }
+  }
+
+  const hasProcessing = allThinkingBlocks.length > 0 || allToolUses.length > 0;
+  const finalText = textParts.join('\n\n');
+  const hasTextContent = finalText.trim().length > 0;
+
+  // Build processing summary
+  const processingSummary = buildProcessingSummary(allThinkingBlocks, allToolUses);
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-start gap-2">
+        <div className={`w-1 self-stretch bg-green-500 rounded-full shrink-0 ${inProgress ? 'animate-pulse' : ''}`} />
+        <div className="flex-1 min-w-0">
+          {/* Single Processing section for ALL intermediate steps */}
+          {hasProcessing && (
+            <details className="mb-2 text-xs bg-slate-800/50 rounded border border-slate-700">
+              <summary className="cursor-pointer px-2 py-1 text-gray-500 hover:text-gray-400 select-none flex items-center gap-2">
+                {inProgress && (
+                  <span className="inline-block w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full animate-spin" />
+                )}
+                <span>{processingSummary}{inProgress ? '...' : ''}</span>
+              </summary>
+              <div className="px-2 py-1 border-t border-slate-700 space-y-2 max-h-60 overflow-y-auto">
+                {/* Thinking blocks */}
+                {allThinkingBlocks.map((thinking, i) => (
+                  <div key={`thinking-${i}`} className="text-gray-400">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-1">Thinking</div>
+                    <div className="whitespace-pre-wrap break-words">{thinking}</div>
+                  </div>
+                ))}
+                {/* Tool uses */}
+                {allToolUses.map((tool, i) => (
+                  <div key={`tool-${i}`}>
+                    <div className="flex items-center gap-2 text-gray-500 text-[10px] uppercase tracking-wide mb-1">
+                      <span className="text-purple-400">{tool.name}</span>
+                      {getToolSummary(tool.name, tool.input) && (
+                        <span className="normal-case text-gray-600">{getToolSummary(tool.name, tool.input)}</span>
+                      )}
+                    </div>
+                    <pre className="text-gray-500 whitespace-pre-wrap break-words text-[11px]">
+                      {JSON.stringify(tool.input, null, 2)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          {/* Final text content - always visible */}
+          {hasTextContent && (
+            <div className="text-gray-200">
+              <FormattedText text={finalText} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Check if a user message is a tool result (not actual user input)
+ */
+function isToolResultMessage(msg: SDKMessage): boolean {
+  // Check for parent_tool_use_id (indicates this is a response to a tool)
+  if ('parent_tool_use_id' in msg && msg.parent_tool_use_id !== null) {
+    return true;
+  }
+  // Check for tool_use_result field
+  if ('tool_use_result' in msg && msg.tool_use_result !== undefined) {
+    return true;
+  }
+  // Check if message content contains tool_result blocks
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as { content?: unknown };
+    if (Array.isArray(message.content)) {
+      return message.content.some((block: unknown) =>
+        typeof block === 'object' && block !== null && (block as { type?: string }).type === 'tool_result'
+      );
+    }
+  }
+  return false;
 }
 
 /**
@@ -251,54 +500,76 @@ function extractUserContent(msg: SDKMessage): string {
   return JSON.stringify(msg, null, 2);
 }
 
+
 /**
- * Render assistant message - left-aligned with green accent
+ * Build a summary string for the processing section header
  */
-function AssistantMessageView({ msg }: { msg: SDKMessage }) {
-  const content = extractAssistantContent(msg);
-  const toolUses = extractToolUses(msg);
-  const usage = extractUsage(msg);
+function buildProcessingSummary(thinkingBlocks: string[], toolUses: { name: string; input: unknown }[]): string {
+  const parts: string[] = [];
 
-  return (
-    <div className="mb-3">
-      <div className="flex items-start gap-2">
-        <div className="w-1 self-stretch bg-green-500 rounded-full shrink-0" />
-        <div className="flex-1 min-w-0">
-          {/* Main text content */}
-          {content && (
-            <div className="text-gray-200">
-              <FormattedText text={content} />
-            </div>
-          )}
+  if (thinkingBlocks.length > 0) {
+    parts.push('Thinking');
+  }
 
-          {/* Tool uses */}
-          {toolUses.length > 0 && (
-            <div className="mt-2 space-y-1">
-              {toolUses.map((tool, i) => (
-                <div key={i} className="text-xs bg-slate-800 rounded px-2 py-1 text-gray-400">
-                  <span className="text-purple-400">{tool.name}</span>
-                  <details className="inline ml-2">
-                    <summary className="cursor-pointer hover:text-gray-300">input</summary>
-                    <pre className="mt-1 text-gray-500 whitespace-pre-wrap break-words overflow-x-auto">
-                      {JSON.stringify(tool.input, null, 2)}
-                    </pre>
-                  </details>
-                </div>
-              ))}
-            </div>
-          )}
+  // Count tool uses by name
+  const toolCounts = new Map<string, number>();
+  for (const tool of toolUses) {
+    toolCounts.set(tool.name, (toolCounts.get(tool.name) ?? 0) + 1);
+  }
 
-          {/* Usage info (small) */}
-          {usage && (
-            <div className="mt-1 text-xs text-gray-600">
-              {usage.input_tokens !== undefined && `in: ${usage.input_tokens}`}
-              {usage.output_tokens !== undefined && ` / out: ${usage.output_tokens}`}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  for (const [name, count] of toolCounts) {
+    parts.push(count > 1 ? `${name}×${count}` : name);
+  }
+
+  return parts.length > 0 ? `Processing: ${parts.join(', ')}` : 'Processing...';
+}
+
+
+/**
+ * Get a brief summary for a tool use
+ */
+function getToolSummary(name: string, input: unknown): string {
+  if (!input || typeof input !== 'object') return '';
+  const inp = input as Record<string, unknown>;
+
+  switch (name) {
+    case 'Bash':
+      return typeof inp.command === 'string' ? truncate(inp.command, 50) : '';
+    case 'Read':
+      return typeof inp.file_path === 'string' ? truncate(inp.file_path, 50) : '';
+    case 'Write':
+    case 'Edit':
+      return typeof inp.file_path === 'string' ? truncate(inp.file_path, 50) : '';
+    case 'Glob':
+      return typeof inp.pattern === 'string' ? truncate(inp.pattern, 40) : '';
+    case 'Grep':
+      return typeof inp.pattern === 'string' ? truncate(inp.pattern, 40) : '';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Truncate text with ellipsis
+ */
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen - 3) + '...';
+}
+
+/**
+ * Extract thinking blocks from assistant message
+ */
+function extractThinkingBlocks(msg: SDKMessage): string[] {
+  if (msg.message && typeof msg.message === 'object') {
+    const message = msg.message as AssistantMessage;
+    if (Array.isArray(message.content)) {
+      return message.content
+        .filter((block): block is ThinkingBlock => block.type === 'thinking')
+        .map(block => block.thinking);
+    }
+  }
+  return [];
 }
 
 /**
@@ -339,18 +610,6 @@ function extractToolUses(msg: SDKMessage): { name: string; input: unknown }[] {
   return [];
 }
 
-/**
- * Extract usage info from assistant message
- */
-function extractUsage(msg: SDKMessage): { input_tokens?: number; output_tokens?: number } | null {
-  if (msg.message && typeof msg.message === 'object') {
-    const message = msg.message as AssistantMessage;
-    if (message.usage) {
-      return message.usage;
-    }
-  }
-  return null;
-}
 
 /**
  * Render result message - compact summary

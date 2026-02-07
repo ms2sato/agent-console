@@ -3,6 +3,7 @@ import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 
 export interface MessageInputProps {
   onSend: (content: string, files?: File[]) => Promise<void>;
+  onStop?: () => void;
   placeholder?: string;
   disabled?: boolean;
   sending?: boolean;
@@ -33,6 +34,7 @@ export function validateFiles(files: { length: number; totalSize: number }): [st
 
 export function MessageInput({
   onSend,
+  onStop,
   placeholder = 'Send message... (Ctrl+Enter to send)',
   disabled = false,
   sending = false,
@@ -147,14 +149,24 @@ export function MessageInput({
           }}
         />
 
-        {/* Send button */}
-        <button
-          onClick={handleSend}
-          disabled={!canSendInternal(content, sending, files.length, disabled)}
-          className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
-        >
-          Send
-        </button>
+        {/* Send/Stop button */}
+        {sending && onStop ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="bg-red-600 hover:bg-red-500 text-white text-sm px-3 py-1 rounded shrink-0"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!canSendInternal(content, sending, files.length, disabled)}
+            className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
+          >
+            Send
+          </button>
+        )}
       </div>
 
       {/* File chips */}

@@ -38,6 +38,7 @@ export const CreateWorktreeFormSchema = v.pipe(
     baseBranch: v.optional(v.string()),
     sessionTitle: v.optional(v.string()),
     agentId: v.optional(v.string()),
+    useSdk: v.optional(v.boolean()),
   }),
   // Validate initialPrompt is required when mode is 'prompt'
   v.forward(
