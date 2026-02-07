@@ -109,15 +109,19 @@ export async function handleSdkWorkerMessage(
           { uuid: crypto.randomUUID() }
         );
 
-        // Store user message in memory
-        worker.messages.push(userMessage);
-
-        // Persist user message to file
+        // Persist user message to file first (must succeed before broadcasting)
         if (persistMessage) {
-          persistMessage(userMessage).catch((err) => {
+          try {
+            await persistMessage(userMessage);
+          } catch (err) {
             log.error({ sessionId, workerId, err }, 'Failed to persist user message');
-          });
+            sendMessage(ws, { type: 'error', message: 'Failed to save message. Please try again.' });
+            return;
+          }
         }
+
+        // Only add to memory and broadcast after successful persistence
+        worker.messages.push(userMessage);
 
         // Broadcast user message to connected clients
         sendMessage(ws, { type: 'sdk-message', message: userMessage });

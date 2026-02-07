@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { SDKMessage, AgentActivityState } from '@agent-console/shared';
-import { useSdkWorkerWebSocket, type SdkWorkerError } from '../../hooks/useSdkWorkerWebSocket';
+import { useSdkWorkerWebSocket } from '../../hooks/useSdkWorkerWebSocket';
 import { MessageInput } from '../sessions/MessageInput';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
@@ -65,7 +65,7 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
   const [lastUuid, setLastUuid] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<SdkWorkerError | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const historyRequestedRef = useRef(false);
 
@@ -80,9 +80,12 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
   }, []);
 
   // Handle message history
+  // Also reset sending flag since message-history is received on reconnect,
+  // which means any in-flight query from before server restart is no longer running
   const handleMessageHistory = useCallback((historyMessages: SDKMessage[], uuid: string | null) => {
     setMessages(historyMessages);
     setLastUuid(uuid);
+    setSending(false);
   }, []);
 
   // Handle activity state changes
@@ -91,6 +94,12 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
     setSending(state === 'active');
     onActivityChange?.(state);
   }, [onActivityChange]);
+
+  // Handle exit event - reset sending flag when worker exits unexpectedly
+  const handleExit = useCallback(() => {
+    setSending(false);
+    onStatusChange?.('exited');
+  }, [onStatusChange]);
 
   // Handle connection changes
   const handleConnectionChange = useCallback((isConnected: boolean) => {
@@ -106,13 +115,9 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
       onMessageHistory: handleMessageHistory,
       onActivity: handleActivity,
       onConnectionChange: handleConnectionChange,
+      onExit: handleExit,
     }
   );
-
-  // Sync WebSocket error state
-  useEffect(() => {
-    setError(wsError);
-  }, [wsError]);
 
   // Request history when first connected
   useEffect(() => {
@@ -130,8 +135,15 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
   // Handle sending user message
   const handleSend = useCallback(async (content: string) => {
     if (!connected || sending) return;
-    sendUserMessage(content);
-    // setSending will be set to true via onActivity callback when SDK starts working
+    try {
+      setSendError(null);
+      sendUserMessage(content);
+      // setSending will be set to true via onActivity callback when SDK starts working
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to send message';
+      setSendError(message);
+      throw err; // Re-throw to prevent MessageInput from resetting form
+    }
   }, [connected, sending, sendUserMessage]);
 
   return (
@@ -143,11 +155,11 @@ export function SdkWorkerView({ sessionId, workerId, onActivityChange, onStatusC
         </div>
       )}
 
-      {/* Error display */}
-      {error && (
+      {/* Error display - shows WebSocket errors or send errors */}
+      {(wsError || sendError) && (
         <div className="bg-red-900/50 border-b border-red-700 px-4 py-2 text-red-300 text-sm">
-          <span className="font-medium">Error:</span> {error.message}
-          {error.code && <span className="text-red-400 ml-2">({error.code})</span>}
+          <span className="font-medium">Error:</span> {wsError?.message ?? sendError}
+          {wsError?.code && <span className="text-red-400 ml-2">({wsError.code})</span>}
         </div>
       )}
 
