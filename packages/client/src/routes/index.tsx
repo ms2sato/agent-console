@@ -130,6 +130,7 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
 
 function DashboardPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [showAddSession, setShowAddSession] = useState(false);
   // Repository to unregister (for confirmation dialog)
@@ -521,7 +522,7 @@ function DashboardPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setShowAddSession(false);
-      window.open(`/sessions/${data.session.id}`, '_blank', 'noopener,noreferrer');
+      navigate({ to: `/sessions/${data.session.id}` });
     },
   });
 
