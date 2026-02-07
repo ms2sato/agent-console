@@ -20,8 +20,8 @@ afterEach(() => {
 // Mock agents response
 const mockAgentsResponse = {
   agents: [
-    { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
-    { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false },
+    { id: 'claude-code', name: 'Claude Code', isBuiltIn: true, agentType: 'claude-code' },
+    { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false, agentType: 'unknown' },
   ],
 };
 
@@ -130,6 +130,93 @@ describe('QuickSessionForm', () => {
 
       const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
       expect(submitCall[0]).toMatchObject({
+        agentId: 'custom-agent',
+      });
+    });
+
+    it('should submit with useSdk: false by default', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Submit form without checking SDK mode
+      const submitButton = screen.getByText('Start');
+      await user.click(submitButton);
+
+      // Verify onSubmit was called with useSdk: false
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: false,
+      });
+    });
+
+    it('should submit with useSdk: true when SDK mode is enabled', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Enable SDK mode
+      const sdkCheckbox = screen.getByLabelText('Use SDK Mode');
+      await user.click(sdkCheckbox);
+
+      // Submit form
+      const submitButton = screen.getByText('Start');
+      await user.click(submitButton);
+
+      // Verify onSubmit was called with useSdk: true
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: true,
+      });
+    });
+
+    it('should hide SDK checkbox when non-claude-code agent is selected', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // SDK checkbox should be visible for Claude Code
+      expect(screen.getByLabelText('Use SDK Mode')).toBeTruthy();
+
+      // Select custom agent (non-claude-code)
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'custom-agent');
+
+      // SDK checkbox should be hidden
+      expect(screen.queryByLabelText('Use SDK Mode')).toBeNull();
+
+      // Submit form
+      const submitButton = screen.getByText('Start');
+      await user.click(submitButton);
+
+      // Verify onSubmit was called with useSdk: false
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: false,
         agentId: 'custom-agent',
       });
     });

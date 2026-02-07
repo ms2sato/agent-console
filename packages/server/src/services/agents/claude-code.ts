@@ -49,6 +49,7 @@ const claudeCodeAgentBase = {
   description: 'Anthropic Claude Code - Interactive AI coding assistant',
   isBuiltIn: true,
   createdAt: new Date(0).toISOString(), // Epoch time for built-in
+  agentType: 'claude-code',
   activityPatterns: {
     askingPatterns: ASKING_PATTERNS,
   },

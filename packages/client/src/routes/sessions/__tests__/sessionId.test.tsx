@@ -6,7 +6,7 @@ import { describe, it, expect } from 'bun:test';
  */
 
 // Extracted logic from components/sessions/SessionPage.tsx
-type WorkerType = 'agent' | 'terminal' | 'git-diff';
+type WorkerType = 'agent' | 'terminal' | 'git-diff' | 'sdk';
 
 /**
  * Determines if a tab can be closed based on worker type.

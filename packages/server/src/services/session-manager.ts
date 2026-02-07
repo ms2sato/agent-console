@@ -11,6 +11,7 @@ import type {
   WorkerErrorCode,
   SessionActivationState,
   WorkerMessage,
+  SDKMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -21,6 +22,7 @@ import type {
   InternalPtyWorker,
   InternalAgentWorker,
   InternalTerminalWorker,
+  SdkWorkerCallbacks,
   WorkerCallbacks,
 } from './worker-types.js';
 import { WorkerManager } from './worker-manager.js';
@@ -49,6 +51,7 @@ import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { sdkMessageFileManager } from './sdk-message-file-manager.js';
 import type { SessionRepository } from '../repositories/index.js';
 import { JsonSessionRepository } from '../repositories/index.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
@@ -253,8 +256,9 @@ export class SessionManager {
 
       // Kill any orphan worker processes first
       for (const worker of session.workers) {
-        // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-        if (worker.type === 'git-diff' || worker.pid === null) continue;
+        // Skip git-diff/sdk workers (no process) and workers with no pid (not yet activated)
+        if (worker.type === 'git-diff' || worker.type === 'sdk') continue;
+        if (worker.pid === null) continue;
 
         if (isProcessAlive(worker.pid)) {
           try {
@@ -492,8 +496,9 @@ export class SessionManager {
 
       // Kill all workers in this session (only PTY workers have pid)
       for (const worker of session.workers) {
-        // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-        if (worker.type === 'git-diff' || worker.pid === null) continue;
+        // Skip git-diff/sdk workers (no process) and workers with no pid (not yet activated)
+        if (worker.type === 'git-diff' || worker.type === 'sdk') continue;
+        if (worker.pid === null) continue;
 
         if (isProcessAlive(worker.pid)) {
           try {
@@ -570,9 +575,10 @@ export class SessionManager {
     // Create initial workers in parallel
     // Note: Each createWorker calls persistSession internally
     const effectiveAgentId = request.agentId ?? CLAUDE_CODE_AGENT_ID;
+    const workerType = request.useSdk ? 'sdk' : 'agent';
     await Promise.all([
       this.createWorker(id, {
-        type: 'agent',
+        type: workerType,
         agentId: effectiveAgentId,
         // name is not specified; generateWorkerName will use the agent's name
       }, request.continueConversation ?? false, request.initialPrompt),
@@ -613,7 +619,7 @@ export class SessionManager {
         // Stop file watcher for git-diff workers
         stopWatching(session.locationPath);
       } else {
-        // Kill PTY for agent/terminal workers
+        // Kill PTY for agent/terminal workers, abort for SDK workers
         this.workerManager.killWorker(worker);
       }
     }
@@ -959,7 +965,7 @@ export class SessionManager {
 
     for (const session of this.sessions.values()) {
       const hasAgentWorker = Array.from(session.workers.values()).some(
-        (worker) => worker.type === 'agent' && worker.agentId === agentId
+        (worker) => (worker.type === 'agent' || worker.type === 'sdk') && worker.agentId === agentId
       );
       if (hasAgentWorker) {
         matchingSessions.push(this.toPublicSession(session));
@@ -998,7 +1004,7 @@ export class SessionManager {
 
     const workerId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
+    const agentIdForName = (request.type === 'agent' || request.type === 'sdk') ? request.agentId : undefined;
     const workerName = request.name ?? await this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
@@ -1032,6 +1038,13 @@ export class SessionManager {
         repositoryEnvVars,
       });
       worker = terminalWorker;
+    } else if (request.type === 'sdk') {
+      worker = this.workerManager.initializeSdkWorker({
+        id: workerId,
+        name: workerName,
+        createdAt,
+        agentId: request.agentId,
+      });
     } else {
       // git-diff worker (async initialization for base commit calculation)
       worker = await this.workerManager.initializeGitDiffWorker({
@@ -1049,6 +1062,11 @@ export class SessionManager {
     // This prevents race conditions where WebSocket connects before any output is buffered
     if (request.type === 'agent' || request.type === 'terminal') {
       await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId);
+    }
+
+    // Initialize messages file for SDK workers
+    if (request.type === 'sdk') {
+      await sdkMessageFileManager.initializeWorkerFile(sessionId, workerId);
     }
 
     await this.persistSession(session);
@@ -1076,8 +1094,8 @@ export class SessionManager {
     const worker = session.workers.get(workerId);
     if (!worker) return null;
 
-    // git-diff workers don't have PTY
-    if (worker.type === 'git-diff') return null;
+    // git-diff and sdk workers don't have PTY
+    if (worker.type === 'git-diff' || worker.type === 'sdk') return null;
 
     // If PTY is already active, return the worker
     if (worker.pty) {
@@ -1136,6 +1154,10 @@ export class SessionManager {
     if (worker.type === 'agent' || worker.type === 'terminal') {
       this.workerManager.killWorker(worker);
       await this.cleanupWorkerOutput(sessionId, workerId);
+    } else if (worker.type === 'sdk') {
+      this.workerManager.killWorker(worker);
+      // Clean up SDK messages file
+      await sdkMessageFileManager.clearWorkerFile(sessionId, workerId);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -1156,8 +1178,8 @@ export class SessionManager {
     return true;
   }
 
-  private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): Promise<string> {
-    if (type === 'agent') {
+  private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff' | 'sdk', agentId?: string): Promise<string> {
+    if (type === 'agent' || type === 'sdk') {
       // Get agent name from agentManager
       const agentManager = await getAgentManager();
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
@@ -1186,7 +1208,7 @@ export class SessionManager {
    */
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): string | null {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return null;
 
     return this.workerManager.attachCallbacks(worker, callbacks);
   }
@@ -1197,28 +1219,46 @@ export class SessionManager {
    */
   detachWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return false;
 
     return this.workerManager.detachCallbacks(worker, connectionId);
   }
 
+  /**
+   * Attach callbacks for a WebSocket connection to an SDK worker.
+   */
+  attachSdkWorkerCallbacks(sessionId: string, workerId: string, callbacks: SdkWorkerCallbacks): string | null {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type !== 'sdk') return null;
+    return this.workerManager.attachSdkCallbacks(worker, callbacks);
+  }
+
+  /**
+   * Detach callbacks for a specific WebSocket connection from an SDK worker.
+   */
+  detachSdkWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type !== 'sdk') return false;
+    return this.workerManager.detachSdkCallbacks(worker, connectionId);
+  }
+
   writeWorkerInput(sessionId: string, workerId: string, data: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return false;
 
     return this.workerManager.writeInput(worker, data);
   }
 
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return false;
 
     return this.workerManager.resize(worker, cols, rows);
   }
 
   getWorkerOutputBuffer(sessionId: string, workerId: string): string {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return '';
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return '';
     return this.workerManager.getOutputBuffer(worker);
   }
 
@@ -1226,6 +1266,9 @@ export class SessionManager {
     const worker = this.getWorker(sessionId, workerId);
     if (worker?.type === 'agent') {
       return this.workerManager.getActivityState(worker);
+    }
+    if (worker?.type === 'sdk') {
+      return this.workerManager.getSdkActivityState(worker);
     }
     return undefined;
   }
@@ -1245,7 +1288,7 @@ export class SessionManager {
     maxLines?: number
   ): Promise<HistoryReadResult | null> {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return null;
 
     // Use line-limited read for initial connection (fromOffset is 0 or undefined)
     if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
@@ -1262,9 +1305,40 @@ export class SessionManager {
    */
   async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return 0;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'sdk') return 0;
 
     return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
+  }
+
+  /**
+   * Restore SDK worker messages from file storage.
+   * Called lazily when a client requests message history.
+   * If messages are already in memory, returns those directly.
+   * Otherwise, reads from file and populates the worker's message array.
+   * @param sessionId Session ID
+   * @param workerId Worker ID
+   * @returns Array of SDK messages, or null if worker not found or not an SDK worker
+   */
+  async restoreSdkWorkerMessages(sessionId: string, workerId: string): Promise<SDKMessage[] | null> {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type !== 'sdk') return null;
+
+    // If messages already in memory, return those
+    if (worker.messages.length > 0) {
+      return worker.messages;
+    }
+
+    // Try to restore from file
+    const messages = await sdkMessageFileManager.readMessages(sessionId, workerId);
+    if (messages.length > 0) {
+      worker.messages = messages;
+      logger.info(
+        { sessionId, workerId, messageCount: messages.length },
+        'Restored SDK worker messages from file'
+      );
+    }
+
+    return worker.messages;
   }
 
   async restartAgentWorker(
@@ -1357,6 +1431,15 @@ export class SessionManager {
         success: false,
         errorCode: 'WORKER_NOT_FOUND',
         message: 'Git-diff workers do not support PTY restoration',
+      };
+    }
+
+    // SDK workers don't need PTY restoration (handled by sdk-worker-handler)
+    if (existingWorker.type === 'sdk') {
+      return {
+        success: false,
+        errorCode: 'WORKER_NOT_FOUND',
+        message: 'SDK workers do not support PTY restoration',
       };
     }
 
@@ -1583,6 +1666,7 @@ export class SessionManager {
       (w): w is InternalAgentWorker | InternalTerminalWorker =>
         w.type === 'agent' || w.type === 'terminal'
     );
+    // SDK workers are always "running" (no PTY hibernation concept)
     if (ptyWorkers.length === 0) return 'running';
     const hasActivePty = ptyWorkers.some((w) => w.pty !== null);
     return hasActivePty ? 'running' : 'hibernated';

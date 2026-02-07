@@ -35,6 +35,7 @@ export type {
   CreateAgentWorkerParams,
   CreateTerminalWorkerParams,
   CreateGitDiffWorkerParams,
+  CreateSdkWorkerParams,
   CreateWorkerParams,
   // API types (client can only create terminal workers)
   CreateWorkerRequest,

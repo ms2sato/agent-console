@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { AGENT_TYPES } from '../types/agent.js';
 
 // === Regex Validation Utilities ===
 
@@ -194,6 +195,7 @@ export const CreateAgentRequestSchema = v.intersect([
   AgentFieldsBaseSchema,
   v.object({
     activityPatterns: v.optional(AgentActivityPatternsSchema),
+    agentType: v.optional(v.picklist(AGENT_TYPES)),
   }),
 ]);
 
@@ -208,6 +210,7 @@ export const UpdateAgentRequestSchema = v.object({
   description: v.optional(v.pipe(v.string(), v.trim())),
   // Allow null to explicitly clear activityPatterns (PATCH semantics: null = clear, undefined = no change)
   activityPatterns: v.optional(v.nullable(AgentActivityPatternsSchema)),
+  agentType: v.optional(v.picklist(AGENT_TYPES)),
 });
 
 /**
@@ -223,6 +226,7 @@ export const AgentDefinitionSchema = v.intersect([
     createdAt: v.string(),
     activityPatterns: v.optional(AgentActivityPatternsSchema),
     capabilities: AgentCapabilitiesSchema,
+    agentType: v.optional(v.picklist(AGENT_TYPES)),
   }),
 ]);
 

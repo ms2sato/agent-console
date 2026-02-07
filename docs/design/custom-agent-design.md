@@ -374,10 +374,42 @@ function getAgentFunctions(agentId: string): AgentFunctions {
 ### AgentDefinition Type Definition
 
 ```typescript
+/**
+ * Agent type labels - Single Source of Truth.
+ * Keys identify the underlying CLI tool, values are display labels.
+ */
+const AGENT_TYPE_LABELS = {
+  'claude-code': 'Claude Code',
+  'gemini': 'Gemini CLI',
+  'codex': 'Codex CLI',
+  'unknown': 'Unknown',
+} as const;
+
+/** Agent type - derived from AGENT_TYPE_LABELS keys */
+type AgentType = keyof typeof AGENT_TYPE_LABELS;
+
+/** Array of all agent types - for iteration */
+const AGENT_TYPES = Object.keys(AGENT_TYPE_LABELS) as AgentType[];
+
+/** Default agent type for new/unspecified agents */
+const DEFAULT_AGENT_TYPE: AgentType = 'unknown';
+
 type AgentDefinition = {
   id: string;
   name: string;
   description?: string;
+
+  // === Agent Type ===
+
+  /**
+   * The type of CLI tool this agent uses.
+   * Enables tool-specific features:
+   * - 'claude-code': SDK mode available
+   * - Other types: PTY mode only
+   *
+   * Defaults to 'unknown' if omitted.
+   */
+  agentType?: AgentType;
 
   // === Templates ===
 
@@ -504,6 +536,7 @@ Custom agents MAY configure `activityPatterns.askingPatterns`, but it's optional
 {
   "id": "claude-code-builtin",
   "name": "Claude Code",
+  "agentType": "claude-code",
   "commandTemplate": "claude {{prompt}}",
   "continueTemplate": "claude -c",
   "headlessTemplate": "claude -p --output-format text {{prompt}}",
@@ -528,6 +561,21 @@ Custom agents MAY configure `activityPatterns.askingPatterns`, but it's optional
   "isBuiltIn": false
 }
 ```
+
+Note: `agentType` is omitted, so it defaults to `'unknown'`. SDK mode is not available for this agent.
+
+### Gemini CLI
+
+```json
+{
+  "name": "Gemini CLI",
+  "agentType": "gemini",
+  "commandTemplate": "gemini {{prompt}}",
+  "isBuiltIn": false
+}
+```
+
+Note: While `agentType: 'gemini'` is set for clarity, it currently has no special behavior. SDK mode is only available for `'claude-code'`.
 
 ### Cline
 
@@ -946,9 +994,15 @@ Templates are executed in the user's shell with full user privileges. This is by
 ## Implementation Checklist
 
 ### Phase 1: Core Types and Validation
-- [ ] Update `AgentDefinition` type with template fields and `capabilities` in `packages/shared`
+- [ ] Add `AgentType` type definition in `packages/shared`
+- [ ] Update `AgentDefinition` type with `agentType` field and `capabilities` in `packages/shared`
 - [ ] Add template validation to `CreateAgentRequestSchema` and `UpdateAgentRequestSchema`
 - [ ] Implement `computeCapabilities()` helper
+
+### Phase 1.5: Database Migration
+- [ ] Add v8 migration: `agent_type` column to agents table (DEFAULT 'unknown')
+- [ ] Update `AgentsTable` interface in `packages/server/src/database/schema.ts`
+- [ ] Update `toAgentRow()` and agent mappers
 
 ### Phase 2: Server-side Changes
 - [ ] Update `AgentManager` to use new format

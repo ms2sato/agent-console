@@ -1,0 +1,13 @@
+{
+  "name": "claude-code-sdk-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "basic": "bun run basic.ts",
+    "streaming": "bun run streaming.ts",
+    "structured": "bun run structured.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0"
+  }
+}

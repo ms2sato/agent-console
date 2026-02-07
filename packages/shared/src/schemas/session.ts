@@ -24,6 +24,7 @@ export const CreateWorktreeSessionRequestSchema = v.object({
   continueConversation: v.optional(v.boolean()),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
+  useSdk: v.optional(v.boolean()),
 });
 
 /**
@@ -40,6 +41,7 @@ export const CreateQuickSessionRequestSchema = v.object({
   continueConversation: v.optional(v.boolean()),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
+  useSdk: v.optional(v.boolean()),
 });
 
 /**

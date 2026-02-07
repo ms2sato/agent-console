@@ -37,6 +37,7 @@ export function EditAgentForm({ agentId, initialData, onSuccess, onCancel }: Edi
     const askingPatterns = parseAskingPatterns(data.askingPatternsInput);
     updateMutation.mutate({
       name: data.name,
+      agentType: data.agentType,
       commandTemplate: data.commandTemplate,
       // Send null to clear optional fields (server interprets null as "clear", undefined as "no change")
       continueTemplate: data.continueTemplate || null,

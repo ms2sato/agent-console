@@ -17,6 +17,7 @@ import type {
   AgentWorker,
   TerminalWorker,
   GitDiffWorker,
+  SdkWorker,
   AgentActivityState,
 } from '@agent-console/shared';
 import type {
@@ -24,6 +25,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedSdkWorker,
 } from './persistence-service.js';
 import type { PtyProvider } from '../lib/pty-provider.js';
 import type {
@@ -32,6 +34,8 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
   InternalGitDiffWorker,
+  InternalSdkWorker,
+  SdkWorkerCallbacks,
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
@@ -84,6 +88,16 @@ export interface GitDiffWorkerInitParams {
   createdAt: string;
   locationPath: string;
   baseCommit?: string;
+}
+
+/**
+ * Parameters for initializing an SDK worker.
+ */
+export interface SdkWorkerInitParams {
+  id: string;
+  name: string;
+  createdAt: string;
+  agentId: string;
 }
 
 /**
@@ -246,6 +260,29 @@ export class WorkerManager {
       name,
       createdAt,
       baseCommit: resolvedBaseCommit,
+    };
+
+    return worker;
+  }
+
+  /**
+   * Initialize an SDK worker (no PTY, uses Claude Code SDK query()).
+   */
+  initializeSdkWorker(params: SdkWorkerInitParams): InternalSdkWorker {
+    const { id, name, createdAt, agentId } = params;
+
+    const worker: InternalSdkWorker = {
+      id,
+      type: 'sdk',
+      name,
+      createdAt,
+      agentId,
+      activityState: 'unknown',
+      sdkSessionId: null,
+      abortController: null,
+      isRunning: false,
+      messages: [],
+      connectionCallbacks: new Map(),
     };
 
     return worker;
@@ -546,6 +583,19 @@ export class WorkerManager {
         case 'git-diff':
           worker = { ...base, type: 'git-diff', baseCommit: pw.baseCommit };
           break;
+        case 'sdk':
+          worker = {
+            ...base,
+            type: 'sdk',
+            agentId: pw.agentId,
+            activityState: 'unknown',
+            sdkSessionId: pw.sdkSessionId,
+            abortController: null,
+            isRunning: false,
+            messages: [],
+            connectionCallbacks: new Map(),
+          };
+          break;
         default: {
           // Exhaustive check: compile error if new worker type is added
           const _exhaustive: never = pw;
@@ -574,6 +624,8 @@ export class WorkerManager {
         return { ...base, type: 'terminal', activated: worker.pty !== null } as TerminalWorker;
       case 'git-diff':
         return { ...base, type: 'git-diff', baseCommit: worker.baseCommit } as GitDiffWorker;
+      case 'sdk':
+        return { ...base, type: 'sdk', agentId: worker.agentId } as SdkWorker;
     }
   }
 
@@ -590,6 +642,8 @@ export class WorkerManager {
         return { ...base, type: 'terminal', pid: worker.pty?.pid ?? null } as PersistedTerminalWorker;
       case 'git-diff':
         return { ...base, type: 'git-diff', baseCommit: worker.baseCommit } as PersistedGitDiffWorker;
+      case 'sdk':
+        return { ...base, type: 'sdk', agentId: worker.agentId, sdkSessionId: worker.sdkSessionId } as PersistedSdkWorker;
     }
   }
 
@@ -604,6 +658,31 @@ export class WorkerManager {
    * Get the activity state for an agent worker.
    */
   getActivityState(worker: InternalAgentWorker): AgentActivityState {
+    return worker.activityState;
+  }
+
+  // ========== SDK Worker I/O ==========
+
+  /**
+   * Attach callbacks for a WebSocket connection to an SDK worker.
+   */
+  attachSdkCallbacks(worker: InternalSdkWorker, callbacks: SdkWorkerCallbacks): string {
+    const connectionId = crypto.randomUUID();
+    worker.connectionCallbacks.set(connectionId, callbacks);
+    return connectionId;
+  }
+
+  /**
+   * Detach callbacks for a specific WebSocket connection from an SDK worker.
+   */
+  detachSdkCallbacks(worker: InternalSdkWorker, connectionId: string): boolean {
+    return worker.connectionCallbacks.delete(connectionId);
+  }
+
+  /**
+   * Get activity state for an SDK worker.
+   */
+  getSdkActivityState(worker: InternalSdkWorker): AgentActivityState {
     return worker.activityState;
   }
 
@@ -630,5 +709,15 @@ export class WorkerManager {
       }
     }
     // git-diff workers have no PTY to kill
+
+    if (worker.type === 'sdk') {
+      // Abort any running query
+      if (worker.abortController) {
+        worker.abortController.abort();
+        worker.abortController = null;
+      }
+      worker.isRunning = false;
+      worker.connectionCallbacks.clear();
+    }
   }
 }

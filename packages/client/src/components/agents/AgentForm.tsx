@@ -7,6 +7,9 @@ import {
   isValidRegex,
   isPromptQuoted,
   hasMalformedPlaceholder,
+  AGENT_TYPE_LABELS,
+  AGENT_TYPES,
+  DEFAULT_AGENT_TYPE,
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
@@ -23,6 +26,9 @@ const AgentFormSchema = v.object({
   name: AgentFieldsBaseSchema.entries.name,
   commandTemplate: AgentFieldsBaseSchema.entries.commandTemplate,
   description: AgentFieldsBaseSchema.entries.description,
+
+  // Agent type selector
+  agentType: v.optional(v.picklist(AGENT_TYPES)),
 
   // Override optional templates: allow empty string (converted to undefined on submit)
   // Non-empty strings are validated with same rules as server
@@ -115,6 +121,7 @@ export function AgentForm({
       headlessTemplate: '',
       description: '',
       askingPatternsInput: '',
+      agentType: DEFAULT_AGENT_TYPE,
     },
     mode: 'onBlur',
   });
@@ -149,6 +156,20 @@ export function AgentForm({
               placeholder="e.g., GPT/Claude pair programming tool"
               error={errors.description}
             />
+          </FormField>
+
+          <FormField label="Agent Type" error={errors.agentType}>
+            <select
+              {...register('agentType')}
+              className="bg-slate-800 border-slate-700 text-white rounded px-3 py-2 w-full"
+            >
+              {AGENT_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {AGENT_TYPE_LABELS[type]}
+                  {type === DEFAULT_AGENT_TYPE ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
           </FormField>
 
           <FormField label="Command Template" error={errors.commandTemplate}>

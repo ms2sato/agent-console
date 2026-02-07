@@ -12,8 +12,12 @@ import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
 import { getNotificationManager } from '../services/notifications/index.js';
+import type { InternalSdkWorker } from '../services/worker-types.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
+import { handleSdkWorkerConnection, handleSdkWorkerMessage, handleSdkWorkerDisconnection } from './sdk-worker-handler.js';
+import { runSdkQuery, cancelSdkQuery } from '../services/sdk-query-runner.js';
+import { sdkMessageFileManager } from '../services/sdk-message-file-manager.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -640,6 +644,31 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // Handle SDK workers differently (structured messages, no PTY)
+          if (worker.type === 'sdk') {
+            const internalWorker = sessionManager.getWorker(sessionId, workerId);
+            if (!internalWorker || internalWorker.type !== 'sdk') {
+              sendErrorAndClose(ws, 'SDK worker not found internally', 'WORKER_NOT_FOUND');
+              return;
+            }
+            handleSdkWorkerConnection(
+              ws,
+              sessionId,
+              workerId,
+              internalWorker as InternalSdkWorker,
+              (callbacks) => sessionManager.attachSdkWorkerCallbacks(sessionId, workerId, callbacks)
+            ).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error handling SDK worker connection');
+              try {
+                ws.send(JSON.stringify({ type: 'error', message: 'Connection failed' }));
+                ws.close(WS_CLOSE_CODE.INTERNAL_ERROR, 'SDK worker connection failed');
+              } catch {
+                // Ignore
+              }
+            });
+            return;
+          }
+
           // PTY-based worker handling (agent/terminal)
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
@@ -684,6 +713,49 @@ export async function setupWebSocketRoutes(
               } catch {
                 // Ignore send errors (connection may be closed)
               }
+            });
+            return;
+          }
+
+          // Handle SDK worker messages differently
+          if (worker.type === 'sdk') {
+            handleSdkWorkerMessage(
+              ws,
+              sessionId,
+              workerId,
+              data,
+              () => {
+                const w = sessionManager.getWorker(sessionId, workerId);
+                return (w && w.type === 'sdk') ? w as InternalSdkWorker : null;
+              },
+              async (wId, prompt) => {
+                const w = sessionManager.getWorker(sessionId, wId);
+                if (w && w.type === 'sdk') {
+                  const s = sessionManager.getSession(sessionId);
+                  if (s) {
+                    await runSdkQuery(w as InternalSdkWorker, prompt, s.locationPath, {
+                      globalActivityCallback: (wkId, state) => {
+                        broadcastToApp({ type: 'worker-activity', sessionId, workerId: wkId, activityState: state });
+                      },
+                      onPersistMessage: async (message) => {
+                        await sdkMessageFileManager.appendMessage(sessionId, wId, message);
+                      },
+                    });
+                  }
+                }
+              },
+              (wId) => {
+                const w = sessionManager.getWorker(sessionId, wId);
+                if (w && w.type === 'sdk') {
+                  cancelSdkQuery(w as InternalSdkWorker);
+                }
+              },
+              () => sessionManager.restoreSdkWorkerMessages(sessionId, workerId),
+              async (message) => {
+                await sdkMessageFileManager.appendMessage(sessionId, workerId, message);
+              },
+            ).catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error handling SDK worker message');
             });
             return;
           }
@@ -834,7 +906,14 @@ export async function setupWebSocketRoutes(
           const session = sessionManager.getSession(sessionId);
           const worker = session?.workers.find(w => w.id === workerId);
 
-          if (worker?.type === 'git-diff') {
+          if (worker?.type === 'sdk') {
+            handleSdkWorkerDisconnection(
+              sessionId,
+              workerId,
+              ws,
+              (connId) => sessionManager.detachSdkWorkerCallbacks(sessionId, workerId, connId)
+            );
+          } else if (worker?.type === 'git-diff') {
             // Stop file watching for git-diff workers
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff disconnection');
@@ -879,7 +958,14 @@ export async function setupWebSocketRoutes(
           const session = sessionManager.getSession(sessionId);
           const worker = session?.workers.find(w => w.id === workerId);
 
-          if (worker?.type === 'git-diff') {
+          if (worker?.type === 'sdk') {
+            handleSdkWorkerDisconnection(
+              sessionId,
+              workerId,
+              ws,
+              (connId) => sessionManager.detachSdkWorkerCallbacks(sessionId, workerId, connId)
+            );
+          } else if (worker?.type === 'git-diff') {
             // Stop file watching for git-diff workers on error
             handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error cleaning up git-diff on WebSocket error');

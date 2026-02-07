@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
+import { DEFAULT_AGENT_TYPE } from '@agent-console/shared';
 import { fetchAgent } from '../../../lib/api';
 import { EditAgentForm } from '../../../components/agents';
 import { Spinner } from '../../../components/ui/Spinner';
@@ -94,6 +95,7 @@ function AgentEditPage() {
         initialData={{
           name: agent.name,
           description: agent.description || '',
+          agentType: agent.agentType || DEFAULT_AGENT_TYPE,
           commandTemplate: agent.commandTemplate,
           continueTemplate: agent.continueTemplate || '',
           headlessTemplate: agent.headlessTemplate || '',

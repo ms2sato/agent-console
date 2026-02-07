@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { WorkerMessage } from '@agent-console/shared';
-import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
+import { MessageInput, validateFiles } from './MessageInput';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -10,38 +10,20 @@ interface MessagePanelProps {
   onError?: (title: string, message: string) => void;
 }
 
-/** Determine if the send action should be enabled. */
-export function canSend(targetWorkerId: string, content: string, sending: boolean, fileCount: number): boolean {
-  return !sending && (content.trim().length > 0 || fileCount > 0) && targetWorkerId.length > 0;
-}
-
-/** Validate file constraints before sending. Returns error [title, message] or null if valid. */
-export function validateFiles(files: { length: number; totalSize: number }): [string, string] | null {
-  if (files.length > MAX_MESSAGE_FILES) {
-    return ['Too Many Files', `Maximum ${MAX_MESSAGE_FILES} files allowed`];
-  }
-  if (files.totalSize > MAX_TOTAL_FILE_SIZE) {
-    return ['File Size Limit', `Total file size must be under ${Math.round(MAX_TOTAL_FILE_SIZE / 1024 / 1024)}MB`];
-  }
-  return null;
-}
+// Re-export for backward compatibility with existing tests
+export { canSend, validateFiles } from './MessageInput';
 
 export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }: MessagePanelProps) {
-  const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
-  const [files, setFiles] = useState<File[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Key to force MessageInput remount when target worker changes
+  const [inputKey, setInputKey] = useState(0);
 
   // Clear state when target worker changes
   useEffect(() => {
-    setContent('');
-    setFiles([]);
     setHasUnread(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
+    // Increment key to remount MessageInput and reset its internal state
+    setInputKey(prev => prev + 1);
   }, [targetWorkerId]);
 
   // Show unread indicator when new message arrives for this target worker
@@ -51,150 +33,50 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
     }
   }, [newMessage, sessionId, targetWorkerId]);
 
-  const handleResize = useCallback((textarea: HTMLTextAreaElement) => {
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
-  }, []);
+  const handleSend = useCallback(
+    async (content: string, files?: File[]) => {
+      if (!targetWorkerId || (!content.trim() && (!files || files.length === 0))) return;
 
-  const addFiles = useCallback((newFiles: FileList | File[]) => {
-    const incoming = Array.from(newFiles);
-    setFiles(prev => {
-      const combined = [...prev, ...incoming];
-      return combined.slice(0, MAX_MESSAGE_FILES);
-    });
-  }, []);
-
-  const removeFile = useCallback((index: number) => {
-    setFiles(prev => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const handleSend = useCallback(async () => {
-    if (!targetWorkerId || (!content.trim() && files.length === 0)) return;
-
-    // Client-side file validation
-    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-    const fileError = validateFiles({ length: files.length, totalSize });
-    if (fileError) {
-      onError?.(fileError[0], fileError[1]);
-      return;
-    }
-
-    setSending(true);
-    try {
-      await sendWorkerMessage(sessionId, targetWorkerId, content.trim(), files.length > 0 ? files : undefined);
-      setContent('');
-      setFiles([]);
-      setHasUnread(false);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+      // Client-side file validation
+      if (files && files.length > 0) {
+        const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+        const fileError = validateFiles({ length: files.length, totalSize });
+        if (fileError) {
+          onError?.(fileError[0], fileError[1]);
+          throw new Error(fileError[1]); // Throw to prevent form reset
+        }
       }
-    } catch (err) {
-      console.error('Failed to send message:', err);
-      onError?.('Failed to Send Message', err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setSending(false);
-    }
-  }, [sessionId, targetWorkerId, content, files, onError]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      handleSend();
-    }
-  }, [handleSend]);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files);
-    }
-  }, [addFiles]);
+      setSending(true);
+      try {
+        await sendWorkerMessage(sessionId, targetWorkerId, content.trim(), files);
+        setHasUnread(false);
+      } catch (err) {
+        console.error('Failed to send message:', err);
+        onError?.('Failed to Send Message', err instanceof Error ? err.message : 'Unknown error');
+        throw err; // Re-throw to prevent form reset in MessageInput
+      } finally {
+        setSending(false);
+      }
+    },
+    [sessionId, targetWorkerId, onError],
+  );
 
   return (
-    <div
-      className="bg-slate-800 border-t border-slate-700 px-3 py-2"
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
-      <div className="flex items-end gap-2">
-        {/* Unread indicator */}
-        {hasUnread && (
-          <span className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
-        )}
-
-        {/* Message textarea */}
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={e => {
-            setContent(e.target.value);
-            handleResize(e.target);
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder="Send message to worker... (Ctrl+Enter to send)"
-          rows={1}
-          className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"
-          style={{ maxHeight: '120px' }}
-        />
-
-        {/* Attach button */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0"
-          aria-label="Attach files"
-          title="Attach files"
-        >
-          📎
-        </button>
-
-        {/* Hidden file input */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files) addFiles(e.target.files);
-            e.target.value = '';
-          }}
-        />
-
-        {/* Send button */}
-        <button
-          onClick={handleSend}
-          disabled={!canSend(targetWorkerId, content, sending, files.length)}
-          className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
-        >
-          Send
-        </button>
-      </div>
-
-      {/* File chips */}
-      {files.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1">
-          {files.map((file, index) => (
-            <span
-              key={`${file.name}-${index}`}
-              className="inline-flex items-center gap-1 bg-slate-700 text-gray-300 text-xs rounded px-2 py-0.5"
-            >
-              {file.name}
-              <button
-                type="button"
-                onClick={() => removeFile(index)}
-                className="text-gray-500 hover:text-white"
-                aria-label={`Remove ${file.name}`}
-              >
-                ×
-              </button>
-            </span>
-          ))}
+    <div className="relative">
+      {/* Unread indicator - positioned before the input */}
+      {hasUnread && (
+        <div className="absolute left-1 top-1/2 -translate-y-1/2 z-10">
+          <span className="w-2 h-2 bg-blue-500 rounded-full block" />
         </div>
       )}
+      <MessageInput
+        key={inputKey}
+        onSend={handleSend}
+        placeholder="Send message to worker... (Ctrl+Enter to send)"
+        disabled={!targetWorkerId}
+        sending={sending}
+      />
     </div>
   );
 }

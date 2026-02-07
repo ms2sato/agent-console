@@ -743,4 +743,216 @@ describe('CreateWorktreeForm', () => {
       });
     });
   });
+
+  describe('SDK mode checkbox', () => {
+    // Mock agents with agentType
+    const mockAgentsWithType = {
+      agents: [
+        { id: 'claude-code', name: 'Claude Code', isBuiltIn: true, agentType: 'claude-code' },
+        { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false, agentType: 'custom' },
+      ],
+    };
+
+    it('should show SDK checkbox only for Claude Code agent', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsWithType));
+        }
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load - Claude Code is selected by default
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // SDK checkbox should be visible for Claude Code
+      expect(screen.getByLabelText('SDK Mode')).toBeTruthy();
+    });
+
+    it('should hide SDK checkbox for non-Claude Code agents', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsWithType));
+        }
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      });
+
+      renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Switch to custom agent using selectOptions for proper select interaction
+      const agentSelector = screen.getByRole('combobox');
+      await user.selectOptions(agentSelector, 'custom-agent');
+
+      // SDK checkbox should be hidden - wait for it to disappear
+      await waitFor(() => {
+        expect(screen.queryByLabelText('SDK Mode')).toBeNull();
+      });
+    });
+
+    it('should include useSdk in form submission when checked', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsWithType));
+        }
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      });
+
+      const { props } = renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Check the SDK checkbox
+      const sdkCheckbox = screen.getByLabelText('SDK Mode');
+      await user.click(sdkCheckbox);
+
+      // Fill in initial prompt (required)
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Test with SDK');
+
+      // Submit form
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      // Verify useSdk is true
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: true,
+      });
+    });
+
+    it('should reset useSdk to false when switching from Claude Code to another agent', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsWithType));
+        }
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      });
+
+      const { props } = renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Check the SDK checkbox
+      const sdkCheckbox = screen.getByLabelText('SDK Mode');
+      await user.click(sdkCheckbox);
+      expect((sdkCheckbox as HTMLInputElement).checked).toBe(true);
+
+      // Switch to custom agent using selectOptions for proper select interaction
+      const agentSelector = screen.getByRole('combobox');
+      await user.selectOptions(agentSelector, 'custom-agent');
+
+      // SDK checkbox should be hidden now - wait for it to disappear
+      await waitFor(() => {
+        expect(screen.queryByLabelText('SDK Mode')).toBeNull();
+      });
+
+      // Switch back to Claude Code
+      await user.selectOptions(agentSelector, 'claude-code');
+
+      // SDK checkbox should be visible again but unchecked (reset to false)
+      await waitFor(() => {
+        const newSdkCheckbox = screen.getByLabelText('SDK Mode');
+        expect((newSdkCheckbox as HTMLInputElement).checked).toBe(false);
+      });
+
+      // Fill in prompt and submit to verify useSdk is false
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Test after switching');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: false,
+      });
+    });
+
+    it('should not include useSdk: true when checkbox is unchecked', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsWithType));
+        }
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      });
+
+      const { props } = renderCreateWorktreeForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Do NOT check the SDK checkbox
+
+      // Fill in initial prompt
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Test without SDK');
+
+      // Submit form
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      // Verify useSdk is false
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        useSdk: false,
+      });
+    });
+  });
 });

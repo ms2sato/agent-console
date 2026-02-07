@@ -1,6 +1,6 @@
 export type TabLike = {
   id: string;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: 'agent' | 'terminal' | 'git-diff' | 'sdk';
 };
 
 export function isWorkerIdReady(

@@ -1,7 +1,8 @@
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useAgents } from '../AgentSelector';
 import { FormOverlay } from '../ui/Spinner';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
@@ -30,9 +31,25 @@ export function QuickSessionForm({
       type: 'quick',
       locationPath: '/tmp',
       agentId: undefined,
+      useSdk: false,
     },
     mode: 'onBlur',
   });
+
+  // Get agents list to find the selected agent's type
+  const { agents } = useAgents();
+  const agentId = watch('agentId');
+
+  // Find the selected agent (use first agent as default if none selected)
+  const selectedAgent = agents.find((a) => a.id === agentId) ?? agents[0];
+  const isClaudeCode = selectedAgent?.agentType === 'claude-code';
+
+  // Reset useSdk to false when agent changes to non-claude-code type
+  useEffect(() => {
+    if (selectedAgent && selectedAgent.agentType !== 'claude-code') {
+      setValue('useSdk', false);
+    }
+  }, [selectedAgent, setValue]);
 
   const handleFormSubmit = async (data: CreateQuickSessionRequest) => {
     try {
@@ -67,6 +84,22 @@ export function QuickSessionForm({
               className="flex-1"
             />
           </div>
+          {isClaudeCode && (
+            <div className="flex items-center gap-2">
+              <input
+                {...register('useSdk')}
+                type="checkbox"
+                id="use-sdk"
+                className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
+              />
+              <label htmlFor="use-sdk" className="text-sm text-gray-400">
+                Use SDK Mode
+              </label>
+              <span className="text-xs text-gray-500" title="Use Claude Code SDK for structured messages instead of PTY-based terminal">
+                (?)
+              </span>
+            </div>
+          )}
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
           )}

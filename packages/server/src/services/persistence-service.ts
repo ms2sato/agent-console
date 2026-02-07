@@ -43,7 +43,13 @@ export interface PersistedGitDiffWorker extends PersistedWorkerBase {
   baseCommit: string;  // No pid - runs in server process
 }
 
-export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | PersistedGitDiffWorker;
+export interface PersistedSdkWorker extends PersistedWorkerBase {
+  type: 'sdk';
+  agentId: string;
+  sdkSessionId: string | null;  // For resume capability after server restart
+}
+
+export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | PersistedGitDiffWorker | PersistedSdkWorker;
 
 interface PersistedSessionBase {
   id: string;

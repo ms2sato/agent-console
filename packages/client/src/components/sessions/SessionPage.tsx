@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, startTransition } from 'react
 import { Link, useNavigate } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
+import { SdkWorkerView } from '../workers/SdkWorkerView';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
@@ -27,7 +28,7 @@ type PageState =
 // Tab representation - links to workers
 interface Tab {
   id: string;           // Worker ID
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: 'agent' | 'terminal' | 'git-diff' | 'sdk';
   name: string;
 }
 
@@ -58,7 +59,7 @@ function findFirstAgentWorker(workers: Worker[]): AgentWorker | undefined {
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: 'agent' | 'terminal' | 'git-diff' | 'sdk';
   workerName: string;
   onRetry: () => void;
 }
@@ -66,6 +67,7 @@ interface WorkerErrorFallbackProps {
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
   const typeLabel = workerType === 'git-diff' ? 'Diff View' :
                     workerType === 'agent' ? 'Agent' :
+                    workerType === 'sdk' ? 'Agent' :
                     workerType === 'terminal' ? 'Terminal' :
                     (() => { const _exhaustive: never = workerType; return _exhaustive; })();
 
@@ -619,6 +621,13 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
           />
+        ) : activeTab.workerType === 'sdk' ? (
+          <SdkWorkerView
+            sessionId={sessionId}
+            workerId={activeTab.id}
+            onActivityChange={handleActivityChange}
+            onStatusChange={handleStatusChange}
+          />
         ) : (
           <Terminal
             sessionId={sessionId}
@@ -715,8 +724,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {formatPath(session.locationPath)}
         </span>
-        {/* Activity state indicator (only for agent tab) */}
-        {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
+        {/* Activity state indicator (only for agent/sdk tabs) */}
+        {(activeTab?.workerType === 'agent' || activeTab?.workerType === 'sdk') && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             activityState === 'asking' ? 'bg-yellow-500/20 text-yellow-400' :
             activityState === 'active' ? 'bg-blue-500/20 text-blue-400' :

@@ -209,7 +209,7 @@ const repositories = new Hono()
     }
 
     const body = c.req.valid('json');
-    const { taskId, mode, autoStartSession, agentId, initialPrompt, title } = body;
+    const { taskId, mode, autoStartSession, agentId, initialPrompt, title, useSdk } = body;
 
     // Validate agent exists before returning accepted (fail fast for invalid config)
     const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
@@ -335,6 +335,7 @@ const repositories = new Hono()
             agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
             initialPrompt,
             title: effectiveTitle,
+            useSdk,
           });
         }
 

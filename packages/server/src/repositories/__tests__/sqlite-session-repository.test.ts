@@ -56,6 +56,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('pid', 'integer')
       .addColumn('agent_id', 'text')
       .addColumn('base_commit', 'text')
+      .addColumn('sdk_session_id', 'text')
       .execute();
 
     repository = new SqliteSessionRepository(db);

@@ -12,11 +12,15 @@
 import {
   WORKER_SERVER_MESSAGE_TYPES,
   GIT_DIFF_SERVER_MESSAGE_TYPES,
+  SDK_WORKER_SERVER_MESSAGE_TYPES,
   WS_CLOSE_CODE,
   type WorkerServerMessage,
   type WorkerClientMessage,
   type GitDiffServerMessage,
   type GitDiffClientMessage,
+  type SdkWorkerServerMessage,
+  type SdkWorkerClientMessage,
+  type SDKMessage,
   type AgentActivityState,
   type GitDiffData,
   type GitDiffTarget,
@@ -80,6 +84,17 @@ function isValidGitDiffMessage(msg: unknown): msg is GitDiffServerMessage {
   return typeof type === 'string' && type in GIT_DIFF_SERVER_MESSAGE_TYPES;
 }
 
+/**
+ * Validate that a parsed message is a valid SdkWorkerServerMessage.
+ */
+function isValidSdkMessage(msg: unknown): msg is SdkWorkerServerMessage {
+  if (typeof msg !== 'object' || msg === null) {
+    return false;
+  }
+  const { type } = msg as { type?: unknown };
+  return typeof type === 'string' && type in SDK_WORKER_SERVER_MESSAGE_TYPES;
+}
+
 // Connection state for a single worker
 export interface WorkerConnectionState {
   connected: boolean;
@@ -123,7 +138,18 @@ export interface GitDiffWorkerCallbacks {
   onDiffError?: (error: string) => void;
 }
 
-type WorkerCallbacks = TerminalWorkerCallbacks | GitDiffWorkerCallbacks;
+// Callbacks for SDK workers (Claude Code SDK-based)
+export interface SdkWorkerCallbacks {
+  type: 'sdk';
+  onMessage: (message: SDKMessage) => void;
+  onActivity?: (state: AgentActivityState) => void;
+  onExit?: (exitCode: number, signal: string | null) => void;
+  onError?: (message: string, code?: WorkerErrorCode) => void;
+  onMessageHistory?: (messages: SDKMessage[], lastUuid: string | null) => void;
+  onServerRestarted?: (serverPid: number) => void;
+}
+
+type WorkerCallbacks = TerminalWorkerCallbacks | GitDiffWorkerCallbacks | SdkWorkerCallbacks;
 
 // Connection storage
 const connections = new Map<string, WorkerConnection>();
@@ -346,6 +372,38 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 }
 
 /**
+ * Handle incoming WebSocket message for SDK workers.
+ */
+function handleSdkMessage(msg: SdkWorkerServerMessage, callbacks: SdkWorkerCallbacks): void {
+  switch (msg.type) {
+    case 'sdk-message':
+      callbacks.onMessage(msg.message);
+      break;
+    case 'activity':
+      callbacks.onActivity?.(msg.state);
+      break;
+    case 'exit':
+      callbacks.onExit?.(msg.exitCode, msg.signal);
+      break;
+    case 'error':
+      callbacks.onError?.(msg.message, msg.code);
+      break;
+    case 'message-history':
+      callbacks.onMessageHistory?.(msg.messages, msg.lastUuid);
+      break;
+    case 'server-restarted':
+      callbacks.onServerRestarted?.(msg.serverPid);
+      break;
+    default: {
+      // Exhaustive check: TypeScript will error if a new message type is added
+      // but not handled in this switch statement
+      const _exhaustive: never = msg;
+      console.error('[WorkerWS] Unknown SDK message type:', _exhaustive);
+    }
+  }
+}
+
+/**
  * Set up WebSocket event handlers.
  */
 function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCallbacks): void {
@@ -381,6 +439,12 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
           return;
         }
         handleGitDiffMessage(key, parsed, currentCallbacks);
+      } else if (currentCallbacks.type === 'sdk') {
+        if (!isValidSdkMessage(parsed)) {
+          console.error('[WorkerWS] Invalid SDK message type:', parsed);
+          return;
+        }
+        handleSdkMessage(parsed, currentCallbacks);
       } else {
         if (!isValidWorkerMessage(parsed)) {
           console.error('[WorkerWS] Invalid worker message type:', parsed);
@@ -600,6 +664,48 @@ export function setTargetCommit(sessionId: string, workerId: string, ref: GitDif
 
 export function requestFileLines(sessionId: string, workerId: string, path: string, startLine: number, endLine: number, ref: GitDiffTarget): boolean {
   return sendGitDiffMessage(sessionId, workerId, { type: 'get-file-lines', path, startLine, endLine, ref });
+}
+
+/**
+ * Send a message to an SDK worker.
+ * @returns true if sent, false if not connected
+ */
+export function sendSdkMessage(sessionId: string, workerId: string, msg: SdkWorkerClientMessage): boolean {
+  const key = getConnectionKey(sessionId, workerId);
+  const conn = connections.get(key);
+
+  if (conn && conn.ws.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify(msg));
+    return true;
+  }
+  return false;
+}
+
+// Convenience methods for SDK workers
+
+/**
+ * Send a user message to an SDK worker.
+ * @returns true if sent, false if not connected
+ */
+export function sendUserMessage(sessionId: string, workerId: string, content: string): boolean {
+  return sendSdkMessage(sessionId, workerId, { type: 'user-message', content });
+}
+
+/**
+ * Cancel the current query in an SDK worker.
+ * @returns true if sent, false if not connected
+ */
+export function cancelQuery(sessionId: string, workerId: string): boolean {
+  return sendSdkMessage(sessionId, workerId, { type: 'cancel' });
+}
+
+/**
+ * Request message history from an SDK worker.
+ * @param lastUuid If specified, request only messages after this UUID (incremental sync)
+ * @returns true if sent, false if not connected
+ */
+export function requestSdkHistory(sessionId: string, workerId: string, lastUuid?: string): boolean {
+  return sendSdkMessage(sessionId, workerId, { type: 'request-history', lastUuid });
 }
 
 /**

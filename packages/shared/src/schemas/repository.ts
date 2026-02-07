@@ -50,6 +50,7 @@ const CreateWorktreeBaseSchema = v.object({
   agentId: v.optional(v.string()),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
+  useSdk: v.optional(v.boolean()),
 });
 
 /**

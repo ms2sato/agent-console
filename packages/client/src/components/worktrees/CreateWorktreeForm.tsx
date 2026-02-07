@@ -1,9 +1,9 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useAgents } from '../AgentSelector';
 import { Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
@@ -67,6 +67,7 @@ export function CreateWorktreeForm({
       baseBranch: '',
       sessionTitle: '',
       agentId: undefined,
+      useSdk: false,
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -74,6 +75,20 @@ export function CreateWorktreeForm({
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
+
+  // Get agents list to find the selected agent's type
+  const { agents } = useAgents();
+  const selectedAgentId = watch('agentId');
+  const selectedAgent = agents.find((a) => a.id === (selectedAgentId || agents[0]?.id));
+  const isClaudeCode = selectedAgent?.agentType === 'claude-code';
+
+  // Reset useSdk to false when agent changes to non-claude-code type
+  useEffect(() => {
+    if (!isClaudeCode) {
+      setValue('useSdk', false);
+    }
+  }, [isClaudeCode, setValue]);
+
   const issueFieldId = useId();
   const issueErrorId = `${issueFieldId}-error`;
   const lastFetchedIssue = useRef<string | null>(null);
@@ -168,6 +183,7 @@ export function CreateWorktreeForm({
           agentId: data.agentId,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
+          useSdk: data.useSdk,
         };
       case 'custom':
         return {
@@ -179,6 +195,7 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
+          useSdk: data.useSdk,
         };
       case 'existing':
         return {
@@ -188,6 +205,7 @@ export function CreateWorktreeForm({
           agentId: data.agentId,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
+          useSdk: data.useSdk,
         };
     }
     // Exhaustiveness check - compile error if new mode is added
@@ -228,6 +246,16 @@ export function CreateWorktreeForm({
                 value={watch('agentId')}
                 onChange={(value) => setValue('agentId', value)}
               />
+              {isClaudeCode && (
+                <label className="flex items-center gap-1 text-sm text-gray-400 ml-4">
+                  <input
+                    type="checkbox"
+                    {...register('useSdk')}
+                    className="rounded border-gray-600 bg-slate-700"
+                  />
+                  <span>SDK Mode</span>
+                </label>
+              )}
             </div>
             <button
               type="button"

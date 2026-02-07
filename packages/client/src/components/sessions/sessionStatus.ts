@@ -1,7 +1,7 @@
 import type { ConnectionStatus } from '../Terminal';
 import type { AgentActivityState } from '@agent-console/shared';
 
-type WorkerType = 'agent' | 'terminal' | 'git-diff';
+type WorkerType = 'agent' | 'terminal' | 'git-diff' | 'sdk';
 
 function getNonAgentStatusColor(status: ConnectionStatus): string {
   switch (status) {
@@ -21,7 +21,7 @@ export function getConnectionStatusColor(
   activityState: AgentActivityState,
   workerType: WorkerType
 ): string {
-  if (workerType !== 'agent') {
+  if (workerType !== 'agent' && workerType !== 'sdk') {
     return getNonAgentStatusColor(status);
   }
 
@@ -51,7 +51,7 @@ export function getConnectionStatusText(
     case 'connecting':
       return 'Connecting...';
     case 'connected':
-      if (workerType !== 'agent') {
+      if (workerType !== 'agent' && workerType !== 'sdk') {
         return 'Connected';
       }
       return activityState === 'unknown' ? 'Starting Claude...' : 'Connected';

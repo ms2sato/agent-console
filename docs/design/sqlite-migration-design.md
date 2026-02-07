@@ -370,11 +370,15 @@ CREATE TABLE repositories (
 CREATE TABLE agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  command TEXT NOT NULL,
-  args TEXT,  -- JSON array
-  cwd TEXT,
+  command_template TEXT NOT NULL,
+  continue_template TEXT,
+  headless_template TEXT,
+  description TEXT,
+  is_built_in INTEGER NOT NULL DEFAULT 0,
   activity_patterns TEXT,  -- JSON
-  registered_at INTEGER NOT NULL
+  agent_type TEXT NOT NULL DEFAULT 'unknown',  -- 'claude-code', 'gemini', 'codex', 'unknown'
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 ```
 
