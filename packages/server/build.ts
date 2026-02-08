@@ -4,6 +4,30 @@ import { dirname, join } from 'path';
 const __dirname = dirname(new URL(import.meta.url).pathname);
 const distDir = join(__dirname, '../../dist');
 
+// Native modules that need to be installed separately (not bundled by Bun)
+// These are typically platform-specific binaries that cannot be bundled
+const NATIVE_DEPENDENCIES = ['bun-pty'] as const;
+
+// Read server package.json to get dependency versions
+const serverPkgPath = join(__dirname, 'package.json');
+const serverPkg = JSON.parse(readFileSync(serverPkgPath, 'utf-8')) as {
+  dependencies: Record<string, string>;
+};
+
+// Extract native dependencies with their versions
+function getNativeDependencies(): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const dep of NATIVE_DEPENDENCIES) {
+    const version = serverPkg.dependencies[dep];
+    if (version) {
+      result[dep] = version;
+    } else {
+      console.warn(`Warning: Native dependency "${dep}" not found in package.json`);
+    }
+  }
+  return result;
+}
+
 // Bundle server with Bun's built-in bundler
 const result = await Bun.build({
   entrypoints: [join(__dirname, 'src/index.ts')],
@@ -35,7 +59,7 @@ const distPackageJson = {
   engines: {
     bun: '>=1.3.5', // Bun.Terminal requires 1.3.5+
   },
-  dependencies: {},
+  dependencies: getNativeDependencies(),
 };
 
 mkdirSync(distDir, { recursive: true });
