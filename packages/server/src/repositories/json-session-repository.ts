@@ -1,24 +1,27 @@
-import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as crypto from 'crypto';
 import type { PersistedSession } from '../services/persistence-service.js';
 import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('json-session-repository');
 
 /**
  * Write data to a file atomically using a unique temporary file.
  * Uses PID + random bytes to ensure uniqueness across concurrent writes.
  */
-function atomicWrite(filePath: string, data: string): void {
+async function atomicWrite(filePath: string, data: string): Promise<void> {
   // Use unique temp file per write operation to prevent race conditions
   const uniqueSuffix = `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
   const tempPath = `${filePath}.${uniqueSuffix}.tmp`;
 
   try {
-    fs.writeFileSync(tempPath, data, 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    await fsPromises.writeFile(tempPath, data, 'utf-8');
+    await fsPromises.rename(tempPath, filePath);
   } catch (error) {
     // Clean up temp file on failure
     try {
-      fs.unlinkSync(tempPath);
+      await fsPromises.unlink(tempPath);
     } catch {
       // Ignore cleanup errors
     }
@@ -30,14 +33,15 @@ function atomicWrite(filePath: string, data: string): void {
  * Safely read and parse JSON from a file.
  * Returns the default value if the file doesn't exist or parsing fails.
  */
-function safeRead<T>(filePath: string, defaultValue: T): T {
+async function safeRead<T>(filePath: string, defaultValue: T): Promise<T> {
   try {
-    if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(content);
-    }
+    await fsPromises.access(filePath);
+    const content = await fsPromises.readFile(filePath, 'utf-8');
+    return JSON.parse(content);
   } catch (error) {
-    console.error(`Failed to read ${filePath}:`, error);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error({ err: error, filePath }, 'Failed to read file');
+    }
   }
   return defaultValue;
 }
@@ -50,7 +54,7 @@ export class JsonSessionRepository implements SessionRepository {
   constructor(private readonly filePath: string) {}
 
   async findAll(): Promise<PersistedSession[]> {
-    return safeRead<PersistedSession[]>(this.filePath, []);
+    return await safeRead<PersistedSession[]>(this.filePath, []);
   }
 
   async findById(id: string): Promise<PersistedSession | null> {
@@ -73,17 +77,17 @@ export class JsonSessionRepository implements SessionRepository {
       sessions.push(session);
     }
 
-    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+    await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
   }
 
   async saveAll(sessions: PersistedSession[]): Promise<void> {
-    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+    await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
   }
 
   async delete(id: string): Promise<void> {
     const sessions = await this.findAll();
     const filtered = sessions.filter((s) => s.id !== id);
-    atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));
+    await atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));
   }
 
   async update(id: string, updates: SessionUpdateFields): Promise<boolean> {
@@ -116,7 +120,7 @@ export class JsonSessionRepository implements SessionRepository {
     }
 
     sessions[index] = updated;
-    atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
+    await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
     return true;
   }
 

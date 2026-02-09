@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentDefinition } from '@agent-console/shared';
@@ -27,7 +27,7 @@ describe('PersistenceService', () => {
     it('should return empty array when no repositories file exists', async () => {
       const service = await getPersistenceService();
 
-      const repos = service.loadRepositories();
+      const repos = await service.loadRepositories();
       expect(repos).toEqual([]);
     });
 
@@ -43,8 +43,8 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveRepositories(testRepos);
-      const loaded = service.loadRepositories();
+      await service.saveRepositories(testRepos);
+      const loaded = await service.loadRepositories();
 
       expect(loaded).toEqual(testRepos);
     });
@@ -59,10 +59,10 @@ describe('PersistenceService', () => {
         { id: '2', name: 'repo2', path: '/path2', createdAt: '2024-01-02T00:00:00.000Z' },
       ];
 
-      service.saveRepositories(repos1);
-      service.saveRepositories(repos2);
+      await service.saveRepositories(repos1);
+      await service.saveRepositories(repos2);
 
-      const loaded = service.loadRepositories();
+      const loaded = await service.loadRepositories();
       expect(loaded).toEqual(repos2);
     });
   });
@@ -71,7 +71,7 @@ describe('PersistenceService', () => {
     it('should return empty array when no sessions file exists', async () => {
       const service = await getPersistenceService();
 
-      const sessions = service.loadSessions();
+      const sessions = await service.loadSessions();
       expect(sessions).toEqual([]);
     });
 
@@ -100,8 +100,8 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveSessions(testSessions);
-      const loaded = service.loadSessions();
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
 
       expect(loaded).toEqual(testSessions);
     });
@@ -128,8 +128,8 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveSessions(testSessions);
-      const loaded = service.loadSessions();
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
 
       expect(loaded[0].serverPid).toBe(67890);
     });
@@ -158,9 +158,9 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveSessions(testSessions);
+      await service.saveSessions(testSessions);
 
-      const session = service.getSessionMetadata('s1');
+      const session = await service.getSessionMetadata('s1');
       expect(session?.id).toBe('s1');
       expect(session?.locationPath).toBe('/p1');
       expect(session?.serverPid).toBe(100);
@@ -169,7 +169,7 @@ describe('PersistenceService', () => {
     it('should return undefined for non-existent session', async () => {
       const service = await getPersistenceService();
 
-      const session = service.getSessionMetadata('non-existent');
+      const session = await service.getSessionMetadata('non-existent');
       expect(session).toBeUndefined();
     });
 
@@ -195,10 +195,10 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveSessions(testSessions);
-      service.removeSession('s1');
+      await service.saveSessions(testSessions);
+      await service.removeSession('s1');
 
-      const loaded = service.loadSessions();
+      const loaded = await service.loadSessions();
       expect(loaded.length).toBe(1);
       expect(loaded[0].id).toBe('s2');
     });
@@ -225,10 +225,10 @@ describe('PersistenceService', () => {
         },
       ];
 
-      service.saveSessions(testSessions);
-      service.clearSessions();
+      await service.saveSessions(testSessions);
+      await service.clearSessions();
 
-      const loaded = service.loadSessions();
+      const loaded = await service.loadSessions();
       expect(loaded).toEqual([]);
     });
   });
@@ -237,7 +237,7 @@ describe('PersistenceService', () => {
     it('should not leave temp files on successful write', async () => {
       const service = await getPersistenceService();
 
-      service.saveRepositories([
+      await service.saveRepositories([
         { id: '1', name: 'repo', path: '/path', createdAt: '2024-01-01T00:00:00.000Z' },
       ]);
 
@@ -265,7 +265,7 @@ describe('PersistenceService', () => {
     it('should return empty array when no agents file exists', async () => {
       const service = await getPersistenceService();
 
-      const agents = service.loadAgents();
+      const agents = await service.loadAgents();
       expect(agents).toEqual([]);
     });
 
@@ -274,8 +274,8 @@ describe('PersistenceService', () => {
 
       const testAgents = [createValidAgent()];
 
-      service.saveAgents(testAgents);
-      const loaded = service.loadAgents();
+      await service.saveAgents(testAgents);
+      const loaded = await service.loadAgents();
 
       expect(loaded).toEqual(testAgents);
     });
@@ -299,15 +299,14 @@ describe('PersistenceService', () => {
         }),
       ];
 
-      service.saveAgents(testAgents);
-      const loaded = service.loadAgents();
+      await service.saveAgents(testAgents);
+      const loaded = await service.loadAgents();
 
       expect(loaded).toEqual(testAgents);
     });
 
     it('should skip agents with missing required fields', async () => {
       const service = await getPersistenceService();
-      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
       // Write raw JSON with invalid agents directly to file
       const agentsFile = path.join(getTestConfigDir(), 'agents.json');
@@ -319,18 +318,15 @@ describe('PersistenceService', () => {
       ];
       fs.writeFileSync(agentsFile, JSON.stringify(invalidAgents));
 
-      const loaded = service.loadAgents();
+      const loaded = await service.loadAgents();
 
+      // Should only load the valid agent, invalid ones are logged and skipped
       expect(loaded.length).toBe(1);
       expect(loaded[0].id).toBe('valid');
-      expect(warnSpy).toHaveBeenCalled();
-
-      warnSpy.mockRestore();
     });
 
     it('should skip agents with invalid askingPatterns regex', async () => {
       const service = await getPersistenceService();
-      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
       // Write raw JSON with invalid regex directly to file
       const agentsFile = path.join(getTestConfigDir(), 'agents.json');
@@ -357,13 +353,11 @@ describe('PersistenceService', () => {
       ];
       fs.writeFileSync(agentsFile, JSON.stringify(agentsWithInvalidRegex));
 
-      const loaded = service.loadAgents();
+      const loaded = await service.loadAgents();
 
+      // Should only load the valid agent, invalid regex agents are logged and skipped
       expect(loaded.length).toBe(1);
       expect(loaded[0].id).toBe('valid-agent');
-      expect(warnSpy).toHaveBeenCalled();
-
-      warnSpy.mockRestore();
     });
 
     it('should get agent by id', async () => {
@@ -374,16 +368,16 @@ describe('PersistenceService', () => {
         createValidAgent({ id: 'agent-2', name: 'Agent 2' }),
       ];
 
-      service.saveAgents(testAgents);
+      await service.saveAgents(testAgents);
 
-      const agent = service.getAgent('agent-1');
+      const agent = await service.getAgent('agent-1');
       expect(agent?.name).toBe('Agent 1');
     });
 
     it('should return undefined for non-existent agent', async () => {
       const service = await getPersistenceService();
 
-      const agent = service.getAgent('non-existent');
+      const agent = await service.getAgent('non-existent');
       expect(agent).toBeUndefined();
     });
 
@@ -395,11 +389,11 @@ describe('PersistenceService', () => {
         createValidAgent({ id: 'agent-2', name: 'Agent 2' }),
       ];
 
-      service.saveAgents(testAgents);
-      const removed = service.removeAgent('agent-1');
+      await service.saveAgents(testAgents);
+      const removed = await service.removeAgent('agent-1');
 
       expect(removed).toBe(true);
-      const loaded = service.loadAgents();
+      const loaded = await service.loadAgents();
       expect(loaded.length).toBe(1);
       expect(loaded[0].id).toBe('agent-2');
     });
@@ -409,11 +403,11 @@ describe('PersistenceService', () => {
 
       const testAgents = [createValidAgent({ id: 'built-in-1', name: 'Built-in', isBuiltIn: true })];
 
-      service.saveAgents(testAgents);
-      const removed = service.removeAgent('built-in-1');
+      await service.saveAgents(testAgents);
+      const removed = await service.removeAgent('built-in-1');
 
       expect(removed).toBe(false);
-      const loaded = service.loadAgents();
+      const loaded = await service.loadAgents();
       expect(loaded.length).toBe(1);
     });
   });

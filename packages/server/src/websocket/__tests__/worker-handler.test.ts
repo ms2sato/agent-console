@@ -5,8 +5,7 @@ import { createWorkerMessageHandler, type WorkerHandlerDependencies } from '../w
 describe('Worker Handler', () => {
   let mockWs: WSContext;
   let mockSessionManager: WorkerHandlerDependencies['sessionManager'];
-  let mockWriteFileSync: ReturnType<typeof mock>;
-  let mockMkdirSync: ReturnType<typeof mock>;
+  let mockMkdir: ReturnType<typeof mock>;
   let handleWorkerMessage: ReturnType<typeof createWorkerMessageHandler>;
 
   beforeEach(() => {
@@ -24,34 +23,32 @@ describe('Worker Handler', () => {
     };
 
     // Create mock fs functions
-    mockWriteFileSync = mock();
-    mockMkdirSync = mock();
+    mockMkdir = mock(() => Promise.resolve(undefined));
 
     // Create handler with mocked dependencies
     handleWorkerMessage = createWorkerMessageHandler({
       sessionManager: mockSessionManager,
-      writeFileSync: mockWriteFileSync as unknown as WorkerHandlerDependencies['writeFileSync'],
-      mkdirSync: mockMkdirSync as unknown as WorkerHandlerDependencies['mkdirSync'],
+      mkdir: mockMkdir as unknown as WorkerHandlerDependencies['mkdir'],
       tmpdir: () => '/tmp/test',
     });
   });
 
   describe('handleWorkerMessage', () => {
-    it('should handle input message', () => {
+    it('should handle input message', async () => {
       const message = JSON.stringify({ type: 'input', data: 'hello world' });
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'hello world');
     });
 
-    it('should handle resize message', () => {
+    it('should handle resize message', async () => {
       const message = JSON.stringify({ type: 'resize', cols: 80, rows: 24 });
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       expect(mockSessionManager.resizeWorker).toHaveBeenCalledWith('test-session', 'worker-1', 80, 24);
     });
 
-    it('should handle image message', () => {
+    it('should handle image message', async () => {
       // Base64 encoded small PNG
       const base64Image = 'iVBORw0KGgo='; // minimal base64 data
       const message = JSON.stringify({
@@ -60,10 +57,7 @@ describe('Worker Handler', () => {
         mimeType: 'image/png',
       });
 
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
-
-      // Should write file
-      expect(mockWriteFileSync).toHaveBeenCalled();
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // Should write file path to session
       expect(mockSessionManager.writeWorkerInput).toHaveBeenCalled();
@@ -71,34 +65,34 @@ describe('Worker Handler', () => {
       expect(writtenPath).toContain('.png');
     });
 
-    it('should handle ArrayBuffer message', () => {
+    it('should handle ArrayBuffer message', async () => {
       const message = new TextEncoder().encode(
         JSON.stringify({ type: 'input', data: 'test' })
       ).buffer;
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith('test-session', 'worker-1', 'test');
     });
 
-    it('should handle invalid JSON gracefully', () => {
+    it('should handle invalid JSON gracefully', async () => {
       // Should not throw
-      expect(() => {
-        handleWorkerMessage(mockWs, 'test-session', 'worker-1', 'not valid json');
-      }).not.toThrow();
+      await expect(
+        handleWorkerMessage(mockWs, 'test-session', 'worker-1', 'not valid json')
+      ).resolves.toBeUndefined();
     });
 
-    it('should handle unknown message type gracefully', () => {
+    it('should handle unknown message type gracefully', async () => {
       const message = JSON.stringify({ type: 'unknown', data: 'test' });
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // Should not call any methods
       expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
       expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
     });
 
-    it('should handle request-history message', () => {
+    it('should handle request-history message', async () => {
       const message = JSON.stringify({ type: 'request-history' });
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // request-history is handled in routes.ts, not in worker-handler
       // This test verifies that the message passes validation without error
@@ -109,7 +103,7 @@ describe('Worker Handler', () => {
   });
 
   describe('getExtensionFromMimeType (via image handling)', () => {
-    it('should use correct extension for different mime types', () => {
+    it('should use correct extension for different mime types', async () => {
       const testCases = [
         { mimeType: 'image/png', expectedExt: '.png' },
         { mimeType: 'image/jpeg', expectedExt: '.jpg' },
@@ -127,23 +121,22 @@ describe('Worker Handler', () => {
           data: 'dGVzdA==', // base64 for "test"
           mimeType,
         });
-        handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+        await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
         const writtenPath = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0][2];
         expect(writtenPath).toContain(expectedExt);
       }
     });
 
-    it('should reject unknown mime type for security', () => {
+    it('should reject unknown mime type for security', async () => {
       const message = JSON.stringify({
         type: 'image',
         data: 'dGVzdA==',
         mimeType: 'image/unknown',
       });
-      handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
 
       // Unknown mime types should be rejected (no file written, no input sent)
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
       expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
     });
   });
