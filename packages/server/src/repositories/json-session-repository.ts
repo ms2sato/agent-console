@@ -35,7 +35,6 @@ async function atomicWrite(filePath: string, data: string): Promise<void> {
  */
 async function safeRead<T>(filePath: string, defaultValue: T): Promise<T> {
   try {
-    await fsPromises.access(filePath);
     const content = await fsPromises.readFile(filePath, 'utf-8');
     return JSON.parse(content);
   } catch (error) {

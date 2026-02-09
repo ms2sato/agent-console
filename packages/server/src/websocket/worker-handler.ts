@@ -111,9 +111,7 @@ export function createWorkerMessageHandler(
 
   // Ensure image upload directory exists (async init at factory level)
   const initPromise = mkdir(IMAGE_UPLOAD_DIR, { recursive: true }).catch((err) => {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-      logger.warn({ err, dir: IMAGE_UPLOAD_DIR }, 'Failed to create image upload directory');
-    }
+    logger.warn({ err, dir: IMAGE_UPLOAD_DIR }, 'Failed to create image upload directory');
   });
 
   return async function handleWorkerMessage(

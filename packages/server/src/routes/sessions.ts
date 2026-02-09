@@ -21,9 +21,14 @@ import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('sessions-route');
 
 const FILE_UPLOAD_DIR = join(tmpdir(), 'agent-console-uploads');
-const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch(() => {});
+const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) => {
+  logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
+});
 
 const sessions = new Hono()
   // Validate all sessions

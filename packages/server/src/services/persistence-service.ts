@@ -127,12 +127,7 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
 
 async function ensureConfigDir(): Promise<void> {
   const configDir = getConfigDir();
-  try {
-    await fsPromises.access(configDir);
-  } catch {
-    await fsPromises.mkdir(configDir, { recursive: true });
-    logger.info({ configDir }, 'Created config directory');
-  }
+  await fsPromises.mkdir(configDir, { recursive: true });
 }
 
 /**
@@ -160,7 +155,6 @@ async function atomicWrite(filePath: string, data: string): Promise<void> {
 
 async function safeRead<T>(filePath: string, defaultValue: T): Promise<T> {
   try {
-    await fsPromises.access(filePath);
     const content = await fsPromises.readFile(filePath, 'utf-8');
     return JSON.parse(content);
   } catch (error) {

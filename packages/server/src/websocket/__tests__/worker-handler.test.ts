@@ -23,12 +23,14 @@ describe('Worker Handler', () => {
     };
 
     // Create mock fs functions
-    mockMkdir = mock(() => Promise.resolve(undefined));
+    mockMkdir = mock((_path: string, _opts?: { recursive?: boolean }) =>
+      Promise.resolve(undefined as string | undefined),
+    );
 
     // Create handler with mocked dependencies
     handleWorkerMessage = createWorkerMessageHandler({
       sessionManager: mockSessionManager,
-      mkdir: mockMkdir as unknown as WorkerHandlerDependencies['mkdir'],
+      mkdir: mockMkdir as WorkerHandlerDependencies['mkdir'],
       tmpdir: () => '/tmp/test',
     });
   });

@@ -29,7 +29,6 @@ interface IndexStore {
 async function loadIndexStore(repoWorktreeDir: string): Promise<IndexStore> {
   const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
   try {
-    await fsPromises.access(indexFile);
     const content = await fsPromises.readFile(indexFile, 'utf-8');
     return JSON.parse(content);
   } catch (e) {
@@ -49,6 +48,7 @@ async function saveIndexStore(repoWorktreeDir: string, store: IndexStore): Promi
     await fsPromises.writeFile(indexFile, JSON.stringify(store, null, 2));
   } catch (e) {
     logger.error({ err: e, indexFile }, 'Failed to save index store');
+    throw e;
   }
 }
 
