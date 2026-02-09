@@ -63,12 +63,20 @@ interface WorkerErrorFallbackProps {
   onRetry: () => void;
 }
 
+function getWorkerTypeLabel(workerType: WorkerErrorFallbackProps['workerType']): string {
+  switch (workerType) {
+    case 'git-diff':
+      return 'Diff View';
+    case 'agent':
+    case 'sdk':
+      return 'Agent';
+    case 'terminal':
+      return 'Terminal';
+  }
+}
+
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
-  const typeLabel = workerType === 'git-diff' ? 'Diff View' :
-                    workerType === 'agent' ? 'Agent' :
-                    workerType === 'sdk' ? 'Agent' :
-                    workerType === 'terminal' ? 'Terminal' :
-                    (() => { const _exhaustive: never = workerType; return _exhaustive; })();
+  const typeLabel = getWorkerTypeLabel(workerType);
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">

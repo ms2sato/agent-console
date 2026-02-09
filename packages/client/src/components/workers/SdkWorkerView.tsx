@@ -512,7 +512,6 @@ function extractUserContent(msg: SDKMessage): string {
   return JSON.stringify(msg, null, 2);
 }
 
-
 /**
  * Build a summary string for the processing section header
  */
@@ -536,7 +535,6 @@ function buildProcessingSummary(thinkingBlocks: string[], toolUses: { name: stri
   return parts.length > 0 ? `Processing: ${parts.join(', ')}` : 'Processing...';
 }
 
-
 /**
  * Get a brief summary for a tool use
  */
@@ -548,12 +546,10 @@ function getToolSummary(name: string, input: unknown): string {
     case 'Bash':
       return typeof inp.command === 'string' ? truncate(inp.command, 50) : '';
     case 'Read':
-      return typeof inp.file_path === 'string' ? truncate(inp.file_path, 50) : '';
     case 'Write':
     case 'Edit':
       return typeof inp.file_path === 'string' ? truncate(inp.file_path, 50) : '';
     case 'Glob':
-      return typeof inp.pattern === 'string' ? truncate(inp.pattern, 40) : '';
     case 'Grep':
       return typeof inp.pattern === 'string' ? truncate(inp.pattern, 40) : '';
     default:
@@ -621,7 +617,6 @@ function extractToolUses(msg: SDKMessage): { name: string; input: unknown }[] {
   }
   return [];
 }
-
 
 /**
  * Render result message - compact summary
