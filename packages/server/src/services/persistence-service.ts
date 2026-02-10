@@ -1,10 +1,13 @@
-import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
 import { getConfigDir } from '../lib/config.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('persistence-service');
 
 // Config directory paths (lazy-evaluated to support env override)
 const getRepositoriesFile = () => path.join(getConfigDir(), 'repositories.json');
@@ -122,30 +125,27 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
   }
 }
 
-function ensureConfigDir(): void {
+async function ensureConfigDir(): Promise<void> {
   const configDir = getConfigDir();
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-    console.log(`Created config directory: ${configDir}`);
-  }
+  await fsPromises.mkdir(configDir, { recursive: true });
 }
 
 /**
  * Write data to a file atomically using a unique temporary file.
  * Uses PID + random bytes to ensure uniqueness across concurrent writes.
  */
-function atomicWrite(filePath: string, data: string): void {
+async function atomicWrite(filePath: string, data: string): Promise<void> {
   // Use unique temp file per write operation to prevent race conditions
   const uniqueSuffix = `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
   const tempPath = `${filePath}.${uniqueSuffix}.tmp`;
 
   try {
-    fs.writeFileSync(tempPath, data, 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    await fsPromises.writeFile(tempPath, data, 'utf-8');
+    await fsPromises.rename(tempPath, filePath);
   } catch (error) {
     // Clean up temp file on failure
     try {
-      fs.unlinkSync(tempPath);
+      await fsPromises.unlink(tempPath);
     } catch {
       // Ignore cleanup errors
     }
@@ -153,68 +153,75 @@ function atomicWrite(filePath: string, data: string): void {
   }
 }
 
-function safeRead<T>(filePath: string, defaultValue: T): T {
+async function safeRead<T>(filePath: string, defaultValue: T): Promise<T> {
   try {
-    if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(content);
-    }
+    const content = await fsPromises.readFile(filePath, 'utf-8');
+    return JSON.parse(content);
   } catch (error) {
-    console.error(`Failed to read ${filePath}:`, error);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error({ err: error, filePath }, 'Failed to read file');
+    }
   }
   return defaultValue;
 }
 
 export class PersistenceService {
+  private initPromise: Promise<void>;
+
   constructor() {
-    ensureConfigDir();
+    this.initPromise = ensureConfigDir();
   }
 
-  loadRepositories(): PersistedRepository[] {
+  async loadRepositories(): Promise<PersistedRepository[]> {
+    await this.initPromise;
     return safeRead<PersistedRepository[]>(getRepositoriesFile(), []);
   }
 
-  saveRepositories(repositories: PersistedRepository[]): void {
-    atomicWrite(getRepositoriesFile(), JSON.stringify(repositories, null, 2));
+  async saveRepositories(repositories: PersistedRepository[]): Promise<void> {
+    await this.initPromise;
+    await atomicWrite(getRepositoriesFile(), JSON.stringify(repositories, null, 2));
   }
 
-  loadSessions(): PersistedSession[] {
-    const raw = safeRead<unknown[]>(getSessionsFile(), []);
+  async loadSessions(): Promise<PersistedSession[]> {
+    await this.initPromise;
+    const raw = await safeRead<unknown[]>(getSessionsFile(), []);
 
     // Migrate old format if needed
     return raw.map(session => {
       if (isOldFormat(session)) {
-        console.log(`Migrating old session format: ${session.id}`);
+        logger.info({ sessionId: session.id }, 'Migrating old session format');
         return migrateSession(session);
       }
       return session as PersistedSession;
     });
   }
 
-  saveSessions(sessions: PersistedSession[]): void {
-    atomicWrite(getSessionsFile(), JSON.stringify(sessions, null, 2));
+  async saveSessions(sessions: PersistedSession[]): Promise<void> {
+    await this.initPromise;
+    await atomicWrite(getSessionsFile(), JSON.stringify(sessions, null, 2));
   }
 
   // Get session metadata by ID (for reconnection)
-  getSessionMetadata(sessionId: string): PersistedSession | undefined {
-    const sessions = this.loadSessions();
+  async getSessionMetadata(sessionId: string): Promise<PersistedSession | undefined> {
+    const sessions = await this.loadSessions();
     return sessions.find(s => s.id === sessionId);
   }
 
   // Remove session from persisted storage
-  removeSession(sessionId: string): void {
-    const sessions = this.loadSessions();
+  async removeSession(sessionId: string): Promise<void> {
+    const sessions = await this.loadSessions();
     const filtered = sessions.filter(s => s.id !== sessionId);
-    this.saveSessions(filtered);
+    await this.saveSessions(filtered);
   }
 
   // Clear all sessions (used after cleanup)
-  clearSessions(): void {
-    this.saveSessions([]);
+  async clearSessions(): Promise<void> {
+    await this.saveSessions([]);
   }
 
-  loadAgents(): AgentDefinition[] {
-    const raw = safeRead<unknown[]>(getAgentsFile(), []);
+  async loadAgents(): Promise<AgentDefinition[]> {
+    await this.initPromise;
+    const raw = await safeRead<unknown[]>(getAgentsFile(), []);
     const validAgents: AgentDefinition[] = [];
 
     for (const item of raw) {
@@ -223,30 +230,31 @@ export class PersistenceService {
         validAgents.push(result.output as AgentDefinition);
       } else {
         const agentId = (item as { id?: string })?.id ?? 'unknown';
-        console.warn(`Skipping invalid persisted agent (id: ${agentId}):`, v.flatten(result.issues));
+        logger.warn({ agentId, issues: v.flatten(result.issues) }, 'Skipping invalid persisted agent');
       }
     }
 
     return validAgents;
   }
 
-  saveAgents(agents: AgentDefinition[]): void {
-    atomicWrite(getAgentsFile(), JSON.stringify(agents, null, 2));
+  async saveAgents(agents: AgentDefinition[]): Promise<void> {
+    await this.initPromise;
+    await atomicWrite(getAgentsFile(), JSON.stringify(agents, null, 2));
   }
 
-  getAgent(agentId: string): AgentDefinition | undefined {
-    const agents = this.loadAgents();
+  async getAgent(agentId: string): Promise<AgentDefinition | undefined> {
+    const agents = await this.loadAgents();
     return agents.find(a => a.id === agentId);
   }
 
-  removeAgent(agentId: string): boolean {
-    const agents = this.loadAgents();
+  async removeAgent(agentId: string): Promise<boolean> {
+    const agents = await this.loadAgents();
     const agent = agents.find(a => a.id === agentId);
     if (!agent || agent.isBuiltIn) {
       return false; // Cannot remove built-in agents
     }
     const filtered = agents.filter(a => a.id !== agentId);
-    this.saveAgents(filtered);
+    await this.saveAgents(filtered);
     return true;
   }
 }

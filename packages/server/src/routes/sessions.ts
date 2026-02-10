@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdir } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { validateSessionPath } from '../lib/path-validator.js';
 import {
@@ -21,13 +21,14 @@ import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('sessions-route');
 
 const FILE_UPLOAD_DIR = join(tmpdir(), 'agent-console-uploads');
-try {
-  mkdirSync(FILE_UPLOAD_DIR, { recursive: true });
-} catch {
-  // Directory may already exist
-}
+const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) => {
+  logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
+});
 
 const sessions = new Hono()
   // Validate all sessions
@@ -279,6 +280,9 @@ const sessions = new Hono()
       throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
     }
 
+    // Ensure upload directory is ready before writing files
+    await uploadDirReady;
+
     // Save files to disk
     const savedPaths: string[] = [];
     for (const file of files) {
@@ -287,7 +291,7 @@ const sessions = new Hono()
       const uniqueName = `${randomUUID()}-${sanitizedName}`;
       const filePath = join(FILE_UPLOAD_DIR, uniqueName);
       const buffer = Buffer.from(await file.arrayBuffer());
-      writeFileSync(filePath, buffer);
+      await Bun.write(filePath, buffer);
       savedPaths.push(filePath);
     }
 

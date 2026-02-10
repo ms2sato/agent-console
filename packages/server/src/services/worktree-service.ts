@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import type { Worktree, SetupCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
@@ -26,14 +26,15 @@ interface IndexStore {
 /**
  * Load index store for a repository
  */
-function loadIndexStore(repoWorktreeDir: string): IndexStore {
+async function loadIndexStore(repoWorktreeDir: string): Promise<IndexStore> {
   const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
   try {
-    if (fs.existsSync(indexFile)) {
-      return JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
-    }
+    const content = await fsPromises.readFile(indexFile, 'utf-8');
+    return JSON.parse(content);
   } catch (e) {
-    console.error('Failed to load index store:', e);
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error({ err: e, indexFile }, 'Failed to load index store');
+    }
   }
   return { indexes: {} };
 }
@@ -41,12 +42,13 @@ function loadIndexStore(repoWorktreeDir: string): IndexStore {
 /**
  * Save index store for a repository
  */
-function saveIndexStore(repoWorktreeDir: string, store: IndexStore): void {
+async function saveIndexStore(repoWorktreeDir: string, store: IndexStore): Promise<void> {
   const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
   try {
-    fs.writeFileSync(indexFile, JSON.stringify(store, null, 2));
+    await fsPromises.writeFile(indexFile, JSON.stringify(store, null, 2));
   } catch (e) {
-    console.error('Failed to save index store:', e);
+    logger.error({ err: e, indexFile }, 'Failed to save index store');
+    throw e;
   }
 }
 
@@ -85,17 +87,27 @@ function generateRandomSuffix(length: number): string {
  * Find templates directory for a repository
  * Priority: 1. .agent-console/ in repo root  2. $AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/
  */
-function findTemplatesDir(repoPath: string, orgRepo: string): string | null {
+async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<string | null> {
   // Check repo-local templates
   const localTemplates = path.join(repoPath, '.agent-console');
-  if (fs.existsSync(localTemplates) && fs.statSync(localTemplates).isDirectory()) {
-    return localTemplates;
+  try {
+    const stat = await fsPromises.stat(localTemplates);
+    if (stat.isDirectory()) {
+      return localTemplates;
+    }
+  } catch {
+    // Directory doesn't exist, continue to global templates
   }
 
   // Check global templates in $AGENT_CONSOLE_HOME/repositories/<org>/<repo>/templates/
   const globalTemplates = path.join(getRepositoryDir(orgRepo), 'templates');
-  if (fs.existsSync(globalTemplates) && fs.statSync(globalTemplates).isDirectory()) {
-    return globalTemplates;
+  try {
+    const stat = await fsPromises.stat(globalTemplates);
+    if (stat.isDirectory()) {
+      return globalTemplates;
+    }
+  } catch {
+    // Directory doesn't exist
   }
 
   return null;
@@ -139,15 +151,15 @@ function substituteVariables(
 /**
  * Copy template files to worktree with variable substitution
  */
-function copyTemplateFiles(
+async function copyTemplateFiles(
   templatesDir: string,
   worktreePath: string,
   vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
-): string[] {
+): Promise<string[]> {
   const copiedFiles: string[] = [];
 
-  function copyRecursive(srcDir: string, destDir: string) {
-    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  async function copyRecursive(srcDir: string, destDir: string): Promise<void> {
+    const entries = await fsPromises.readdir(srcDir, { withFileTypes: true });
 
     for (const entry of entries) {
       // Skip .DS_Store
@@ -157,28 +169,24 @@ function copyTemplateFiles(
       const destPath = path.join(destDir, entry.name);
 
       if (entry.isDirectory()) {
-        if (!fs.existsSync(destPath)) {
-          fs.mkdirSync(destPath, { recursive: true });
-        }
-        copyRecursive(srcPath, destPath);
+        await fsPromises.mkdir(destPath, { recursive: true });
+        await copyRecursive(srcPath, destPath);
       } else {
         // Read, substitute, and write
-        const content = fs.readFileSync(srcPath, 'utf-8');
+        const content = await fsPromises.readFile(srcPath, 'utf-8');
         const substituted = substituteVariables(content, vars);
 
         // Ensure parent directory exists
         const destParent = path.dirname(destPath);
-        if (!fs.existsSync(destParent)) {
-          fs.mkdirSync(destParent, { recursive: true });
-        }
+        await fsPromises.mkdir(destParent, { recursive: true });
 
-        fs.writeFileSync(destPath, substituted);
+        await fsPromises.writeFile(destPath, substituted);
         copiedFiles.push(path.relative(worktreePath, destPath));
       }
     }
   }
 
-  copyRecursive(templatesDir, worktreePath);
+  await copyRecursive(templatesDir, worktreePath);
   return copiedFiles;
 }
 
@@ -207,11 +215,11 @@ export class WorktreeService {
       // Get org/repo for index store path
       const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
       const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
-      const indexStore = loadIndexStore(repoWorktreeDir);
+      const indexStore = await loadIndexStore(repoWorktreeDir);
 
       return this.parsePorcelainOutput(output, repositoryId, repoPath, indexStore);
     } catch (error) {
-      console.error('Failed to list worktrees:', error);
+      logger.error({ err: error, repoPath }, 'Failed to list worktrees');
       return [];
     }
   }
@@ -284,12 +292,10 @@ export class WorktreeService {
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     // Ensure base directory exists
-    if (!fs.existsSync(repoWorktreeDir)) {
-      fs.mkdirSync(repoWorktreeDir, { recursive: true });
-    }
+    await fsPromises.mkdir(repoWorktreeDir, { recursive: true });
 
     // Allocate index before creating worktree
-    const indexStore = loadIndexStore(repoWorktreeDir);
+    const indexStore = await loadIndexStore(repoWorktreeDir);
     const newIndex = allocateIndex(indexStore);
 
     // Generate directory name: wt-{index:3 digits}-{4 random alphanumeric}
@@ -302,31 +308,31 @@ export class WorktreeService {
 
       // Save index assignment
       indexStore.indexes[worktreePath] = newIndex;
-      saveIndexStore(repoWorktreeDir, indexStore);
+      await saveIndexStore(repoWorktreeDir, indexStore);
 
-      console.log(`Worktree created: ${worktreePath} (index: ${newIndex})`);
+      logger.info({ worktreePath, index: newIndex }, 'Worktree created');
 
       // Copy template files
-      const templatesDir = findTemplatesDir(repoPath, orgRepo);
+      const templatesDir = await findTemplatesDir(repoPath, orgRepo);
       let copiedFiles: string[] = [];
 
       if (templatesDir) {
         const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
-        copiedFiles = copyTemplateFiles(templatesDir, worktreePath, {
+        copiedFiles = await copyTemplateFiles(templatesDir, worktreePath, {
           worktreeNum: newIndex,
           branch,
           repo: repoName,
           worktreePath,
         });
         if (copiedFiles.length > 0) {
-          console.log(`Template files copied: ${copiedFiles.join(', ')}`);
+          logger.info({ copiedFiles }, 'Template files copied');
         }
       }
 
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
       const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
-      console.error('Failed to create worktree:', message);
+      logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
   }
@@ -347,16 +353,16 @@ export class WorktreeService {
       await gitRemoveWorktree(worktreePath, repoPath, { force });
 
       // Remove index assignment
-      const indexStore = loadIndexStore(repoWorktreeDir);
+      const indexStore = await loadIndexStore(repoWorktreeDir);
       const removedIndex = indexStore.indexes[worktreePath];
       delete indexStore.indexes[worktreePath];
-      saveIndexStore(repoWorktreeDir, indexStore);
+      await saveIndexStore(repoWorktreeDir, indexStore);
 
-      console.log(`Worktree removed: ${worktreePath} (index ${removedIndex} freed)`);
+      logger.info({ worktreePath, removedIndex }, 'Worktree removed (index freed)');
       return { success: true };
     } catch (error) {
       const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
-      console.error('Failed to remove worktree:', message);
+      logger.error({ err: error, message, worktreePath }, 'Failed to remove worktree');
       return { success: false, error: message };
     }
   }
@@ -374,7 +380,7 @@ export class WorktreeService {
 
       return { local, remote, defaultBranch };
     } catch (error) {
-      console.error('Failed to list branches:', error);
+      logger.error({ err: error }, 'Failed to list branches');
       return { local: [], remote: [], defaultBranch: null };
     }
   }
@@ -414,11 +420,9 @@ export class WorktreeService {
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     // Ensure directory exists for index store
-    if (!fs.existsSync(repoWorktreeDir)) {
-      fs.mkdirSync(repoWorktreeDir, { recursive: true });
-    }
+    await fsPromises.mkdir(repoWorktreeDir, { recursive: true });
 
-    const indexStore = loadIndexStore(repoWorktreeDir);
+    const indexStore = await loadIndexStore(repoWorktreeDir);
     const nextIndex = allocateIndex(indexStore);
     const suffix = generateRandomSuffix(4);
 

@@ -1,6 +1,6 @@
 import type { WSContext } from 'hono/ws';
 import type { WorkerClientMessage } from '@agent-console/shared';
-import { writeFileSync as defaultWriteFileSync, mkdirSync as defaultMkdirSync } from 'node:fs';
+import { mkdir as defaultMkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir as defaultTmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -21,15 +21,13 @@ export interface WorkerHandlerSessionManager {
  */
 export interface WorkerHandlerDependencies {
   sessionManager: WorkerHandlerSessionManager;
-  writeFileSync: typeof defaultWriteFileSync;
-  mkdirSync: typeof defaultMkdirSync;
+  mkdir: typeof defaultMkdir;
   tmpdir: typeof defaultTmpdir;
 }
 
 // Default dependencies (sessionManager must be provided explicitly)
 const defaultDeps: Omit<WorkerHandlerDependencies, 'sessionManager'> = {
-  writeFileSync: defaultWriteFileSync,
-  mkdirSync: defaultMkdirSync,
+  mkdir: defaultMkdir,
   tmpdir: defaultTmpdir,
 };
 
@@ -106,24 +104,24 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
 export function createWorkerMessageHandler(
   deps: Pick<WorkerHandlerDependencies, 'sessionManager'> & Partial<Omit<WorkerHandlerDependencies, 'sessionManager'>>
 ) {
-  const { sessionManager, writeFileSync, mkdirSync, tmpdir } = { ...defaultDeps, ...deps };
+  const { sessionManager, mkdir, tmpdir } = { ...defaultDeps, ...deps };
 
   // Directory for storing uploaded images
   const IMAGE_UPLOAD_DIR = join(tmpdir(), 'agent-console-images');
 
-  // Ensure image upload directory exists
-  try {
-    mkdirSync(IMAGE_UPLOAD_DIR, { recursive: true });
-  } catch {
-    // Directory may already exist
-  }
+  // Ensure image upload directory exists (async init at factory level)
+  const initPromise = mkdir(IMAGE_UPLOAD_DIR, { recursive: true }).catch((err) => {
+    logger.warn({ err, dir: IMAGE_UPLOAD_DIR }, 'Failed to create image upload directory');
+  });
 
-  return function handleWorkerMessage(
+  return async function handleWorkerMessage(
     _ws: WSContext,
     sessionId: string,
     workerId: string,
     message: string | ArrayBuffer
-  ): void {
+  ): Promise<void> {
+    // Ensure directory is ready before processing image messages
+    await initPromise;
     try {
       const msgStr = typeof message === 'string' ? message : new TextDecoder().decode(message);
       const rawParsed: unknown = JSON.parse(msgStr);
@@ -194,7 +192,7 @@ export function createWorkerMessageHandler(
             break;
           }
 
-          writeFileSync(filePath, buffer);
+          await Bun.write(filePath, buffer);
 
           logger.debug({ filePath, size: buffer.length }, 'Image saved');
 

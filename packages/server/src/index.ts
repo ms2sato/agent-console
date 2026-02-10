@@ -13,7 +13,6 @@ import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
 import { setNotificationManager } from './services/notifications/index.js';
 import { setSystemCapabilities } from './services/system-capabilities-service.js';
-import * as fs from 'fs';
 import * as path from 'path';
 
 const logger = createLogger('server');
@@ -132,18 +131,21 @@ await setupWebSocketRoutes(app, upgradeWebSocket);
 
 // Static file serving (production only)
 // NOTE: Must be registered AFTER WebSocket routes to avoid catching /ws/* paths
+let cachedIndexHtml: string | null = null;
 if (isProduction) {
   const __dirname = path.dirname(new URL(import.meta.url).pathname);
   const publicDir = path.join(__dirname, './public');
 
+  // Cache index.html at startup (avoid blocking event loop on every request)
+  const indexPath = path.join(publicDir, 'index.html');
+  cachedIndexHtml = await Bun.file(indexPath).text();
+
   // Serve static files from public directory
   app.use('/*', serveStatic({ root: publicDir }));
 
-  // SPA fallback: serve index.html for any non-API/WS routes
+  // SPA fallback: serve cached index.html for any non-API/WS routes
   app.get('*', (c) => {
-    const indexPath = path.join(publicDir, 'index.html');
-    const html = fs.readFileSync(indexPath, 'utf-8');
-    return c.html(html);
+    return c.html(cachedIndexHtml!);
   });
 }
 

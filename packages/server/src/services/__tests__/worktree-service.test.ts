@@ -286,6 +286,10 @@ detached
 
   describe('removeWorktree', () => {
     it('should remove worktree successfully', async () => {
+      // Setup index store directory for saving
+      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      fs.mkdirSync(indexStorePath, { recursive: true });
+
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
@@ -296,6 +300,10 @@ detached
     });
 
     it('should use force flag when specified', async () => {
+      // Setup index store directory for saving
+      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      fs.mkdirSync(indexStorePath, { recursive: true });
+
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService();
 
