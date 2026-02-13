@@ -212,8 +212,8 @@ Agent (wt-001) polls status via: get_session_status
 Register the Agent Console MCP server in Claude Code (one-time):
 
 ```bash
-# For production (default port 3457)
-claude mcp add --transport http agent-console http://localhost:3457/mcp
+# For production (default port 6340)
+claude mcp add --transport http agent-console http://localhost:6340/mcp
 
 # For development (if using a different port, match your .env PORT)
 claude mcp add --transport http agent-console-dev http://localhost:3457/mcp
