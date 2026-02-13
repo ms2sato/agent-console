@@ -11,11 +11,6 @@ description: Hono/Bun patterns and backend best practices for this project. Use 
 - **Structured logging** - Use Pino with context objects
 - **Resource cleanup** - Always clean up PTY processes and connections
 - **Type safety** - Define types in shared package, validate at boundaries
-
-## Tech Stack
-
-- Bun, Hono, bun-pty, Pino, Valibot
-
 ## Backend Best Practices
 
 - **Resource Cleanup** - PTY processes, WebSocket connections, file handles must be cleaned up

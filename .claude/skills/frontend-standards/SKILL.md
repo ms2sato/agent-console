@@ -11,11 +11,6 @@ description: React patterns and frontend best practices for this project. Use wh
 - **Prefer Suspense** - For loading states and async boundaries
 - **useSyncExternalStore** - For external state subscriptions (WebSocket, global stores)
 - **Server is the source of truth** - Don't maintain conflicting client state
-
-## Tech Stack
-
-- React 18, TanStack Router, TanStack Query, Tailwind CSS, xterm.js, Valibot
-
 ## React Best Practices
 
 - **Suspense Usage** - Prefer Suspense for async operations over manual isLoading flags
