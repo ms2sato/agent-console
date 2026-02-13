@@ -14,12 +14,12 @@ When an agent is working on a task and the user says "execute that in a new work
 
 ## Current Architecture Context
 
-### What the Agent Knows Today
+### What the Agent Knows
 
-Currently, an agent spawned by AgentConsole runs as a PTY process with:
+An agent spawned by AgentConsole runs as a PTY process with:
 - **Working directory**: The worktree path (e.g., `~/.agent-console/repositories/org/repo/worktrees/wt-003-ab12`)
 - **Environment variables**: Parent process env (filtered), plus `__AGENT_PROMPT__` for the initial prompt
-- **No self-awareness**: The agent has no knowledge of its own sessionId, workerId, the AgentConsole server address, or the repositoryId
+- **AgentConsole context** (Phase 1, implemented): `AGENT_CONSOLE_BASE_URL`, `AGENT_CONSOLE_SESSION_ID`, `AGENT_CONSOLE_WORKER_ID`, and `AGENT_CONSOLE_REPOSITORY_ID` (worktree sessions only)
 
 ### Relevant Existing API
 
@@ -58,23 +58,26 @@ Provide MCP tools that the agent can use through Claude Code's native MCP tool i
 | **Direct curl** | Zero implementation | Fragile, hard to maintain, poor UX |
 | **Claude Code hooks** | Event-driven | Not designed for agent-initiated actions; cannot return data |
 
-### Decision 2: AgentConsole server itself as MCP server (SSE transport)
+### Decision 2: AgentConsole server itself as MCP server (Streamable HTTP transport)
 
-AgentConsole server exposes an MCP-compatible endpoint directly, rather than running a separate MCP server process.
+AgentConsole server exposes an MCP-compatible endpoint directly at `/mcp`, using the **Streamable HTTP** transport. This is the current recommended MCP transport (SSE transport was deprecated in MCP Protocol version 2025-03-26).
 
 **Alternatives considered and rejected:**
 
 | Approach | Issue |
 |----------|-------|
 | **Separate MCP server process (stdio transport)** | Requires distributing a separate command binary (npm package, PATH setup, etc.). Unnecessary complexity. |
+| **SSE transport** | Deprecated by MCP spec. Requires two endpoints (GET + POST), long-lived connections, and has HTTP/2 compatibility issues. |
 | **Writing `.claude/settings.local.json` to worktree** | Pollutes the user's worktree with git diff noise. Fundamentally problematic. |
 | **CLI flags on commandTemplate** | Depends on Claude Code supporting `--mcp-config` flag. Couples agent definition to MCP setup. |
 
-**Why SSE transport on AgentConsole server is best:**
+**Why Streamable HTTP on AgentConsole server is best:**
 - **No additional binary to distribute**: The AgentConsole server is already running
 - **No worktree files modified**: Zero filesystem side effects
 - **Direct access to internal state**: No need to call REST API from a child process; the MCP endpoint can access SessionManager, WorkerManager, etc. directly
 - **Simple configuration**: Just a URL (`http://localhost:<port>/mcp`)
+- **Single endpoint**: Streamable HTTP uses one endpoint for all communication (POST requests with JSON-RPC, responses as JSON or SSE stream)
+- **Stateless-friendly**: No long-lived connections required; fits naturally into Hono's request-response model
 
 ### Decision 3: Environment variables for agent self-awareness
 
@@ -102,10 +105,16 @@ The user adds the AgentConsole MCP server to `~/.claude/settings.json` (user-lev
 {
   "mcpServers": {
     "agent-console": {
+      "type": "http",
       "url": "http://localhost:3457/mcp"
     }
   }
 }
+```
+
+Or via Claude Code CLI:
+```bash
+claude mcp add --transport http agent-console http://localhost:3457/mcp
 ```
 
 **Notes:**
@@ -115,8 +124,8 @@ The user adds the AgentConsole MCP server to `~/.claude/settings.json` (user-lev
   ```json
   {
     "mcpServers": {
-      "agent-console": { "url": "http://localhost:3457/mcp" },
-      "agent-console-2": { "url": "http://localhost:3458/mcp" }
+      "agent-console": { "type": "http", "url": "http://localhost:3457/mcp" },
+      "agent-console-2": { "type": "http", "url": "http://localhost:3458/mcp" }
     }
   }
   ```
@@ -128,7 +137,7 @@ The user adds the AgentConsole MCP server to `~/.claude/settings.json` (user-lev
 Agent (Claude Code in wt-002)
     │
     │ 1. Calls MCP tool: delegate_to_worktree
-    │    (via SSE transport to AgentConsole server)
+    │    (via Streamable HTTP to AgentConsole server)
     ▼
 AgentConsole Server (/mcp endpoint)
     │
@@ -245,17 +254,17 @@ List active sessions (useful for discovering existing work).
 
 ## Implementation Plan
 
-### Phase 1: Environment Variable Injection
+### Phase 1: Environment Variable Injection (Done)
 
-1. Inject `AGENT_CONSOLE_BASE_URL`, `AGENT_CONSOLE_SESSION_ID`, `AGENT_CONSOLE_WORKER_ID`, and `AGENT_CONSOLE_REPOSITORY_ID` into PTY process environment (`worker-manager.ts`)
-2. Verify no conflicts with existing env filtering (`env-filter.ts`)
+1. ~~Inject `AGENT_CONSOLE_BASE_URL`, `AGENT_CONSOLE_SESSION_ID`, `AGENT_CONSOLE_WORKER_ID`, and `AGENT_CONSOLE_REPOSITORY_ID` into PTY process environment (`worker-manager.ts`)~~
+2. ~~Verify no conflicts with existing env filtering (`env-filter.ts`)~~
 
-This alone enables agents to use `curl` for basic self-delegation, even without the MCP endpoint.
+Implemented in `worker-manager.ts` and `session-manager.ts`. Agent worker PTY processes now receive AgentConsole context. Terminal workers do not.
 
 ### Phase 2: MCP Endpoint on AgentConsole Server
 
-1. Add `/mcp` SSE endpoint to the Hono server
-2. Implement MCP protocol (tool listing, tool execution) using `@modelcontextprotocol/sdk` or equivalent
+1. Add `/mcp` Streamable HTTP endpoint to the Hono server
+2. Implement MCP protocol using `@modelcontextprotocol/sdk` with Streamable HTTP transport
 3. Implement tools: `delegate_to_worktree`, `get_session_status`, `send_message_to_session`, `list_sessions`
 4. Direct service layer access (no internal HTTP calls)
 
@@ -263,7 +272,7 @@ This alone enables agents to use `curl` for basic self-delegation, even without 
 
 1. **Output retrieval**: Tool to read recent output from delegated workers (leveraging existing worker output file system)
 2. **Session lifecycle management**: Tools to pause/resume/stop delegated sessions
-3. **Activity state subscription**: SSE-based notification when delegated agent state changes
+3. **Activity state subscription**: Real-time notification when delegated agent state changes
 
 ## Security Considerations
 
