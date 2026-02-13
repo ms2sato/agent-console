@@ -54,6 +54,31 @@ Consider extracting to `worker-lifecycle.ts` or similar.
 - Can internal structures change without affecting clients?
 - Are data structures protected from direct manipulation?
 
+### Module Design Evaluation
+
+When evaluating or designing modules, apply these three lenses:
+
+**Cohesion: Does the module have a single, clear purpose?**
+- Can you describe the module's purpose in one sentence without using "and"? If not, it likely has multiple responsibilities.
+- Change cohesion: When one feature changes, do the affected files always change together? Files that always change together should be in the same module.
+- Negative cohesion: If two functions in the same module never change together, they may belong in different modules.
+- Temporal cohesion trap: Functions grouped "because they run at startup" or "because they're called together" may not belong together. Group by domain responsibility, not timing.
+
+**Coupling: How much does this module depend on others?**
+- Can this module change without forcing changes elsewhere?
+- Does this module depend on implementation details of another? (It shouldn't)
+- Would a new team member understand this module without reading its dependencies?
+- Data coupling (good): Modules communicate through simple data parameters.
+- Stamp coupling (caution): Modules share complex data structures beyond what's needed.
+- Control coupling (bad): One module controls another's behavior via flags.
+- Content coupling (prohibited): One module directly accesses another's internals.
+
+**Encapsulation: Is the interface minimal and stable?**
+- Does the public API reveal only what callers need?
+- Can the internal implementation change without affecting callers?
+- Is the dependency direction correct? High-level modules should not depend on low-level implementation details.
+- Are dependencies explicit (imports) rather than implicit (global state, naming conventions)?
+
 ## 2. Bug Resistance
 
 ### Type Safety
@@ -273,6 +298,32 @@ Key principles:
 - Validate message format before processing (use Valibot schemas)
 - Don't trust client-provided IDs without verification
 - Rate-limit rapid reconnection attempts
+
+## 9. TypeScript Standards
+
+### Type Safety Fundamentals
+- Avoid `any`. Use `unknown` with proper type guards only when the type is genuinely uncertain.
+- Do not use `unknown` as a shortcut to bypass type checking. Casting through `unknown` (e.g., `value as unknown as TargetType`) is prohibited.
+- Define shared types in `packages/shared`.
+- Always use `async/await`. Avoid fire-and-forget patterns (calling async functions without awaiting). See frontend-standards and backend-standards for detailed rules.
+
+### Enum-like Definitions with Labels
+
+When defining a set of related constants that need display labels (for UI, logs, etc.), define the labeled object first and derive the type from it:
+
+```typescript
+// ✅ Good: Object is Single Source of Truth
+const STATUS_LABELS = {
+  'pending': 'Pending',
+  'active': 'Active',
+  'completed': 'Completed',
+} as const;
+type Status = keyof typeof STATUS_LABELS;
+
+// ❌ Avoid: Type and labels defined separately (can drift)
+type Status = 'pending' | 'active' | 'completed';
+const STATUS_LABELS: Record<Status, string> = { ... };
+```
 
 ## Evaluation Output Format
 

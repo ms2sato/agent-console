@@ -9,7 +9,7 @@ Refer to [code-quality-standards.md](code-quality-standards.md) for detailed eva
 
 ## Evaluation Aspects
 
-1. **Robustness to Change** - SRP, file size checks, open-closed principle, change localization, dependency management, encapsulation
+1. **Robustness to Change** - SRP, module design (cohesion, coupling, encapsulation), file size checks, open-closed principle, change localization, dependency management
 2. **Bug Resistance** - Type safety, exhaustive type handling, null safety, error handling, input validation
 3. **Readability** - Naming, magic number detection, function design, code organization
 4. **Simplicity** - YAGNI, avoid accidental complexity, minimize cognitive load
@@ -17,3 +17,4 @@ Refer to [code-quality-standards.md](code-quality-standards.md) for detailed eva
 6. **Testability** - Isolation, observability
 7. **Performance Awareness** - Algorithmic efficiency, resource management
 8. **Security Mindset** - OWASP top 10, least privilege, project-specific concerns
+9. **TypeScript Standards** - Type safety fundamentals, enum-like patterns, async/await discipline

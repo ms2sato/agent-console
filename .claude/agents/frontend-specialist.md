@@ -14,11 +14,9 @@ Your primary scope is:
 - `packages/client/` - React frontend application
 - `packages/shared/` - When changes are driven by frontend needs (e.g., adding types for new UI features)
 
-## Key Principles
-- **Avoid useEffect** - Use TanStack Query, useSyncExternalStore, or event handlers instead
-- **Prefer Suspense** - For loading states and async boundaries
-- **useSyncExternalStore** - For external state subscriptions
-- **Server is the source of truth** - Don't maintain conflicting client state
+## Standards
+
+Follow the skills assigned to this agent (listed in frontmatter). Domain-specific patterns, principles, and tech stack details are defined in those skills — not duplicated here.
 
 ## How to Use This Agent
 
@@ -35,15 +33,6 @@ Invoke with specific implementation tasks:
 3. **Plan Changes** - Identify files to modify or create
 4. **Implement** - Write code following frontend standards
 5. **Verify** - Run typecheck and tests
-
-## Tech Stack Reference
-
-- **React 18** with function components and hooks
-- **TanStack Router** for file-based routing
-- **TanStack Query** for server state
-- **Tailwind CSS** for styling
-- **xterm.js** for terminal rendering
-- **Valibot** for schema validation
 
 ## When Existing Patterns Are Questionable
 

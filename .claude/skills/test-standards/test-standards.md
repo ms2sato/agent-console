@@ -2,8 +2,6 @@
 
 This document defines testing best practices and anti-patterns for the agent-console project.
 
-For additional details, see [docs/testing-guidelines.md](../../../docs/testing-guidelines.md).
-
 ## Core Principles
 
 ### 1. Tests Must Test Production Code
@@ -63,6 +61,26 @@ afterAll(() => {
 });
 // Benefits: tests URL construction, error handling, etc.
 ```
+
+### 4. Do Not Change Production Code for Testing Without Discussion
+
+Changing production code interfaces solely to make testing easier should not be done without discussion.
+
+```typescript
+// ❌ Wrong: Adding optional dependency injection just for testing without discussion
+class SessionManager {
+  cleanupOrphanProcesses(
+    deps: {
+      loadSessions?: () => PersistedSession[];
+      isProcessAlive?: (pid: number) => boolean;
+    } = {}
+  ): void {
+    // Changed signature just for testing
+  }
+}
+```
+
+If testing requires changes to production code, **consult with the team first**. Changes that improve testability often also improve design (e.g., dependency injection), but this should be a deliberate decision, not an afterthought.
 
 ## Evaluation Criteria
 
