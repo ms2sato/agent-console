@@ -17,6 +17,7 @@ Currently supports **[Claude Code](https://claude.ai/code)** as the default agen
 - **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI
 - **Real-time Updates**: WebSocket-based notifications for session and worker lifecycle changes
+- **Agent Self-Delegation (MCP)**: Agents can programmatically create worktrees and delegate tasks to new agents via [MCP](https://modelcontextprotocol.io) tools
 
 ## Key Concepts
 
@@ -180,6 +181,71 @@ API_PORT={{WORKTREE_NUM + 4000}}
 ```
 
 With this template, worktree 0 uses DEV_PORT=3000, worktree 1 uses DEV_PORT=3001, and so on.
+
+## Agent Self-Delegation (MCP)
+
+Agents running inside Agent Console can delegate work to new worktrees using [MCP (Model Context Protocol)](https://modelcontextprotocol.io) tools. For example, an agent working on a feature can say *"implement the tests in a new worktree"* and Agent Console will create the worktree, start a new session, and send the prompt — all programmatically.
+
+### How It Works
+
+```
+Agent (Claude Code in wt-001)
+    │
+    │  Calls MCP tool: delegate_to_worktree
+    │  (via Streamable HTTP → AgentConsole /mcp)
+    ▼
+AgentConsole Server
+    │
+    │  1. Creates worktree (wt-002)
+    │  2. Creates session + agent worker
+    │  3. Sends prompt to new agent
+    ▼
+New Agent (Claude Code in wt-002)
+    │
+    │  Executes the delegated task
+    ▼
+Agent (wt-001) polls status via: get_session_status
+```
+
+### Setup
+
+Register the Agent Console MCP server in Claude Code (one-time):
+
+```bash
+# For production (default port 3457)
+claude mcp add --transport http agent-console http://localhost:3457/mcp
+
+# For development (if using a different port, match your .env PORT)
+claude mcp add --transport http agent-console-dev http://localhost:3457/mcp
+```
+
+This adds the MCP server to `~/.claude.json`. All Claude Code instances (including those spawned by Agent Console) will automatically discover the tools.
+
+> **Tip**: If you change the server port, update the URL accordingly. Multiple Agent Console instances can coexist with different names (e.g., `agent-console`, `agent-console-2`).
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_agents` | Discover available agents (built-in + custom) |
+| `list_sessions` | List all active sessions with worker states |
+| `get_session_status` | Check a specific session's status and activity |
+| `send_message_to_session` | Send a follow-up message to a worker |
+| `delegate_to_worktree` | Create a worktree + session + agent in one call |
+
+### Example Interaction
+
+Once set up, you can ask an agent running in Agent Console:
+
+> *"Create a new worktree and implement unit tests for the authentication module"*
+
+The agent will use the `delegate_to_worktree` MCP tool, which:
+1. Creates a new git worktree with an auto-generated branch name
+2. Starts a new session with an agent worker
+3. Sends the prompt to the new agent
+4. Returns the session ID so the parent agent can monitor progress
+
+See [docs/design/self-worktree-delegation.md](docs/design/self-worktree-delegation.md) for the full design document.
 
 ## Project Structure
 
