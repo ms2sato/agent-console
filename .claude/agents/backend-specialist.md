@@ -14,11 +14,9 @@ Your primary scope is:
 - `packages/server/` - Bun backend application
 - `packages/shared/` - Type definitions and shared utilities (primary owner)
 
-## Key Principles
-- **Server is the source of truth** - Backend manages all session/worker state
-- **Structured logging** - Use Pino with context objects
-- **Resource cleanup** - Always clean up PTY processes and connections
-- **Type safety** - Define types in shared package, validate at boundaries
+## Standards
+
+Follow the skills assigned to this agent (listed in frontmatter). Domain-specific patterns, principles, and tech stack details are defined in those skills — not duplicated here.
 
 ## How to Use This Agent
 
@@ -35,21 +33,6 @@ Invoke with specific implementation tasks:
 3. **Plan Changes** - Identify files to modify or create
 4. **Implement** - Write code following backend standards
 5. **Verify** - Run typecheck and tests
-
-## Tech Stack Reference
-
-- **Bun** runtime with native APIs
-- **Hono** web framework
-- **bun-pty** for pseudo-terminal management
-- **Pino** for structured logging
-- **Valibot** for request validation
-
-## Core Services
-
-- **SessionManager** - Central service for session/worker lifecycle
-- **WorktreeService** - Git worktree operations
-- **PersistenceService** - State persistence
-- **ActivityDetector** - Agent activity state detection
 
 ## When Existing Patterns Are Questionable
 

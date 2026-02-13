@@ -1,5 +1,7 @@
 # Testing Guidelines
 
+> **Note:** Claude Code follows these guidelines via the [test-standards skill](.claude/skills/test-standards/). This document is the human-readable project reference.
+
 ## Principles
 
 ### 1. Tests Must Test Production Code

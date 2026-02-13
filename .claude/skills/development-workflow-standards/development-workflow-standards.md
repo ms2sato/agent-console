@@ -2,14 +2,7 @@
 
 This document defines the development process rules that all implementation work must follow.
 
-## Working Principles
-
-See [CLAUDE.md](/CLAUDE.md#working-principles) for the canonical definition. Summary:
-
-- **Purpose over speed** - Don't rush; code that fails its purpose wastes more time
-- **Don't blindly follow patterns** - Evaluate existing code before adopting
-- **Think before acting** - Consider the correct approach first
-- **Speak up about issues** - Mention problems even outside task scope
+See [CLAUDE.md](/CLAUDE.md#working-principles) for working principles that apply to all work.
 
 ## Branching Strategy (GitHub-Flow)
 
@@ -113,8 +106,49 @@ Before completing any code changes, always verify:
 1. **Run tests:** Execute `bun run test` and ensure all tests pass
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors
 3. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
+4. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
 
-If any verification fails, assume it is caused by your changes and fix it before proceeding.
+**Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
+
+## Commands
+
+```bash
+bun run dev        # Start development servers (uses AGENT_CONSOLE_HOME=$HOME/.agent-console-dev)
+bun run build      # Build all packages
+bun run test       # Run typecheck then tests
+bun run test:only  # Run tests only (skip typecheck)
+bun run typecheck  # Type check all packages
+bun run lint       # Lint all packages
+```
+
+### Environment Configuration
+
+**Before starting `bun run dev`:** Check `.env` for port configuration. Each worktree may use different ports to avoid conflicts:
+
+```bash
+cat .env  # Check PORT and CLIENT_PORT values
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 3457 | Backend server port |
+| `CLIENT_PORT` | 5173 | Frontend dev server port |
+| `AGENT_CONSOLE_HOME` | ~/.agent-console-dev | Data directory |
+
+## Claude Code on the Web (Remote Environment)
+
+When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook (`.claude/hooks/gh-setup.sh`). The following setup is required in the Claude Code Web custom environment:
+
+- **GH_TOKEN**: Set in the custom environment variables (gh CLI recognizes this automatically)
+- **Network access**: If using custom network mode, add `release-assets.githubusercontent.com` to the allowlist
+
+**Important:** Due to the sandbox proxy, `gh` commands require the `-R owner/repo` flag explicitly. For this repository, always use `-R ms2sato/agent-console`:
+
+```bash
+gh issue list -R ms2sato/agent-console
+gh pr list -R ms2sato/agent-console
+gh pr view 123 -R ms2sato/agent-console
+```
 
 ## Commit Standards
 

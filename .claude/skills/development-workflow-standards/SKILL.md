@@ -15,3 +15,5 @@ Refer to [development-workflow-standards.md](development-workflow-standards.md) 
 - **Conflict assessment**: Before PR, check conflicts with latest main. If severe, propose re-implementation.
 - **Never merge PRs**: Merging is always the user's decision.
 - **Verification**: Run `bun run test` and `bun run typecheck` before completing changes.
+- **Commands**: `bun run dev`, `bun run build`, `bun run test`, `bun run typecheck`, `bun run lint`
+- **Environment**: Check `.env` for port configuration before `bun run dev`.

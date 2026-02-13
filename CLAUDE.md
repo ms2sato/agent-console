@@ -27,6 +27,25 @@ The following are perspectives to revisit repeatedly during design. This is not 
 - Have you considered abstraction? Have you judged whether it is truly necessary after attempting it?
   - Do not avoid abstraction; judge its necessity after considering it
 
+- Is the module cohesive?
+  - Does each file/class/module have a single, clear responsibility?
+  - If you removed any part, would the rest still make sense as a unit?
+  - Would you name this module the same way after reading all its contents?
+
+- Is coupling minimized?
+  - Can this module change without forcing changes elsewhere?
+  - Does this module depend on implementation details of another?
+  - Would a new team member understand this module without reading its dependencies?
+
+- Is the interface well-encapsulated?
+  - Does the public API reveal only what callers need?
+  - Are implementation details hidden behind stable interfaces?
+  - Can the internal implementation change without affecting callers?
+
+- Is the dependency direction correct?
+  - Do high-level modules depend on low-level details? (They shouldn't)
+  - Are dependencies explicit (imports) rather than implicit (global state, conventions)?
+
 - Is the placement appropriate?
   - Module-specific or shared?
   - Does it align with the scope of responsibility?
@@ -95,112 +114,12 @@ Project-defined skills (in `.claude/skills/`):
 
 **Communication with Claude:** Adapt to the user's preferred language. Respond in the same language the user uses.
 
-## Development Workflow
-
-**Branching:** Follow GitHub-Flow. Create feature branches from main, open pull requests for review, and merge after approval.
-
-**Testing with code changes:** When modifying code, always update or add corresponding tests. Code changes without test coverage are incomplete.
-
-**TDD for bug fixes:** When fixing bugs, apply Test-Driven Development where feasible. Write a failing test that reproduces the bug first, then implement the fix.
-
-**Commit messages:** Use conventional commit format: `type: description`
-- `feat:` new feature
-- `fix:` bug fix
-- `refactor:` code change without feature/fix
-- `test:` adding or updating tests
-- `docs:` documentation changes
-
-## Commands
-
-```bash
-bun run dev        # Start development servers (uses AGENT_CONSOLE_HOME=$HOME/.agent-console-dev)
-bun run build      # Build all packages
-bun run test       # Run typecheck then tests
-bun run test:only  # Run tests only (skip typecheck)
-bun run typecheck  # Type check all packages
-bun run lint       # Lint all packages
-```
-
-**Before starting `bun run dev`:** Check `.env` for port configuration. Each worktree may use different ports to avoid conflicts:
-
-```bash
-cat .env  # Check PORT and CLIENT_PORT values
-```
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | 3457 | Backend server port |
-| `CLIENT_PORT` | 5173 | Frontend dev server port |
-| `AGENT_CONSOLE_HOME` | ~/.agent-console-dev | Data directory |
-
-## Claude Code on the Web (Remote Environment)
-
-When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook (`.claude/hooks/gh-setup.sh`). The following setup is required in the Claude Code Web custom environment:
-
-- **GH_TOKEN**: Set in the custom environment variables (gh CLI recognizes this automatically)
-- **Network access**: If using custom network mode, add `release-assets.githubusercontent.com` to the allowlist
-
-**Important:** Due to the sandbox proxy, `gh` commands require the `-R owner/repo` flag explicitly. For this repository, always use `-R ms2sato/agent-console`:
-
-```bash
-gh issue list -R ms2sato/agent-console
-gh pr list -R ms2sato/agent-console
-gh pr view 123 -R ms2sato/agent-console
-```
-
 ## Project Structure
 
 Monorepo with Bun workspaces:
 - `packages/client` - React frontend with Vite, TanStack Router, TanStack Query, and Tailwind CSS
 - `packages/server` - Bun backend with Hono framework and native WebSocket
 - `packages/shared` - Shared types and utilities
-
-## TypeScript
-
-- Avoid `any`. Use `unknown` with proper type guards only when the type is genuinely uncertain.
-- Do not use `unknown` as a shortcut to bypass type checking. Casting through `unknown` (e.g., `value as unknown as TargetType`) is prohibited.
-- Define shared types in `packages/shared`.
-- Always use `async/await`. Avoid fire-and-forget patterns (calling async functions without awaiting). See frontend-standards and backend-standards for detailed rules.
-
-## TypeScript Idioms
-
-### Enum-like definitions with labels
-
-When defining a set of related constants that need display labels (for UI, logs, etc.), define the labeled object first and derive the type from it:
-
-```typescript
-// ✅ Good: Object is Single Source of Truth
-const STATUS_LABELS = {
-  'pending': 'Pending',
-  'active': 'Active',
-  'completed': 'Completed',
-} as const;
-type Status = keyof typeof STATUS_LABELS;
-
-// ❌ Avoid: Type and labels defined separately (can drift)
-type Status = 'pending' | 'active' | 'completed';
-const STATUS_LABELS: Record<Status, string> = { ... };
-```
-
-## Schema Validation (Valibot)
-
-**Always add `minLength(1)` before regex validation.** When an empty string reaches a regex, it fails with a confusing error message (e.g., "Invalid branch name" instead of "Branch name is required"). Users cannot understand what to fix.
-
-```typescript
-// ❌ Bug: empty string shows "Invalid branch name"
-v.pipe(
-  v.string(),
-  v.regex(branchNamePattern, branchNameErrorMessage)
-)
-
-// ✅ Correct: empty string shows "Branch name is required"
-v.pipe(
-  v.string(),
-  v.trim(),
-  v.minLength(1, 'Branch name is required'),
-  v.regex(branchNamePattern, branchNameErrorMessage)
-)
-```
 
 ## Project Overview
 
@@ -216,82 +135,28 @@ A web application for managing multiple AI coding agent instances (Claude Code, 
 
 ## Architecture
 
-```
-Backend (Bun + Hono)                Frontend (React + Vite)
-┌──────────────────────────┐        ┌──────────────────────────┐
-│ SessionManager           │        │ Dashboard                │
-│ ├── Session1             │        │ ├── SessionList          │
-│ │   ├── AgentWorker     │◄──────►│ │   └── WorkerTabs       │
-│ │   └── TerminalWorker   │  WS   │ └── Terminal (xterm.js)  │
-│ └── Session2             │        │                          │
-│     └── AgentWorker      │        │                          │
-└──────────────────────────┘        └──────────────────────────┘
-```
-
-- **Backend** manages PTY processes that persist across browser reconnections (tmux-like)
-- **Frontend** is React with TanStack Router, using xterm.js for terminal rendering
-- **WebSocket** endpoints:
-  - `/ws/app` - Broadcasts session/worker lifecycle events (app-wide state sync)
-  - `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
-
-### Client-Server Responsibility
+See [docs/design/session-worker-design.md](docs/design/session-worker-design.md) for detailed architecture and data models.
 
 **Server is the source of truth.** The client should always follow the server's state, not make independent decisions about application state.
 
-- **Session/Worker lifecycle:** Server creates, manages, and destroys sessions and workers. Client only displays what server provides.
-- **State synchronization:** Client receives state updates via WebSocket and renders accordingly. No client-side state that contradicts server.
-- **User actions:** Client sends user intent to server (e.g., "create session"), server executes and broadcasts result.
-- **Terminal caching:** Client caches terminal state in IndexedDB for UX optimization (instant tab switching), but always syncs with server to get updates since the cached offset. Cache is a performance optimization, not a source of truth.
+- Backend manages PTY processes that persist across browser reconnections (tmux-like)
+- Frontend renders terminal state using xterm.js
+- WebSocket provides real-time communication (see [docs/design/websocket-protocol.md](docs/design/websocket-protocol.md))
+  - `/ws/app` - App-wide state synchronization
+  - `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
 
-## Key Technical Details
+## Reference
 
-- AI agents require PTY (not regular spawn) because they are interactive TUIs
-- xterm.js handles ANSI escape sequences from agents
-- Resize events must be propagated to PTY
-- Output buffering enables reconnection without losing history
-- Activity detection: Parses agent output to determine state (active/idle/asking)
-- Terminal state caching: IndexedDB stores terminal state for instant restore on tab switch (see [terminal-state-sync.md](docs/design/terminal-state-sync.md))
+Details for each domain are defined in their respective skills and docs. CLAUDE.md intentionally does NOT duplicate skill content — each skill is the single source of truth for its domain.
 
-## WebSocket Message Protocol
-
-See [docs/design/websocket-protocol.md](docs/design/websocket-protocol.md) for detailed protocol specification.
-
-- `/ws/app` - App-wide state synchronization (sessions, worker activity)
-- `/ws/session/:sessionId/worker/:workerId` - Individual worker I/O
-
-## Key Dependencies
-
-- `bun-pty` - Pseudo-terminal for spawning agents (Bun native)
-- `hono` - Web framework for Bun
-- `@xterm/xterm` - Terminal rendering in browser
-- `@tanstack/react-query` - Server state management
-- `@tanstack/react-router` - File-based routing
-
-## Testing
-
-Follow the guidelines in [docs/testing-guidelines.md](docs/testing-guidelines.md).
-
-### Verification Checklist
-
-Before completing any code changes, always verify the following:
-
-1. **Run tests:** Execute `bun run test` and ensure all tests pass.
-2. **Run type check:** Execute `bun run typecheck` and ensure no type errors.
-3. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
-
-**Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
-
-### Reviewer Usage
-
-Use reviewers to evaluate code before finalizing changes. Run applicable reviewers in parallel for efficiency.
-
-| Reviewer | When to Use |
-|----------|-------------|
-| `test-reviewer` | **Always** when tests are added or modified (code changes require test changes) |
-| `code-quality-reviewer` | New features, refactoring, or architectural decisions |
-| `ux-architecture-reviewer` | State synchronization, WebSocket, persistence, or session/worker lifecycle changes |
-
-Each reviewer focuses on a specific aspect:
-- **test-reviewer**: Test validity, coverage, methodology, anti-patterns
-- **code-quality-reviewer**: Design, maintainability, patterns (React and Backend)
-- **ux-architecture-reviewer**: UI accurately represents system state, edge case handling
+| Topic | Source |
+|-------|--------|
+| Development workflow (branching, testing, commits, commands) | `development-workflow-standards` skill |
+| Code quality (design principles, TypeScript, module evaluation) | `code-quality-standards` skill |
+| Frontend (React, TanStack, Tailwind, Valibot) | `frontend-standards` skill |
+| Backend (Hono, Bun, PTY, WebSocket, logging) | `backend-standards` skill |
+| Testing (methodology, anti-patterns, boundary testing) | `test-standards` skill |
+| WebSocket protocol specification | [docs/design/websocket-protocol.md](docs/design/websocket-protocol.md) |
+| Terminal state sync design | [docs/design/terminal-state-sync.md](docs/design/terminal-state-sync.md) |
+| Session/Worker data model | [docs/design/session-worker-design.md](docs/design/session-worker-design.md) |
+| Testing guidelines (human reference) | [docs/testing-guidelines.md](docs/testing-guidelines.md) |
