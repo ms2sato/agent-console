@@ -2,6 +2,7 @@ import { serveStatic, upgradeWebSocket, websocket } from 'hono/bun';
 import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
+import { mcpApp } from './mcp/mcp-server.js';
 import { setupWebSocketRoutes } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
@@ -124,6 +125,9 @@ app.get('/health', (c) => {
 
 // Mount API routes
 app.route('/api', api);
+
+// Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
+app.route('', mcpApp);
 
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
 // WebSocket routes are not caught by the catch-all SPA handler

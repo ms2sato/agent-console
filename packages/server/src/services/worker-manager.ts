@@ -93,6 +93,8 @@ export interface AgentActivationParams extends WorkerContext {
   agentId: string;
   continueConversation: boolean;
   initialPrompt?: string;
+  /** Repository ID for worktree sessions. Omit for quick sessions. */
+  repositoryId?: string;
 }
 
 /**
@@ -270,7 +272,7 @@ export class WorkerManager {
       return;
     }
 
-    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars } = params;
+    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId } = params;
 
     const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(agentId) ?? agentManager.getDefaultAgent();
@@ -285,10 +287,25 @@ export class WorkerManager {
       cwd: locationPath,
     });
 
+    // Build AgentConsole context env vars so the agent knows its own context.
+    // These enable self-delegation (e.g., MCP tools) and agent self-awareness.
+    const agentConsoleEnv: Record<string, string> = {
+      AGENT_CONSOLE_BASE_URL: `http://localhost:${serverConfig.PORT}`,
+      AGENT_CONSOLE_SESSION_ID: sessionId,
+      AGENT_CONSOLE_WORKER_ID: worker.id,
+    };
+    if (repositoryId) {
+      agentConsoleEnv.AGENT_CONSOLE_REPOSITORY_ID = repositoryId;
+    }
+
+    // Security: AgentConsole context vars (agentConsoleEnv) are spread LAST
+    // so they cannot be spoofed by repository-level configuration (repositoryEnvVars)
+    // or agent command templates (templateEnv).
     const processEnv = {
       ...getChildProcessEnv(),
       ...repositoryEnvVars,
       ...templateEnv,
+      ...agentConsoleEnv,
     };
 
     const unsetPrefix = getUnsetEnvPrefix();
