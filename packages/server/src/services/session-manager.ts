@@ -868,6 +868,7 @@ export class SessionManager {
 
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
+    const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     try {
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
@@ -877,6 +878,7 @@ export class SessionManager {
             repositoryEnvVars,
             agentId: worker.agentId,
             continueConversation: true,
+            repositoryId,
           });
           activatedWorkers.push(worker);
         } else if (worker.type === 'terminal') {
@@ -1003,6 +1005,7 @@ export class SessionManager {
 
     let worker: InternalWorker;
     const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
     if (request.type === 'agent') {
       const agentWorker = await this.workerManager.initializeAgentWorker({
@@ -1018,6 +1021,7 @@ export class SessionManager {
         agentId: agentWorker.agentId,
         continueConversation,
         initialPrompt,
+        repositoryId,
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
@@ -1093,6 +1097,7 @@ export class SessionManager {
     }
 
     const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
@@ -1109,6 +1114,7 @@ export class SessionManager {
         repositoryEnvVars,
         agentId: agent ? worker.agentId : CLAUDE_CODE_AGENT_ID,
         continueConversation: true,
+        repositoryId,
       });
     } else {
       // terminal worker
@@ -1292,6 +1298,7 @@ export class SessionManager {
 
     // Create new worker with same ID, preserving original createdAt for tab order
     const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
     const newWorker = await this.workerManager.initializeAgentWorker({
       id: workerId,
       name: workerName,
@@ -1304,6 +1311,7 @@ export class SessionManager {
       repositoryEnvVars,
       agentId: workerAgentId,
       continueConversation,
+      repositoryId,
     });
 
     // Re-check session still exists after async gap
@@ -1379,6 +1387,7 @@ export class SessionManager {
     // Activate PTY for the worker
     try {
       const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
+      const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
       if (existingWorker.type === 'agent') {
         // SECURITY: Verify agentId is still valid before activating
@@ -1395,6 +1404,7 @@ export class SessionManager {
           repositoryEnvVars,
           agentId: effectiveAgentId,
           continueConversation: true,
+          repositoryId,
         });
       } else {
         this.workerManager.activateTerminalWorkerPty(existingWorker, {

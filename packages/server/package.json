@@ -22,14 +22,17 @@
   },
   "dependencies": {
     "@agent-console/shared": "*",
+    "@hono/mcp": "npm:@jsr/hono__mcp",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "bun-pty": "^0.4.2",
-    "hono": "^4.6.13",
+    "hono": "^4.11.9",
     "hono-pino": "^0.10.3",
     "kysely": "^0.28.9",
     "kysely-bun-sqlite": "^0.4.0",
     "open": "^11.0.0",
     "pino": "^10.1.0",
-    "valibot": "^1.2.0"
+    "valibot": "^1.2.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",
