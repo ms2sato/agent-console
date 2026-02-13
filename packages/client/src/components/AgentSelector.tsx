@@ -22,8 +22,8 @@ export function AgentSelector({
 
   const agents = data?.agents ?? [];
 
-  // Default to first agent (Claude Code) if no value provided
-  const selectedValue = value ?? agents[0]?.id ?? '';
+  // Default to first agent (Claude Code) if no value provided or value doesn't match any agent
+  const selectedValue = (value && agents.some(a => a.id === value)) ? value : (agents[0]?.id ?? '');
 
   if (isLoading) {
     return (
