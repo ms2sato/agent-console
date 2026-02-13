@@ -5,6 +5,7 @@ import { AgentSelector } from '../AgentSelector';
 import { FormOverlay } from '../ui/Spinner';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
+import { getLastSelectedAgentId, saveLastSelectedAgentId } from '../../lib/agent-preference';
 
 export interface QuickSessionFormProps {
   isPending: boolean;
@@ -29,7 +30,7 @@ export function QuickSessionForm({
     defaultValues: {
       type: 'quick',
       locationPath: '/tmp',
-      agentId: undefined,
+      agentId: getLastSelectedAgentId(),
     },
     mode: 'onBlur',
   });
@@ -63,7 +64,10 @@ export function QuickSessionForm({
             <span className="text-sm text-gray-400">Agent:</span>
             <AgentSelector
               value={watch('agentId')}
-              onChange={(value) => setValue('agentId', value)}
+              onChange={(value) => {
+                setValue('agentId', value);
+                if (value) saveLastSelectedAgentId(value);
+              }}
               className="flex-1"
             />
           </div>

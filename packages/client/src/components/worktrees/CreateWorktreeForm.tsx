@@ -14,6 +14,7 @@ import type {
   GitHubIssueSummary,
 } from '@agent-console/shared';
 import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
+import { getLastSelectedAgentId, saveLastSelectedAgentId } from '../../lib/agent-preference';
 import {
   Dialog,
   DialogContent,
@@ -66,7 +67,7 @@ export function CreateWorktreeForm({
       customBranch: '',
       baseBranch: '',
       sessionTitle: '',
-      agentId: undefined,
+      agentId: getLastSelectedAgentId(),
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -226,7 +227,10 @@ export function CreateWorktreeForm({
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
                 value={watch('agentId')}
-                onChange={(value) => setValue('agentId', value)}
+                onChange={(value) => {
+                  setValue('agentId', value);
+                  if (value) saveLastSelectedAgentId(value);
+                }}
               />
             </div>
             <button
