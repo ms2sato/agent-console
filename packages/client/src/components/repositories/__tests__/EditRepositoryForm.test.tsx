@@ -143,7 +143,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -171,7 +171,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: '', envVars: '', description: '' });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -198,7 +198,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
     });
   });
 

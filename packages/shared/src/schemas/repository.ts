@@ -10,6 +10,7 @@ export const CreateRepositoryRequestSchema = v.object({
     v.trim(),
     v.minLength(1, 'Path is required')
   ),
+  description: v.optional(v.pipe(v.string(), v.trim())),
 });
 
 /**

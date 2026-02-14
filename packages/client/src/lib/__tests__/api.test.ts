@@ -295,7 +295,7 @@ describe('API Client', () => {
       const mockRepo = { repository: { id: '1', name: 'repo', path: '/path' } };
       mockFetch.mockResolvedValue(createMockResponse(mockRepo));
 
-      const result = await registerRepository('/path/to/repo');
+      const result = await registerRepository({ path: '/path/to/repo' });
 
       expect(getLastFetchUrl()).toContain('/api/repositories');
       expect(getLastFetchMethod()).toBe('POST');
@@ -312,7 +312,7 @@ describe('API Client', () => {
         json: mock(() => Promise.resolve({ error: 'Not a git repository' })),
       } as unknown as Response);
 
-      await expect(registerRepository('/not/git')).rejects.toThrow('Not a git repository');
+      await expect(registerRepository({ path: '/not/git' })).rejects.toThrow('Not a git repository');
     });
   });
 

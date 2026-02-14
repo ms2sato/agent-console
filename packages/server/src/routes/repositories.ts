@@ -20,6 +20,7 @@ import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
+import { generateRepositoryDescription } from '../services/repository-description-generator.js';
 import {
   getNotificationManager,
   getRepositorySlackIntegration,
@@ -61,11 +62,11 @@ const repositories = new Hono()
   // Register a repository
   .post('/', vValidator(CreateRepositoryRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const { path } = body;
+    const { path, description } = body;
     const repositoryManager = getRepositoryManager();
 
     try {
-      const repository = await repositoryManager.registerRepository(path);
+      const repository = await repositoryManager.registerRepository(path, { description });
       const repositoryWithRemote = await withRepositoryRemote(repository);
       return c.json({ repository: repositoryWithRemote }, 201);
     } catch (error) {
@@ -181,6 +182,34 @@ const repositories = new Hono()
 
     const repositoryWithRemote = await withRepositoryRemote(updated);
     return c.json({ repository: repositoryWithRemote });
+  })
+  // Generate a repository description using AI
+  .post('/:id/generate-description', async (c) => {
+    const repoId = c.req.param('id');
+    const repositoryManager = getRepositoryManager();
+    const repo = repositoryManager.getRepository(repoId);
+
+    if (!repo) {
+      throw new NotFoundError('Repository');
+    }
+
+    // Use the built-in Claude Code agent for description generation
+    const agentManager = await getAgentManager();
+    const agent = agentManager.getAgent(CLAUDE_CODE_AGENT_ID);
+    if (!agent) {
+      throw new ValidationError('Built-in agent not available');
+    }
+
+    const result = await generateRepositoryDescription({
+      repositoryPath: repo.path,
+      agent,
+    });
+
+    if (result.error) {
+      throw new ValidationError(result.error);
+    }
+
+    return c.json({ description: result.description });
   })
   // ===========================================================================
   // Worktree Routes

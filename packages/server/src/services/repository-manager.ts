@@ -103,7 +103,7 @@ export class RepositoryManager {
     }
   }
 
-  async registerRepository(repoPath: string): Promise<Repository> {
+  async registerRepository(repoPath: string, options?: { description?: string }): Promise<Repository> {
     // Resolve to absolute path
     const absolutePath = path.resolve(repoPath);
 
@@ -137,6 +137,7 @@ export class RepositoryManager {
       name,
       path: absolutePath,
       createdAt: new Date().toISOString(),
+      description: options?.description ?? null,
     };
 
     this.repositories.set(id, repository);

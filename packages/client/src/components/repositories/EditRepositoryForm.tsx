@@ -6,6 +6,7 @@ import * as v from 'valibot';
 import type { Repository, UpdateRepositoryRequest } from '@agent-console/shared';
 import {
   updateRepository,
+  generateRepositoryDescription,
   fetchRepositorySlackIntegration,
   updateRepositorySlackIntegration,
   testRepositorySlackIntegration,
@@ -14,8 +15,9 @@ import {
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
 
-// Form data schema - setup command and env vars are optional, can be empty
+// Form data schema - setup command, env vars, and description are optional, can be empty
 const EditRepositoryFormSchema = v.object({
+  description: v.optional(v.pipe(v.string(), v.trim())),
   setupCommand: v.optional(
     v.pipe(
       v.string(),
@@ -251,7 +253,7 @@ function SlackSettingsSection({ repositoryId }: SlackSettingsSectionProps) {
 }
 
 export interface EditRepositoryFormProps {
-  repository: Repository & { setupCommand?: string | null; envVars?: string | null };
+  repository: Repository & { setupCommand?: string | null; envVars?: string | null; description?: string | null };
   onSuccess: () => void;
   onCancel: () => void;
 }
@@ -263,10 +265,12 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<EditRepositoryFormData>({
     resolver: valibotResolver(EditRepositoryFormSchema),
     defaultValues: {
+      description: repository.description ?? '',
       setupCommand: repository.setupCommand ?? '',
       envVars: repository.envVars ?? '',
     },
@@ -287,7 +291,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
         if (!old) return old;
         return {
           repositories: old.repositories.map((r) =>
-            r.id === repository.id ? { ...r, setupCommand: data.setupCommand, envVars: data.envVars } : r
+            r.id === repository.id ? { ...r, description: data.description, setupCommand: data.setupCommand, envVars: data.envVars } : r
           ),
         };
       });
@@ -307,10 +311,18 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     },
   });
 
+  const regenerateDescriptionMutation = useMutation({
+    mutationFn: () => generateRepositoryDescription(repository.id),
+    onSuccess: (data) => {
+      setValue('description', data.description);
+    },
+  });
+
   const handleFormSubmit = (data: EditRepositoryFormData) => {
     setError(null);
     // Send empty string as-is; server will convert to null for database storage
     updateMutation.mutate({
+      description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
       envVars: data.envVars?.trim() ?? '',
     });
@@ -324,6 +336,43 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset disabled={updateMutation.isPending} className="flex flex-col gap-4">
+          <FormField label="Description" error={errors.description}>
+            <Textarea
+              {...register('description')}
+              placeholder="Brief description of the repository"
+              rows={3}
+              className="text-sm"
+              error={errors.description}
+            />
+          </FormField>
+          <div>
+            <button
+              type="button"
+              onClick={() => regenerateDescriptionMutation.mutate()}
+              disabled={regenerateDescriptionMutation.isPending}
+              className="btn bg-slate-600 hover:bg-slate-500 text-sm"
+              title="Regenerate description from README"
+            >
+              {regenerateDescriptionMutation.isPending ? (
+                <Spinner size="sm" />
+              ) : (
+                'Regenerate from README'
+              )}
+            </button>
+            {regenerateDescriptionMutation.isError && (
+              <p className="text-xs text-red-400 mt-1">
+                {regenerateDescriptionMutation.error instanceof Error
+                  ? regenerateDescriptionMutation.error.message
+                  : 'Failed to regenerate description'}
+              </p>
+            )}
+            {regenerateDescriptionMutation.isSuccess && (
+              <p className="text-xs text-green-400 mt-1">
+                Description regenerated successfully
+              </p>
+            )}
+          </div>
+
           <FormField label="Setup Command (optional)" error={errors.setupCommand}>
             <Textarea
               {...register('setupCommand')}
