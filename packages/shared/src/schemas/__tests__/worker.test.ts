@@ -118,4 +118,82 @@ describe('RestartWorkerRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('should validate with valid branch name', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature/new-feature',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.branch).toBe('feature/new-feature');
+    }
+  });
+
+  it('should validate with all fields', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      continueConversation: true,
+      agentId: 'agent-123',
+      branch: 'feature/test',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should trim whitespace from branch', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: '  feature/test  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.branch).toBe('feature/test');
+    }
+  });
+
+  it('should reject empty branch name', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject whitespace-only branch name', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept branch with slashes, dots, underscores, hyphens', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature/test-1.0_beta',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject branch with spaces', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature branch',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject branch with special characters', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature@branch',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject branch with unicode characters', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature/日本語',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject branch with backslash', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      branch: 'feature\\test',
+    });
+    expect(result.success).toBe(false);
+  });
 });

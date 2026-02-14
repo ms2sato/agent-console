@@ -70,6 +70,18 @@ export function getUnsetEnvPrefix(): string {
 }
 
 /**
+ * Get child process environment with AGENT_CONSOLE_* variables stripped.
+ * Prevents the parent process's AgentConsole context from leaking into
+ * child PTY processes. The correct AGENT_CONSOLE_* values (if any) should
+ * be layered on top by the caller.
+ */
+export function getCleanChildProcessEnv(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(getChildProcessEnv()).filter(([key]) => !key.startsWith('AGENT_CONSOLE_'))
+  );
+}
+
+/**
  * Filter repository environment variables to remove protected/dangerous variables.
  * This prevents repository configs from overriding security-sensitive variables
  * like LD_PRELOAD, PATH, HOME, etc.

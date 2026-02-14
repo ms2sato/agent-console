@@ -4,7 +4,9 @@ import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-co
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { resetAgentManager } from '../agent-manager.js';
 import { JobQueue } from '../../jobs/index.js';
 
 // Test config directory
@@ -42,6 +44,12 @@ describe('SessionManager', () => {
 
     // Reset PTY factory
     ptyFactory.reset();
+
+    // Reset git mocks to default implementations
+    resetGitMocks();
+
+    // Reset AgentManager singleton so it re-initializes with the new database
+    resetAgentManager();
   });
 
   afterEach(async () => {
@@ -1601,6 +1609,270 @@ describe('SessionManager', () => {
 
       const result = await manager.restartAgentWorker(session.id, terminalWorker!.id, false);
       expect(result).toBeNull();
+    });
+
+    it('should restart with a different agent when agentId is provided', async () => {
+      const manager = await getSessionManager();
+
+      // Register a custom agent
+      const { getAgentManager } = await import('../agent-manager.js');
+      const agentManager = await getAgentManager();
+      const customAgent = await agentManager.registerAgent({
+        name: 'Custom Agent',
+        commandTemplate: 'custom-agent',
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const originalAgentId = agentWorker.agentId;
+      expect(originalAgentId).not.toBe(customAgent.id);
+
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+
+      expect(restarted).not.toBeNull();
+      expect(restarted?.id).toBe(agentWorker.id);
+      expect(restarted?.agentId).toBe(customAgent.id);
+    });
+
+    it('should update worker name when agent changes', async () => {
+      const manager = await getSessionManager();
+
+      // Register a custom agent
+      const { getAgentManager } = await import('../agent-manager.js');
+      const agentManager = await getAgentManager();
+      const customAgent = await agentManager.registerAgent({
+        name: 'Custom Agent',
+        commandTemplate: 'custom-agent',
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+
+      expect(restarted).not.toBeNull();
+      expect(restarted?.name).toBe('Custom Agent');
+    });
+
+    it('should keep same agent when agentId is not provided', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const originalAgentId = agentWorker.agentId;
+      const originalName = agentWorker.name;
+
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false);
+
+      expect(restarted).not.toBeNull();
+      expect(restarted?.agentId).toBe(originalAgentId);
+      expect(restarted?.name).toBe(originalName);
+    });
+
+    it('should return null for invalid agentId', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = await manager.restartAgentWorker(session.id, agentWorker.id, false, 'non-existent-agent');
+      expect(result).toBeNull();
+    });
+
+    it('should broadcast session-updated after agent switch', async () => {
+      const manager = await getSessionManager();
+
+      // Register a custom agent
+      const { getAgentManager } = await import('../agent-manager.js');
+      const agentManager = await getAgentManager();
+      const customAgent = await agentManager.registerAgent({
+        name: 'Custom Agent',
+        commandTemplate: 'custom-agent',
+      });
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+
+      // onSessionUpdated should be called for agent switch
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+        }),
+      );
+    });
+
+    it('should not broadcast session-updated when restarting with same agent', async () => {
+      const manager = await getSessionManager();
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false);
+
+      // onSessionUpdated should NOT be called when agent stays the same
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+    });
+
+    it('should rename branch when branch parameter is provided for worktree session', async () => {
+      const manager = await getSessionManager();
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+
+      expect(restarted).not.toBeNull();
+      expect(restarted?.id).toBe(agentWorker.id);
+      // Git operations should have been called
+      expect(mockGit.getCurrentBranch).toHaveBeenCalledWith('/test/path');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
+      // New PTY should be created
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      // worktreeId should be updated
+      const updatedSession = manager.getSession(session.id);
+      if (updatedSession?.type === 'worktree') {
+        expect(updatedSession.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('should not rename branch when branch matches current branch', async () => {
+      const manager = await getSessionManager();
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('same-branch'));
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'same-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'same-branch');
+
+      // renameBranch should NOT be called when branch name matches
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+    });
+
+    it('should broadcast session-updated when branch is renamed', async () => {
+      const manager = await getSessionManager();
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+
+      // onSessionUpdated should be called for branch rename
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+        }),
+      );
+    });
+
+    it('should ignore branch parameter for quick sessions', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Passing branch to a quick session should not cause errors
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+
+      expect(restarted).not.toBeNull();
+      // Git operations should NOT be called for quick sessions
+      expect(mockGit.getCurrentBranch).not.toHaveBeenCalled();
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateSessionMetadata - no auto-restart on branch rename', () => {
+    it('should rename branch without restarting agent worker', async () => {
+      const manager = await getSessionManager();
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+      // Git operations should have been called
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
+      // No new PTY should be created (no auto-restart)
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+      // No old PTY should be killed (no auto-restart)
+      const agentPty = ptyFactory.instances[0];
+      expect(agentPty.killed).toBe(false);
     });
   });
 

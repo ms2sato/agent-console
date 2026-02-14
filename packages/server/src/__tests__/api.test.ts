@@ -470,7 +470,7 @@ describe('API Routes Integration', () => {
         expect(body.title).toBe('New Title');
       });
 
-      it('should return 400 when no fields provided', async () => {
+      it('should accept empty object (all fields optional)', async () => {
         const app = await createApp();
 
         // Create a session first
@@ -484,39 +484,13 @@ describe('API Routes Integration', () => {
         });
         const { session } = (await createRes.json()) as { session: Session };
 
-        // Try to update with empty body
+        // Update with empty body should succeed (title is optional)
         const patchRes = await app.request(`/api/sessions/${session.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
         });
-        expect(patchRes.status).toBe(400);
-      });
-
-      it('should return 400 when branch is empty string', async () => {
-        const app = await createApp();
-
-        // Create a session first
-        const createRes = await app.request('/api/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'quick',
-            locationPath: '/test/path',
-          }),
-        });
-        const { session } = (await createRes.json()) as { session: Session };
-
-        // Try to update with empty branch
-        const patchRes = await app.request(`/api/sessions/${session.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ branch: '   ' }),
-        });
-        expect(patchRes.status).toBe(400);
-
-        const body = (await patchRes.json()) as { error: string };
-        expect(body.error).toContain('Branch name cannot be empty');
+        expect(patchRes.status).toBe(200);
       });
 
       it('should return 404 for non-existent session', async () => {

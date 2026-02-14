@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { branchNamePattern, branchNameErrorMessage } from './session.js';
 
 /**
  * Base options for worker creation
@@ -48,6 +49,13 @@ export const CreateWorkerRequestSchema = CreateTerminalWorkerParamsSchema;
  */
 export const RestartWorkerRequestSchema = v.object({
   continueConversation: v.optional(v.boolean()),
+  agentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Agent ID must not be empty'))),
+  branch: v.optional(v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Branch name cannot be empty'),
+    v.regex(branchNamePattern, branchNameErrorMessage)
+  )),
 });
 
 // Internal types for server-side worker creation

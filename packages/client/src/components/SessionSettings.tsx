@@ -8,7 +8,7 @@ import {
   InitialPromptDialog,
   type MenuAction,
 } from './sessions';
-import type { Session, AgentActivityState } from '@agent-console/shared';
+import type { Session, AgentActivityState, AgentWorker } from '@agent-console/shared';
 
 interface SessionSettingsProps {
   sessionId: string;
@@ -66,17 +66,18 @@ export function SessionSettings({
         open={activeDialog === 'edit'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
-        currentBranch={currentBranch}
         currentTitle={currentTitle}
-        onBranchChange={onBranchChange}
         onTitleChange={onTitleChange}
-        onSessionRestart={onSessionRestart}
       />
 
       <RestartSessionDialog
         open={activeDialog === 'restart'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
+        currentAgentId={(session?.workers.find((w): w is AgentWorker => w.type === 'agent'))?.agentId}
+        currentBranch={currentBranch}
+        isWorktreeSession={true}
+        onBranchChange={onBranchChange}
         onSessionRestart={onSessionRestart}
       />
 
