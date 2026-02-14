@@ -130,11 +130,13 @@ export async function deleteWorker(sessionId: string, workerId: string): Promise
 export async function restartAgentWorker(
   sessionId: string,
   workerId: string,
-  continueConversation: boolean = false
+  continueConversation: boolean = false,
+  agentId?: string,
+  branch?: string
 ): Promise<{ worker: Worker }> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
     param: { sessionId, workerId },
-    json: { continueConversation },
+    json: { continueConversation, ...(agentId ? { agentId } : {}), ...(branch ? { branch } : {}) },
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
@@ -181,13 +183,11 @@ export async function resumeSession(sessionId: string): Promise<Session> {
 
 export interface UpdateSessionMetadataRequest {
   title?: string;
-  branch?: string;
 }
 
 export interface UpdateSessionMetadataResponse {
   success: boolean;
   title?: string;
-  branch?: string;
 }
 
 export async function updateSessionMetadata(

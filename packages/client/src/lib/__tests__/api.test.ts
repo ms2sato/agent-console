@@ -251,6 +251,30 @@ describe('API Client', () => {
       expect(body).toEqual({ continueConversation: true });
       expect(result).toEqual(mockWorker);
     });
+
+    it('should pass agentId when provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Custom Agent' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await restartAgentWorker('session-id', 'worker-id', false, 'custom-agent-id');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/restart');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ continueConversation: false, agentId: 'custom-agent-id' });
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('should not include agentId when not provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await restartAgentWorker('session-id', 'worker-id', false);
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ continueConversation: false });
+      expect(body).not.toHaveProperty('agentId');
+    });
   });
 
   describe('fetchRepositories', () => {

@@ -139,19 +139,15 @@ const sessions = new Hono()
 
     return c.json({ session });
   })
-  // Update session metadata (title and/or branch)
-  // If branch is changed, agent worker is automatically restarted
+  // Update session metadata (title)
   .patch('/:id', vValidator(UpdateSessionRequestSchema), async (c) => {
     const sessionId = c.req.param('id');
     const body = c.req.valid('json');
-    const { title, branch } = body;
+    const { title } = body;
 
-    const updates: { title?: string; branch?: string } = {};
+    const updates: { title?: string } = {};
     if (title !== undefined) {
       updates.title = title.trim();
-    }
-    if (branch !== undefined) {
-      updates.branch = branch.trim();
     }
 
     const sessionManager = getSessionManager();
@@ -167,7 +163,6 @@ const sessions = new Hono()
     return c.json({
       success: true,
       ...(result.title !== undefined && { title: result.title }),
-      ...(result.branch !== undefined && { branch: result.branch }),
     });
   })
   // Get workers for a session
@@ -353,10 +348,10 @@ const sessions = new Hono()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
     const body = c.req.valid('json');
-    const { continueConversation = false } = body;
+    const { continueConversation = false, agentId, branch } = body;
 
     const sessionManager = getSessionManager();
-    const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation);
+    const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
 
     if (!worker) {
       throw new NotFoundError('Worker');

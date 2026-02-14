@@ -62,25 +62,12 @@ export const branchNamePattern = /^[a-zA-Z0-9._/-]+$/;
 export const branchNameErrorMessage = 'Invalid branch name. Use alphanumeric, dots, underscores, slashes, or hyphens.';
 
 /**
- * Schema for updating a session
+ * Schema for updating a session (title only)
+ * Branch renaming is now handled via the restart worker endpoint.
  */
-export const UpdateSessionRequestSchema = v.pipe(
-  v.object({
-    title: v.optional(v.string()),
-    branch: v.optional(
-      v.pipe(
-        v.string(),
-        v.trim(),
-        v.minLength(1, 'Branch name cannot be empty'),
-        v.regex(branchNamePattern, branchNameErrorMessage)
-      )
-    ),
-  }),
-  v.check(
-    (input) => input.title !== undefined || input.branch !== undefined,
-    'At least one of title or branch must be provided'
-  )
-);
+export const UpdateSessionRequestSchema = v.object({
+  title: v.optional(v.pipe(v.string(), v.trim())),
+});
 
 /**
  * Schema for deleting a session.

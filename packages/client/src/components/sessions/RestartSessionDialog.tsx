@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -10,22 +10,44 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { restartAgentWorker, getSession } from '../../lib/api';
+import { AgentSelector } from '../AgentSelector';
 
 export interface RestartSessionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
+  currentAgentId?: string;
+  currentBranch?: string;
+  isWorktreeSession?: boolean;
   onSessionRestart?: () => void;
+  onBranchChange?: (newBranch: string) => void;
 }
 
 export function RestartSessionDialog({
   open,
   onOpenChange,
   sessionId,
+  currentAgentId,
+  currentBranch,
+  isWorktreeSession,
   onSessionRestart,
+  onBranchChange,
 }: RestartSessionDialogProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(currentAgentId);
+  const [branchValue, setBranchValue] = useState(currentBranch ?? '');
+
+  // Reset selected agent and branch when dialog opens
+  useEffect(() => {
+    if (open) {
+      setSelectedAgentId(currentAgentId);
+      setBranchValue(currentBranch ?? '');
+    }
+  }, [open, currentAgentId, currentBranch]);
+
+  const isAgentChanged = selectedAgentId !== currentAgentId;
+  const isBranchChanged = isWorktreeSession === true && branchValue.trim() !== (currentBranch ?? '');
 
   const handleRestart = async (continueConversation: boolean) => {
     setIsSubmitting(true);
@@ -41,8 +63,13 @@ export function RestartSessionDialog({
       if (!agentWorker) {
         throw new Error('No agent worker found');
       }
-      await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
+      const agentId = isAgentChanged ? selectedAgentId : undefined;
+      const newBranch = isBranchChanged ? branchValue.trim() : undefined;
+      await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
       onOpenChange(false);
+      if (newBranch && onBranchChange) {
+        onBranchChange(newBranch);
+      }
       if (onSessionRestart) {
         onSessionRestart();
       }
@@ -69,6 +96,37 @@ export function RestartSessionDialog({
             How would you like to restart this session?
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-400 shrink-0 w-14">Agent:</span>
+            <AgentSelector
+              value={selectedAgentId}
+              onChange={setSelectedAgentId}
+              className="flex-1"
+            />
+          </div>
+          {isWorktreeSession && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400 shrink-0 w-14">Branch:</span>
+              <input
+                type="text"
+                value={branchValue}
+                onChange={(e) => setBranchValue(e.target.value)}
+                className="input flex-1"
+                placeholder="Branch name"
+              />
+            </div>
+          )}
+          {(isAgentChanged || isBranchChanged) && (
+            <p className="text-xs text-yellow-400">
+              {isAgentChanged && isBranchChanged
+                ? 'Agent and branch will be changed. The terminal will be restarted.'
+                : isAgentChanged
+                  ? 'Agent will be switched. The terminal will be restarted with the new agent.'
+                  : 'Branch will be renamed. The terminal will be restarted.'}
+            </p>
+          )}
+        </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isSubmitting}>

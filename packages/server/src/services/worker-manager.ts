@@ -37,7 +37,7 @@ import type {
 } from './worker-types.js';
 import { ActivityDetector } from './activity-detector.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
-import { getChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
+import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { expandTemplate } from '../lib/template.js';
 import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -302,7 +302,7 @@ export class WorkerManager {
     // so they cannot be spoofed by repository-level configuration (repositoryEnvVars)
     // or agent command templates (templateEnv).
     const processEnv = {
-      ...getChildProcessEnv(),
+      ...getCleanChildProcessEnv(),
       ...repositoryEnvVars,
       ...templateEnv,
       ...agentConsoleEnv,
@@ -362,7 +362,7 @@ export class WorkerManager {
     const { sessionId, locationPath, repositoryEnvVars } = params;
 
     const processEnv = {
-      ...getChildProcessEnv(),
+      ...getCleanChildProcessEnv(),
       ...repositoryEnvVars,
     };
 

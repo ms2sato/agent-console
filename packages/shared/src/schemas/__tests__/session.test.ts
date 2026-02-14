@@ -215,7 +215,7 @@ describe('CreateSessionRequestSchema', () => {
 });
 
 describe('UpdateSessionRequestSchema', () => {
-  it('should validate update with title only', () => {
+  it('should validate update with title', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {
       title: 'New Title',
     });
@@ -225,175 +225,19 @@ describe('UpdateSessionRequestSchema', () => {
     }
   });
 
-  it('should validate update with branch only', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/new-feature',
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.output.branch).toBe('feature/new-feature');
-    }
-  });
-
-  it('should validate update with both title and branch', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      title: 'New Title',
-      branch: 'feature/new-feature',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should reject empty object (no fields)', () => {
+  it('should accept empty object (title is optional)', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {});
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
-  it('should reject empty branch name', () => {
+  it('should trim whitespace from title', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: '',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject whitespace-only branch name', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: '   ',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should trim whitespace from branch', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: '  feature/test  ',
+      title: '  My Title  ',
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.output.branch).toBe('feature/test');
+      expect(result.output.title).toBe('My Title');
     }
-  });
-
-  it('should accept valid branch with slashes', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/sub/branch',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept valid branch with dots', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'release-1.2.3',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept valid branch with underscores', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature_branch',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept valid branch with hyphens', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature-branch',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept valid branch with mixed valid characters', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/test-1.0_beta',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should reject branch with spaces', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature branch',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject branch with special characters', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature@branch',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject branch with hash', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature#branch',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  // Branch name boundary tests
-  it('should accept branch starting with slash', () => {
-    // Git allows branches starting with slash
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: '/feature',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept branch ending with slash', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept branch with double slashes', () => {
-    // The regex allows // - this is valid per current implementation
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature//test',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should reject branch with unicode characters', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/日本語',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject branch with emoji', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature/🚀',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should accept branch starting with dot', () => {
-    // The regex allows branches starting with dot
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: '.hidden-branch',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should reject branch with backslash', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature\\test',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject branch with asterisk', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 'feature*',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  // Type mismatch tests
-  it('should reject number for branch field', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: 123,
-    });
-    expect(result.success).toBe(false);
   });
 
   it('should reject number for title field', () => {
@@ -403,17 +247,12 @@ describe('UpdateSessionRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject object for branch field', () => {
+  it('should ignore unknown fields', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: { name: 'feature/test' },
+      title: 'Title',
+      branch: 'feature/test',
     });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject null for branch field', () => {
-    const result = v.safeParse(UpdateSessionRequestSchema, {
-      branch: null,
-    });
-    expect(result.success).toBe(false);
+    // Valibot strips unknown fields by default in v.object
+    expect(result.success).toBe(true);
   });
 });

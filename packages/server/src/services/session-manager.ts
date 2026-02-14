@@ -1276,7 +1276,9 @@ export class SessionManager {
   async restartAgentWorker(
     sessionId: string,
     workerId: string,
-    continueConversation: boolean
+    continueConversation: boolean,
+    agentId?: string,
+    branch?: string
   ): Promise<Worker | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -1284,10 +1286,35 @@ export class SessionManager {
     const existingWorker = session.workers.get(workerId);
     if (!existingWorker || existingWorker.type !== 'agent') return null;
 
+    // Resolve agent ID: use provided agentId or fall back to existing
+    const workerAgentId = agentId ?? existingWorker.agentId;
+
+    // Validate that the agent exists if a new agentId was provided
+    if (agentId) {
+      const agentManager = await getAgentManager();
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        logger.warn({ workerId, sessionId, agentId }, 'Cannot restart worker: agent not found');
+        return null;
+      }
+    }
+
+    // Handle branch rename if requested (must happen before restart)
+    if (branch && session.type === 'worktree') {
+      const currentBranch = await gitGetCurrentBranch(session.locationPath);
+      if (currentBranch !== branch) {
+        await gitRenameBranch(currentBranch, branch, session.locationPath);
+        session.worktreeId = branch;
+      }
+    }
+
+    const isAgentChanged = workerAgentId !== existingWorker.agentId;
+
     // Capture worker metadata before killing (needed for new worker creation)
-    const workerName = existingWorker.name;
+    const workerName = isAgentChanged
+      ? await this.generateWorkerName(session, 'agent', workerAgentId)
+      : existingWorker.name;
     const workerCreatedAt = existingWorker.createdAt;
-    const workerAgentId = existingWorker.agentId;
     const locationPath = session.locationPath;
 
     // Kill existing worker
@@ -1326,7 +1353,16 @@ export class SessionManager {
     currentSession.workers.set(workerId, newWorker);
     await this.persistSession(currentSession);
 
-    logger.info({ workerId, sessionId, continueConversation }, 'Agent worker restarted');
+    // Broadcast session update so all clients learn about agent/name/branch changes
+    const isBranchChanged = branch && session.type === 'worktree';
+    if (isAgentChanged || isBranchChanged) {
+      this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(currentSession));
+    }
+
+    logger.info(
+      { workerId, sessionId, continueConversation, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
+      isAgentChanged ? 'Agent worker switched to different agent' : (isBranchChanged ? 'Agent worker restarted with branch rename' : 'Agent worker restarted')
+    );
 
     return this.workerManager.toPublicWorker(newWorker);
   }
@@ -1441,7 +1477,6 @@ export class SessionManager {
 
   /**
    * Update session metadata (title and/or branch)
-   * If branch is changed, automatically restarts the agent worker
    */
   async updateSessionMetadata(
     sessionId: string,
@@ -1508,13 +1543,6 @@ export class SessionManager {
       try {
         await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
         session.worktreeId = updates.branch;
-
-        // Automatically restart agent worker to pick up new branch name
-        const agentWorker = Array.from(session.workers.values()).find(w => w.type === 'agent');
-        if (agentWorker) {
-          await this.restartAgentWorker(sessionId, agentWorker.id, true);
-          logger.info({ workerId: agentWorker.id, sessionId }, 'Agent worker auto-restarted after branch rename');
-        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: message };
