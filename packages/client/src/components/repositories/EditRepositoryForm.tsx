@@ -261,6 +261,16 @@ export interface EditRepositoryFormProps {
 export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepositoryFormProps) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [regenerateSuccess, setRegenerateSuccess] = useState(false);
+  const regenerateTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (regenerateTimerRef.current) {
+        clearTimeout(regenerateTimerRef.current);
+      }
+    };
+  }, []);
 
   const {
     register,
@@ -313,8 +323,17 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
   const regenerateDescriptionMutation = useMutation({
     mutationFn: () => generateRepositoryDescription(repository.id),
+    onMutate: () => {
+      setRegenerateSuccess(false);
+      if (regenerateTimerRef.current) {
+        clearTimeout(regenerateTimerRef.current);
+        regenerateTimerRef.current = null;
+      }
+    },
     onSuccess: (data) => {
       setValue('description', data.description);
+      setRegenerateSuccess(true);
+      regenerateTimerRef.current = setTimeout(() => setRegenerateSuccess(false), 3000);
     },
   });
 
@@ -366,7 +385,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
                   : 'Failed to regenerate description'}
               </p>
             )}
-            {regenerateDescriptionMutation.isSuccess && (
+            {regenerateSuccess && (
               <p className="text-xs text-green-400 mt-1">
                 Description regenerated successfully
               </p>
@@ -410,7 +429,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
           )}
 
           <div className="flex gap-2">
-            <button type="submit" className="btn btn-primary text-sm">
+            <button type="submit" className="btn btn-primary text-sm" disabled={regenerateDescriptionMutation.isPending}>
               Save Changes
             </button>
             <button type="button" onClick={onCancel} className="btn btn-danger text-sm">

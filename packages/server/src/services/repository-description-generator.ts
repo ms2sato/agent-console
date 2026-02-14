@@ -86,10 +86,17 @@ export async function generateRepositoryDescription(
 
   const descriptionPrompt = buildDescriptionPrompt(readmeContent);
 
+  // Defensive guard: ensure headlessTemplate is actually present
+  if (!agent.headlessTemplate) {
+    return {
+      error: `Agent "${agent.name}" has no headless template configured`,
+    };
+  }
+
   try {
     // Expand the headless template with the description prompt
     const { command, env: templateEnv } = expandTemplate({
-      template: agent.headlessTemplate!,
+      template: agent.headlessTemplate,
       prompt: descriptionPrompt,
       cwd: repositoryPath,
     });
@@ -108,8 +115,10 @@ export async function generateRepositoryDescription(
       },
     });
 
-    // Set up timeout
+    // Set up timeout with a flag to distinguish timeout from other failures
+    let timedOut = false;
     const timeoutId = setTimeout(() => {
+      timedOut = true;
       proc.kill();
     }, TIMEOUT_MS);
 
@@ -117,6 +126,11 @@ export async function generateRepositoryDescription(
     clearTimeout(timeoutId);
 
     if (exitCode !== 0) {
+      if (timedOut) {
+        return {
+          error: `Description generation timed out after ${TIMEOUT_MS / 1000} seconds`,
+        };
+      }
       const stderr = await new Response(proc.stderr).text();
       return {
         error: `Agent command failed: ${stderr.trim() || `exit code ${exitCode}`}`,

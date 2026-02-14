@@ -347,6 +347,84 @@ describe('repository-description-generator', () => {
       expect(prompt).toContain('ONLY the description text');
     });
 
+    it('should return error when agent has supportsHeadlessMode but no headlessTemplate', async () => {
+      mockFileContents.set('/repo/README.md', '# Project');
+      const agentMissingTemplate: AgentDefinition = {
+        ...mockAgent,
+        id: 'missing-template-agent',
+        name: 'Missing Template Agent',
+        headlessTemplate: undefined,
+        capabilities: {
+          ...mockAgent.capabilities,
+          supportsHeadlessMode: true,
+        },
+      };
+
+      const { generateRepositoryDescription } = await getModule();
+
+      const result = await generateRepositoryDescription({
+        repositoryPath: '/repo',
+        agent: agentMissingTemplate,
+      });
+
+      expect(result.description).toBeUndefined();
+      expect(result.error).toContain('has no headless template configured');
+    });
+
+    it('should return timeout error when agent command times out', async () => {
+      mockFileContents.set('/repo/README.md', '# Project');
+
+      // Simulate a process that is killed by timeout (exit code != 0)
+      // We capture the kill call and set up exited to resolve after kill
+      let killCalled = false;
+      let resolveExited: (value: number) => void;
+      const exitedPromise = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
+
+      mockSpawnResult = {
+        exited: exitedPromise,
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        kill: () => {
+          killCalled = true;
+          // Simulate the process exiting with non-zero after being killed
+          resolveExited!(137);
+        },
+      };
+
+      // Override setTimeout to fire the timeout callback immediately (with 0ms delay)
+      // This avoids waiting 30 seconds in test while still exercising the timeout code path
+      const originalSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((callback: () => void, _delay?: number) => {
+        return originalSetTimeout(callback, 0);
+      }) as typeof globalThis.setTimeout;
+
+      try {
+        const { generateRepositoryDescription } = await getModule();
+
+        const result = await generateRepositoryDescription({
+          repositoryPath: '/repo',
+          agent: mockAgent,
+        });
+
+        expect(killCalled).toBe(true);
+        expect(result.description).toBeUndefined();
+        expect(result.error).toContain('timed out');
+        expect(result.error).toContain('30 seconds');
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+
     it('should read README.rst as fallback', async () => {
       mockFileContents.set('/repo/README.rst', 'reStructuredText README');
       setMockSpawnResult('An rst project.');

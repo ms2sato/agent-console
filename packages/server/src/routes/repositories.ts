@@ -38,6 +38,9 @@ const logger = createLogger('api:repositories');
 // Guard against concurrent deletion of the same worktree
 const deletionsInProgress = new Set<string>();
 
+// Guard against concurrent description generation for the same repository
+const descriptionGenerationsInProgress = new Set<string>();
+
 /** Get the deletion guard set. Exported for testing only. */
 export function _getDeletionsInProgress(): Set<string> {
   return deletionsInProgress;
@@ -200,16 +203,25 @@ const repositories = new Hono()
       throw new ValidationError('Built-in agent not available');
     }
 
-    const result = await generateRepositoryDescription({
-      repositoryPath: repo.path,
-      agent,
-    });
-
-    if (result.error) {
-      throw new ValidationError(result.error);
+    if (descriptionGenerationsInProgress.has(repoId)) {
+      throw new ValidationError('Description generation already in progress for this repository');
     }
 
-    return c.json({ description: result.description });
+    descriptionGenerationsInProgress.add(repoId);
+    try {
+      const result = await generateRepositoryDescription({
+        repositoryPath: repo.path,
+        agent,
+      });
+
+      if (result.error) {
+        throw new ValidationError(result.error);
+      }
+
+      return c.json({ description: result.description });
+    } finally {
+      descriptionGenerationsInProgress.delete(repoId);
+    }
   })
   // ===========================================================================
   // Worktree Routes

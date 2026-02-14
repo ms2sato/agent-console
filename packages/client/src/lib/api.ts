@@ -22,6 +22,7 @@ import type {
   RemoteBranchStatus,
   UpdateRepositoryRequest,
   WorkerMessage,
+  GenerateRepositoryDescriptionResponse,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -609,17 +610,13 @@ export async function refreshDefaultBranch(repositoryId: string): Promise<Refres
 // Repository Description Generation
 // ===========================================================================
 
-export interface GenerateDescriptionResponse {
-  description: string;
-}
-
 /**
  * Generate a description for a repository based on its README.
  * Uses raw fetch because the server endpoint may not be in the Hono RPC client types yet.
  */
 export async function generateRepositoryDescription(
   repositoryId: string
-): Promise<GenerateDescriptionResponse> {
+): Promise<GenerateRepositoryDescriptionResponse> {
   const res = await fetch(`${API_BASE}/repositories/${repositoryId}/generate-description`, {
     method: 'POST',
   });
@@ -627,7 +624,7 @@ export async function generateRepositoryDescription(
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to generate description');
   }
-  return res.json() as Promise<GenerateDescriptionResponse>;
+  return res.json() as Promise<GenerateRepositoryDescriptionResponse>;
 }
 
 // ===========================================================================
