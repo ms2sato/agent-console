@@ -74,6 +74,7 @@ export {
   type GitHubIssueSummary,
   type RefreshDefaultBranchResponse,
   type RemoteBranchStatus,
+  type GenerateRepositoryDescriptionResponse,
 } from './repository.js';
 
 // System schemas

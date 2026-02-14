@@ -10,6 +10,7 @@ export const CreateRepositoryRequestSchema = v.object({
     v.trim(),
     v.minLength(1, 'Path is required')
   ),
+  description: v.optional(v.pipe(v.string(), v.trim())),
 });
 
 /**
@@ -163,3 +164,8 @@ export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueReque
 export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;
 export type RefreshDefaultBranchResponse = v.InferOutput<typeof RefreshDefaultBranchResponseSchema>;
 export type RemoteBranchStatus = v.InferOutput<typeof RemoteBranchStatusSchema>;
+
+/** Response type for repository description generation endpoint */
+export interface GenerateRepositoryDescriptionResponse {
+  description: string;
+}

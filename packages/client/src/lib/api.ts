@@ -7,6 +7,7 @@ import type {
   CreateWorkerRequest,
   CreateWorkerResponse,
   CreateSessionRequest,
+  CreateRepositoryRequest,
   AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
@@ -21,6 +22,7 @@ import type {
   RemoteBranchStatus,
   UpdateRepositoryRequest,
   WorkerMessage,
+  GenerateRepositoryDescriptionResponse,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -221,8 +223,8 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
   return res.json();
 }
 
-export async function registerRepository(path: string): Promise<CreateRepositoryResponse> {
-  const res = await api.repositories.$post({ json: { path } });
+export async function registerRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResponse> {
+  const res = await api.repositories.$post({ json: request });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to register repository');
@@ -602,6 +604,27 @@ export async function refreshDefaultBranch(repositoryId: string): Promise<Refres
     throw new Error(error.error || 'Failed to refresh default branch');
   }
   return res.json() as Promise<RefreshDefaultBranchResponse>;
+}
+
+// ===========================================================================
+// Repository Description Generation
+// ===========================================================================
+
+/**
+ * Generate a description for a repository based on its README.
+ * Uses raw fetch because the server endpoint may not be in the Hono RPC client types yet.
+ */
+export async function generateRepositoryDescription(
+  repositoryId: string
+): Promise<GenerateRepositoryDescriptionResponse> {
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}/generate-description`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(error.error || 'Failed to generate description');
+  }
+  return res.json() as Promise<GenerateRepositoryDescriptionResponse>;
 }
 
 // ===========================================================================

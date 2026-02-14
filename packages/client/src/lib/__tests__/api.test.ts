@@ -12,6 +12,7 @@ import {
   unregisterRepository,
   fetchWorktrees,
   fetchBranches,
+  generateRepositoryDescription,
   ServerUnavailableError,
 } from '../api';
 
@@ -295,7 +296,7 @@ describe('API Client', () => {
       const mockRepo = { repository: { id: '1', name: 'repo', path: '/path' } };
       mockFetch.mockResolvedValue(createMockResponse(mockRepo));
 
-      const result = await registerRepository('/path/to/repo');
+      const result = await registerRepository({ path: '/path/to/repo' });
 
       expect(getLastFetchUrl()).toContain('/api/repositories');
       expect(getLastFetchMethod()).toBe('POST');
@@ -312,7 +313,7 @@ describe('API Client', () => {
         json: mock(() => Promise.resolve({ error: 'Not a git repository' })),
       } as unknown as Response);
 
-      await expect(registerRepository('/not/git')).rejects.toThrow('Not a git repository');
+      await expect(registerRepository({ path: '/not/git' })).rejects.toThrow('Not a git repository');
     });
   });
 
@@ -585,6 +586,30 @@ describe('API Client', () => {
       await expect(unregisterAgent('claude-code')).rejects.toThrow(
         'Cannot unregister built-in agent'
       );
+    });
+  });
+
+  describe('generateRepositoryDescription', () => {
+    it('should generate repository description', async () => {
+      const mockDescription = { description: 'A web application for managing AI agents.' };
+      mockFetch.mockResolvedValue(createMockResponse(mockDescription));
+
+      const result = await generateRepositoryDescription('repo-1');
+
+      expect(getLastFetchUrl()).toContain('/repositories/repo-1/generate-description');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result.description).toBe('A web application for managing AI agents.');
+    });
+
+    it('should throw on error response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        json: mock(() => Promise.resolve({ error: 'No README file found in repository' })),
+      } as unknown as Response);
+
+      await expect(generateRepositoryDescription('repo-1')).rejects.toThrow('No README file found in repository');
     });
   });
 });

@@ -65,7 +65,7 @@ function createMockResponse(body: unknown, ok = true) {
   } as unknown as Response;
 }
 
-function createTestRepository(overrides: Partial<Repository & { setupCommand?: string | null }> = {}): Repository & { setupCommand?: string | null } {
+function createTestRepository(overrides: Partial<Repository & { setupCommand?: string | null; description?: string | null }> = {}): Repository & { setupCommand?: string | null; description?: string | null } {
   return {
     id: 'repo-1',
     name: 'test-repo',
@@ -73,6 +73,7 @@ function createTestRepository(overrides: Partial<Repository & { setupCommand?: s
     createdAt: new Date().toISOString(),
     remoteUrl: 'https://github.com/test/test-repo.git',
     setupCommand: null,
+    description: null,
     ...overrides,
   };
 }
@@ -143,7 +144,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -171,7 +172,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: '', envVars: '', description: '' });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -198,7 +199,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
     });
   });
 
@@ -560,6 +561,101 @@ describe('EditRepositoryForm', () => {
 
       const commandInput = screen.getByPlaceholderText(/bun install/) as HTMLTextAreaElement;
       expect(commandInput.value).toBe('');
+    });
+  });
+
+  describe('description field', () => {
+    it('should render description textarea with initial value', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ description: 'Test description' });
+      renderEditRepositoryForm({ repository });
+
+      const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
+      expect(descriptionInput.value).toBe('Test description');
+    });
+
+    it('should include description in form submission', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, description: 'New description' } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // Fill in description
+      const descriptionInput = screen.getByPlaceholderText(/Brief description/);
+      await user.type(descriptionInput, 'New description');
+
+      // Submit form
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      // Wait for mutation to complete
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      // Verify API was called with description
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.description).toBe('New description');
+    });
+
+    it('should default null description to empty string', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ description: null });
+      renderEditRepositoryForm({ repository });
+
+      const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
+      expect(descriptionInput.value).toBe('');
+    });
+
+    it('should default undefined description to empty string', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository();
+      delete (repository as { description?: string | null }).description;
+      renderEditRepositoryForm({ repository });
+
+      const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
+      expect(descriptionInput.value).toBe('');
+    });
+  });
+
+  describe('regenerate description', () => {
+    it('should update description textarea with generated value', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+
+      // Mock: Slack returns 404, generate-description returns a description
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/integrations/slack')) {
+          return Promise.resolve(createSlackNotFoundResponse());
+        }
+        if (url.includes('/generate-description')) {
+          return Promise.resolve(createMockResponse({ description: 'Generated from README' }));
+        }
+        // Default response for other calls
+        return Promise.resolve(createMockResponse({ repository }));
+      });
+
+      renderEditRepositoryForm({ repository });
+
+      // Click regenerate button
+      const regenerateButton = screen.getByText('Regenerate from README');
+      await user.click(regenerateButton);
+
+      // Wait for the description textarea to be updated
+      await waitFor(() => {
+        const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
+        expect(descriptionInput.value).toBe('Generated from README');
+      });
+
+      // Success message should appear
+      expect(screen.getByText('Description regenerated successfully')).toBeTruthy();
     });
   });
 });

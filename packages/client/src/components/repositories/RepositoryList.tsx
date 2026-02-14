@@ -93,6 +93,14 @@ function RepositoryCard({ repository, onEdit }: RepositoryCardProps) {
           {/* Path */}
           <div className="text-sm text-gray-400 font-mono mb-2">{repository.path}</div>
 
+          {/* Description */}
+          {repository.description && (
+            <div className="text-sm mb-2">
+              <span className="text-gray-500">Description: </span>
+              <span className="text-gray-300">{repository.description}</span>
+            </div>
+          )}
+
           {/* Setup command */}
           <div className="text-sm">
             <span className="text-gray-500">Setup command: </span>
