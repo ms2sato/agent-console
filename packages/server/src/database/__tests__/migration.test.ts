@@ -433,6 +433,298 @@ describe('migration', () => {
     });
   });
 
+  describe('schema migration v4: setup_command column', () => {
+    it('should add setup_command column to repositories table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-setup',
+          name: 'Setup Repo',
+          path: '/test/setup',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          setup_command: 'npm install && npm run build',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].setup_command).toBe('npm install && npm run build');
+    });
+
+    it('should allow null setup_command values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-no-setup',
+          name: 'No Setup Repo',
+          path: '/test/no-setup',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].setup_command).toBeNull();
+    });
+  });
+
+  describe('schema migration v5: env_vars column', () => {
+    it('should add env_vars column to repositories table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-env',
+          name: 'Env Repo',
+          path: '/test/env',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          env_vars: 'NODE_ENV=production\nAPI_KEY=secret',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].env_vars).toBe('NODE_ENV=production\nAPI_KEY=secret');
+    });
+
+    it('should allow null env_vars values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-no-env',
+          name: 'No Env Repo',
+          path: '/test/no-env',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].env_vars).toBeNull();
+    });
+  });
+
+  describe('schema migration v6: repository_slack_integrations table', () => {
+    it('should create repository_slack_integrations table with correct columns', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-slack',
+          name: 'Slack Repo',
+          path: '/test/slack',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('repository_slack_integrations')
+        .values({
+          id: 'slack-1',
+          repository_id: 'repo-slack',
+          webhook_url: 'https://hooks.slack.com/services/T00/B00/xxx',
+          enabled: 1,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repository_slack_integrations').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('slack-1');
+      expect(rows[0].repository_id).toBe('repo-slack');
+      expect(rows[0].webhook_url).toBe('https://hooks.slack.com/services/T00/B00/xxx');
+      expect(rows[0].enabled).toBe(1);
+    });
+
+    it('should cascade delete integrations when repository is deleted', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-cascade',
+          name: 'Cascade Repo',
+          path: '/test/cascade',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('repository_slack_integrations')
+        .values({
+          id: 'slack-cascade',
+          repository_id: 'repo-cascade',
+          webhook_url: 'https://hooks.slack.com/services/T00/B00/yyy',
+          enabled: 1,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db.deleteFrom('repositories').where('id', '=', 'repo-cascade').execute();
+
+      const rows = await db.selectFrom('repository_slack_integrations').selectAll().execute();
+      expect(rows).toHaveLength(0);
+    });
+
+    it('should enforce unique constraint on repository_id', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-unique',
+          name: 'Unique Repo',
+          path: '/test/unique',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('repository_slack_integrations')
+        .values({
+          id: 'slack-unique-1',
+          repository_id: 'repo-unique',
+          webhook_url: 'https://hooks.slack.com/services/T00/B00/first',
+          enabled: 1,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await expect(
+        db
+          .insertInto('repository_slack_integrations')
+          .values({
+            id: 'slack-unique-2',
+            repository_id: 'repo-unique',
+            webhook_url: 'https://hooks.slack.com/services/T00/B00/second',
+            enabled: 1,
+            created_at: '2024-01-01T00:00:00.000Z',
+            updated_at: '2024-01-01T00:00:00.000Z',
+          })
+          .execute()
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('schema migration v7: description column', () => {
+    it('should add description column to repositories table when migrating from v6', async () => {
+      // Initialize database (runs all migrations up to current version)
+      const db = await initializeDatabase(':memory:');
+
+      // Verify the schema version is 7
+      const { sql } = await import('kysely');
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(7);
+
+      // Verify description column exists by inserting and reading a repository with description
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'test-repo',
+          name: 'Test Repo',
+          path: '/test/path',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          description: 'A test repository description',
+        })
+        .execute();
+
+      const rows = await db
+        .selectFrom('repositories')
+        .selectAll()
+        .execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].description).toBe('A test repository description');
+    });
+
+    it('should allow null description values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Insert a repository without description
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'test-repo-no-desc',
+          name: 'No Description Repo',
+          path: '/test/no-desc',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db
+        .selectFrom('repositories')
+        .selectAll()
+        .execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].description).toBeNull();
+    });
+
+    it('should default description to null for rows inserted without it, then allow update', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Insert a repository without specifying description (simulates pre-v7 data)
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-pre-v7',
+          name: 'Pre-v7 Repo',
+          path: '/test/pre-v7',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Verify description defaults to null
+      const beforeUpdate = await db
+        .selectFrom('repositories')
+        .selectAll()
+        .where('id', '=', 'repo-pre-v7')
+        .executeTakeFirstOrThrow();
+      expect(beforeUpdate.description).toBeNull();
+
+      // Update to add a description
+      await db
+        .updateTable('repositories')
+        .set({ description: 'Added after migration' })
+        .where('id', '=', 'repo-pre-v7')
+        .execute();
+
+      // Verify the description is now set
+      const afterUpdate = await db
+        .selectFrom('repositories')
+        .selectAll()
+        .where('id', '=', 'repo-pre-v7')
+        .executeTakeFirstOrThrow();
+      expect(afterUpdate.description).toBe('Added after migration');
+    });
+  });
+
   describe('migrateFromJson error handling', () => {
     it('should handle unparseable JSON gracefully', async () => {
       // Create an invalid sessions.json with malformed JSON

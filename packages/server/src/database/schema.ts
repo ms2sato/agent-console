@@ -100,6 +100,8 @@ export interface RepositoriesTable {
   setup_command: string | null;
   /** Environment variables in .env format to apply to workers (added in v5) */
   env_vars: string | null;
+  /** Brief description of the repository (added in v7) */
+  description: string | null;
 }
 
 /** Repository row as returned from SELECT queries */

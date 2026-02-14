@@ -22,7 +22,7 @@ describe('SqliteRepositoryRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create tables manually (v5 schema)
+    // Create tables manually (v7 schema)
     await db.schema
       .createTable('repositories')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -32,6 +32,7 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('setup_command', 'text')
       .addColumn('env_vars', 'text')
+      .addColumn('description', 'text')
       .execute();
 
     repository = new SqliteRepositoryRepository(db);
@@ -51,6 +52,7 @@ describe('SqliteRepositoryRepository', () => {
       path: overrides.path ?? '/test/path/repo',
       createdAt: overrides.createdAt ?? new Date().toISOString(),
       setupCommand: overrides.setupCommand,
+      description: overrides.description ?? null,
     };
   }
 
@@ -427,6 +429,125 @@ describe('SqliteRepositoryRepository', () => {
       });
 
       expect(updated?.setupCommand).toBe(commandWithTemplate);
+    });
+  });
+
+  describe('description', () => {
+    it('should update description from null to string', async () => {
+      const repo = createRepository({ id: 'repo-desc', name: 'Repo Desc' });
+      await repository.save(repo);
+
+      // Verify description is initially null
+      const before = await repository.findById('repo-desc');
+      expect(before?.description).toBeNull();
+
+      // Update description
+      const updated = await repository.update('repo-desc', {
+        description: 'A test repository',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.description).toBe('A test repository');
+    });
+
+    it('should update description from string to new string', async () => {
+      const repo = createRepository({
+        id: 'repo-update-desc',
+        name: 'Repo Update Desc',
+        description: 'Original description',
+      });
+      await repository.save(repo);
+
+      // Verify initial description
+      const before = await repository.findById('repo-update-desc');
+      expect(before?.description).toBe('Original description');
+
+      // Update to new description
+      const updated = await repository.update('repo-update-desc', {
+        description: 'Updated description with more details',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.description).toBe('Updated description with more details');
+    });
+
+    it('should update description to null when given empty string', async () => {
+      const repo = createRepository({
+        id: 'repo-clear-desc',
+        name: 'Repo Clear Desc',
+        description: 'Will be cleared',
+      });
+      await repository.save(repo);
+
+      // Verify initial description
+      const before = await repository.findById('repo-clear-desc');
+      expect(before?.description).toBe('Will be cleared');
+
+      // Update with empty string should clear the description
+      const updated = await repository.update('repo-clear-desc', {
+        description: '',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.description).toBeNull();
+
+      // Double check via direct DB query
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-clear-desc')
+        .select('description')
+        .executeTakeFirst();
+      expect(row?.description).toBeNull();
+    });
+
+    it('should include description in findAll results', async () => {
+      const repo = createRepository({
+        id: 'repo-findall-desc',
+        path: '/path/findall-desc',
+        description: 'Visible in findAll',
+      });
+      await repository.save(repo);
+
+      const repos = await repository.findAll();
+      const found = repos.find((r) => r.id === 'repo-findall-desc');
+      expect(found?.description).toBe('Visible in findAll');
+    });
+
+    it('should include description in findById results', async () => {
+      const repo = createRepository({
+        id: 'repo-findbyid-desc',
+        description: 'Visible in findById',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-findbyid-desc');
+      expect(found?.description).toBe('Visible in findById');
+    });
+
+    it('should preserve description on save with onConflict upsert', async () => {
+      const repo = createRepository({
+        id: 'repo-upsert-desc',
+        name: 'Original',
+        description: 'Original description',
+      });
+      await repository.save(repo);
+
+      // Save again with updated description
+      const updated = createRepository({
+        id: 'repo-upsert-desc',
+        name: 'Updated',
+        description: 'Updated description',
+      });
+      await repository.save(updated);
+
+      const found = await repository.findById('repo-upsert-desc');
+      expect(found?.name).toBe('Updated');
+      expect(found?.description).toBe('Updated description');
+
+      // Verify only one repository exists
+      const all = await repository.findAll();
+      const matching = all.filter((r) => r.id === 'repo-upsert-desc');
+      expect(matching.length).toBe(1);
     });
   });
 

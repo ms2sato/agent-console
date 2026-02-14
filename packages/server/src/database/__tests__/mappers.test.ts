@@ -477,6 +477,7 @@ describe('mappers', () => {
         updated_at: '2024-02-20T14:00:00.000Z',
         setup_command: null,
         env_vars: null,
+        description: null,
       };
 
       const repository = toRepository(row);
@@ -498,6 +499,7 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         env_vars: null,
+        description: null,
       };
 
       const repository = toRepository(row);
@@ -515,6 +517,7 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: 'npm install',
         env_vars: null,
+        description: null,
       };
 
       const repository = toRepository(row);
@@ -531,6 +534,7 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         env_vars: 'FOO=bar\nBAZ=qux',
+        description: null,
       };
 
       const repository = toRepository(row);

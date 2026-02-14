@@ -19,6 +19,7 @@ export interface Repository {
   remoteUrl?: string;   // Git remote URL for origin (if available)
   setupCommand?: string | null; // Shell command to run after creating worktrees
   envVars?: string | null; // Environment variables in .env format (applied to workers)
+  description?: string | null; // Brief description of the repository
 }
 
 /**

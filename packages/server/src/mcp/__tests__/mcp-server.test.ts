@@ -297,6 +297,100 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // list_repositories
+  // ===========================================================================
+
+  describe('list_repositories', () => {
+    async function setupRepositoryManager(repos: Array<{
+      id: string;
+      name: string;
+      path: string;
+      description?: string | null;
+    }> = []): Promise<void> {
+      const { getDatabase } = await import('../../database/connection.js');
+      const db = getDatabase();
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      for (const repo of repos) {
+        await sqliteRepoRepo.save({
+          ...repo,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      const { getJobQueue } = await import('../../jobs/index.js');
+      const repoMgr = await RepositoryManager.create({
+        jobQueue: getJobQueue(),
+        repository: sqliteRepoRepo,
+      });
+      setRepositoryManager(repoMgr);
+    }
+
+    it('should return empty repositories array when no repositories registered', async () => {
+      await setupRepositoryManager();
+      const response = await callTool(app, mcpSessionId, 'list_repositories', {}, nextId++);
+      const data = parseToolResult(response) as { repositories: unknown[] };
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repositories).toEqual([]);
+    });
+
+    it('should return repository info with id, name, and description', async () => {
+      // Need to set up memfs with the repo path for RepositoryManager to load it
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      });
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+      // Mock getRemoteUrl to return a known URL
+      mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
+
+      await setupRepositoryManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+        description: 'A test repository for unit tests',
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'list_repositories', {}, nextId++);
+      const data = parseToolResult(response) as {
+        repositories: Array<Record<string, unknown>>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repositories).toHaveLength(1);
+      expect(data.repositories[0].id).toBe('repo-1');
+      expect(data.repositories[0].name).toBe('my-repo');
+      expect(data.repositories[0].remoteUrl).toBe('git@github.com:owner/repo.git');
+      expect(data.repositories[0].description).toBe('A test repository for unit tests');
+    });
+
+    it('should not expose path, setupCommand, or envVars', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      });
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+      mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
+
+      await setupRepositoryManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'list_repositories', {}, nextId++);
+      const data = parseToolResult(response) as {
+        repositories: Array<Record<string, unknown>>;
+      };
+
+      for (const repo of data.repositories) {
+        expect(repo).not.toHaveProperty('path');
+        expect(repo).not.toHaveProperty('setupCommand');
+        expect(repo).not.toHaveProperty('envVars');
+      }
+    });
+  });
+
+  // ===========================================================================
   // list_sessions
   // ===========================================================================
 
@@ -359,6 +453,39 @@ describe('MCP Server Tools', () => {
 
       expect(data.sessions[0].worktreeId).toBe('feature-branch');
     });
+
+    it('should include repositoryId and repositoryName for worktree sessions', async () => {
+      await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as {
+        sessions: Array<{ repositoryId?: string; repositoryName?: string; type: string }>;
+      };
+
+      expect(data.sessions[0].repositoryId).toBe('repo-1');
+      expect(data.sessions[0].repositoryName).toBeDefined();
+    });
+
+    it('should not include repositoryId for quick sessions', async () => {
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as {
+        sessions: Array<{ repositoryId?: string }>;
+      };
+
+      expect(data.sessions[0].repositoryId).toBeUndefined();
+    });
   });
 
   // ===========================================================================
@@ -416,6 +543,27 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { worktreeId?: string };
 
       expect(data.worktreeId).toBe('feature-branch');
+    });
+
+    it('should include repositoryId and repositoryName for worktree sessions', async () => {
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repositoryId?: string;
+        repositoryName?: string;
+      };
+
+      expect(data.repositoryId).toBe('repo-1');
+      expect(data.repositoryName).toBeDefined();
     });
 
     it('should report worker activity states', async () => {

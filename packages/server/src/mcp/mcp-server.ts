@@ -17,7 +17,7 @@ import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
-import { fetchRemote, GitError } from '../lib/git.js';
+import { fetchRemote, getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
@@ -37,6 +37,8 @@ interface SessionStatusResult {
   status: 'active' | 'inactive';
   title?: string;
   worktreeId?: string;
+  repositoryId?: string;
+  repositoryName?: string;
   workers: Array<{
     id: string;
     type: 'agent' | 'terminal' | 'git-diff';
@@ -49,6 +51,8 @@ interface SessionListItem {
   type: 'worktree' | 'quick';
   title?: string;
   worktreeId?: string;
+  repositoryId?: string;
+  repositoryName?: string;
   status: 'active' | 'inactive';
   workers: Array<{
     id: string;
@@ -133,6 +137,43 @@ mcpServer.tool(
   },
 );
 
+// ---------- Tool: list_repositories ----------
+
+interface RepositoryListItem {
+  id: string;
+  name: string;
+  remoteUrl?: string;
+  description?: string;
+}
+
+mcpServer.tool(
+  'list_repositories',
+  'List all registered repositories in AgentConsole. Returns repository IDs, names, remote URLs, and brief descriptions. ' +
+    'Use this to discover available repositories before calling delegate_to_worktree with a specific repositoryId.',
+  {},
+  async () => {
+    try {
+      const repositoryManager = getRepositoryManager();
+      const repos = repositoryManager.getAllRepositories();
+
+      const result: RepositoryListItem[] = await Promise.all(
+        repos.map(async (repo) => ({
+          id: repo.id,
+          name: repo.name,
+          remoteUrl: (await getRemoteUrl(repo.path)) ?? undefined,
+          description: repo.description ?? undefined,
+        })),
+      );
+
+      return textResult({ repositories: result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      logger.error({ err }, 'list_repositories failed');
+      return errorResult(message);
+    }
+  },
+);
+
 // ---------- Tool: list_sessions ----------
 
 mcpServer.tool(
@@ -154,6 +195,8 @@ mcpServer.tool(
         };
         if (s.type === 'worktree') {
           base.worktreeId = s.worktreeId;
+          base.repositoryId = s.repositoryId;
+          base.repositoryName = s.repositoryName;
         }
         return base;
       });
@@ -193,6 +236,8 @@ mcpServer.tool(
 
       if (session.type === 'worktree') {
         result.worktreeId = session.worktreeId;
+        result.repositoryId = session.repositoryId;
+        result.repositoryName = session.repositoryName;
       }
 
       return textResult(result);
@@ -240,10 +285,12 @@ mcpServer.tool(
   'delegate_to_worktree',
   'Create a new worktree, start a session with an agent, and send a prompt. ' +
     'Use this to delegate work to a new agent running in an isolated worktree. ' +
-    'Note: once started, the worktree and session persist on the server even if the MCP client disconnects.',
+    'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
+    'To delegate to a repository other than your own, use list_repositories to discover available repositories.',
   {
     repositoryId: z.string().describe(
-      'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable.',
+      'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable. ' +
+        'To delegate to a different repository, call list_repositories first to discover available repository IDs.',
     ),
     prompt: z
       .string()

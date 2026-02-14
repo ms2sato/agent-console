@@ -195,6 +195,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 6) {
     await migrateToV6(database);
   }
+
+  if (currentVersion < 7) {
+    await migrateToV7(database);
+  }
 }
 
 /**
@@ -449,6 +453,25 @@ async function migrateToV6(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 6`.execute(database);
 
   logger.info('Migration to v6 completed');
+}
+
+/**
+ * Migration v7: Add description column to repositories table.
+ * This column stores a brief description of the repository.
+ */
+async function migrateToV7(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v7: Adding description column to repositories');
+
+  // Add description column to repositories table
+  await database.schema
+    .alterTable('repositories')
+    .addColumn('description', 'text')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 7`.execute(database);
+
+  logger.info('Migration to v7 completed');
 }
 
 /**
