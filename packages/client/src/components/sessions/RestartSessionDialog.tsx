@@ -47,7 +47,8 @@ export function RestartSessionDialog({
   }, [open, currentAgentId, currentBranch]);
 
   const isAgentChanged = selectedAgentId !== currentAgentId;
-  const isBranchChanged = isWorktreeSession === true && branchValue.trim() !== (currentBranch ?? '');
+  const trimmedBranch = branchValue.trim();
+  const isBranchChanged = isWorktreeSession === true && trimmedBranch !== '' && trimmedBranch !== (currentBranch ?? '');
 
   const handleRestart = async (continueConversation: boolean) => {
     setIsSubmitting(true);
@@ -64,7 +65,7 @@ export function RestartSessionDialog({
         throw new Error('No agent worker found');
       }
       const agentId = isAgentChanged ? selectedAgentId : undefined;
-      const newBranch = isBranchChanged ? branchValue.trim() : undefined;
+      const newBranch = isBranchChanged ? trimmedBranch : undefined;
       await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
       onOpenChange(false);
       if (newBranch && onBranchChange) {
