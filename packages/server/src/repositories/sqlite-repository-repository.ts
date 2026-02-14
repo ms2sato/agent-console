@@ -47,6 +47,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         updated_at: now,
         setup_command: repository.setupCommand ?? null,
         env_vars: repository.envVars ?? null,
+        description: repository.description ?? null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
@@ -54,6 +55,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
           path: repository.path,
           setup_command: repository.setupCommand ?? null,
           env_vars: repository.envVars ?? null,
+          description: repository.description ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
         })
@@ -66,19 +68,22 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
   async update(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
     const now = new Date().toISOString();
 
-    // Build update object with only provided fields
+    // Build update object with only provided fields.
+    // Empty strings are normalized to null for database storage.
     const updateData: Record<string, unknown> = {
       updated_at: now,
     };
 
-    if (updates.setupCommand !== undefined) {
-      // Convert empty string to null for database storage
-      updateData.setup_command = updates.setupCommand === '' ? null : updates.setupCommand;
-    }
+    const fieldMap: Array<[keyof RepositoryUpdates, string]> = [
+      ['setupCommand', 'setup_command'],
+      ['envVars', 'env_vars'],
+      ['description', 'description'],
+    ];
 
-    if (updates.envVars !== undefined) {
-      // Convert empty string to null for database storage
-      updateData.env_vars = updates.envVars === '' ? null : updates.envVars;
+    for (const [domainKey, dbColumn] of fieldMap) {
+      if (updates[domainKey] !== undefined) {
+        updateData[dbColumn] = updates[domainKey] === '' ? null : updates[domainKey];
+      }
     }
 
     const result = await this.db

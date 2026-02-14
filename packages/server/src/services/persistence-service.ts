@@ -21,6 +21,7 @@ export interface PersistedRepository {
   createdAt: string;
   setupCommand?: string | null;
   envVars?: string | null;
+  description?: string | null;
 }
 
 // Base for all persisted workers

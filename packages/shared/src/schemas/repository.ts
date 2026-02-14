@@ -133,6 +133,7 @@ export const DeleteWorktreeRequestSchema = v.object({
 export const UpdateRepositoryRequestSchema = v.object({
   setupCommand: v.nullish(v.pipe(v.string(), v.trim())),
   envVars: v.nullish(v.pipe(v.string(), v.trim())),
+  description: v.nullish(v.pipe(v.string(), v.trim())),
 });
 
 /**
