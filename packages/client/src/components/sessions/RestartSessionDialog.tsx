@@ -48,6 +48,7 @@ export function RestartSessionDialog({
 
   const isAgentChanged = selectedAgentId !== currentAgentId;
   const trimmedBranch = branchValue.trim();
+  const isBranchEmpty = isWorktreeSession === true && trimmedBranch === '';
   const isBranchChanged = isWorktreeSession === true && trimmedBranch !== '' && trimmedBranch !== (currentBranch ?? '');
 
   const handleRestart = async (continueConversation: boolean) => {
@@ -118,6 +119,9 @@ export function RestartSessionDialog({
               />
             </div>
           )}
+          {isBranchEmpty && (
+            <p className="text-xs text-red-400">Branch name cannot be empty.</p>
+          )}
           {(isAgentChanged || isBranchChanged) && (
             <p className="text-xs text-yellow-400">
               {isAgentChanged && isBranchChanged
@@ -136,11 +140,11 @@ export function RestartSessionDialog({
           <button
             onClick={() => handleRestart(false)}
             className="btn bg-slate-600 hover:bg-slate-500"
-            disabled={isSubmitting}
+            disabled={isSubmitting || isBranchEmpty}
           >
             New Session
           </button>
-          <AlertDialogAction onClick={() => handleRestart(true)} disabled={isSubmitting}>
+          <AlertDialogAction onClick={() => handleRestart(true)} disabled={isSubmitting || isBranchEmpty}>
             {isSubmitting ? 'Restarting...' : 'Continue (-c)'}
           </AlertDialogAction>
         </AlertDialogFooter>
