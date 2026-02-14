@@ -1844,6 +1844,79 @@ describe('SessionManager', () => {
       expect(mockGit.getCurrentBranch).not.toHaveBeenCalled();
       expect(mockGit.renameBranch).not.toHaveBeenCalled();
     });
+
+    it('should sync worktreeId and broadcast when AI agent externally renamed the git branch', async () => {
+      const manager = await getSessionManager();
+
+      // Scenario: An AI agent (e.g. Claude Code) renamed the git branch from
+      // 'stale-branch' to 'new-branch' during its session. The user then uses
+      // RestartSession with branch='new-branch' to sync the session state.
+      // The git branch already matches, so no git rename is needed,
+      // but session.worktreeId must be updated from the stale value.
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('new-branch'));
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'stale-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+
+      // renameBranch should NOT be called since git branch already matches
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+
+      // worktreeId should be updated from 'stale-branch' to 'new-branch'
+      const updatedSession = manager.getSession(session.id);
+      expect(updatedSession?.type).toBe('worktree');
+      if (updatedSession?.type === 'worktree') {
+        expect(updatedSession.worktreeId).toBe('new-branch');
+      }
+
+      // onSessionUpdated should broadcast the updated worktreeId
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+          worktreeId: 'new-branch',
+        }),
+      );
+    });
+
+    it('should rename git branch and sync worktreeId when all three values differ', async () => {
+      const manager = await getSessionManager();
+
+      // Edge case: worktreeId='stale-branch', actual git branch='intermediate-branch',
+      // requested='final-branch'. Both git rename AND worktreeId sync must happen.
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('intermediate-branch'));
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'stale-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'final-branch');
+
+      // renameBranch should be called to rename from the actual git branch to the requested name
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('intermediate-branch', 'final-branch', '/test/path');
+
+      // worktreeId should be updated to the requested branch
+      const updatedSession = manager.getSession(session.id);
+      expect(updatedSession?.type).toBe('worktree');
+      if (updatedSession?.type === 'worktree') {
+        expect(updatedSession.worktreeId).toBe('final-branch');
+      }
+    });
   });
 
   describe('updateSessionMetadata - no auto-restart on branch rename', () => {

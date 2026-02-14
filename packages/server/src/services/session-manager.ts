@@ -1304,8 +1304,8 @@ export class SessionManager {
       const currentBranch = await gitGetCurrentBranch(session.locationPath);
       if (currentBranch !== branch) {
         await gitRenameBranch(currentBranch, branch, session.locationPath);
-        session.worktreeId = branch;
       }
+      session.worktreeId = branch;
     }
 
     const isAgentChanged = workerAgentId !== existingWorker.agentId;
