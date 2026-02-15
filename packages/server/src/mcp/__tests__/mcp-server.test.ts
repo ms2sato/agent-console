@@ -1023,8 +1023,10 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('Worktree creation failed');
     });
 
-    it('should rollback worktree when created worktree cannot be found in list', async () => {
-      // Setup environment with worktree creation succeeding but listWorktrees not returning it
+    it('should find worktree via DB even when git does not report it (orphaned)', async () => {
+      // Setup environment with worktree creation succeeding but git listWorktrees
+      // not returning it. With DB-based tracking, the worktree is still found as
+      // an orphaned entry because createWorktree saves a record to the DB.
       setupMemfs({
         [`${TEST_CONFIG_DIR}/.keep`]: '',
         [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
@@ -1034,13 +1036,11 @@ describe('MCP Server Tools', () => {
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
 
-      // createWorktree succeeds (captures the path) but listWorktrees returns
-      // only the main worktree, so the created worktree cannot be found
       mockGit.createWorktree.mockImplementation(async () => {
         // Success - worktree is "created" on disk
       });
       mockGit.listWorktrees.mockImplementation(async () => {
-        // Only return the main worktree, not the one just created
+        // Only return the main worktree; the created worktree is NOT in git output
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
 
@@ -1052,16 +1052,20 @@ describe('MCP Server Tools', () => {
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
-        prompt: 'Test worktree not found in list',
+        prompt: 'Test orphaned worktree lookup via DB',
         branch: 'feat/ghost-worktree',
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Worktree was created but could not be found in the list');
+      // The worktree is found via the DB record (as an orphaned entry),
+      // so the delegate succeeds instead of rolling back
+      expect(response.result?.isError).toBeUndefined();
 
-      // Verify removeWorktree was called for rollback
-      expect(mockGit.removeWorktree).toHaveBeenCalled();
+      const data = parseToolResult(response) as {
+        sessionId: string;
+        worktreePath: string;
+      };
+      expect(data.sessionId).toBeDefined();
+      expect(data.worktreePath).toBeDefined();
     });
 
     it('should rollback worktree when session is deleted before delegation completes', async () => {
