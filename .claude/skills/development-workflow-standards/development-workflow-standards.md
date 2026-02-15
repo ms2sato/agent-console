@@ -74,6 +74,7 @@ git merge-tree $(git merge-base origin/main HEAD) origin/main HEAD
 
 1. Open pull requests for review
 2. **Merging is the user's responsibility** - Never merge PRs automatically. Always leave the merge decision to the user.
+3. **Write in English** - PR titles, descriptions, and comments must be written in English (per Language Policy).
 
 ## Testing Requirements
 
