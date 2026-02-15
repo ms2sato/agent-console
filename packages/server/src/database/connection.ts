@@ -8,7 +8,8 @@ import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
-import { getConfigDir, getDbPath } from '../lib/config.js';
+import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
+import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
 import { addDatetime } from './schema-helpers.js';
@@ -198,6 +199,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
 
   if (currentVersion < 7) {
     await migrateToV7(database);
+  }
+
+  if (currentVersion < 8) {
+    await migrateToV8(database);
   }
 }
 
@@ -475,6 +480,42 @@ async function migrateToV7(database: Kysely<Database>): Promise<void> {
 }
 
 /**
+ * Migration v8: Create worktrees table.
+ * Replaces the JSON-based worktree-indexes.json with a proper database table.
+ */
+async function migrateToV8(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v8: Creating worktrees table');
+
+  // Create worktrees table
+  let worktreesTable = database.schema
+    .createTable('worktrees')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('repository_id', 'text', (col) =>
+      col.notNull().references('repositories.id').onDelete('cascade')
+    )
+    .addColumn('path', 'text', (col) => col.notNull().unique())
+    .addColumn('index_number', 'integer', (col) => col.notNull());
+  worktreesTable = addDatetime(worktreesTable, 'worktrees', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  await worktreesTable.execute();
+
+  // Create index for foreign key lookups
+  await database.schema
+    .createIndex('idx_worktrees_repository_id')
+    .ifNotExists()
+    .on('worktrees')
+    .column('repository_id')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 8`.execute(database);
+
+  logger.info('Migration to v8 completed');
+}
+
+/**
  * Check if SQLite database exists.
  * Used for auto-detection during migration from JSON to SQLite.
  * Uses Bun's native file API to avoid issues with fs mocks in tests.
@@ -501,6 +542,7 @@ export async function migrateFromJson(database: Kysely<Database>): Promise<void>
     await migrateSessionsFromJson(database);
     await migrateRepositoriesFromJson(database);
     await migrateAgentsFromJson(database);
+    await migrateWorktreeIndexesFromJson(database);
   } catch (error) {
     logger.error({ err: error }, 'Migration from JSON failed');
     // Clean up database file for retry on next startup
@@ -745,5 +787,108 @@ async function migrateAgentsFromJson(database: Kysely<Database>): Promise<void> 
     logger.error({ err: error, path: agentsJsonPath }, 'Failed to migrate agents from JSON');
     // Let the parent migrateFromJson handle cleanup
     throw error;
+  }
+}
+
+/**
+ * Get org/repo string from a repository path, with fallback to directory basename.
+ * Used during migration to locate worktree-indexes.json files.
+ */
+async function getOrgRepoForMigration(repoPath: string): Promise<string> {
+  try {
+    const remoteUrl = await getRemoteUrl(repoPath);
+    if (remoteUrl) {
+      const parsed = parseOrgRepo(remoteUrl);
+      if (parsed) return parsed;
+    }
+  } catch {
+    // fallback below
+  }
+  return path.basename(repoPath);
+}
+
+/**
+ * Worktree indexes JSON file format.
+ * Used for parsing worktree-indexes.json during migration.
+ */
+interface WorktreeIndexesJson {
+  indexes: Record<string, number>;
+}
+
+/**
+ * Migrate existing worktree indexes from JSON files to SQLite database.
+ * Each repository may have its own worktree-indexes.json file.
+ *
+ * Unlike other migrations, this does not fail the entire migration if one
+ * repository fails - it logs the error and continues with other repositories.
+ */
+async function migrateWorktreeIndexesFromJson(database: Kysely<Database>): Promise<void> {
+  // Check if we already have data in SQLite
+  const existingCount = await database
+    .selectFrom('worktrees')
+    .select(database.fn.count<number>('id').as('count'))
+    .executeTakeFirst();
+
+  if (existingCount && existingCount.count > 0) {
+    logger.debug({ count: existingCount.count }, 'SQLite already has worktrees, skipping JSON migration');
+    return;
+  }
+
+  // Load all repositories from the database
+  const repositories = await database
+    .selectFrom('repositories')
+    .selectAll()
+    .execute();
+
+  if (repositories.length === 0) {
+    logger.debug('No repositories found, skipping worktree indexes JSON migration');
+    return;
+  }
+
+  for (const repo of repositories) {
+    try {
+      // Determine org/repo to locate the JSON file
+      const orgRepo = await getOrgRepoForMigration(repo.path);
+      const worktreeIndexesPath = path.join(getRepositoryDir(orgRepo), 'worktrees', 'worktree-indexes.json');
+
+      // Skip if JSON file doesn't exist for this repository
+      if (!fs.existsSync(worktreeIndexesPath)) {
+        logger.debug({ repositoryId: repo.id, path: worktreeIndexesPath }, 'No worktree-indexes.json found for repository');
+        continue;
+      }
+
+      const jsonContent = fs.readFileSync(worktreeIndexesPath, 'utf-8');
+      const data = JSON.parse(jsonContent) as WorktreeIndexesJson;
+
+      const entries = Object.entries(data.indexes ?? {});
+
+      if (entries.length === 0) {
+        logger.info({ repositoryId: repo.id }, 'worktree-indexes.json is empty, marking as migrated');
+        fs.renameSync(worktreeIndexesPath, `${worktreeIndexesPath}.migrated`);
+        continue;
+      }
+
+      logger.info({ repositoryId: repo.id, count: entries.length }, 'Migrating worktree indexes from JSON to SQLite');
+
+      // Use transaction per repository for atomicity
+      await database.transaction().execute(async (trx) => {
+        for (const [worktreePath, indexNumber] of entries) {
+          await trx.insertInto('worktrees').values({
+            id: crypto.randomUUID(),
+            repository_id: repo.id,
+            path: worktreePath,
+            index_number: indexNumber,
+          }).execute();
+        }
+      });
+
+      // Rename ONLY after successful transaction
+      fs.renameSync(worktreeIndexesPath, `${worktreeIndexesPath}.migrated`);
+
+      logger.info({ repositoryId: repo.id, count: entries.length }, 'Successfully migrated worktree indexes from JSON to SQLite');
+    } catch (error) {
+      // Log error but continue with other repositories
+      logger.error({ err: error, repositoryId: repo.id }, 'Failed to migrate worktree indexes for repository, continuing with others');
+    }
   }
 }

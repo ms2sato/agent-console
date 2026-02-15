@@ -334,7 +334,7 @@ const repositories = new Hono()
         }
         const effectiveBaseBranch = effectiveUseRemote && baseBranch ? `origin/${baseBranch}` : baseBranch;
 
-        const result = await worktreeService.createWorktree(repo.path, branch, effectiveBaseBranch);
+        const result = await worktreeService.createWorktree(repo.path, branch, repoId, effectiveBaseBranch);
 
         if (result.error) {
           // Broadcast failure
@@ -455,7 +455,7 @@ const repositories = new Hono()
 
     // Verify this is actually a worktree of this repository
     try {
-      if (!await worktreeService.isWorktreeOf(repo.path, worktreePath)) {
+      if (!await worktreeService.isWorktreeOf(repo.path, worktreePath, repoId)) {
         deletionsInProgress.delete(worktreePath);
         throw new ValidationError('Invalid worktree path for this repository');
       }

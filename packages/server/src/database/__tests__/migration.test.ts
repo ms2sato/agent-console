@@ -634,10 +634,10 @@ describe('migration', () => {
       // Initialize database (runs all migrations up to current version)
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is 7
+      // Verify the schema version is the latest (8)
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(7);
+      expect(result.rows[0]?.user_version).toBe(8);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -722,6 +722,118 @@ describe('migration', () => {
         .where('id', '=', 'repo-pre-v7')
         .executeTakeFirstOrThrow();
       expect(afterUpdate.description).toBe('Added after migration');
+    });
+  });
+
+  describe('schema migration v8: worktrees table', () => {
+    it('should create worktrees table with correct columns', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Verify the schema version is 8
+      const { sql } = await import('kysely');
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(8);
+
+      // First create a repository (foreign key dependency)
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-wt',
+          name: 'Worktree Repo',
+          path: '/test/worktree-repo',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Insert a worktree record
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-1',
+          repository_id: 'repo-wt',
+          path: '/test/worktrees/feature-1',
+          index_number: 1,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('wt-1');
+      expect(rows[0].repository_id).toBe('repo-wt');
+      expect(rows[0].path).toBe('/test/worktrees/feature-1');
+      expect(rows[0].index_number).toBe(1);
+      expect(rows[0].created_at).toBeDefined();
+    });
+
+    it('should enforce unique path constraint', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-unique-path',
+          name: 'Unique Path Repo',
+          path: '/test/unique-path',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-dup-1',
+          repository_id: 'repo-unique-path',
+          path: '/test/worktrees/same-path',
+          index_number: 1,
+        })
+        .execute();
+
+      await expect(
+        db
+          .insertInto('worktrees')
+          .values({
+            id: 'wt-dup-2',
+            repository_id: 'repo-unique-path',
+            path: '/test/worktrees/same-path',
+            index_number: 2,
+          })
+          .execute()
+      ).rejects.toThrow();
+    });
+
+    it('should cascade delete worktrees when repository is deleted', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-cascade-wt',
+          name: 'Cascade Repo',
+          path: '/test/cascade-wt',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-cascade',
+          repository_id: 'repo-cascade-wt',
+          path: '/test/worktrees/cascade-1',
+          index_number: 1,
+        })
+        .execute();
+
+      // Delete the parent repository
+      await db.deleteFrom('repositories').where('id', '=', 'repo-cascade-wt').execute();
+
+      // Worktree should be cascade-deleted
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(0);
     });
   });
 

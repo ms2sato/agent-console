@@ -386,6 +386,7 @@ mcpServer.tool(
       const wtResult = await worktreeService.createWorktree(
         repo.path,
         effectiveBranch,
+        repositoryId,
         effectiveBaseBranch,
       );
 

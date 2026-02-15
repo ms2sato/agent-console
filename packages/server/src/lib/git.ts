@@ -316,12 +316,14 @@ export async function removeWorktree(
   try {
     await git(args, cwd, HEAVY_GIT_TIMEOUT_MS);
   } catch (error) {
-    // When force is enabled and the .git file is missing (race condition where
-    // another process already partially cleaned up), fall back to manual cleanup.
+    // When force is enabled, fall back to manual cleanup for cases where
+    // git cannot remove the worktree on its own:
+    // - The .git file is missing (race condition / partial cleanup)
+    // - The path is not recognized as a working tree (orphaned worktree)
     if (
       options?.force &&
       error instanceof GitError &&
-      error.stderr.includes('.git')
+      (error.stderr.includes('.git') || error.stderr.includes('is not a working tree'))
     ) {
       const fs = await import('node:fs/promises');
       await fs.rm(worktreePath, { recursive: true, force: true });

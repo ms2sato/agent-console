@@ -253,7 +253,7 @@ function SlackSettingsSection({ repositoryId }: SlackSettingsSectionProps) {
 }
 
 export interface EditRepositoryFormProps {
-  repository: Repository & { setupCommand?: string | null; envVars?: string | null; description?: string | null };
+  repository: Repository;
   onSuccess: () => void;
   onCancel: () => void;
 }

@@ -532,5 +532,59 @@ index abc1234..def5678 100644
         await fs.rm(tempWorktreePath, { recursive: true, force: true });
       }
     });
+
+    it('should fall back to manual cleanup when force is true and path is not a working tree (orphaned worktree)', async () => {
+      const fs = await import('node:fs/promises');
+
+      const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await fs.mkdir(tempWorktreePath, { recursive: true });
+
+      try {
+        // First call fails with "is not a working tree" error, second call (worktree prune) succeeds
+        let callCount = 0;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+          spawnCalls.push({ args, options: options || {} });
+          callCount++;
+          if (callCount === 1) {
+            // First call: git worktree remove fails with orphaned worktree error
+            return {
+              exited: Promise.resolve(128),
+              stdout: new ReadableStream({
+                start(controller) { controller.close(); },
+              }),
+              stderr: new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(`fatal: '${tempWorktreePath}' is not a working tree`));
+                  controller.close();
+                },
+              }),
+            };
+          }
+          // Second call: git worktree prune succeeds
+          return {
+            exited: Promise.resolve(0),
+            stdout: new ReadableStream({
+              start(controller) { controller.close(); },
+            }),
+            stderr: new ReadableStream({
+              start(controller) { controller.close(); },
+            }),
+          };
+        }) as typeof Bun.spawn;
+
+        const { removeWorktree } = await getGitModule();
+
+        await removeWorktree(tempWorktreePath, '/repo', { force: true });
+
+        // Should have called git worktree remove first, then git worktree prune
+        expect(spawnCalls.length).toBe(2);
+        expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
+        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune']);
+        expect(spawnCalls[1].options.cwd).toBe('/repo');
+      } finally {
+        // Clean up temp directory (may already be removed by removeWorktree)
+        await fs.rm(tempWorktreePath, { recursive: true, force: true });
+      }
+    });
   });
 });

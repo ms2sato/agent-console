@@ -3,6 +3,9 @@ import * as path from 'path';
 import type { Worktree, SetupCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
+import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
+import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
+import { getDatabase } from '../database/connection.js';
 
 const logger = createLogger('worktree-service');
 import {
@@ -17,59 +20,6 @@ import {
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
 } from '../lib/git.js';
-
-interface IndexStore {
-  // Map of worktree path -> index number
-  indexes: Record<string, number>;
-}
-
-/**
- * Load index store for a repository
- */
-async function loadIndexStore(repoWorktreeDir: string): Promise<IndexStore> {
-  const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
-  try {
-    const content = await fsPromises.readFile(indexFile, 'utf-8');
-    return JSON.parse(content);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.error({ err: e, indexFile }, 'Failed to load index store');
-    }
-  }
-  return { indexes: {} };
-}
-
-/**
- * Save index store for a repository
- */
-async function saveIndexStore(repoWorktreeDir: string, store: IndexStore): Promise<void> {
-  const indexFile = path.join(repoWorktreeDir, 'worktree-indexes.json');
-  try {
-    await fsPromises.writeFile(indexFile, JSON.stringify(store, null, 2));
-  } catch (e) {
-    logger.error({ err: e, indexFile }, 'Failed to save index store');
-    throw e;
-  }
-}
-
-/**
- * Allocate the next available index (fills gaps)
- */
-function allocateIndex(store: IndexStore): number {
-  const usedIndexes = new Set(Object.values(store.indexes));
-  let index = 1;
-  while (usedIndexes.has(index)) {
-    index++;
-  }
-  return index;
-}
-
-/**
- * Get index for a worktree path
- */
-function getIndexForPath(store: IndexStore, worktreePath: string): number | undefined {
-  return store.indexes[worktreePath];
-}
 
 /**
  * Generate a random alphanumeric suffix
@@ -206,18 +156,54 @@ async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
 
 export class WorktreeService {
   /**
-   * List all worktrees for a repository
+   * Injected repository (via constructor). When provided, it is cached and reused.
+   * When null, worktreeRepository getter creates a fresh SqliteWorktreeRepository
+   * from the current database on each access. This avoids stale references when
+   * the database is closed and reopened (e.g., between tests).
+   */
+  private readonly _injectedRepository: WorktreeRepository | null;
+
+  constructor(worktreeRepository?: WorktreeRepository) {
+    this._injectedRepository = worktreeRepository ?? null;
+  }
+
+  private get worktreeRepository(): WorktreeRepository {
+    if (this._injectedRepository) {
+      return this._injectedRepository;
+    }
+    return new SqliteWorktreeRepository(getDatabase());
+  }
+
+  /**
+   * List all worktrees for a repository.
+   * Includes git-tracked worktrees registered in DB and orphaned DB records
+   * (worktrees that exist in DB but are no longer tracked by git).
    */
   async listWorktrees(repoPath: string, repositoryId: string): Promise<Worktree[]> {
     try {
       const output = await gitListWorktrees(repoPath);
 
-      // Get org/repo for index store path
-      const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
-      const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
-      const indexStore = await loadIndexStore(repoWorktreeDir);
+      // Get all registered worktrees from DB
+      const dbRecords = await this.worktreeRepository.findByRepositoryId(repositoryId);
 
-      return this.parsePorcelainOutput(output, repositoryId, repoPath, indexStore);
+      // Parse git output, matching with DB records for index info
+      const gitWorktrees = this.parsePorcelainOutput(output, repositoryId, repoPath, dbRecords);
+
+      // Find orphaned worktrees: exist in DB but not in git output
+      const gitPaths = new Set(gitWorktrees.map(wt => wt.path));
+      for (const record of dbRecords) {
+        if (!gitPaths.has(record.path)) {
+          gitWorktrees.push({
+            path: record.path,
+            branch: '(orphaned)',
+            isMain: false,
+            repositoryId,
+            index: record.indexNumber,
+          });
+        }
+      }
+
+      return gitWorktrees;
     } catch (error) {
       logger.error({ err: error, repoPath }, 'Failed to list worktrees');
       return [];
@@ -225,16 +211,20 @@ export class WorktreeService {
   }
 
   /**
-   * Parse git worktree list --porcelain output
+   * Parse git worktree list --porcelain output.
+   * Returns only git-tracked worktrees; the caller handles adding orphaned ones.
    */
   private parsePorcelainOutput(
     output: string,
     repositoryId: string,
     mainRepoPath: string,
-    indexStore: IndexStore
+    dbRecords: WorktreeRecord[]
   ): Worktree[] {
     const worktrees: Worktree[] = [];
     const entries = output.trim().split('\n\n');
+
+    // Build a lookup map from DB records for efficient index retrieval
+    const recordByPath = new Map(dbRecords.map(r => [r.path, r]));
 
     for (const entry of entries) {
       if (!entry.trim()) continue;
@@ -259,17 +249,17 @@ export class WorktreeService {
 
       if (worktreePath) {
         const isMain = worktreePath === mainRepoPath;
-        const index = getIndexForPath(indexStore, worktreePath);
+        const record = recordByPath.get(worktreePath);
 
-        // Only include worktrees that are registered in the index store (created by this app)
+        // Only include worktrees that are registered in the DB (created by this app)
         // Main worktree is always included
-        if (isMain || index !== undefined) {
+        if (isMain || record !== undefined) {
           worktrees.push({
             path: worktreePath,
             branch,
             isMain,
             repositoryId,
-            index: isMain ? undefined : index,
+            index: isMain ? undefined : record?.indexNumber,
           });
         }
       }
@@ -284,6 +274,7 @@ export class WorktreeService {
   async createWorktree(
     repoPath: string,
     branch: string,
+    repositoryId: string,
     baseBranch?: string
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
@@ -294,9 +285,9 @@ export class WorktreeService {
     // Ensure base directory exists
     await fsPromises.mkdir(repoWorktreeDir, { recursive: true });
 
-    // Allocate index before creating worktree
-    const indexStore = await loadIndexStore(repoWorktreeDir);
-    const newIndex = allocateIndex(indexStore);
+    // Allocate index from DB records
+    const dbRecords = await this.worktreeRepository.findByRepositoryId(repositoryId);
+    const newIndex = this.allocateNextIndex(dbRecords);
 
     // Generate directory name: wt-{index:3 digits}-{4 random alphanumeric}
     const dirSuffix = generateRandomSuffix(4);
@@ -306,9 +297,14 @@ export class WorktreeService {
     try {
       await gitCreateWorktree(worktreePath, branch, repoPath, { baseBranch });
 
-      // Save index assignment
-      indexStore.indexes[worktreePath] = newIndex;
-      await saveIndexStore(repoWorktreeDir, indexStore);
+      // Save record to DB
+      await this.worktreeRepository.save({
+        id: crypto.randomUUID(),
+        repositoryId,
+        path: worktreePath,
+        indexNumber: newIndex,
+        createdAt: new Date().toISOString(),
+      });
 
       logger.info({ worktreePath, index: newIndex }, 'Worktree created');
 
@@ -345,20 +341,13 @@ export class WorktreeService {
     worktreePath: string,
     force: boolean = false
   ): Promise<{ success: boolean; error?: string }> {
-    // Get org/repo for index store
-    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
-    const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
-
     try {
       await gitRemoveWorktree(worktreePath, repoPath, { force });
 
-      // Remove index assignment
-      const indexStore = await loadIndexStore(repoWorktreeDir);
-      const removedIndex = indexStore.indexes[worktreePath];
-      delete indexStore.indexes[worktreePath];
-      await saveIndexStore(repoWorktreeDir, indexStore);
+      // Remove DB record
+      await this.worktreeRepository.deleteByPath(worktreePath);
 
-      logger.info({ worktreePath, removedIndex }, 'Worktree removed (index freed)');
+      logger.info({ worktreePath }, 'Worktree removed');
       return { success: true };
     } catch (error) {
       const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
@@ -404,29 +393,40 @@ export class WorktreeService {
   }
 
   /**
-   * Check if a worktree path belongs to a specific repository
+   * Check if a worktree path belongs to a specific repository.
+   * Uses direct DB lookup instead of listing all worktrees.
    */
-  async isWorktreeOf(repoPath: string, worktreePath: string): Promise<boolean> {
-    const worktrees = await this.listWorktrees(repoPath, '');
-    return worktrees.some(wt => wt.path === worktreePath);
+  async isWorktreeOf(repoPath: string, worktreePath: string, repositoryId: string): Promise<boolean> {
+    // Main worktree is always valid
+    if (worktreePath === repoPath) return true;
+
+    // Check DB for registered worktree
+    const record = await this.worktreeRepository.findByPath(worktreePath);
+    return record !== null && record.repositoryId === repositoryId;
   }
 
   /**
    * Generate next branch name: wt-{index:3 digits}-{4 random alphanumeric}
-   * Uses the next available index from the index store
+   * Uses the next available index from the DB
    */
-  async generateNextBranchName(repoPath: string): Promise<string> {
-    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
-    const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
-
-    // Ensure directory exists for index store
-    await fsPromises.mkdir(repoWorktreeDir, { recursive: true });
-
-    const indexStore = await loadIndexStore(repoWorktreeDir);
-    const nextIndex = allocateIndex(indexStore);
+  async generateNextBranchName(repositoryId: string): Promise<string> {
+    const dbRecords = await this.worktreeRepository.findByRepositoryId(repositoryId);
+    const nextIndex = this.allocateNextIndex(dbRecords);
     const suffix = generateRandomSuffix(4);
 
     return `wt-${String(nextIndex).padStart(3, '0')}-${suffix}`;
+  }
+
+  /**
+   * Allocate the next available index (fills gaps) from DB records
+   */
+  private allocateNextIndex(records: WorktreeRecord[]): number {
+    const usedIndexes = new Set(records.map(r => r.indexNumber));
+    let index = 1;
+    while (usedIndexes.has(index)) {
+      index++;
+    }
+    return index;
   }
 
   /**
