@@ -2,12 +2,6 @@ import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import type { Worktree, SetupCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
-import { createLogger } from '../lib/logger.js';
-import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
-import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
-import { getDatabase } from '../database/connection.js';
-
-const logger = createLogger('worktree-service');
 import {
   getRemoteUrl,
   parseOrgRepo,
@@ -20,6 +14,12 @@ import {
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
 } from '../lib/git.js';
+import { createLogger } from '../lib/logger.js';
+import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
+import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
+import { getDatabase } from '../database/connection.js';
+
+const logger = createLogger('worktree-service');
 
 /**
  * Generate a random alphanumeric suffix
@@ -138,6 +138,16 @@ async function copyTemplateFiles(
 
   await copyRecursive(templatesDir, worktreePath);
   return copiedFiles;
+}
+
+/**
+ * Extract user-facing error message from a git or generic error.
+ * Prefers stderr from GitError (which contains the actual git error details).
+ */
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof GitError) return error.stderr;
+  if (error instanceof Error) return error.message;
+  return 'Unknown error';
 }
 
 /**
@@ -327,7 +337,7 @@ export class WorktreeService {
 
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
-      const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
+      const message = extractErrorMessage(error);
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
@@ -350,7 +360,7 @@ export class WorktreeService {
       logger.info({ worktreePath }, 'Worktree removed');
       return { success: true };
     } catch (error) {
-      const message = error instanceof GitError ? error.stderr : (error instanceof Error ? error.message : 'Unknown error');
+      const message = extractErrorMessage(error);
       logger.error({ err: error, message, worktreePath }, 'Failed to remove worktree');
       return { success: false, error: message };
     }

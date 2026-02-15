@@ -28,7 +28,7 @@ export class SqliteWorktreeRepository implements WorktreeRepository {
       .selectAll()
       .execute();
 
-    return rows.map((row) => toWorktreeRecord(row));
+    return rows.map(toWorktreeRecord);
   }
 
   async findByPath(path: string): Promise<WorktreeRecord | null> {

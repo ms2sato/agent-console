@@ -487,6 +487,117 @@ detached
     });
   });
 
+  describe('generateNextBranchName', () => {
+    it('should return wt-001-XXXX format when no worktrees exist', async () => {
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-001-[a-z0-9]{4}$/);
+    });
+
+    it('should return wt-002-XXXX format when index 1 is used', async () => {
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/existing',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-002-[a-z0-9]{4}$/);
+    });
+
+    it('should match format /^wt-\\d{3}-[a-z0-9]{4}$/', async () => {
+      // Add several records to push the index higher
+      for (let i = 1; i <= 5; i++) {
+        mockRepo.records.push({
+          id: `wt-${i}`,
+          repositoryId: 'repo-1',
+          path: `/worktrees/wt-${i}`,
+          indexNumber: i,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-\d{3}-[a-z0-9]{4}$/);
+      // Should be wt-006-xxxx since indexes 1-5 are taken
+      expect(branchName).toMatch(/^wt-006-/);
+    });
+  });
+
+  describe('allocateNextIndex (tested indirectly via createWorktree)', () => {
+    it('should fill gaps: indexes [1, 3] exist -> next is 2', async () => {
+      mockRepo.records.push(
+        {
+          id: 'wt-1',
+          repositoryId: 'repo-1',
+          path: '/worktrees/wt-1',
+          indexNumber: 1,
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 'wt-3',
+          repositoryId: 'repo-1',
+          path: '/worktrees/wt-3',
+          indexNumber: 3,
+          createdAt: new Date().toISOString(),
+        }
+      );
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'feature-gap', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(2);
+    });
+
+    it('should allocate sequentially: indexes [1, 2, 3] exist -> next is 4', async () => {
+      for (let i = 1; i <= 3; i++) {
+        mockRepo.records.push({
+          id: `wt-${i}`,
+          repositoryId: 'repo-1',
+          path: `/worktrees/wt-${i}`,
+          indexNumber: i,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'feature-next', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(4);
+    });
+
+    it('should allocate index 1 when no indexes exist', async () => {
+      // mockRepo.records is empty
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'first-worktree', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(1);
+    });
+  });
+
   describe('executeSetupCommand', () => {
     beforeEach(() => {
       // Reset spawn tracking
