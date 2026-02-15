@@ -823,17 +823,6 @@ interface WorktreeIndexesJson {
  * repository fails - it logs the error and continues with other repositories.
  */
 async function migrateWorktreeIndexesFromJson(database: Kysely<Database>): Promise<void> {
-  // Check if we already have data in SQLite
-  const existingCount = await database
-    .selectFrom('worktrees')
-    .select(database.fn.count<number>('id').as('count'))
-    .executeTakeFirst();
-
-  if (existingCount && existingCount.count > 0) {
-    logger.debug({ count: existingCount.count }, 'SQLite already has worktrees, skipping JSON migration');
-    return;
-  }
-
   // Load all repositories from the database
   const repositories = await database
     .selectFrom('repositories')
@@ -847,6 +836,18 @@ async function migrateWorktreeIndexesFromJson(database: Kysely<Database>): Promi
 
   for (const repo of repositories) {
     try {
+      // Per-repository idempotency check: skip if this repo already has worktrees in the DB
+      const existingCount = await database
+        .selectFrom('worktrees')
+        .select(database.fn.count<number>('id').as('count'))
+        .where('repository_id', '=', repo.id)
+        .executeTakeFirst();
+
+      if (existingCount && existingCount.count > 0) {
+        logger.debug({ repositoryId: repo.id, count: existingCount.count }, 'SQLite already has worktrees for this repository, skipping JSON migration');
+        continue;
+      }
+
       // Determine org/repo to locate the JSON file
       const orgRepo = await getOrgRepoForMigration(repo.path);
       const worktreeIndexesPath = path.join(getRepositoryDir(orgRepo), 'worktrees', 'worktree-indexes.json');
