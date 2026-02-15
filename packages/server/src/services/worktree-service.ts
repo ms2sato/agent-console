@@ -170,6 +170,12 @@ export class WorktreeService {
    * When null, worktreeRepository getter creates a fresh SqliteWorktreeRepository
    * from the current database on each access. This avoids stale references when
    * the database is closed and reopened (e.g., between tests).
+   *
+   * Design rationale: This lazy getter pattern is intentional. WorktreeService is
+   * exported as a module-level singleton (see bottom of file), so the database is
+   * not yet initialized at construction time. Always requiring DI would force all
+   * callers through a factory — a larger refactor with little benefit here. Tests
+   * CAN inject a repository via the constructor for proper isolation.
    */
   private readonly _injectedRepository: WorktreeRepository | null;
 

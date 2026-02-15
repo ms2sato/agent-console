@@ -320,6 +320,13 @@ export async function removeWorktree(
     // git cannot remove the worktree on its own:
     // - The .git file is missing (race condition / partial cleanup)
     // - The path is not recognized as a working tree (orphaned worktree)
+    //
+    // Security note: This function intentionally does NOT validate path safety.
+    // It is a low-level git utility; security checks (path traversal prevention,
+    // isWorktreeOf ownership, boundary validation) are the caller's responsibility.
+    // See the route handler in repositories.ts which performs all validation before
+    // calling here. The `force` flag is only set when the caller has already
+    // verified the path is safe to delete.
     if (
       options?.force &&
       error instanceof GitError &&
