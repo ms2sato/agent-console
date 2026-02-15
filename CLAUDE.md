@@ -94,6 +94,7 @@ Project-defined (`.claude/agents/`):
 - `code-quality-reviewer` - Evaluating design and maintainability
 - `ux-architecture-reviewer` - Verifying state consistency in client-server interactions
 - `claude-config-specialist` - Analyzing and improving Claude Code configuration (.claude/, CLAUDE.md)
+- `coderabbit-reviewer` - External AI review via CodeRabbit CLI (optional, skips if CLI not installed)
 
 Project-defined skills (in `.claude/skills/`):
 - **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Development process rules (testing, branching, commits)

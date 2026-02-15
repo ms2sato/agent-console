@@ -7,7 +7,7 @@ You are coordinating an automated review and fix loop. Your role is to orchestra
 
 ## Overview
 
-1. Launch 3 reviewers in parallel (background)
+1. Launch reviewers in parallel (background): 3 built-in reviewers + CodeRabbit CLI (optional)
 2. Collect their findings
 3. If CRITICAL/HIGH issues exist → Fix them with specialists
 4. Re-review after fixes
@@ -19,7 +19,8 @@ For each iteration (max 5):
 
 ### Step 1: Launch Reviewers in Parallel
 
-Launch all three reviewers with `run_in_background=true` in a **single message**:
+Launch all reviewers with `run_in_background=true` in a **single message**.
+Always launch the 3 built-in reviewers. Additionally launch coderabbit-reviewer as a 4th reviewer (it will self-skip if CLI is not installed).
 
 **test-reviewer:**
 ```
@@ -66,6 +67,21 @@ For CRITICAL and HIGH severity issues, provide:
 Format your findings clearly so they can be easily identified and addressed.
 ```
 
+**coderabbit-reviewer (optional - self-skips if CLI not installed):**
+```
+Run CodeRabbit CLI review against the main branch.
+
+Translate all findings into standard severity format (CRITICAL, HIGH, MEDIUM, LOW).
+
+For CRITICAL and HIGH severity issues, provide:
+- Severity level
+- File path and line number
+- Clear description of the problem
+- Specific recommendation for fixing
+
+Format your findings clearly so they can be easily identified and addressed.
+```
+
 ### Step 2: Collect Results
 
 Use `TaskOutput` with `block=true` to wait for each reviewer to complete:
@@ -74,7 +90,10 @@ Use `TaskOutput` with `block=true` to wait for each reviewer to complete:
 test_result = TaskOutput(test_reviewer_id, block=true)
 quality_result = TaskOutput(quality_reviewer_id, block=true)
 ux_result = TaskOutput(ux_reviewer_id, block=true)
+coderabbit_result = TaskOutput(coderabbit_reviewer_id, block=true)
 ```
+
+**Note:** If coderabbit-reviewer reports "Skipped" (CLI not installed), simply ignore its results and continue with the other reviewers' findings.
 
 ### Step 3: Extract CRITICAL/HIGH Issues
 
@@ -181,18 +200,18 @@ After the loop completes, provide a summary:
 
 ## Error Handling
 
-- **Reviewer fails:** Continue with remaining reviewers, report the failure
+- **Reviewer fails or skips:** Continue with remaining reviewers, report the failure/skip (this is expected for coderabbit-reviewer when CLI is not installed)
 - **Specialist fails:** Report the failure, continue to next iteration to retry
 - **Tests fail after fix:** Report which fix caused the failure, attempt to revert or fix in next iteration
 
 ## Important Notes
 
 - **Primary agent role:** You (the primary agent) coordinate but do NOT write code directly. Delegate all fixes to specialists.
-- **Parallel execution:** Launch reviewers in parallel (single message with 3 Task calls). Launch specialists in parallel when you have both frontend and backend issues.
+- **Parallel execution:** Launch reviewers in parallel (single message with 4 Task calls including coderabbit-reviewer). Launch specialists in parallel when you have both frontend and backend issues.
 - **Maximum iterations:** Stop after 5 iterations even if CRITICAL/HIGH issues remain
 - **Focus:** Only auto-fix CRITICAL and HIGH severity issues
 - **Verification:** Always run tests after fixes
 
 ## Begin Now
 
-Start with Iteration 1: Launch all three reviewers in parallel.
+Start with Iteration 1: Launch all reviewers in parallel (3 built-in + coderabbit-reviewer).
