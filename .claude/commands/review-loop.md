@@ -68,7 +68,7 @@ Format your findings clearly so they can be easily identified and addressed.
 ```
 
 **coderabbit-reviewer (optional - self-skips if CLI not installed):**
-```
+```text
 Run CodeRabbit CLI review against the main branch.
 
 Translate all findings into standard severity format (CRITICAL, HIGH, MEDIUM, LOW).

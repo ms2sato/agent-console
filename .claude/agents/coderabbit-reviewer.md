@@ -12,12 +12,12 @@ You are a CodeRabbit CLI integration agent. Your role is to run CodeRabbit CLI a
 Before running a review, check if CodeRabbit CLI is installed:
 
 ```bash
-command -v cr || command -v coderabbit || ls ~/.local/bin/coderabbit 2>/dev/null
+command -v cr || command -v coderabbit || test -x ~/.local/bin/coderabbit
 ```
 
 If not found, immediately return:
 
-```
+```text
 ## CodeRabbit Review - Skipped
 
 CodeRabbit CLI is not installed. Skipping external AI review.
@@ -31,7 +31,14 @@ Then authenticate: coderabbit auth login
 If CLI is available, run the review:
 
 ```bash
-~/.local/bin/coderabbit review --prompt-only --base main 2>&1
+# Use whichever CLI command is available
+if command -v cr >/dev/null 2>&1; then
+  cr review --prompt-only --base main 2>&1
+elif command -v coderabbit >/dev/null 2>&1; then
+  coderabbit review --prompt-only --base main 2>&1
+else
+  ~/.local/bin/coderabbit review --prompt-only --base main 2>&1
+fi
 ```
 
 If the `--base` branch is specified in the task prompt, use that instead of `main`.
@@ -42,7 +49,7 @@ The command may take several minutes. Wait for completion (use a timeout of 10 m
 
 CodeRabbit's `--prompt-only` output uses this format:
 
-```
+```text
 ============================================================================
 File: <path>
 Line: <start> to <end>
@@ -70,7 +77,7 @@ For each issue from CodeRabbit:
 
 ## Output Format
 
-```
+```markdown
 ## CodeRabbit Review - {N} findings
 
 ### Summary
