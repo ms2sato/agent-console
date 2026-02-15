@@ -23,9 +23,15 @@ Launch all three reviewers with `run_in_background=true` in a **single message**
 
 **test-reviewer:**
 ```
-Review all test files for test quality, coverage, and anti-patterns.
+Review test quality and coverage, including detection of missing tests for production code changes.
+
+1. Run `git diff main...HEAD --name-only` to identify changed production code files (exclude test files).
+2. For each changed production file, verify that corresponding tests exist and cover the changes.
+3. Review existing test files for quality, coverage, and anti-patterns.
 
 Report ALL issues found with their severity levels (CRITICAL, HIGH, MEDIUM, LOW).
+
+Missing tests for new or significantly changed production code should be reported as HIGH severity.
 
 For CRITICAL and HIGH severity issues, provide:
 - Severity level
