@@ -11,6 +11,7 @@ export interface Database {
   agents: AgentsTable;
   jobs: JobsTable;
   repository_slack_integrations: RepositorySlackIntegrationsTable;
+  worktrees: WorktreesTable;
 }
 
 /**
@@ -208,3 +209,27 @@ export type RepositorySlackIntegrationRow = Selectable<RepositorySlackIntegratio
 export type NewRepositorySlackIntegration = Insertable<RepositorySlackIntegrationsTable>;
 /** Repository Slack integration data for UPDATE queries */
 export type RepositorySlackIntegrationUpdate = Updateable<RepositorySlackIntegrationsTable>;
+
+/**
+ * Worktrees table schema.
+ * Stores worktree index data, replacing the JSON-based worktree-indexes.json.
+ */
+export interface WorktreesTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Foreign key reference to repositories.id */
+  repository_id: string;
+  /** Absolute path to the worktree directory (unique) */
+  path: string;
+  /** Index number for worktree naming (e.g., wt-001-xxxx) */
+  index_number: number;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+}
+
+/** Worktree row as returned from SELECT queries */
+export type WorktreeRow = Selectable<WorktreesTable>;
+/** Worktree data for INSERT queries */
+export type NewWorktree = Insertable<WorktreesTable>;
+/** Worktree data for UPDATE queries */
+export type WorktreeUpdate = Updateable<WorktreesTable>;

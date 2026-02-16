@@ -4,9 +4,6 @@ import { useRepositories } from '../../hooks/use-repositories';
 import { Spinner } from '../ui/Spinner';
 import { EditRepositoryForm } from './EditRepositoryForm';
 
-// Extended Repository type that includes setupCommand
-type RepositoryWithSetup = Repository & { setupCommand?: string | null };
-
 export function RepositoryList() {
   const { repositories, isLoading, error, refetch } = useRepositories();
   const [editingRepoId, setEditingRepoId] = useState<string | null>(null);
@@ -48,14 +45,13 @@ export function RepositoryList() {
   return (
     <div className="flex flex-col gap-3">
       {repositories.map((repo) => {
-        const repoWithSetup = repo as RepositoryWithSetup;
         const isEditing = editingRepoId === repo.id;
 
         if (isEditing) {
           return (
             <EditRepositoryForm
               key={repo.id}
-              repository={repoWithSetup}
+              repository={repo}
               onSuccess={() => setEditingRepoId(null)}
               onCancel={() => setEditingRepoId(null)}
             />
@@ -65,7 +61,7 @@ export function RepositoryList() {
         return (
           <RepositoryCard
             key={repo.id}
-            repository={repoWithSetup}
+            repository={repo}
             onEdit={() => setEditingRepoId(repo.id)}
           />
         );
@@ -75,7 +71,7 @@ export function RepositoryList() {
 }
 
 interface RepositoryCardProps {
-  repository: RepositoryWithSetup;
+  repository: Repository;
   onEdit: () => void;
 }
 

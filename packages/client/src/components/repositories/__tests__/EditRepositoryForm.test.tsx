@@ -65,7 +65,7 @@ function createMockResponse(body: unknown, ok = true) {
   } as unknown as Response;
 }
 
-function createTestRepository(overrides: Partial<Repository & { setupCommand?: string | null; description?: string | null }> = {}): Repository & { setupCommand?: string | null; description?: string | null } {
+function createTestRepository(overrides: Partial<Repository> = {}): Repository {
   return {
     id: 'repo-1',
     name: 'test-repo',
@@ -555,7 +555,7 @@ describe('EditRepositoryForm', () => {
 
       const repository = createTestRepository();
       // Explicitly set to undefined instead of null
-      delete (repository as { setupCommand?: string | null }).setupCommand;
+      delete repository.setupCommand;
 
       renderEditRepositoryForm({ repository });
 
@@ -616,7 +616,7 @@ describe('EditRepositoryForm', () => {
       setupMockFetch(createMockResponse({}));
 
       const repository = createTestRepository();
-      delete (repository as { description?: string | null }).description;
+      delete repository.description;
       renderEditRepositoryForm({ repository });
 
       const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;

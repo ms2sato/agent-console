@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test'
 import * as fs from 'fs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
+import type { Worktree } from '@agent-console/shared';
+import type { WorktreeRepository, WorktreeRecord } from '../../repositories/worktree-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -37,13 +39,42 @@ function setMockSpawnResult(stdout: string, exitCode = 0, stderr = '') {
   };
 }
 
+/**
+ * Create an in-memory mock WorktreeRepository for testing.
+ * Stores records in a plain array, avoiding any database dependency.
+ */
+function createMockWorktreeRepository(): WorktreeRepository & { records: WorktreeRecord[] } {
+  const records: WorktreeRecord[] = [];
+  return {
+    records,
+    async findByRepositoryId(repositoryId: string) {
+      return records.filter(r => r.repositoryId === repositoryId);
+    },
+    async findByPath(path: string) {
+      return records.find(r => r.path === path) ?? null;
+    },
+    async save(record: WorktreeRecord) {
+      records.push(record);
+    },
+    async deleteByPath(path: string) {
+      const idx = records.findIndex(r => r.path === path);
+      if (idx >= 0) records.splice(idx, 1);
+    },
+  };
+}
+
 describe('WorktreeService', () => {
+  let mockRepo: ReturnType<typeof createMockWorktreeRepository>;
+
   beforeEach(() => {
     // Setup memfs with config directory structure
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Create fresh mock repository for each test
+    mockRepo = createMockWorktreeRepository();
 
     // Reset mocks
     mockGit.getRemoteUrl.mockReset();
@@ -84,17 +115,18 @@ branch refs/heads/feature-1
   }
 
   describe('listWorktrees', () => {
-    it('should only return main worktree and worktrees registered in index store', async () => {
-      // Create index store with one registered worktree
-      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
-      fs.mkdirSync(indexStorePath, { recursive: true });
-      fs.writeFileSync(
-        `${indexStorePath}/worktree-indexes.json`,
-        JSON.stringify({ indexes: { '/worktrees/feature-1': 1 } })
-      );
+    it('should only return main worktree and worktrees registered in DB', async () => {
+      // Register one worktree in the mock repository
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -110,17 +142,10 @@ branch refs/heads/feature-1
       expect(worktrees[1].index).toBe(1);
     });
 
-    it('should filter out worktrees not registered in index store', async () => {
-      // Create empty index store
-      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
-      fs.mkdirSync(indexStorePath, { recursive: true });
-      fs.writeFileSync(
-        `${indexStorePath}/worktree-indexes.json`,
-        JSON.stringify({ indexes: {} })
-      );
-
+    it('should filter out worktrees not registered in DB', async () => {
+      // No records in mock repository - only main worktree should be returned
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -137,7 +162,7 @@ detached
 `));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -148,19 +173,49 @@ detached
       mockGit.listWorktrees.mockImplementation(() => Promise.reject(new Error('git error')));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const worktrees = await service.listWorktrees('/repo', 'repo-1');
       expect(worktrees).toEqual([]);
+    });
+
+    it('should include orphaned worktrees (in DB but not in git)', async () => {
+      // Add DB record for a worktree that will not appear in git output
+      mockRepo.records.push({
+        id: 'wt-orphaned',
+        repositoryId: 'repo-1',
+        path: '/worktrees/orphaned-1',
+        indexNumber: 2,
+        createdAt: new Date().toISOString(),
+      });
+      // Also add a normal registered worktree
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+      const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
+
+      // Should include: main + feature-1 (from git) + orphaned-1 (from DB only)
+      expect(worktrees.length).toBe(3);
+      const orphaned = worktrees.find((wt: Worktree) => wt.path === '/worktrees/orphaned-1');
+      expect(orphaned).toBeDefined();
+      expect(orphaned!.branch).toBe('(orphaned)');
+      expect(orphaned!.index).toBe(2);
     });
   });
 
   describe('createWorktree', () => {
     it('should create worktree with existing branch', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      const result = await service.createWorktree('/repo', 'feature-branch');
+      const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
       expect(result.error).toBeUndefined();
       // Directory name is wt-XXX-xxxx format, independent of branch name
@@ -173,13 +228,17 @@ detached
         '/repo',
         { baseBranch: undefined }
       );
+      // Verify record was saved to mock repository
+      expect(mockRepo.records.length).toBe(1);
+      expect(mockRepo.records[0].repositoryId).toBe('repo-1');
+      expect(mockRepo.records[0].path).toBe(result.worktreePath);
     });
 
     it('should create worktree with new branch from base', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      await service.createWorktree('/repo', 'new-feature', 'main');
+      await service.createWorktree('/repo', 'new-feature', 'repo-1', 'main');
 
       expect(mockGit.createWorktree).toHaveBeenCalledWith(
         expect.stringMatching(/wt-\d{3}-[a-z0-9]{4}$/),
@@ -195,9 +254,9 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      const result = await service.createWorktree('/repo', 'existing-branch');
+      const result = await service.createWorktree('/repo', 'existing-branch', 'repo-1');
 
       expect(result.error).toBeDefined();
       expect(result.worktreePath).toBe('');
@@ -210,9 +269,9 @@ detached
         fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService();
+        const service = new WorktreeService(mockRepo);
 
-        const result = await service.createWorktree('/repo', 'feature-branch');
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
         expect(result.error).toBeUndefined();
         expect(result.copiedFiles).toContain('CLAUDE.md');
@@ -230,9 +289,9 @@ detached
         fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, '#!/bin/bash\necho setup');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService();
+        const service = new WorktreeService(mockRepo);
 
-        const result = await service.createWorktree('/repo', 'feature-branch');
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
         expect(result.error).toBeUndefined();
         expect(result.copiedFiles).toContain('setup.sh');
@@ -248,9 +307,9 @@ detached
         );
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService();
+        const service = new WorktreeService(mockRepo);
 
-        const result = await service.createWorktree('/repo', 'my-feature');
+        const result = await service.createWorktree('/repo', 'my-feature', 'repo-1');
 
         expect(result.error).toBeUndefined();
         const content = fs.readFileSync(`${result.worktreePath}/config.txt`, 'utf-8');
@@ -267,9 +326,9 @@ detached
         fs.writeFileSync('/repo/.agent-console/root-file.txt', 'root');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService();
+        const service = new WorktreeService(mockRepo);
 
-        const result = await service.createWorktree('/repo', 'feature-branch');
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
         expect(result.error).toBeUndefined();
         expect(result.copiedFiles).toContain('.claude/settings.local.json');
@@ -286,26 +345,38 @@ detached
 
   describe('removeWorktree', () => {
     it('should remove worktree successfully', async () => {
-      // Setup index store directory for saving
-      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
-      fs.mkdirSync(indexStorePath, { recursive: true });
+      // Pre-populate DB record for the worktree being removed
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
 
       expect(result.success).toBe(true);
       expect(result.error).toBeUndefined();
+      // Verify record was deleted from mock repository
+      expect(mockRepo.records.length).toBe(0);
     });
 
     it('should use force flag when specified', async () => {
-      // Setup index store directory for saving
-      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
-      fs.mkdirSync(indexStorePath, { recursive: true });
+      // Pre-populate DB record
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       await service.removeWorktree('/repo', '/worktrees/feature', true);
 
@@ -322,7 +393,7 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
 
@@ -334,7 +405,7 @@ detached
   describe('listBranches', () => {
     it('should list local and remote branches', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.listBranches('/repo');
 
@@ -350,7 +421,7 @@ detached
       mockGit.getDefaultBranch.mockImplementation(() => Promise.reject(new Error('git error')));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.listBranches('/repo');
 
@@ -363,7 +434,7 @@ detached
   describe('getDefaultBranch', () => {
     it('should return default branch from git', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBe('main');
@@ -373,7 +444,7 @@ detached
       mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBeNull();
@@ -383,35 +454,147 @@ detached
   describe('isWorktreeOf', () => {
     it('should return true for valid worktree path', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      // listWorktrees will return /repo/main and /worktrees/feature-1
-      const result = await service.isWorktreeOf('/repo/main', '/repo/main');
+      // Main worktree path equals repo path, always valid
+      const result = await service.isWorktreeOf('/repo/main', '/repo/main', 'repo-1');
       expect(result).toBe(true);
     });
 
     it('should return true for secondary worktree path', async () => {
-      // Create index store with registered worktree
-      const indexStorePath = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
-      fs.mkdirSync(indexStorePath, { recursive: true });
-      fs.writeFileSync(
-        `${indexStorePath}/worktree-indexes.json`,
-        JSON.stringify({ indexes: { '/worktrees/feature-1': 1 } })
-      );
+      // Register worktree in mock repository
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      const result = await service.isWorktreeOf('/repo/main', '/worktrees/feature-1');
+      const result = await service.isWorktreeOf('/repo/main', '/worktrees/feature-1', 'repo-1');
       expect(result).toBe(true);
     });
 
     it('should return false for invalid worktree path', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService();
+      const service = new WorktreeService(mockRepo);
 
-      const result = await service.isWorktreeOf('/repo/main', '/other/path');
+      const result = await service.isWorktreeOf('/repo/main', '/other/path', 'repo-1');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('generateNextBranchName', () => {
+    it('should return wt-001-XXXX format when no worktrees exist', async () => {
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-001-[a-z0-9]{4}$/);
+    });
+
+    it('should return wt-002-XXXX format when index 1 is used', async () => {
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/existing',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-002-[a-z0-9]{4}$/);
+    });
+
+    it('should match format /^wt-\\d{3}-[a-z0-9]{4}$/', async () => {
+      // Add several records to push the index higher
+      for (let i = 1; i <= 5; i++) {
+        mockRepo.records.push({
+          id: `wt-${i}`,
+          repositoryId: 'repo-1',
+          path: `/worktrees/wt-${i}`,
+          indexNumber: i,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const branchName = await service.generateNextBranchName('repo-1');
+
+      expect(branchName).toMatch(/^wt-\d{3}-[a-z0-9]{4}$/);
+      // Should be wt-006-xxxx since indexes 1-5 are taken
+      expect(branchName).toMatch(/^wt-006-/);
+    });
+  });
+
+  describe('allocateNextIndex (tested indirectly via createWorktree)', () => {
+    it('should fill gaps: indexes [1, 3] exist -> next is 2', async () => {
+      mockRepo.records.push(
+        {
+          id: 'wt-1',
+          repositoryId: 'repo-1',
+          path: '/worktrees/wt-1',
+          indexNumber: 1,
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 'wt-3',
+          repositoryId: 'repo-1',
+          path: '/worktrees/wt-3',
+          indexNumber: 3,
+          createdAt: new Date().toISOString(),
+        }
+      );
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'feature-gap', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(2);
+    });
+
+    it('should allocate sequentially: indexes [1, 2, 3] exist -> next is 4', async () => {
+      for (let i = 1; i <= 3; i++) {
+        mockRepo.records.push({
+          id: `wt-${i}`,
+          repositoryId: 'repo-1',
+          path: `/worktrees/wt-${i}`,
+          indexNumber: i,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'feature-next', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(4);
+    });
+
+    it('should allocate index 1 when no indexes exist', async () => {
+      // mockRepo.records is empty
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService(mockRepo);
+
+      const result = await service.createWorktree('/repo', 'first-worktree', 'repo-1');
+
+      expect(result.error).toBeUndefined();
+      expect(result.index).toBe(1);
     });
   });
 

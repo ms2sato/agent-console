@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { initializeDatabase, closeDatabase, migrateFromJson } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -90,6 +91,10 @@ describe('migration', () => {
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    // Reset git mocks for worktree migration tests
+    mockGit.getRemoteUrl.mockReset();
+    mockGit.parseOrgRepo.mockReset();
   });
 
   afterEach(async () => {
@@ -634,10 +639,10 @@ describe('migration', () => {
       // Initialize database (runs all migrations up to current version)
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is 7
+      // Verify the schema version is the latest (8)
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(7);
+      expect(result.rows[0]?.user_version).toBe(8);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -722,6 +727,398 @@ describe('migration', () => {
         .where('id', '=', 'repo-pre-v7')
         .executeTakeFirstOrThrow();
       expect(afterUpdate.description).toBe('Added after migration');
+    });
+  });
+
+  describe('schema migration v8: worktrees table', () => {
+    it('should create worktrees table with correct columns', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Verify the schema version is 8
+      const { sql } = await import('kysely');
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(8);
+
+      // First create a repository (foreign key dependency)
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-wt',
+          name: 'Worktree Repo',
+          path: '/test/worktree-repo',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Insert a worktree record
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-1',
+          repository_id: 'repo-wt',
+          path: '/test/worktrees/feature-1',
+          index_number: 1,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('wt-1');
+      expect(rows[0].repository_id).toBe('repo-wt');
+      expect(rows[0].path).toBe('/test/worktrees/feature-1');
+      expect(rows[0].index_number).toBe(1);
+      expect(rows[0].created_at).toBeDefined();
+    });
+
+    it('should enforce unique path constraint', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-unique-path',
+          name: 'Unique Path Repo',
+          path: '/test/unique-path',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-dup-1',
+          repository_id: 'repo-unique-path',
+          path: '/test/worktrees/same-path',
+          index_number: 1,
+        })
+        .execute();
+
+      await expect(
+        db
+          .insertInto('worktrees')
+          .values({
+            id: 'wt-dup-2',
+            repository_id: 'repo-unique-path',
+            path: '/test/worktrees/same-path',
+            index_number: 2,
+          })
+          .execute()
+      ).rejects.toThrow();
+    });
+
+    it('should cascade delete worktrees when repository is deleted', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-cascade-wt',
+          name: 'Cascade Repo',
+          path: '/test/cascade-wt',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'wt-cascade',
+          repository_id: 'repo-cascade-wt',
+          path: '/test/worktrees/cascade-1',
+          index_number: 1,
+        })
+        .execute();
+
+      // Delete the parent repository
+      await db.deleteFrom('repositories').where('id', '=', 'repo-cascade-wt').execute();
+
+      // Worktree should be cascade-deleted
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(0);
+    });
+  });
+
+  describe('migrateWorktreeIndexesFromJson (via migrateFromJson)', () => {
+    it('should migrate worktree indexes from JSON to SQLite for a single repo', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Pre-insert a repository
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'my-project',
+          path: '/path/to/my-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Mock git to resolve org/repo
+      mockGit.getRemoteUrl.mockImplementation(() =>
+        Promise.resolve('git@github.com:owner/my-project.git')
+      );
+      mockGit.parseOrgRepo.mockImplementation(() => 'owner/my-project');
+
+      // Create worktree-indexes.json at the expected path
+      const worktreeIndexesPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'owner', 'my-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(worktreeIndexesPath), { recursive: true });
+      fs.writeFileSync(
+        worktreeIndexesPath,
+        JSON.stringify({ indexes: { '/path/to/wt-1': 1, '/path/to/wt-2': 2 } })
+      );
+
+      await migrateFromJson(db);
+
+      // Verify data was migrated
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(2);
+
+      const paths = rows.map(r => r.path).sort();
+      expect(paths).toEqual(['/path/to/wt-1', '/path/to/wt-2']);
+
+      const indexes = rows.map(r => r.index_number).sort();
+      expect(indexes).toEqual([1, 2]);
+
+      // All rows should reference repo-1
+      for (const row of rows) {
+        expect(row.repository_id).toBe('repo-1');
+      }
+
+      // Verify JSON file was renamed
+      expect(fs.existsSync(worktreeIndexesPath)).toBe(false);
+      expect(fs.existsSync(`${worktreeIndexesPath}.migrated`)).toBe(true);
+    });
+
+    it('should rename JSON file but insert no data when indexes is empty', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'my-project',
+          path: '/path/to/my-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      mockGit.getRemoteUrl.mockImplementation(() =>
+        Promise.resolve('git@github.com:owner/my-project.git')
+      );
+      mockGit.parseOrgRepo.mockImplementation(() => 'owner/my-project');
+
+      const worktreeIndexesPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'owner', 'my-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(worktreeIndexesPath), { recursive: true });
+      fs.writeFileSync(worktreeIndexesPath, JSON.stringify({ indexes: {} }));
+
+      await migrateFromJson(db);
+
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(0);
+
+      // JSON file should still be renamed to .migrated
+      expect(fs.existsSync(worktreeIndexesPath)).toBe(false);
+      expect(fs.existsSync(`${worktreeIndexesPath}.migrated`)).toBe(true);
+    });
+
+    it('should skip silently when no JSON file exists', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'my-project',
+          path: '/path/to/my-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      mockGit.getRemoteUrl.mockImplementation(() =>
+        Promise.resolve('git@github.com:owner/my-project.git')
+      );
+      mockGit.parseOrgRepo.mockImplementation(() => 'owner/my-project');
+
+      // Do NOT create any worktree-indexes.json
+
+      await migrateFromJson(db);
+
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(0);
+    });
+
+    it('should skip repo that already has worktrees in the DB (per-repo idempotency)', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Pre-insert repository
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'my-project',
+          path: '/path/to/my-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Pre-insert existing worktree record (simulates previous migration)
+      await db
+        .insertInto('worktrees')
+        .values({
+          id: 'existing-wt',
+          repository_id: 'repo-1',
+          path: '/existing/worktree',
+          index_number: 5,
+        })
+        .execute();
+
+      mockGit.getRemoteUrl.mockImplementation(() =>
+        Promise.resolve('git@github.com:owner/my-project.git')
+      );
+      mockGit.parseOrgRepo.mockImplementation(() => 'owner/my-project');
+
+      // Create JSON with different data that should NOT be applied
+      const worktreeIndexesPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'owner', 'my-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(worktreeIndexesPath), { recursive: true });
+      fs.writeFileSync(
+        worktreeIndexesPath,
+        JSON.stringify({ indexes: { '/path/to/wt-new': 10 } })
+      );
+
+      await migrateFromJson(db);
+
+      // Original record should remain unchanged
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('existing-wt');
+      expect(rows[0].path).toBe('/existing/worktree');
+      expect(rows[0].index_number).toBe(5);
+
+      // JSON file should NOT be renamed (migration was skipped)
+      expect(fs.existsSync(worktreeIndexesPath)).toBe(true);
+    });
+
+    it('should continue with other repos when one fails (partial failure)', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Pre-insert two repositories
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'good-project',
+          path: '/path/to/good-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-2',
+          name: 'bad-project',
+          path: '/path/to/bad-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Mock git to return different org/repo based on repo path
+      mockGit.getRemoteUrl.mockImplementation((cwd: string) => {
+        if (cwd === '/path/to/good-project') {
+          return Promise.resolve('git@github.com:owner/good-project.git');
+        }
+        return Promise.resolve('git@github.com:owner/bad-project.git');
+      });
+      mockGit.parseOrgRepo.mockImplementation((remoteUrl: string) => {
+        if (remoteUrl.includes('good-project')) return 'owner/good-project';
+        return 'owner/bad-project';
+      });
+
+      // Create valid JSON for repo-1
+      const goodPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'owner', 'good-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(goodPath), { recursive: true });
+      fs.writeFileSync(goodPath, JSON.stringify({ indexes: { '/wt/good-1': 1 } }));
+
+      // Create invalid/corrupt JSON for repo-2
+      const badPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'owner', 'bad-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(badPath), { recursive: true });
+      fs.writeFileSync(badPath, 'not valid json {{{');
+
+      // migrateFromJson should NOT throw - individual repo errors are caught
+      await migrateFromJson(db);
+
+      // repo-1 data should be migrated
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].path).toBe('/wt/good-1');
+      expect(rows[0].repository_id).toBe('repo-1');
+
+      // Good JSON renamed, bad JSON still present (migration failed for that repo)
+      expect(fs.existsSync(goodPath)).toBe(false);
+      expect(fs.existsSync(`${goodPath}.migrated`)).toBe(true);
+      expect(fs.existsSync(badPath)).toBe(true);
+    });
+
+    it('should fall back to basename when git remote fails', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-1',
+          name: 'my-project',
+          path: '/repos/my-project',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Mock getRemoteUrl to throw (simulates no git remote)
+      mockGit.getRemoteUrl.mockImplementation(() => {
+        throw new Error('fatal: not a git repository');
+      });
+
+      // When fallback occurs, orgRepo = basename of path = 'my-project'
+      // So JSON path is: $AGENT_CONSOLE_HOME/repositories/my-project/worktrees/worktree-indexes.json
+      const worktreeIndexesPath = path.join(
+        TEST_CONFIG_DIR, 'repositories', 'my-project', 'worktrees', 'worktree-indexes.json'
+      );
+      fs.mkdirSync(path.dirname(worktreeIndexesPath), { recursive: true });
+      fs.writeFileSync(
+        worktreeIndexesPath,
+        JSON.stringify({ indexes: { '/repos/my-project/wt-1': 1 } })
+      );
+
+      await migrateFromJson(db);
+
+      const rows = await db.selectFrom('worktrees').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].path).toBe('/repos/my-project/wt-1');
+      expect(rows[0].index_number).toBe(1);
+      expect(rows[0].repository_id).toBe('repo-1');
+
+      // Verify JSON file was renamed
+      expect(fs.existsSync(worktreeIndexesPath)).toBe(false);
+      expect(fs.existsSync(`${worktreeIndexesPath}.migrated`)).toBe(true);
     });
   });
 
