@@ -4,6 +4,7 @@ import { AlertCircleIcon } from '../../components/Icons';
 import { Spinner } from '../../components/ui/Spinner';
 import { useWorktreeCreationTasksContext } from '../__root';
 import { createWorktreeAsync } from '../../lib/api';
+import { generateTaskId } from '../../lib/id';
 
 export const Route = createFileRoute('/worktree-creation-tasks/$taskId')({
   component: WorktreeCreationTaskPage,
@@ -36,7 +37,7 @@ function useWorktreeCreationTask(taskId: string): {
     if (!task) return;
 
     // Generate a new task ID for the retry
-    const newTaskId = crypto.randomUUID();
+    const newTaskId = generateTaskId();
 
     // Build new request with new taskId
     const newRequest = { ...task.request, taskId: newTaskId };
