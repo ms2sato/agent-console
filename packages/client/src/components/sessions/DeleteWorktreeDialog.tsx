@@ -9,6 +9,7 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { deleteWorktreeAsync } from '../../lib/api';
+import { generateTaskId } from '../../lib/id';
 import { useWorktreeDeletionTasksContext } from '../../routes/__root';
 
 export interface DeleteWorktreeDialogProps {
@@ -33,10 +34,7 @@ export function DeleteWorktreeDialog({
 
   const handleDeleteWorktree = async (force: boolean = false) => {
     // Generate task ID
-    const taskId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const taskId = generateTaskId();
 
     // Add task to sidebar with retry info
     addTask({

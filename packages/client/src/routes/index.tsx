@@ -20,6 +20,7 @@ import {
 import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
 import { emitSessionDeleted } from '../lib/app-websocket';
 import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-websocket.js';
+import { generateTaskId } from '../lib/id';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
@@ -720,10 +721,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, ge
 
   // Async worktree creation - returns immediately after API accepts the request
   const handleCreateWorktree = async (formRequest: CreateWorktreeFormRequest) => {
-    const taskId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const taskId = generateTaskId();
     // Build full request with taskId for storage and API
     const request = { ...formRequest, taskId };
 
@@ -912,10 +910,7 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
 
   const executeDelete = async (force: boolean) => {
     // Generate task ID
-    const taskId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const taskId = generateTaskId();
 
     // Use session ID if available, otherwise generate a synthetic one for the task
     const effectiveSessionId = session?.id ?? `no-session-${taskId}`;
