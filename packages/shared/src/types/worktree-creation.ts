@@ -1,6 +1,6 @@
 import type { CreateWorktreeRequest } from '../schemas/repository.js';
 import type { Worker } from './worker.js';
-import type { Worktree, BranchNameFallback, SetupCommandResult } from '../index.js';
+import type { Worktree, BranchNameFallback, HookCommandResult } from '../index.js';
 
 /**
  * Session information for worktree creation completion.
@@ -67,7 +67,7 @@ export interface WorktreeCreationCompletedPayload {
   /** Present when AI branch name generation failed and fallback was used */
   branchNameFallback?: BranchNameFallback;
   /** Present when setup command was executed */
-  setupCommandResult?: SetupCommandResult;
+  setupCommandResult?: HookCommandResult;
   /** Present when fetch from remote failed */
   fetchFailed?: boolean;
   fetchError?: string;

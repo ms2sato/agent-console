@@ -20,6 +20,7 @@ export interface PersistedRepository {
   path: string;
   createdAt: string;
   setupCommand?: string | null;
+  cleanupCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
 }

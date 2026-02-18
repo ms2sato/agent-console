@@ -15,10 +15,16 @@ import {
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
 
-// Form data schema - setup command, env vars, and description are optional, can be empty
+// Form data schema - all fields are optional and can be empty
 const EditRepositoryFormSchema = v.object({
   description: v.optional(v.pipe(v.string(), v.trim())),
   setupCommand: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim()
+    )
+  ),
+  cleanupCommand: v.optional(
     v.pipe(
       v.string(),
       v.trim()
@@ -33,6 +39,23 @@ const EditRepositoryFormSchema = v.object({
 });
 
 type EditRepositoryFormData = v.InferOutput<typeof EditRepositoryFormSchema>;
+
+/** Shared help text listing template variables available in hook commands. */
+function HookCommandTemplateHelp({ description }: { description: string }) {
+  return (
+    <>
+      <p className="text-xs text-gray-500 mt-1">
+        {description}
+      </p>
+      <ul className="text-xs text-gray-500 mt-1 ml-4 list-disc">
+        <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_NUM}}'}</code> - Worktree number (e.g., "3")</li>
+        <li><code className="bg-slate-700 px-1 rounded">{'{{BRANCH}}'}</code> - Branch name</li>
+        <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository name</li>
+        <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_PATH}}'}</code> - Full path to the worktree</li>
+      </ul>
+    </>
+  );
+}
 
 // Slack settings form schema
 const SlackSettingsFormSchema = v.object({
@@ -282,6 +305,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     defaultValues: {
       description: repository.description ?? '',
       setupCommand: repository.setupCommand ?? '',
+      cleanupCommand: repository.cleanupCommand ?? '',
       envVars: repository.envVars ?? '',
     },
     mode: 'onBlur',
@@ -301,7 +325,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
         if (!old) return old;
         return {
           repositories: old.repositories.map((r) =>
-            r.id === repository.id ? { ...r, description: data.description, setupCommand: data.setupCommand, envVars: data.envVars } : r
+            r.id === repository.id ? { ...r, ...data } : r
           ),
         };
       });
@@ -343,6 +367,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     updateMutation.mutate({
       description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
+      cleanupCommand: data.cleanupCommand?.trim() ?? '',
       envVars: data.envVars?.trim() ?? '',
     });
   };
@@ -400,15 +425,18 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               className="font-mono text-sm"
               error={errors.setupCommand}
             />
-            <p className="text-xs text-gray-500 mt-1">
-              This command runs automatically after creating a new worktree. Available template variables:
-            </p>
-            <ul className="text-xs text-gray-500 mt-1 ml-4 list-disc">
-              <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_NUM}}'}</code> - Worktree number (e.g., "3")</li>
-              <li><code className="bg-slate-700 px-1 rounded">{'{{BRANCH}}'}</code> - Branch name</li>
-              <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository name</li>
-              <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_PATH}}'}</code> - Full path to the worktree</li>
-            </ul>
+            <HookCommandTemplateHelp description="This command runs automatically after creating a new worktree. Available template variables:" />
+          </FormField>
+
+          <FormField label="Cleanup Command (optional)" error={errors.cleanupCommand}>
+            <Textarea
+              {...register('cleanupCommand')}
+              placeholder="e.g., docker compose down"
+              rows={3}
+              className="font-mono text-sm"
+              error={errors.cleanupCommand}
+            />
+            <HookCommandTemplateHelp description="This command runs automatically before deleting a worktree. Available template variables:" />
           </FormField>
 
           <FormField label="Environment Variables (optional)" error={errors.envVars}>

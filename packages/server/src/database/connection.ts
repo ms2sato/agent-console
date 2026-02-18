@@ -204,6 +204,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 8) {
     await migrateToV8(database);
   }
+
+  if (currentVersion < 9) {
+    await migrateToV9(database);
+  }
 }
 
 /**
@@ -513,6 +517,25 @@ async function migrateToV8(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 8`.execute(database);
 
   logger.info('Migration to v8 completed');
+}
+
+/**
+ * Migration v9: Add cleanup_command column to repositories table.
+ * This column stores shell commands to run before deleting worktrees.
+ */
+async function migrateToV9(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v9: Adding cleanup_command column to repositories');
+
+  // Add cleanup_command column to repositories table
+  await database.schema
+    .alterTable('repositories')
+    .addColumn('cleanup_command', 'text')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 9`.execute(database);
+
+  logger.info('Migration to v9 completed');
 }
 
 /**

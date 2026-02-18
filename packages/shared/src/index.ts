@@ -18,14 +18,15 @@ export interface Repository {
   createdAt: string;    // Creation date (ISO 8601)
   remoteUrl?: string;   // Git remote URL for origin (if available)
   setupCommand?: string | null; // Shell command to run after creating worktrees
+  cleanupCommand?: string | null; // Shell command to run before deleting worktrees
   envVars?: string | null; // Environment variables in .env format (applied to workers)
   description?: string | null; // Brief description of the repository
 }
 
 /**
- * Result of executing a setup command after worktree creation
+ * Result of executing a hook command (setup or cleanup) during worktree lifecycle
  */
-export interface SetupCommandResult {
+export interface HookCommandResult {
   success: boolean;
   output?: string;
   error?: string;

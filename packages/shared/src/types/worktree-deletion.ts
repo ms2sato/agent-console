@@ -1,3 +1,5 @@
+import type { HookCommandResult } from '../index.js';
+
 /**
  * Status of a worktree deletion task (client-side only)
  */
@@ -26,6 +28,8 @@ export interface WorktreeDeletionTask {
   error?: string;
   /** Git status output when status is 'failed' */
   gitStatus?: string;
+  /** Result of cleanup command execution (when configured) */
+  cleanupCommandResult?: HookCommandResult;
   /** ISO 8601 timestamp */
   createdAt: string;
 }
@@ -37,6 +41,8 @@ export interface WorktreeDeletionCompletedPayload {
   /** Client-generated task ID for correlation */
   taskId: string;
   sessionId: string;
+  /** Present when cleanup command was executed before deletion */
+  cleanupCommandResult?: HookCommandResult;
 }
 
 /**

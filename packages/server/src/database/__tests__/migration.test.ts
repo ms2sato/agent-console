@@ -639,10 +639,10 @@ describe('migration', () => {
       // Initialize database (runs all migrations up to current version)
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is the latest (8)
+      // Verify the schema version is the latest (9)
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(8);
+      expect(result.rows[0]?.user_version).toBe(9);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -734,10 +734,10 @@ describe('migration', () => {
     it('should create worktrees table with correct columns', async () => {
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is 8
+      // Verify the schema version is 9
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(8);
+      expect(result.rows[0]?.user_version).toBe(9);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1119,6 +1119,49 @@ describe('migration', () => {
       // Verify JSON file was renamed
       expect(fs.existsSync(worktreeIndexesPath)).toBe(false);
       expect(fs.existsSync(`${worktreeIndexesPath}.migrated`)).toBe(true);
+    });
+  });
+
+  describe('schema migration v9: cleanup_command column', () => {
+    it('should add cleanup_command column to repositories table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-cleanup',
+          name: 'Cleanup Repo',
+          path: '/test/cleanup',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          cleanup_command: 'docker compose down',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].cleanup_command).toBe('docker compose down');
+    });
+
+    it('should allow null cleanup_command values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-no-cleanup',
+          name: 'No Cleanup Repo',
+          path: '/test/no-cleanup',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].cleanup_command).toBeNull();
     });
   });
 

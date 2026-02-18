@@ -464,6 +464,22 @@ describe('mappers', () => {
       expect(row.path).toBe('/home/user/projects/my-project');
       expect(row.created_at).toBe('2024-01-15T10:30:00.000Z');
       expect(row.updated_at).toBeDefined();
+      expect(row.setup_command).toBeNull();
+      expect(row.cleanup_command).toBeNull();
+    });
+
+    it('should map cleanupCommand to cleanup_command', () => {
+      const repository: PersistedRepository = {
+        id: 'repo-cleanup',
+        name: 'cleanup-project',
+        path: '/home/user/projects/cleanup-project',
+        createdAt: '2024-01-15T10:30:00.000Z',
+        cleanupCommand: 'docker compose down',
+      };
+
+      const row = toRepositoryRow(repository);
+
+      expect(row.cleanup_command).toBe('docker compose down');
     });
   });
 
@@ -476,6 +492,7 @@ describe('mappers', () => {
         created_at: '2024-02-20T14:00:00.000Z',
         updated_at: '2024-02-20T14:00:00.000Z',
         setup_command: null,
+        cleanup_command: null,
         env_vars: null,
         description: null,
       };
@@ -487,6 +504,7 @@ describe('mappers', () => {
       expect(repository.path).toBe('/opt/repos/another-project');
       expect(repository.createdAt).toBe('2024-02-20T14:00:00.000Z');
       expect(repository.setupCommand).toBeNull();
+      expect(repository.cleanupCommand).toBeNull();
       expect(repository.envVars).toBeNull();
     });
 
@@ -498,6 +516,7 @@ describe('mappers', () => {
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
+        cleanup_command: null,
         env_vars: null,
         description: null,
       };
@@ -508,6 +527,24 @@ describe('mappers', () => {
       expect(repository.createdAt).toBe('2024-12-01T00:00:00.000Z');
     });
 
+    it('should map cleanup_command to cleanupCommand', () => {
+      const row: RepositoryRow = {
+        id: 'repo-cleanup',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: 'docker compose down',
+        env_vars: null,
+        description: null,
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.cleanupCommand).toBe('docker compose down');
+    });
+
     it('should map setup_command to setupCommand', () => {
       const row: RepositoryRow = {
         id: 'repo-4',
@@ -516,6 +553,7 @@ describe('mappers', () => {
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: 'npm install',
+        cleanup_command: null,
         env_vars: null,
         description: null,
       };
@@ -533,6 +571,7 @@ describe('mappers', () => {
         created_at: '2024-12-01T00:00:00.000Z',
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
+        cleanup_command: null,
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
       };

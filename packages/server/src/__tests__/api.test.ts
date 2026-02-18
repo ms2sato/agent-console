@@ -8,6 +8,7 @@ import type {
   Worktree,
   AgentDefinition,
   Worker,
+  HookCommandResult,
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
@@ -54,6 +55,55 @@ const mockSuggestSessionMetadata = mock(async () => ({
 mock.module('../services/session-metadata-suggester.js', () => ({
   suggestSessionMetadata: mockSuggestSessionMetadata,
 }));
+
+// Mock broadcastToApp for async path tests (worktree deletion with taskId)
+const mockBroadcastToApp = mock((_msg: unknown) => {});
+mock.module('../websocket/routes.js', () => ({
+  broadcastToApp: mockBroadcastToApp,
+}));
+
+// =============================================================================
+// Bun.spawn mock for hook command tests (executeHookCommand in worktree-service)
+// =============================================================================
+const originalBunSpawn = Bun.spawn;
+let bunSpawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
+let mockBunSpawnResult: {
+  exited: Promise<number>;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+} | null = null;
+
+function setMockBunSpawnResult(stdout: string, exitCode = 0, stderr = '') {
+  mockBunSpawnResult = {
+    exited: Promise.resolve(exitCode),
+    stdout: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(stdout));
+        controller.close();
+      },
+    }),
+    stderr: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(stderr));
+        controller.close();
+      },
+    }),
+  };
+}
+
+function installBunSpawnMock() {
+  bunSpawnCalls = [];
+  (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+    bunSpawnCalls.push({ args, options: options || {} });
+    return mockBunSpawnResult;
+  }) as typeof Bun.spawn;
+}
+
+function restoreBunSpawn() {
+  (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+  mockBunSpawnResult = null;
+  bunSpawnCalls = [];
+}
 
 // Note: We use the real database connection module with in-memory SQLite.
 // This avoids mock.module which applies globally and affects other test files.
@@ -172,6 +222,9 @@ describe('API Routes Integration', () => {
       branch: 'suggested-branch',
       title: 'Suggested Title',
     }));
+
+    // Reset broadcast mock
+    mockBroadcastToApp.mockClear();
 
     // Setup default git command responses
     setupDefaultGitMocks();
@@ -1646,6 +1699,183 @@ describe('API Routes Integration', () => {
           expect(body.error).toBe('Deletion already in progress');
         } finally {
           deletionsInProgress.clear();
+        }
+      });
+
+      // Helper to set up a deletable worktree for cleanup command tests
+      async function setupWorktreeForDeletion(
+        repo: Repository,
+        repoPath: string,
+      ): Promise<{ worktreePath: string }> {
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/wt-001-abcd`;
+
+        // Insert worktree record directly into database so isWorktreeOf returns true
+        const db = getDatabase();
+        await db.insertInto('worktrees').values({
+          id: 'wt-test-delete',
+          repository_id: repo.id,
+          path: worktreePath,
+          index_number: 1,
+        }).execute();
+
+        // Mock listWorktrees to return the worktree with its index and branch
+        mockGit.listWorktrees.mockImplementation(() =>
+          Promise.resolve(
+            `worktree ${repoPath}\nHEAD abc123\nbranch refs/heads/main\n\n` +
+            `worktree ${worktreePath}\nHEAD def456\nbranch refs/heads/feature-1\n\n`
+          )
+        );
+
+        return { worktreePath };
+      }
+
+      it('should delete worktree without cleanupCommandResult when no cleanup command is configured', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?force=true`,
+          { method: 'DELETE' }
+        );
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { success: boolean; cleanupCommandResult?: HookCommandResult };
+        expect(body.success).toBe(true);
+        expect(body.cleanupCommandResult).toBeUndefined();
+      });
+
+      it('should include cleanupCommandResult when cleanup command succeeds', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        // Configure cleanup command on the repository
+        const patchRes = await app.request(`/api/repositories/${repo.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cleanupCommand: 'docker compose down' }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Install Bun.spawn mock for the cleanup command
+        setMockBunSpawnResult('containers stopped', 0);
+        installBunSpawnMock();
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?force=true`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as { success: boolean; cleanupCommandResult?: HookCommandResult };
+          expect(body.success).toBe(true);
+          expect(body.cleanupCommandResult).toBeDefined();
+          expect(body.cleanupCommandResult!.success).toBe(true);
+          expect(body.cleanupCommandResult!.output).toBe('containers stopped');
+
+          // Verify the command was executed with correct arguments
+          expect(bunSpawnCalls.length).toBe(1);
+          expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
+        } finally {
+          restoreBunSpawn();
+        }
+      });
+
+      it('should still delete worktree when cleanup command fails', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        // Configure cleanup command on the repository
+        const patchRes = await app.request(`/api/repositories/${repo.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cleanupCommand: 'docker compose down' }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Install Bun.spawn mock that returns failure
+        setMockBunSpawnResult('', 1, 'docker: command not found');
+        installBunSpawnMock();
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?force=true`,
+            { method: 'DELETE' }
+          );
+
+          // Deletion should still succeed even though cleanup command failed
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as { success: boolean; cleanupCommandResult?: HookCommandResult };
+          expect(body.success).toBe(true);
+          expect(body.cleanupCommandResult).toBeDefined();
+          expect(body.cleanupCommandResult!.success).toBe(false);
+          expect(body.cleanupCommandResult!.error).toBe('docker: command not found');
+        } finally {
+          restoreBunSpawn();
+        }
+      });
+
+      it('should execute cleanup command in async deletion path (with taskId)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        // Configure cleanup command on the repository
+        const patchRes = await app.request(`/api/repositories/${repo.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cleanupCommand: 'docker compose down' }),
+        });
+        expect(patchRes.status).toBe(200);
+
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Install Bun.spawn mock for the cleanup command
+        setMockBunSpawnResult('containers stopped', 0);
+        installBunSpawnMock();
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-task-id&force=true`,
+            { method: 'DELETE' }
+          );
+
+          // Async path returns 202 Accepted immediately
+          expect(res.status).toBe(202);
+          const body = (await res.json()) as { accepted: boolean };
+          expect(body.accepted).toBe(true);
+
+          // Wait for the background async operation to complete
+          await new Promise((resolve) => setTimeout(resolve, 200));
+
+          // Verify the cleanup command was executed via Bun.spawn
+          expect(bunSpawnCalls.length).toBe(1);
+          expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
+
+          // Verify broadcastToApp was called with deletion-completed and cleanup result
+          const completedCall = mockBroadcastToApp.mock.calls.find(
+            (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-completed'
+          );
+          expect(completedCall).toBeDefined();
+          const msg = completedCall![0] as {
+            type: string;
+            taskId: string;
+            cleanupCommandResult?: HookCommandResult;
+          };
+          expect(msg.taskId).toBe('test-task-id');
+          expect(msg.cleanupCommandResult).toBeDefined();
+          expect(msg.cleanupCommandResult!.success).toBe(true);
+          expect(msg.cleanupCommandResult!.output).toBe('containers stopped');
+        } finally {
+          restoreBunSpawn();
         }
       });
     });
