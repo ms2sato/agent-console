@@ -39,7 +39,10 @@ const stateListeners = new Set<StateListener>();
 const INITIAL_RETRY_DELAY = 1000;
 const MAX_RETRY_DELAY = 30000;
 const JITTER_FACTOR = 0.3;
-const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
+/** @internal Exported for testing */
+export const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
+/** @internal Exported for testing */
+export const LAST_RESORT_RETRY_DELAY = 60000; // 60s fixed interval after max retries exhausted
 
 // Close codes that should not trigger reconnection
 const NO_RECONNECT_CLOSE_CODES = [
@@ -126,9 +129,12 @@ function scheduleReconnect() {
     retryTimeout = null;
   }
 
-  // Stop retrying after max attempts
+  // After max attempts, switch to last-resort mode with a fixed long interval
   if (retryCount >= MAX_RETRY_COUNT) {
-    console.error('[WebSocket] Max retry attempts reached, giving up');
+    console.warn(`[WebSocket] Entering last-resort reconnection mode (every ${LAST_RESORT_RETRY_DELAY / 1000}s)`);
+    retryTimeout = setTimeout(() => {
+      connect();
+    }, LAST_RESORT_RETRY_DELAY);
     return;
   }
 
@@ -294,4 +300,12 @@ export function _reset(): void {
   state = { connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false };
   messageListeners.clear();
   stateListeners.clear();
+}
+
+/**
+ * Set retry count for testing.
+ * @internal
+ */
+export function _setRetryCount(count: number): void {
+  retryCount = count;
 }

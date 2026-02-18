@@ -107,12 +107,22 @@ const app = new Hono();
 app.onError(onApiError);
 
 // HTTP request logging middleware
-app.use(
-  '*',
-  pinoLogger({
-    pino: rootLogger.child({ service: 'http' }),
-  })
-);
+// WebSocket upgrade routes (/ws/*) are excluded because pinoLogger attempts to
+// set response headers, which fails on the immutable 101 Switching Protocols
+// response. This causes WebSocket upgrades to hang or fail intermittently.
+// See: https://github.com/honojs/hono/issues/2535
+const httpLogger = pinoLogger({
+  pino: rootLogger.child({ service: 'http' }),
+});
+app.use('*', async (c, next) => {
+  if (c.req.path.startsWith('/ws/')) {
+    return next();
+  }
+  // Type assertion needed: the wrapper middleware's context type (BlankEnv) does
+  // not carry pinoLogger's Env<"logger"> constraint, but pinoLogger will set the
+  // "logger" variable on the context at runtime regardless.
+  return httpLogger(c as any, next);
+});
 
 // Note: In Phase 2, we'll add middleware to inject AppContext into Hono request context:
 // app.use('*', async (c, next) => { c.set('appContext', appContext); await next(); });

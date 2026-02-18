@@ -9,11 +9,15 @@ import {
   getState,
   requestSync,
   _reset,
+  _setRetryCount,
+  MAX_RETRY_COUNT,
+  LAST_RESORT_RETRY_DELAY,
 } from '../app-websocket';
 
 describe('app-websocket', () => {
   let restoreWebSocket: () => void;
   let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleWarnSpy: ReturnType<typeof spyOn>;
   let consoleErrorSpy: ReturnType<typeof spyOn>;
   let originalLocation: Location;
 
@@ -29,6 +33,7 @@ describe('app-websocket', () => {
 
     // Spy on console (not suppress, so we can verify calls)
     consoleLogSpy = spyOn(console, 'log');
+    consoleWarnSpy = spyOn(console, 'warn');
     consoleErrorSpy = spyOn(console, 'error');
 
     _reset();
@@ -42,6 +47,7 @@ describe('app-websocket', () => {
       writable: true,
     });
     consoleLogSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
     consoleErrorSpy.mockRestore();
   });
 
@@ -383,6 +389,79 @@ describe('app-websocket', () => {
 
       expect(clearTimeoutSpy).toHaveBeenCalled();
       clearTimeoutSpy.mockRestore();
+    });
+
+    it('should enter last-resort mode after MAX_RETRY_COUNT retries', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Set retry count to max to simulate exhausted normal retries
+      _setRetryCount(MAX_RETRY_COUNT);
+
+      // Trigger reconnection
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      // Should log last-resort mode message
+      const wasLogged = consoleWarnSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('last-resort reconnection mode'))
+      );
+      expect(wasLogged).toBe(true);
+
+      // Should schedule reconnection at the last-resort interval
+      const lastResortCall = setTimeoutSpy.mock.calls.find(
+        (call: unknown[]) => call[1] === LAST_RESORT_RETRY_DELAY
+      );
+      expect(lastResortCall).toBeDefined();
+
+      setTimeoutSpy.mockRestore();
+    });
+
+    it('should reset to normal backoff after successful reconnection from last-resort mode', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(
+        // Execute callback immediately to simulate timer firing
+        ((fn: () => void) => { fn(); return 0 as unknown as ReturnType<typeof setTimeout>; }) as typeof setTimeout
+      );
+
+      connect();
+      const ws1 = MockWebSocket.getLastInstance();
+      ws1?.simulateOpen();
+
+      // Set retry count to max to enter last-resort mode
+      _setRetryCount(MAX_RETRY_COUNT);
+
+      // Trigger close - scheduleReconnect enters last-resort mode and setTimeout fires immediately
+      ws1?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      setTimeoutSpy.mockRestore();
+
+      // A new connection should have been created by the last-resort retry
+      const ws2 = MockWebSocket.getLastInstance();
+      expect(ws2).not.toBe(ws1);
+
+      // Simulate successful connection - this resets retryCount to 0
+      ws2?.simulateOpen();
+      expect(getState().connected).toBe(true);
+
+      // Now trigger another close - should use normal backoff, not last-resort
+      const setTimeoutSpy2 = spyOn(globalThis, 'setTimeout');
+      ws2?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      // Should log normal reconnection message (not last-resort)
+      const normalReconnectLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Reconnecting in') && arg.includes('attempt 1'))
+      );
+      expect(normalReconnectLogged).toBe(true);
+
+      // Should NOT have scheduled at last-resort interval
+      const lastResortCall = setTimeoutSpy2.mock.calls.find(
+        (call: unknown[]) => call[1] === LAST_RESORT_RETRY_DELAY
+      );
+      expect(lastResortCall).toBeUndefined();
+
+      setTimeoutSpy2.mockRestore();
     });
 
     it('should handle WebSocket construction error', () => {
