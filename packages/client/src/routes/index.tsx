@@ -40,7 +40,7 @@ import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../componen
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
 import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext } from './__root';
-import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, SetupCommandResult } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, HookCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -693,7 +693,7 @@ interface RepositoryCardProps {
 function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, generatingDescription }: RepositoryCardProps) {
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
-  const [setupCommandFailure, setSetupCommandFailure] = useState<SetupCommandResult | null>(null);
+  const [setupCommandFailure, setSetupCommandFailure] = useState<HookCommandResult | null>(null);
   const { errorDialogProps, showError: showWorktreeError } = useErrorDialog();
   const { addTask, removeTask } = useWorktreeCreationTasksContext();
   const isGitHubRemote = Boolean(
@@ -1200,7 +1200,7 @@ function BranchNameFallbackDialog({ fallbackInfo, onClose }: BranchNameFallbackD
 // =============================================================================
 
 interface SetupCommandFailureDialogProps {
-  result: SetupCommandResult | null;
+  result: HookCommandResult | null;
   onClose: () => void;
 }
 

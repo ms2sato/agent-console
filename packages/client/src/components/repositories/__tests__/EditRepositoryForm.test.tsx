@@ -73,6 +73,7 @@ function createTestRepository(overrides: Partial<Repository> = {}): Repository {
     createdAt: new Date().toISOString(),
     remoteUrl: 'https://github.com/test/test-repo.git',
     setupCommand: null,
+    cleanupCommand: null,
     description: null,
     ...overrides,
   };
@@ -144,7 +145,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '' });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -172,7 +173,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', description: '' });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -199,7 +200,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '' });
     });
   });
 
@@ -621,6 +622,65 @@ describe('EditRepositoryForm', () => {
 
       const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
       expect(descriptionInput.value).toBe('');
+    });
+  });
+
+  describe('cleanup command field', () => {
+    it('should render cleanup command label', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      expect(screen.getByText('Cleanup Command (optional)')).toBeTruthy();
+    });
+
+    it('should pre-populate cleanupCommand from repository', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ cleanupCommand: 'docker compose down' });
+
+      renderEditRepositoryForm({ repository });
+
+      const cleanupInput = screen.getByPlaceholderText(/docker compose down/) as HTMLTextAreaElement;
+      expect(cleanupInput.value).toBe('docker compose down');
+    });
+
+    it('should handle null cleanupCommand gracefully', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ cleanupCommand: null });
+
+      renderEditRepositoryForm({ repository });
+
+      const cleanupInput = screen.getByPlaceholderText(/docker compose down/) as HTMLTextAreaElement;
+      expect(cleanupInput.value).toBe('');
+    });
+
+    it('should include cleanupCommand in form submission', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, cleanupCommand: 'docker compose down' } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // Fill in cleanup command
+      const cleanupInput = screen.getByPlaceholderText(/docker compose down/);
+      await user.type(cleanupInput, 'docker compose down');
+
+      // Submit form
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      // Wait for mutation to complete
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      // Verify API was called with cleanupCommand
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.cleanupCommand).toBe('docker compose down');
     });
   });
 

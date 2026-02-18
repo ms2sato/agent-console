@@ -5,6 +5,7 @@ import type { Repository } from '@agent-console/shared';
  */
 export interface RepositoryUpdates {
   setupCommand?: string | null;
+  cleanupCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
 }

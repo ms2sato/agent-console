@@ -22,7 +22,7 @@ describe('SqliteRepositoryRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create tables manually (v7 schema)
+    // Create tables manually (v9 schema)
     await db.schema
       .createTable('repositories')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -31,6 +31,7 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('setup_command', 'text')
+      .addColumn('cleanup_command', 'text')
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
       .execute();
@@ -52,6 +53,7 @@ describe('SqliteRepositoryRepository', () => {
       path: overrides.path ?? '/test/path/repo',
       createdAt: overrides.createdAt ?? new Date().toISOString(),
       setupCommand: overrides.setupCommand,
+      cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
     };
   }
@@ -429,6 +431,54 @@ describe('SqliteRepositoryRepository', () => {
       });
 
       expect(updated?.setupCommand).toBe(commandWithTemplate);
+    });
+
+    describe('cleanupCommand', () => {
+      it('should update cleanupCommand from null to string', async () => {
+        const repo = createRepository({ id: 'repo-cleanup', name: 'Repo Cleanup' });
+        await repository.save(repo);
+
+        // Verify cleanupCommand is initially null
+        const before = await repository.findById('repo-cleanup');
+        expect(before?.cleanupCommand).toBeNull();
+
+        // Update cleanupCommand
+        const updated = await repository.update('repo-cleanup', {
+          cleanupCommand: 'docker compose down',
+        });
+
+        expect(updated).not.toBeNull();
+        expect(updated?.cleanupCommand).toBe('docker compose down');
+      });
+
+      it('should update cleanupCommand to null when given empty string', async () => {
+        const repo = createRepository({
+          id: 'repo-clear-cleanup',
+          name: 'Repo Clear Cleanup',
+          cleanupCommand: 'docker compose down',
+        });
+        await repository.save(repo);
+
+        // Verify initial cleanupCommand
+        const before = await repository.findById('repo-clear-cleanup');
+        expect(before?.cleanupCommand).toBe('docker compose down');
+
+        // Update with empty string should clear the command
+        const updated = await repository.update('repo-clear-cleanup', {
+          cleanupCommand: '',
+        });
+
+        expect(updated).not.toBeNull();
+        expect(updated?.cleanupCommand).toBeNull();
+
+        // Double check via direct DB query
+        const row = await db
+          .selectFrom('repositories')
+          .where('id', '=', 'repo-clear-cleanup')
+          .select('cleanup_command')
+          .executeTakeFirst();
+        expect(row?.cleanup_command).toBeNull();
+      });
     });
   });
 

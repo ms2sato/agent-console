@@ -1,6 +1,6 @@
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
-import type { Worktree, SetupCommandResult } from '@agent-console/shared';
+import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
 import {
   getRemoteUrl,
@@ -15,6 +15,7 @@ import {
   GitError,
 } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { getCleanChildProcessEnv } from './env-filter.js';
 import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
 import { getDatabase } from '../database/connection.js';
@@ -446,7 +447,8 @@ export class WorktreeService {
   }
 
   /**
-   * Execute a setup command in a worktree directory.
+   * Execute a hook command in a worktree directory.
+   * Used for both setup (after creation) and cleanup (before deletion) hooks.
    * Supports template variables: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
    * Also supports arithmetic expressions like {{WORKTREE_NUM + 3000}}
    *
@@ -455,11 +457,11 @@ export class WorktreeService {
    * @param vars - Template variables for substitution
    * @returns Result with success status, output, and any error message
    */
-  async executeSetupCommand(
+  async executeHookCommand(
     command: string,
     worktreePath: string,
     vars: { worktreeNum: number; branch: string; repo: string }
-  ): Promise<SetupCommandResult> {
+  ): Promise<HookCommandResult> {
     // Substitute template variables in the command
     const substitutedCommand = substituteVariables(command, {
       worktreeNum: vars.worktreeNum,
@@ -468,7 +470,7 @@ export class WorktreeService {
       worktreePath,
     });
 
-    logger.info({ worktreePath, command: substitutedCommand }, 'Executing setup command');
+    logger.info({ worktreePath, command: substitutedCommand }, 'Executing hook command');
 
     try {
       // Execute command using Bun.spawn with shell
@@ -477,7 +479,7 @@ export class WorktreeService {
         stdout: 'pipe',
         stderr: 'pipe',
         env: {
-          ...process.env,
+          ...getCleanChildProcessEnv(),
           WORKTREE_NUM: String(vars.worktreeNum),
           BRANCH: vars.branch,
           REPO: vars.repo,
@@ -491,13 +493,13 @@ export class WorktreeService {
       const exitCode = await proc.exited;
 
       if (exitCode === 0) {
-        logger.info({ worktreePath, exitCode }, 'Setup command completed successfully');
+        logger.info({ worktreePath, exitCode }, 'Hook command completed successfully');
         return {
           success: true,
           output: stdout || undefined,
         };
       } else {
-        logger.warn({ worktreePath, exitCode, stderr }, 'Setup command failed');
+        logger.warn({ worktreePath, exitCode, stderr }, 'Hook command failed');
         return {
           success: false,
           output: stdout || undefined,
@@ -506,7 +508,7 @@ export class WorktreeService {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error({ worktreePath, err: error }, 'Setup command execution error');
+      logger.error({ worktreePath, err: error }, 'Hook command execution error');
       return {
         success: false,
         error: errorMessage,

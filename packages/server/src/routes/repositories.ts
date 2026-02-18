@@ -5,7 +5,7 @@ import type {
   GitHubIssueSummary,
   Repository,
   BranchNameFallback,
-  SetupCommandResult,
+  HookCommandResult,
 } from '@agent-console/shared';
 import {
   CreateRepositoryRequestSchema,
@@ -52,6 +52,36 @@ async function withRepositoryRemote(repository: Repository): Promise<Repository>
     ...repository,
     remoteUrl: remoteUrl ?? undefined,
   };
+}
+
+/**
+ * Execute the repository's cleanup command if configured.
+ * Looks up the worktree in git listing to resolve template variables.
+ *
+ * @returns The cleanup command result, or undefined if no cleanup command is configured.
+ */
+async function executeCleanupCommandIfConfigured(
+  repo: { path: string; name: string; cleanupCommand?: string | null },
+  repoId: string,
+  worktreePath: string
+): Promise<HookCommandResult | undefined> {
+  if (!repo.cleanupCommand) return undefined;
+
+  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
+  const targetWorktree = worktrees.find(wt => wt.path === worktreePath);
+  if (!targetWorktree || targetWorktree.index === undefined) {
+    return { success: false, error: 'Cleanup command skipped: worktree not found in git listing' };
+  }
+
+  return worktreeService.executeHookCommand(
+    repo.cleanupCommand,
+    worktreePath,
+    {
+      worktreeNum: targetWorktree.index,
+      branch: targetWorktree.branch,
+      repo: repo.name,
+    }
+  );
 }
 
 const repositories = new Hono()
@@ -351,9 +381,9 @@ const repositories = new Hono()
         const worktree = worktrees.find(wt => wt.path === result.worktreePath);
 
         // Execute setup command if configured
-        let setupCommandResult: SetupCommandResult | undefined;
+        let setupCommandResult: HookCommandResult | undefined;
         if (repo.setupCommand && worktree && result.index !== undefined) {
-          setupCommandResult = await worktreeService.executeSetupCommand(
+          setupCommandResult = await worktreeService.executeHookCommand(
             repo.setupCommand,
             result.worktreePath,
             {
@@ -482,6 +512,9 @@ const repositories = new Hono()
           // Import broadcast function lazily to avoid circular dependencies
           const { broadcastToApp } = await import('../websocket/routes.js');
 
+          // Execute cleanup command before deletion if configured
+          const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
+
           // Try to remove worktree first
           const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
@@ -515,6 +548,7 @@ const repositories = new Hono()
             type: 'worktree-deletion-completed',
             taskId,
             sessionId: sessionId || '',
+            cleanupCommandResult,
           });
           logger.info({ taskId, repoId, worktreePath, sessionId }, 'Worktree and session deletion completed');
         } catch (error) {
@@ -555,6 +589,9 @@ const repositories = new Hono()
 
     // Synchronous deletion (backward compatible)
     try {
+      // Execute cleanup command before deletion if configured
+      const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
+
       // Try to remove worktree first
       const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
@@ -572,7 +609,7 @@ const repositories = new Hono()
         }
       }
 
-      return c.json({ success: true });
+      return c.json({ success: true, cleanupCommandResult });
     } finally {
       deletionsInProgress.delete(worktreePath);
     }

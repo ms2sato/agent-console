@@ -10,7 +10,7 @@ const TEST_CONFIG_DIR = '/test/config';
 
 let importCounter = 0;
 
-// Mock Bun.spawn for executeSetupCommand tests
+// Mock Bun.spawn for executeHookCommand tests
 let mockSpawnResult: {
   exited: Promise<number>;
   stdout: ReadableStream<Uint8Array>;
@@ -598,7 +598,7 @@ detached
     });
   });
 
-  describe('executeSetupCommand', () => {
+  describe('executeHookCommand', () => {
     beforeEach(() => {
       // Reset spawn tracking
       spawnCalls = [];
@@ -624,7 +624,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo {{WORKTREE_NUM}}',
           '/test/worktree',
           { worktreeNum: 5, branch: 'feature-1', repo: 'my-repo' }
@@ -639,7 +639,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'git checkout {{BRANCH}}',
           '/test/worktree',
           { worktreeNum: 1, branch: 'feature/my-branch', repo: 'my-repo' }
@@ -654,7 +654,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo Working on {{REPO}}',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'awesome-project' }
@@ -669,7 +669,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'cd {{WORKTREE_PATH}} && ls',
           '/home/user/worktrees/wt-001',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -684,7 +684,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo "WT {{WORKTREE_NUM}} for {{REPO}} on {{BRANCH}} at {{WORKTREE_PATH}}"',
           '/worktrees/wt-003',
           { worktreeNum: 3, branch: 'fix/bug-123', repo: 'test-repo' }
@@ -701,7 +701,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'export PORT={{WORKTREE_NUM + 3000}}',
           '/test/worktree',
           { worktreeNum: 5, branch: 'main', repo: 'my-repo' }
@@ -716,7 +716,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo {{WORKTREE_NUM - 2}}',
           '/test/worktree',
           { worktreeNum: 10, branch: 'main', repo: 'my-repo' }
@@ -731,7 +731,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo {{WORKTREE_NUM * 100}}',
           '/test/worktree',
           { worktreeNum: 3, branch: 'main', repo: 'my-repo' }
@@ -746,7 +746,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo {{WORKTREE_NUM / 3}}',
           '/test/worktree',
           { worktreeNum: 10, branch: 'main', repo: 'my-repo' }
@@ -762,7 +762,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'export PORT={{WORKTREE_NUM   +   8080}}',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -779,7 +779,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        const result = await service.executeSetupCommand(
+        const result = await service.executeHookCommand(
           'echo "hello"',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -795,7 +795,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        const result = await service.executeSetupCommand(
+        const result = await service.executeHookCommand(
           'silent-command',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -813,7 +813,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        const result = await service.executeSetupCommand(
+        const result = await service.executeHookCommand(
           'invalid-command',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -829,7 +829,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        const result = await service.executeSetupCommand(
+        const result = await service.executeHookCommand(
           'nonexistent-command',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -844,7 +844,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        const result = await service.executeSetupCommand(
+        const result = await service.executeHookCommand(
           'protected-command',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -861,7 +861,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo $WORKTREE_NUM',
           '/test/worktree',
           { worktreeNum: 42, branch: 'main', repo: 'my-repo' }
@@ -877,7 +877,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo $BRANCH',
           '/test/worktree',
           { worktreeNum: 1, branch: 'feature/new-feature', repo: 'my-repo' }
@@ -893,7 +893,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo $REPO',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'test-repository' }
@@ -909,7 +909,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo $WORKTREE_PATH',
           '/home/user/worktrees/wt-005',
           { worktreeNum: 5, branch: 'main', repo: 'my-repo' }
@@ -925,7 +925,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'echo $PATH',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -944,7 +944,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'pwd',
           '/home/user/worktrees/wt-001',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }
@@ -959,7 +959,7 @@ detached
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService();
 
-        await service.executeSetupCommand(
+        await service.executeHookCommand(
           'npm install && npm run build',
           '/test/worktree',
           { worktreeNum: 1, branch: 'main', repo: 'my-repo' }

@@ -408,7 +408,7 @@ mcpServer.tool(
 
         // Execute setup command if configured
         if (repo.setupCommand && wtResult.index !== undefined) {
-          await worktreeService.executeSetupCommand(
+          await worktreeService.executeHookCommand(
             repo.setupCommand,
             createdWorktreePath,
             {

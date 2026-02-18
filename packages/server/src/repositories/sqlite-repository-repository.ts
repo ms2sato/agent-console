@@ -46,6 +46,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         created_at: repository.createdAt,
         updated_at: now,
         setup_command: repository.setupCommand ?? null,
+        cleanup_command: repository.cleanupCommand ?? null,
         env_vars: repository.envVars ?? null,
         description: repository.description ?? null,
       })
@@ -54,6 +55,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
           name: repository.name,
           path: repository.path,
           setup_command: repository.setupCommand ?? null,
+          cleanup_command: repository.cleanupCommand ?? null,
           env_vars: repository.envVars ?? null,
           description: repository.description ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
@@ -76,6 +78,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
     const fieldMap: Array<[keyof RepositoryUpdates, string]> = [
       ['setupCommand', 'setup_command'],
+      ['cleanupCommand', 'cleanup_command'],
       ['envVars', 'env_vars'],
       ['description', 'description'],
     ];

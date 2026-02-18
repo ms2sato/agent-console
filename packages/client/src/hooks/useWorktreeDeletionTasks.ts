@@ -89,11 +89,10 @@ export function useWorktreeDeletionTasks(): UseWorktreeDeletionTasksReturn {
 
   const handleWorktreeDeletionCompleted = useCallback(
     (payload: WorktreeDeletionCompletedPayload) => {
-      // Update task to completed status
       setTasks((prev) =>
         prev.map((t) =>
           t.id === payload.taskId
-            ? { ...t, status: 'completed' as const }
+            ? { ...t, status: 'completed' as const, cleanupCommandResult: payload.cleanupCommandResult }
             : t
         )
       );

@@ -151,6 +151,17 @@ function WorktreeDeletionTaskPage() {
               </>
             )}
           </div>
+          {isCompleted && task.cleanupCommandResult && !task.cleanupCommandResult.success && (
+            <div className="mt-3 p-3 bg-yellow-900/30 border border-yellow-600 rounded text-yellow-200 text-sm">
+              <p className="font-medium">Cleanup command failed</p>
+              {task.cleanupCommandResult.error && (
+                <pre className="mt-1 text-xs text-yellow-300 whitespace-pre-wrap">{task.cleanupCommandResult.error}</pre>
+              )}
+              {task.cleanupCommandResult.output && (
+                <pre className="mt-1 text-xs text-yellow-300/70 whitespace-pre-wrap">{task.cleanupCommandResult.output}</pre>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Error details (if failed) */}
@@ -193,11 +204,7 @@ function WorktreeDeletionTaskPage() {
           <button
             onClick={removeTask}
             className={`btn text-sm ${
-              isFailed
-                ? 'bg-slate-600 hover:bg-slate-500'
-                : isDeleting
-                  ? 'bg-slate-600 hover:bg-slate-500'
-                  : 'btn-primary'
+              isCompleted ? 'btn-primary' : 'bg-slate-600 hover:bg-slate-500'
             }`}
             title={isDeleting ? 'Hide from list (deletion continues in background)' : undefined}
           >
