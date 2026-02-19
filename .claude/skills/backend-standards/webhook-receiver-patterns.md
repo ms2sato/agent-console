@@ -11,8 +11,8 @@ This document defines patterns for receiving webhooks from external services (Gi
 ```typescript
 // ✅ Webhook receiver - always 200
 app.post('/webhooks/github', async (c) => {
-  const payload = await c.req.json();
   try {
+    const payload = await c.req.json();
     await enqueueWebhookEvent('github', payload);
   } catch (error) {
     logger.error({ err: error }, 'Failed to enqueue webhook event');
@@ -55,11 +55,12 @@ app.post('/webhooks/github', async (c) => {
 
 // Separate worker processes the queue
 async function processWebhookQueue() {
-  const event = await dequeueEvent();
+  let event;
   try {
+    event = await dequeueEvent();
     await handleEvent(event);
   } catch (error) {
-    logger.error({ err: error, eventId: event.id }, 'Webhook processing failed');
+    logger.error({ err: error, eventId: event?.id }, 'Webhook processing failed');
     // Internal retry, alerting, dead-letter queue, etc.
   }
 }
@@ -74,7 +75,7 @@ app.post('/webhooks/github', async (c) => {
   const signature = c.req.header('X-Hub-Signature-256');
   const body = await c.req.text();
 
-  if (!verifyGitHubSignature(body, signature, secret)) {
+  if (!signature || !verifyGitHubSignature(body, signature, secret)) {
     // Log the auth failure for investigation, but don't tell the caller
     logger.warn({ ip: c.req.header('X-Forwarded-For') }, 'Webhook signature verification failed');
     return c.json({ received: true }, 200);
@@ -86,7 +87,9 @@ app.post('/webhooks/github', async (c) => {
 });
 ```
 
-**Why return 200 even on auth failure?** Returning 401/403 reveals that the endpoint exists and is active, giving attackers information. Silent acceptance with internal logging is more secure.
+**Why return 200 even on auth failure?** Returning 401/403 reveals that the endpoint exists and is active, providing attackers with information. Silent acceptance with internal logging is more secure.
+
+> **Operational requirement:** Because senders receive 200 regardless of signature validity, a misconfigured secret (e.g., rotated on the sender side but not updated locally) will cause all events to be silently dropped with no sender-side delivery failure. **You must monitor and alert on signature-failure rate** (e.g., via the structured log emitted in the `logger.warn` call above) to detect misconfiguration promptly.
 
 ## Error Handling Strategy
 
