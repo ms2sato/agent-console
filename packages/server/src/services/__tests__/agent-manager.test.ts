@@ -18,8 +18,6 @@ class InMemoryAgentRepository implements AgentRepository {
   }
 
   async save(agent: AgentDefinition): Promise<void> {
-    // Skip built-in agents
-    if (agent.isBuiltIn) return;
     this.agents.set(agent.id, agent);
   }
 
@@ -38,9 +36,7 @@ class InMemoryAgentRepository implements AgentRepository {
   setAgents(agents: AgentDefinition[]): void {
     this.agents.clear();
     for (const agent of agents) {
-      if (!agent.isBuiltIn) {
-        this.agents.set(agent.id, agent);
-      }
+      this.agents.set(agent.id, agent);
     }
   }
 

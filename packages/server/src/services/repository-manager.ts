@@ -138,6 +138,7 @@ export class RepositoryManager {
       path: absolutePath,
       createdAt: new Date().toISOString(),
       description: options?.description ?? null,
+      defaultAgentId: null,
     };
 
     this.repositories.set(id, repository);

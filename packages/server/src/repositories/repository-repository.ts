@@ -8,6 +8,7 @@ export interface RepositoryUpdates {
   cleanupCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
+  defaultAgentId?: string | null;
 }
 
 /**

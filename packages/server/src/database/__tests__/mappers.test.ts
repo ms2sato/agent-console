@@ -466,6 +466,21 @@ describe('mappers', () => {
       expect(row.updated_at).toBeDefined();
       expect(row.setup_command).toBeNull();
       expect(row.cleanup_command).toBeNull();
+      expect(row.default_agent_id).toBeNull();
+    });
+
+    it('should map defaultAgentId to default_agent_id', () => {
+      const repository: PersistedRepository = {
+        id: 'repo-default-agent',
+        name: 'default-agent-project',
+        path: '/home/user/projects/default-agent-project',
+        createdAt: '2024-01-15T10:30:00.000Z',
+        defaultAgentId: 'custom-agent-1',
+      };
+
+      const row = toRepositoryRow(repository);
+
+      expect(row.default_agent_id).toBe('custom-agent-1');
     });
 
     it('should map cleanupCommand to cleanup_command', () => {
@@ -495,6 +510,7 @@ describe('mappers', () => {
         cleanup_command: null,
         env_vars: null,
         description: null,
+        default_agent_id: null,
       };
 
       const repository = toRepository(row);
@@ -506,6 +522,7 @@ describe('mappers', () => {
       expect(repository.setupCommand).toBeNull();
       expect(repository.cleanupCommand).toBeNull();
       expect(repository.envVars).toBeNull();
+      expect(repository.defaultAgentId).toBeNull();
     });
 
     it('should handle created_at correctly', () => {
@@ -519,6 +536,7 @@ describe('mappers', () => {
         cleanup_command: null,
         env_vars: null,
         description: null,
+        default_agent_id: null,
       };
 
       const repository = toRepository(row);
@@ -538,6 +556,7 @@ describe('mappers', () => {
         cleanup_command: 'docker compose down',
         env_vars: null,
         description: null,
+        default_agent_id: null,
       };
 
       const repository = toRepository(row);
@@ -556,6 +575,7 @@ describe('mappers', () => {
         cleanup_command: null,
         env_vars: null,
         description: null,
+        default_agent_id: null,
       };
 
       const repository = toRepository(row);
@@ -574,6 +594,7 @@ describe('mappers', () => {
         cleanup_command: null,
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
+        default_agent_id: null,
       };
 
       const repository = toRepository(row);

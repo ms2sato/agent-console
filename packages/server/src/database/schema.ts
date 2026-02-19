@@ -105,6 +105,8 @@ export interface RepositoriesTable {
   env_vars: string | null;
   /** Brief description of the repository (added in v7) */
   description: string | null;
+  /** Default agent ID for worktree creation (added in v10) */
+  default_agent_id: string | null;
 }
 
 /** Repository row as returned from SELECT queries */
@@ -116,7 +118,7 @@ export type RepositoryUpdate = Updateable<RepositoriesTable>;
 
 /**
  * Agents table schema.
- * Stores custom agent definitions (built-in agents are NOT persisted).
+ * Stores agent definitions (both built-in and custom).
  */
 export interface AgentsTable {
   /** Primary key - UUID */
@@ -131,7 +133,7 @@ export interface AgentsTable {
   headless_template: string | null;
   /** Human-readable description (optional) */
   description: string | null;
-  /** Whether this is a built-in agent (always 0 for persisted agents) */
+  /** Whether this is a built-in agent (1 for built-in, 0 for custom) */
   is_built_in: number;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */
   created_at: Generated<string>;
