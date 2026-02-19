@@ -208,6 +208,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 9) {
     await migrateToV9(database);
   }
+
+  if (currentVersion < 10) {
+    await migrateToV10(database);
+  }
 }
 
 /**
@@ -539,6 +543,38 @@ async function migrateToV9(database: Kysely<Database>): Promise<void> {
 }
 
 /**
+ * Migration v10: Persist built-in agent and add default_agent_id to repositories.
+ */
+async function migrateToV10(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v10: Persisting built-in agent and adding default_agent_id to repositories');
+
+  // Insert built-in agent (Claude Code) into agents table if not exists
+  const now = new Date().toISOString();
+  await database
+    .insertInto('agents')
+    .values({
+      id: 'claude-code-builtin',
+      name: 'Claude Code',
+      command_template: 'claude {{prompt}}',
+      continue_template: 'claude -c',
+      headless_template: 'claude -p --output-format text {{prompt}}',
+      description: 'Anthropic Claude Code - Interactive AI coding assistant',
+      is_built_in: 1,
+      created_at: new Date(0).toISOString(),
+      updated_at: now,
+      activity_patterns: null, // Will be synced from code on next startup
+    })
+    .onConflict((oc) => oc.column('id').doNothing())
+    .execute();
+
+  // Add default_agent_id column with FK constraint
+  await sql`ALTER TABLE repositories ADD COLUMN default_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL`.execute(database);
+
+  await sql`PRAGMA user_version = 10`.execute(database);
+  logger.info('Migration to v10 completed');
+}
+
+/**
  * Check if SQLite database exists.
  * Used for auto-detection during migration from JSON to SQLite.
  * Uses Bun's native file API to avoid issues with fs mocks in tests.
@@ -750,14 +786,17 @@ async function migrateAgentsFromJson(database: Kysely<Database>): Promise<void> 
     return;
   }
 
-  // Check if we already have data in SQLite
+  // Check if we already have custom agents in SQLite
+  // Note: Built-in agents may already exist from schema migration (v10+),
+  // so we only check for custom agents to determine if JSON migration was already done
   const existingCount = await database
     .selectFrom('agents')
     .select(database.fn.count<number>('id').as('count'))
+    .where('is_built_in', '=', 0)
     .executeTakeFirst();
 
   if (existingCount && existingCount.count > 0) {
-    logger.debug({ count: existingCount.count }, 'SQLite already has agents, skipping JSON migration');
+    logger.debug({ count: existingCount.count }, 'SQLite already has custom agents, skipping JSON migration');
     return;
   }
 

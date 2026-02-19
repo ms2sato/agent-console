@@ -231,34 +231,35 @@ describe('migration', () => {
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(customAgents));
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
-      // Verify only custom agent was migrated
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].id).toBe('custom-agent-1');
-      expect(rows[0].is_built_in).toBe(0);
+      // Verify custom agent was migrated (built-in agent already exists from v10 migration)
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(1);
+      expect(customRows[0].id).toBe('custom-agent-1');
+      expect(customRows[0].is_built_in).toBe(0);
 
       // Verify JSON file was renamed
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
       expect(fs.existsSync(`${agentsJsonPath}.migrated`)).toBe(true);
     });
 
-    it('should skip built-in agents during migration', async () => {
+    it('should skip built-in agents during JSON migration', async () => {
       // Create agents.json with both custom and built-in
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(TEST_AGENTS));
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
-      // Verify only custom agent was migrated (built-in was filtered)
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].id).toBe('custom-agent-1');
+      // Verify only custom agent was migrated from JSON (built-in was filtered by JSON migration)
+      // Built-in agent exists from v10 schema migration, not from JSON migration
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(1);
+      expect(customRows[0].id).toBe('custom-agent-1');
     });
 
     it('should validate agent schema and skip invalid agents', async () => {
@@ -282,14 +283,14 @@ describe('migration', () => {
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(invalidAgents));
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
-      // Verify only valid agent was migrated
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].id).toBe('valid-agent');
+      // Verify only valid custom agent was migrated
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(1);
+      expect(customRows[0].id).toBe('valid-agent');
     });
 
     it('should transform legacy registeredAt field to createdAt', async () => {
@@ -307,16 +308,16 @@ describe('migration', () => {
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(legacyAgents));
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
       // Verify agent was migrated with createdAt field
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].id).toBe('legacy-agent');
-      expect(rows[0].name).toBe('Legacy Agent');
-      expect(rows[0].created_at).toBe('2023-06-15T10:30:00.000Z');
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(1);
+      expect(customRows[0].id).toBe('legacy-agent');
+      expect(customRows[0].name).toBe('Legacy Agent');
+      expect(customRows[0].created_at).toBe('2023-06-15T10:30:00.000Z');
 
       // Verify JSON file was renamed
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
@@ -339,14 +340,14 @@ describe('migration', () => {
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       fs.writeFileSync(agentsJsonPath, JSON.stringify(mixedAgents));
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
-      // Verify agent uses createdAt (not registeredAt)
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
+      // Verify custom agent uses createdAt (not registeredAt)
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(1);
+      expect(customRows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     });
 
     it('should skip if no agents.json exists', async () => {
@@ -354,13 +355,13 @@ describe('migration', () => {
       const agentsJsonPath = path.join(TEST_CONFIG_DIR, 'agents.json');
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
 
-      // Initialize database
+      // Initialize database (v10 migration inserts built-in agent)
       const db = await initializeDatabase(':memory:');
       await migrateFromJson(db);
 
-      // Verify no data in database
-      const rows = await db.selectFrom('agents').selectAll().execute();
-      expect(rows).toHaveLength(0);
+      // Verify only built-in agent exists (from v10 migration), no custom agents
+      const customRows = await db.selectFrom('agents').selectAll().where('is_built_in', '=', 0).execute();
+      expect(customRows).toHaveLength(0);
     });
   });
 
@@ -642,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest (9)
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(9);
+      expect(result.rows[0]?.user_version).toBe(10);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -737,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is 9
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(9);
+      expect(result.rows[0]?.user_version).toBe(10);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1162,6 +1163,103 @@ describe('migration', () => {
 
       expect(rows).toHaveLength(1);
       expect(rows[0].cleanup_command).toBeNull();
+    });
+  });
+
+  describe('schema migration v10: built-in agent persistence and default_agent_id column', () => {
+    it('should insert built-in agent into agents table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      const rows = await db
+        .selectFrom('agents')
+        .selectAll()
+        .where('id', '=', 'claude-code-builtin')
+        .execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].name).toBe('Claude Code');
+      expect(rows[0].is_built_in).toBe(1);
+    });
+
+    it('should add default_agent_id column to repositories table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // First insert a built-in agent (already done by migration)
+      // Then insert a repository with default_agent_id
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-default-agent',
+          name: 'Default Agent Repo',
+          path: '/test/default-agent',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          default_agent_id: 'claude-code-builtin',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].default_agent_id).toBe('claude-code-builtin');
+    });
+
+    it('should allow null default_agent_id values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-no-default-agent',
+          name: 'No Default Agent Repo',
+          path: '/test/no-default-agent',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].default_agent_id).toBeNull();
+    });
+
+    it('should set default_agent_id to null when referenced agent is deleted', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      // Insert a custom agent
+      await db
+        .insertInto('agents')
+        .values({
+          id: 'custom-agent-for-fk',
+          name: 'Custom Agent',
+          command_template: 'custom {{prompt}}',
+          is_built_in: 0,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      // Insert a repository referencing this agent
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-fk-test',
+          name: 'FK Test Repo',
+          path: '/test/fk-test',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          default_agent_id: 'custom-agent-for-fk',
+        })
+        .execute();
+
+      // Delete the agent
+      await db.deleteFrom('agents').where('id', '=', 'custom-agent-for-fk').execute();
+
+      // default_agent_id should be set to null (ON DELETE SET NULL)
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].default_agent_id).toBeNull();
     });
   });
 

@@ -203,17 +203,18 @@ describe('SqliteAgentRepository', () => {
       expect(updatedRow?.updated_at).not.toBe(originalUpdatedAt);
     });
 
-    it('should not save built-in agents', async () => {
+    it('should save built-in agents', async () => {
       const builtInAgent = createAgent({ id: 'built-in', isBuiltIn: true });
 
       await repository.save(builtInAgent);
 
-      // Built-in agent should not be saved
+      // Built-in agent should be saved to DB
       const found = await repository.findById('built-in');
-      expect(found).toBeNull();
+      expect(found).not.toBeNull();
+      expect(found?.isBuiltIn).toBe(true);
 
       const all = await repository.findAll();
-      expect(all.length).toBe(0);
+      expect(all.length).toBe(1);
     });
 
     it('should preserve all optional fields', async () => {

@@ -26,12 +26,6 @@ export class SqliteAgentRepository implements AgentRepository {
   }
 
   async save(agent: AgentDefinition): Promise<void> {
-    // Built-in agents should never be persisted
-    if (agent.isBuiltIn) {
-      logger.warn({ agentId: agent.id }, 'Attempted to save built-in agent, ignoring');
-      return;
-    }
-
     const row = toAgentRow(agent);
 
     await this.db

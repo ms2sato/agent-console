@@ -22,7 +22,7 @@ describe('SqliteRepositoryRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create tables manually (v9 schema)
+    // Create tables manually (v10 schema)
     await db.schema
       .createTable('repositories')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -34,6 +34,7 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('cleanup_command', 'text')
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
+      .addColumn('default_agent_id', 'text')
       .execute();
 
     repository = new SqliteRepositoryRepository(db);

@@ -13,8 +13,7 @@ import type {
   CreateWorktreeExistingRequest,
   GitHubIssueSummary,
 } from '@agent-console/shared';
-import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
-import { getLastSelectedAgentId, saveLastSelectedAgentId } from '../../lib/agent-preference';
+import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus, updateRepository } from '../../lib/api';
 import {
   Dialog,
   DialogContent,
@@ -39,6 +38,7 @@ export type CreateWorktreeFormRequest =
 export interface CreateWorktreeFormProps {
   repositoryId: string;
   defaultBranch: string;
+  defaultAgentId?: string | null;
   onSubmit: (request: CreateWorktreeFormRequest) => Promise<void>;
   onCancel: () => void;
 }
@@ -46,6 +46,7 @@ export interface CreateWorktreeFormProps {
 export function CreateWorktreeForm({
   repositoryId,
   defaultBranch,
+  defaultAgentId,
   onSubmit,
   onCancel,
 }: CreateWorktreeFormProps) {
@@ -67,7 +68,7 @@ export function CreateWorktreeForm({
       customBranch: '',
       baseBranch: '',
       sessionTitle: '',
-      agentId: getLastSelectedAgentId(),
+      agentId: defaultAgentId ?? undefined,
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -101,6 +102,14 @@ export function CreateWorktreeForm({
         exact: false,
       });
     },
+  });
+
+  // State for "set as default agent" checkbox
+  const [setAsDefault, setSetAsDefault] = useState(false);
+
+  // Mutation to update repository's default agent
+  const updateDefaultAgentMutation = useMutation({
+    mutationFn: (agentId: string) => updateRepository(repositoryId, { defaultAgentId: agentId }),
   });
 
   // The actual base branch to use (user input or effective default)
@@ -229,9 +238,26 @@ export function CreateWorktreeForm({
                 value={watch('agentId')}
                 onChange={(value) => {
                   setValue('agentId', value);
-                  if (value) saveLastSelectedAgentId(value);
+                  if (setAsDefault && value) {
+                    updateDefaultAgentMutation.mutate(value);
+                  }
                 }}
               />
+              <label className="text-sm text-gray-400 flex items-center gap-1.5 ml-2">
+                <input
+                  type="checkbox"
+                  checked={setAsDefault}
+                  onChange={(e) => {
+                    setSetAsDefault(e.target.checked);
+                    const currentAgent = getValues('agentId');
+                    if (e.target.checked && currentAgent) {
+                      updateDefaultAgentMutation.mutate(currentAgent);
+                    }
+                  }}
+                  className="rounded"
+                />
+                Set as default
+              </label>
             </div>
             <button
               type="button"

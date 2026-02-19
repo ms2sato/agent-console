@@ -807,6 +807,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, ge
         <CreateWorktreeForm
           repositoryId={repository.id}
           defaultBranch={defaultBranch}
+          defaultAgentId={repository.defaultAgentId}
           onSubmit={handleCreateWorktree}
           onCancel={() => setShowCreateWorktree(false)}
         />

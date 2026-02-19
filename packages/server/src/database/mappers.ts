@@ -265,6 +265,7 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     cleanup_command: repository.cleanupCommand ?? null,
     env_vars: repository.envVars ?? null,
     description: repository.description ?? null,
+    default_agent_id: repository.defaultAgentId ?? null,
   };
 }
 
@@ -284,6 +285,7 @@ export function toRepository(row: RepositoryRow): Repository {
     cleanupCommand: row.cleanup_command ?? null,
     envVars: row.env_vars ?? null,
     description: row.description ?? null,
+    defaultAgentId: row.default_agent_id ?? null,
   };
 }
 
@@ -291,7 +293,6 @@ export function toRepository(row: RepositoryRow): Repository {
 
 /**
  * Convert an AgentDefinition to a database row for insertion.
- * Note: Built-in agents should never be persisted.
  *
  * @param agent - The agent to convert
  * @returns Database row ready for insertion

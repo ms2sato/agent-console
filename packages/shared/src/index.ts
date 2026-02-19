@@ -21,6 +21,7 @@ export interface Repository {
   cleanupCommand?: string | null; // Shell command to run before deleting worktrees
   envVars?: string | null; // Environment variables in .env format (applied to workers)
   description?: string | null; // Brief description of the repository
+  defaultAgentId?: string | null; // Default agent ID for worktree creation
 }
 
 /**

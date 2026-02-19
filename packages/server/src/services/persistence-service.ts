@@ -23,6 +23,7 @@ export interface PersistedRepository {
   cleanupCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
+  defaultAgentId?: string | null;
 }
 
 // Base for all persisted workers

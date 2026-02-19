@@ -49,6 +49,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         cleanup_command: repository.cleanupCommand ?? null,
         env_vars: repository.envVars ?? null,
         description: repository.description ?? null,
+        default_agent_id: repository.defaultAgentId ?? null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
@@ -58,6 +59,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
           cleanup_command: repository.cleanupCommand ?? null,
           env_vars: repository.envVars ?? null,
           description: repository.description ?? null,
+          default_agent_id: repository.defaultAgentId ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
         })
@@ -81,6 +83,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       ['cleanupCommand', 'cleanup_command'],
       ['envVars', 'env_vars'],
       ['description', 'description'],
+      ['defaultAgentId', 'default_agent_id'],
     ];
 
     for (const [domainKey, dbColumn] of fieldMap) {

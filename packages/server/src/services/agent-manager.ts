@@ -58,6 +58,9 @@ export class AgentManager {
     // Always register built-in agent first
     this.agents.set(CLAUDE_CODE_AGENT_ID, claudeCodeAgent);
 
+    // Upsert built-in agent to DB on every startup (ensures DB always has latest definition)
+    await this.repository.save(claudeCodeAgent);
+
     // Load custom agents from persistence
     const customAgents = await this.repository.findAll();
     for (const agent of customAgents) {
