@@ -669,6 +669,14 @@ describe('SqliteRepositoryRepository', () => {
 
       expect(updated).not.toBeNull();
       expect(updated?.defaultAgentId).toBeNull();
+
+      // Double check via direct DB query
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-null-agent')
+        .select('default_agent_id')
+        .executeTakeFirst();
+      expect(row?.default_agent_id).toBeNull();
     });
 
     it('should include defaultAgentId in findById results', async () => {
