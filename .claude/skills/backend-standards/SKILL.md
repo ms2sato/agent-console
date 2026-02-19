@@ -23,3 +23,4 @@ description: Hono/Bun patterns and backend best practices for this project. Use 
 
 - [backend-standards.md](backend-standards.md) - Directory structure, Hono, logging, services, testing, security, best practices
 - [websocket-patterns.md](websocket-patterns.md) - Dual WebSocket architecture, message protocol, broadcasting
+- [webhook-receiver-patterns.md](webhook-receiver-patterns.md) - Webhook receiver design: always-200, async processing, internal error handling
