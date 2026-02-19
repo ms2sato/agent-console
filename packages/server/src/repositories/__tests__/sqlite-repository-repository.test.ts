@@ -56,6 +56,7 @@ describe('SqliteRepositoryRepository', () => {
       setupCommand: overrides.setupCommand,
       cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
+      defaultAgentId: overrides.defaultAgentId ?? null,
     };
   }
 
@@ -599,6 +600,99 @@ describe('SqliteRepositoryRepository', () => {
       const all = await repository.findAll();
       const matching = all.filter((r) => r.id === 'repo-upsert-desc');
       expect(matching.length).toBe(1);
+    });
+  });
+
+  describe('defaultAgentId', () => {
+    it('should update defaultAgentId from null to a valid agent ID', async () => {
+      const repo = createRepository({ id: 'repo-default-agent', name: 'Repo Default Agent' });
+      await repository.save(repo);
+
+      // Verify defaultAgentId is initially null
+      const before = await repository.findById('repo-default-agent');
+      expect(before?.defaultAgentId).toBeNull();
+
+      // Update defaultAgentId
+      const updated = await repository.update('repo-default-agent', {
+        defaultAgentId: 'agent-123',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.defaultAgentId).toBe('agent-123');
+    });
+
+    it('should clear defaultAgentId when given empty string', async () => {
+      const repo = createRepository({
+        id: 'repo-clear-agent',
+        name: 'Repo Clear Agent',
+        defaultAgentId: 'agent-123',
+      });
+      await repository.save(repo);
+
+      // Verify initial defaultAgentId
+      const before = await repository.findById('repo-clear-agent');
+      expect(before?.defaultAgentId).toBe('agent-123');
+
+      // Update with empty string should clear the defaultAgentId
+      const updated = await repository.update('repo-clear-agent', {
+        defaultAgentId: '',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.defaultAgentId).toBeNull();
+
+      // Double check via direct DB query
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-clear-agent')
+        .select('default_agent_id')
+        .executeTakeFirst();
+      expect(row?.default_agent_id).toBeNull();
+    });
+
+    it('should clear defaultAgentId when given null', async () => {
+      const repo = createRepository({
+        id: 'repo-null-agent',
+        name: 'Repo Null Agent',
+        defaultAgentId: 'agent-456',
+      });
+      await repository.save(repo);
+
+      // Verify initial defaultAgentId
+      const before = await repository.findById('repo-null-agent');
+      expect(before?.defaultAgentId).toBe('agent-456');
+
+      // Update with null should clear the defaultAgentId
+      const updated = await repository.update('repo-null-agent', {
+        defaultAgentId: null,
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.defaultAgentId).toBeNull();
+    });
+
+    it('should include defaultAgentId in findById results', async () => {
+      const repo = createRepository({
+        id: 'repo-findbyid-agent',
+        defaultAgentId: 'agent-for-findbyid',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-findbyid-agent');
+      expect(found?.defaultAgentId).toBe('agent-for-findbyid');
+    });
+
+    it('should include defaultAgentId in findAll results', async () => {
+      const repo = createRepository({
+        id: 'repo-findall-agent',
+        path: '/path/findall-agent',
+        defaultAgentId: 'agent-for-findall',
+      });
+      await repository.save(repo);
+
+      const repos = await repository.findAll();
+      const found = repos.find((r) => r.id === 'repo-findall-agent');
+      expect(found?.defaultAgentId).toBe('agent-for-findall');
     });
   });
 

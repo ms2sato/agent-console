@@ -105,11 +105,14 @@ export function CreateWorktreeForm({
   });
 
   // State for "set as default agent" checkbox
-  const [setAsDefault, setSetAsDefault] = useState(false);
+  const [setAsDefault, setSetAsDefault] = useState(!!defaultAgentId);
 
   // Mutation to update repository's default agent
   const updateDefaultAgentMutation = useMutation({
     mutationFn: (agentId: string) => updateRepository(repositoryId, { defaultAgentId: agentId }),
+    onError: () => {
+      setSetAsDefault(false);
+    },
   });
 
   // The actual base branch to use (user input or effective default)
@@ -247,6 +250,7 @@ export function CreateWorktreeForm({
                 <input
                   type="checkbox"
                   checked={setAsDefault}
+                  disabled={updateDefaultAgentMutation.isPending}
                   onChange={(e) => {
                     setSetAsDefault(e.target.checked);
                     const currentAgent = getValues('agentId');

@@ -133,7 +133,7 @@ export interface AgentsTable {
   headless_template: string | null;
   /** Human-readable description (optional) */
   description: string | null;
-  /** Whether this is a built-in agent (always 0 for persisted agents) */
+  /** Whether this is a built-in agent (1 for built-in, 0 for custom) */
   is_built_in: number;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */
   created_at: Generated<string>;
