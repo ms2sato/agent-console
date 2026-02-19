@@ -47,8 +47,44 @@ Agent Console Server
 
 1. **Generalized event routing** - Not tied to specific use cases; handlers determine actions
 2. **Multiple targets** - Single event can trigger multiple handlers (PTY, UI, etc.)
-3. **Always return 200 OK** - Webhook providers may disable or retry on errors
+3. **Always return 200 OK** - See [Error Handling Policy](#error-handling-policy) for rationale
 4. **Async processing via queue** - Authenticate and enqueue immediately, process asynchronously
+
+### Error Handling Policy
+
+**Webhook endpoints always return 200 OK, regardless of internal errors.**
+
+This is a fundamental webhook receiver principle. Unlike API endpoints (which should return proper error codes), webhook endpoints must not burden the sending service with the receiver's problems.
+
+**Rationale:**
+
+- Webhook senders (e.g., GitHub) retry on non-2xx responses
+- Configuration errors (wrong secret, missing parser) are permanent — retries will never fix them, only generating wasted load
+- Persistent error responses may cause the sender to disable the webhook entirely
+- The receiver's internal failures are the receiver's responsibility to detect and resolve
+
+**All error cases return 200 OK:**
+
+| Error Case | Internal Action | Why Not an Error Response |
+|------------|----------------|--------------------------|
+| Webhook secret not configured | Log warning | Permanent config error — retries are futile |
+| Signature verification failed | Log warning | Permanent secret mismatch — retries are futile |
+| Service parser not registered | Log warning | Permanent code issue — retries are futile |
+| Job enqueue failed | Log error with full raw data (see below) | Likely persistent system failure (DB down) — retries won't help |
+
+**Enqueue failure recovery strategy:**
+
+When job enqueue fails, the event has not been persisted anywhere. The endpoint must:
+
+1. Return 200 OK (do not burden the sender)
+2. Log the error at ERROR level with the **full raw request data** for manual recovery:
+   - `rawPayload` (the webhook JSON body)
+   - `headers` (including `x-github-event`, etc.)
+   - `service` identifier
+   - Error details
+3. Accept the data loss for automated processing
+
+The raw data in logs enables an operator to manually replay the event if needed. Automatic replay (e.g., saving to a file and re-enqueuing on next startup) is intentionally avoided because session/worker state may have changed since the original event, making stale events likely to cause inconsistencies.
 
 ## Base Architecture
 
@@ -119,9 +155,13 @@ class AgentWorkerHandler implements InboundEventHandler {
   }
 
   private formatMessage(event: SystemEvent): string {
-    // Format: \n[Source] TYPE: Summary\nURL: ...\n
-    return `\n[${event.source}] ${event.type.toUpperCase()}: ${event.summary}\n` +
-           `URL: ${event.metadata.url ?? 'N/A'}\n`;
+    // Format: structured tag + key/value fields for reliable parsing.
+    // Example: [inbound:ci-failed] source=github repo=owner/repo branch=main url=... summary="..." intent=triage
+    const intent = event.type === 'ci:failed' ? 'triage' : 'inform';
+    return `\n[inbound:${event.type}] ` +
+      `source=${event.source} repo=${event.metadata.repositoryName ?? 'unknown'} ` +
+      `branch=${event.metadata.branch ?? 'unknown'} url=${event.metadata.url ?? 'N/A'} ` +
+      `summary="${event.summary}" intent=${intent}\n`;
   }
 }
 ```
@@ -191,15 +231,26 @@ app.post('/webhooks/:service', async (c) => {
 
   // Enqueue for async processing
   const jobId = generateId();
-  jobQueue.enqueue('inbound-event:process', {
-    jobId,
-    service,
-    rawPayload: payload,
-    headers: Object.fromEntries(c.req.raw.headers),  // Stored as Record for serialization
-    receivedAt: new Date().toISOString(),
-  } satisfies InboundEventJobPayload);
+  try {
+    jobQueue.enqueue('inbound-event:process', {
+      jobId,
+      service,
+      rawPayload: payload,
+      headers: Object.fromEntries(c.req.raw.headers),  // Stored as Record for serialization
+      receivedAt: new Date().toISOString(),
+    } satisfies InboundEventJobPayload);
+  } catch (error) {
+    // Enqueue failed — event is NOT persisted. Log full raw data for manual recovery.
+    // Still return 200 OK — do not burden the sender with our internal failures.
+    logger.error({
+      err: error,
+      service,
+      headers: Object.fromEntries(c.req.raw.headers),
+      rawPayload: payload,
+    }, 'Failed to enqueue webhook job - event data preserved for manual recovery');
+  }
 
-  return c.json({ ok: true });
+  return c.json({ ok: true }); // Always 200 OK — see Error Handling Policy
 });
 
 // Step 2: Process queue (asynchronous)
@@ -270,8 +321,12 @@ export interface InboundEventNotificationsTable {
   event_type: string;
   /** Human-readable event summary */
   event_summary: string;
-  /** Timestamp when notification was delivered */
-  notified_at: string;
+  /** Notification status: 'pending' while handler executes, 'delivered' after success */
+  status: string;
+  /** Timestamp when notification was created (pending status) */
+  created_at: string;
+  /** Timestamp when notification was delivered (null until delivered) */
+  notified_at: string | null;
 }
 
 // Add to Database interface:
@@ -571,6 +626,29 @@ interface InboundIntegrationConfig {
 # GitHub webhook secret
 GITHUB_WEBHOOK_SECRET=your-secret-here
 ```
+
+## Implementation Plan
+
+1. **Shared types and protocol updates**
+   - Add `InboundEventType`, `SystemEvent`, and `EventTarget` types under `packages/shared/src/types` (new `system-events.ts` or augment existing shared types).
+   - Extend `AppServerMessage` with `inbound-event` payload and document it in `docs/design/websocket-protocol.md`.
+2. **Database + repository layer**
+   - Add `inbound_event_notifications` table to `packages/server/src/database/schema.ts` and migration v7 in `packages/server/src/database/connection.ts`.
+   - Implement a repository for `inbound_event_notifications` with `create()` and `listBySession/Worker()` queries.
+3. **Inbound job + handler**
+   - Add `inbound-event:process` to `packages/server/src/jobs/job-types.ts` and register a handler in `packages/server/src/jobs/handlers.ts` that:
+     - rehydrates headers, parses the event, resolves targets, runs handlers, and writes notification history.
+4. **Service parsers + routing**
+   - Create `packages/server/src/services/inbound` with `ServiceParser` interface and `GitHubServiceParser` implementation (signature auth + event parsing).
+   - Add `POST /webhooks/github` route in `packages/server/src/routes` and mount in `packages/server/src/index.ts`.
+5. **Target resolution and handlers**
+   - Implement `resolveTargets()` using session + repository managers (runtime `git remote get-url origin`).
+   - Add handlers: `AgentWorkerHandler`, `DiffWorkerHandler`, `UINotificationHandler`, and a registry to filter by event type.
+6. **Client UI handling**
+   - Update `packages/client/src/hooks/useAppWs.ts` and any relevant UI to surface inbound event notifications.
+7. **Configuration + tests**
+   - Add `GITHUB_WEBHOOK_SECRET` to `packages/server/src/lib/server-config.ts` and update env filtering if needed.
+   - Add tests for webhook auth + parsing, job handler processing, and UI message handling.
 
 ## Future Extensions
 

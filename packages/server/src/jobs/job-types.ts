@@ -26,6 +26,12 @@ export const JOB_TYPES = {
    * Payload: CleanupRepositoryPayload
    */
   CLEANUP_REPOSITORY: 'cleanup:repository',
+
+  /**
+   * Process an inbound event from an external service (e.g., GitHub webhook).
+   * Payload: InboundEventJobPayload
+   */
+  INBOUND_EVENT_PROCESS: 'inbound-event:process',
 } as const;
 
 /**
@@ -53,4 +59,15 @@ export interface CleanupWorkerOutputPayload {
  */
 export interface CleanupRepositoryPayload {
   repoDir: string;
+}
+
+/**
+ * Payload for inbound-event:process job.
+ */
+export interface InboundEventJobPayload {
+  jobId: string;
+  service: string;
+  rawPayload: string;
+  headers: Record<string, string>;
+  receivedAt: string;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorkerMessage } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorkerMessage, InboundEventSummary } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -62,6 +62,8 @@ interface UseAppWsEventOptions {
   onWorktreeDeletionFailed?: (payload: WorktreeDeletionFailedPayload) => void;
   /** Called when a worker message is sent */
   onWorkerMessage?: (message: WorkerMessage) => void;
+  /** Called when an inbound integration event is received */
+  onInboundEvent?: (sessionId: string, event: InboundEventSummary) => void;
 }
 
 /**
@@ -178,6 +180,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'worker-message':
           console.log(`[WebSocket] worker-message: ${msg.message.fromWorkerName} -> ${msg.message.toWorkerName}`);
           optionsRef.current.onWorkerMessage?.(msg.message);
+          break;
+        case 'inbound-event':
+          console.log(`[WebSocket] inbound-event: ${msg.event.type}`);
+          optionsRef.current.onInboundEvent?.(msg.sessionId, msg.event);
           break;
         default: {
           const _exhaustive: never = msg;

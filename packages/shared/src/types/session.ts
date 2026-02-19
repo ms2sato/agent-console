@@ -1,6 +1,7 @@
 import type { Worker, AgentActivityState } from './worker.js';
 import type { AgentDefinition } from './agent.js';
 import type { WorkerMessage } from './worker-message.js';
+import type { InboundEventSummary } from './system-events.js';
 import type {
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
@@ -156,6 +157,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worker-message': 19,
   'session-paused': 20,
   'session-resumed': 21,
+  'inbound-event': 22,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -184,7 +186,8 @@ export type AppServerMessage =
   | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload)
   | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
   | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload)
-  | { type: 'worker-message'; message: WorkerMessage };
+  | { type: 'worker-message'; message: WorkerMessage }
+  | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary };
 
 /**
  * Valid message types for AppClientMessage.

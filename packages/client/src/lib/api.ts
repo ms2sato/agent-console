@@ -750,6 +750,16 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
 }
 
 // ===========================================================================
+// System Health
+// ===========================================================================
+
+export async function fetchSystemHealth(): Promise<{ webhookSecretConfigured: boolean; appUrl: string | null }> {
+  const res = await fetch(`${API_BASE}/system/health`);
+  if (!res.ok) throw new Error('Failed to fetch system health');
+  return res.json();
+}
+
+// ===========================================================================
 // Worker Messages
 // ===========================================================================
 

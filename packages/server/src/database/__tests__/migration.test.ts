@@ -640,10 +640,10 @@ describe('migration', () => {
       // Initialize database (runs all migrations up to current version)
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is the latest (9)
+      // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(10);
+      expect(result.rows[0]?.user_version).toBe(11);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -735,10 +735,10 @@ describe('migration', () => {
     it('should create worktrees table with correct columns', async () => {
       const db = await initializeDatabase(':memory:');
 
-      // Verify the schema version is 9
+      // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(10);
+      expect(result.rows[0]?.user_version).toBe(11);
 
       // First create a repository (foreign key dependency)
       await db
