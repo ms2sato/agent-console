@@ -4,7 +4,7 @@ import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
 import { mcpApp } from './mcp/mcp-server.js';
-import { setupWebSocketRoutes } from './websocket/routes.js';
+import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
@@ -77,7 +77,7 @@ const isProduction = serverConfig.NODE_ENV === 'production';
 // Initialize all services via AppContext BEFORE creating the Hono app
 // This ensures services are available when routes are registered
 try {
-  appContext = await createAppContext();
+  appContext = await createAppContext({ broadcastToApp });
   logger.info('Application context initialized');
 } catch (error) {
   logger.fatal({ err: error }, 'Failed to initialize application context');
