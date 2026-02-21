@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { resetAgentManager } from '../agent-manager.js';
 import { WorkerManager } from '../worker-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -14,9 +17,23 @@ describe('WorkerManager - AgentConsole env var injection', () => {
   const ptyFactory = createMockPtyFactory(20000);
   let workerManager: WorkerManager;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({ '/test/config/.keep': '' });
+    process.env.AGENT_CONSOLE_HOME = '/test/config';
+
+    // Use in-memory database so getAgentManager() doesn't hit real filesystem
+    await initializeDatabase(':memory:');
+
     ptyFactory.reset();
     workerManager = new WorkerManager(ptyFactory.provider);
+  });
+
+  afterEach(async () => {
+    resetAgentManager();
+    await closeDatabase();
+    cleanupMemfs();
   });
 
   /**
