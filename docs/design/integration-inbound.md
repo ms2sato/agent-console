@@ -343,7 +343,7 @@ export type NewInboundEventNotification = Insertable<InboundEventNotificationsTa
 ### Migration
 
 ```typescript
-// migrations/007_create_inbound_event_notifications.ts
+// Migration v11 in packages/server/src/database/connection.ts
 import type { Kysely } from 'kysely';
 
 export async function up(db: Kysely<unknown>): Promise<void> {
@@ -356,7 +356,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn('handler_id', 'text', (col) => col.notNull())
     .addColumn('event_type', 'text', (col) => col.notNull())
     .addColumn('event_summary', 'text', (col) => col.notNull())
-    .addColumn('notified_at', 'text', (col) => col.notNull())
+    .addColumn('status', 'text', (col) => col.notNull().defaultTo('pending'))
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('notified_at', 'text')
     .execute();
 
   await db.schema

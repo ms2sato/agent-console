@@ -289,8 +289,8 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
 |---|---|---|---|
 | Workflow runs | Completed successfully | `ci:completed` | Notify agent, refresh diff view |
 | Workflow runs | Completed with failure | `ci:failed` | Notify agent, show UI alert |
-| Issue | Closed | `issue:closed` | Show UI alert |
-| Pull request | Merged | `pr:merged` | Refresh diff view, show UI alert |
+| Issues | Closed | `issue:closed` | Show UI alert |
+| Pull requests | Merged | `pr:merged` | Refresh diff view, show UI alert |
 
 ### How Events Are Routed
 
