@@ -64,6 +64,15 @@ describe('formatFieldValue', () => {
     expect(formatFieldValue('\x00\x01\x07\x1b')).toBe('');
   });
 
+  it('strips Unicode C1 control characters (U+0080-U+009F)', () => {
+    // U+009B is the 8-bit CSI (Control Sequence Introducer), equivalent to ESC [
+    expect(formatFieldValue('hello\u009B31mworld')).toBe('hello31mworld');
+  });
+
+  it('strips mixed C0 and C1 control characters', () => {
+    expect(formatFieldValue('\x1b\u0080\u009f\u009Btest')).toBe('test');
+  });
+
   it('handles empty string', () => {
     expect(formatFieldValue('')).toBe('');
   });

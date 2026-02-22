@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
-import { createTestContext, shutdownAppContext, type AppContext } from '../../app-context.js';
+import { createTestContext, shutdownAppContext, type AppContext, type AppBindings } from '../../app-context.js';
 import { webhooks } from '../webhooks.js';
 
 // Mock server config to set GITHUB_WEBHOOK_SECRET for tests
@@ -11,18 +11,15 @@ mock.module('../../lib/server-config.js', () => ({
 }));
 
 describe('Webhooks route', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let testContext: AppContext;
 
   beforeEach(async () => {
     testContext = await createTestContext({ skipJobQueueStart: true });
 
-    // Type assertion needed: the root Hono app uses BlankEnv, while sub-routes
-    // that consume appContext declare AppBindings on their own Hono instances.
-    // This mirrors the pattern in index.ts.
-    app = new Hono();
+    app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      (c as any).set('appContext', testContext);
+      c.set('appContext', testContext);
       await next();
     });
     app.route('/webhooks', webhooks);
