@@ -265,19 +265,23 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
 
    Add to `.env` for development, or set in your shell/systemd for production.
 
-2. **Configure the webhook in GitHub**:
+2. **Expose the webhook endpoint** to the internet:
+
+   GitHub sends webhooks from its servers, so your local Agent Console must be reachable via a public URL. Use a tunnel service such as [ngrok](https://ngrok.com), [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), or similar:
+
+   ```bash
+   # Example with ngrok (forward to the Agent Console server port)
+   ngrok http 3457
+   # → https://xxxx-xxxx.ngrok-free.app
+   ```
+
+3. **Configure the webhook in GitHub**:
 
    - Go to **Settings > Webhooks > Add webhook** in your repository (or organization)
-   - **Payload URL**: `http://<your-host>:<port>/webhooks/github`
-     - Development: `http://localhost:3457/webhooks/github`
-     - Production: `http://localhost:6340/webhooks/github`
+   - **Payload URL**: `https://<your-tunnel-domain>/webhooks/github`
    - **Content type**: `application/json`
    - **Secret**: Same value as `GITHUB_WEBHOOK_SECRET`
    - **Events**: Select individual events: `Workflow runs`, `Issues`, `Pull requests`
-
-3. **For external access** (receiving webhooks from GitHub.com):
-
-   Use a tunnel service like [ngrok](https://ngrok.com), [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), or similar to expose the local server.
 
 ### Supported Events
 
