@@ -8,7 +8,6 @@ import type {
   AgentActivityState,
   CreateSessionRequest,
   CreateWorkerParams,
-  WorkerErrorCode,
   SessionActivationState,
   WorkerMessage,
 } from '@agent-console/shared';
@@ -23,19 +22,12 @@ import type {
   InternalTerminalWorker,
   WorkerCallbacks,
 } from './worker-types.js';
+import type { InternalSession } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
-import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
+import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
-
-/**
- * Callbacks for resolving dependencies without circular imports.
- * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
- */
-export interface SessionRepositoryCallbacks {
-  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
-  isInitialized: () => boolean;
-}
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
@@ -49,36 +41,22 @@ import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
-import type { SessionRepository } from '../repositories/index.js';
-import { JsonSessionRepository } from '../repositories/index.js';
+import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+
+/**
+ * Callbacks for resolving dependencies without circular imports.
+ * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
+ */
+export interface SessionRepositoryCallbacks {
+  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
+  isInitialized: () => boolean;
+}
 
 const logger = createLogger('session-manager');
 
 // Re-export worker types for consumers that need them
 export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
-
-interface InternalSessionBase {
-  id: string;
-  locationPath: string;
-  status: 'active' | 'inactive';
-  createdAt: string;
-  workers: Map<string, InternalWorker>;
-  initialPrompt?: string;
-  title?: string;
-}
-
-interface InternalWorktreeSession extends InternalSessionBase {
-  type: 'worktree';
-  repositoryId: string;
-  worktreeId: string;
-}
-
-interface InternalQuickSession extends InternalSessionBase {
-  type: 'quick';
-}
-
-type InternalSession = InternalWorktreeSession | InternalQuickSession;
 
 export interface SessionLifecycleCallbacks {
   onSessionCreated?: (session: Session) => void;
@@ -89,18 +67,7 @@ export interface SessionLifecycleCallbacks {
   onSessionResumed?: (session: Session) => void;
 }
 
-/**
- * Result type for restoreWorker operation.
- * Provides detailed error information for specific failure cases.
- * Note: worker type is narrowed to 'agent' | 'terminal' since git-diff workers
- * don't support PTY restoration.
- *
- * @property wasRestored - true if PTY was activated (was hibernated), false if already active.
- *   Used to notify clients about server restart so they can invalidate cached state.
- */
-export type RestoreWorkerResult =
-  | { success: true; worker: { type: 'agent' | 'terminal' }; wasRestored: boolean }
-  | { success: false; errorCode: WorkerErrorCode; message: string };
+export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
 /**
  * Default path existence checker using fs.access
@@ -119,6 +86,7 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private workerManager: WorkerManager;
+  private workerLifecycleManager: WorkerLifecycleManager;
   private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
@@ -165,6 +133,17 @@ export class SessionManager {
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
     this.jobQueue = options?.jobQueue ?? null;
+
+    this.workerLifecycleManager = new WorkerLifecycleManager({
+      workerManager: this.workerManager,
+      pathExists: this.pathExists,
+      getSession: (id) => this.sessions.get(id),
+      persistSession: (session) => this.persistSession(session),
+      getRepositoryEnvVars: (id) => this.getRepositoryEnvVars(id),
+      toPublicSession: (session) => this.toPublicSession(session),
+      getJobQueue: () => this.jobQueue,
+      getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+    });
   }
 
   /**
@@ -173,18 +152,6 @@ export class SessionManager {
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
-  }
-
-  /**
-   * Clean up worker output file via job queue.
-   * Used by deleteWorker and other cleanup operations.
-   * @throws Error if jobQueue is not available
-   */
-  private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
-    if (!this.jobQueue) {
-      throw new Error('JobQueue not available for worker output cleanup. Ensure initializeSessionManager() was called with jobQueue.');
-    }
-    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }
 
   /**
@@ -987,292 +954,82 @@ export class SessionManager {
     return matchingSessions;
   }
 
-  // ========== Worker Operations (delegated to WorkerManager) ==========
+  // ========== Worker Operations (delegated to WorkerLifecycleManager) ==========
 
+  /** Create a worker in the session. Delegates to WorkerLifecycleManager. */
   async createWorker(
     sessionId: string,
     request: CreateWorkerParams,
     continueConversation: boolean = false,
     initialPrompt?: string
   ): Promise<Worker | null> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-
-    const workerId = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
-    const workerName = request.name ?? await this.generateWorkerName(session, request.type, agentIdForName);
-
-    let worker: InternalWorker;
-    const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
-    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-
-    if (request.type === 'agent') {
-      const agentWorker = await this.workerManager.initializeAgentWorker({
-        id: workerId,
-        name: workerName,
-        createdAt,
-        agentId: request.agentId,
-      });
-      await this.workerManager.activateAgentWorkerPty(agentWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-        agentId: agentWorker.agentId,
-        continueConversation,
-        initialPrompt,
-        repositoryId,
-      });
-      worker = agentWorker;
-    } else if (request.type === 'terminal') {
-      const terminalWorker = this.workerManager.initializeTerminalWorker({
-        id: workerId,
-        name: workerName,
-        createdAt,
-      });
-      this.workerManager.activateTerminalWorkerPty(terminalWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-      });
-      worker = terminalWorker;
-    } else {
-      // git-diff worker (async initialization for base commit calculation)
-      worker = await this.workerManager.initializeGitDiffWorker({
-        id: workerId,
-        name: workerName,
-        createdAt,
-        locationPath: session.locationPath,
-        baseCommit: request.baseCommit,
-      });
-    }
-
-    session.workers.set(workerId, worker);
-
-    // Initialize output file immediately for PTY workers (agent/terminal)
-    // This prevents race conditions where WebSocket connects before any output is buffered
-    if (request.type === 'agent' || request.type === 'terminal') {
-      await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId);
-    }
-
-    await this.persistSession(session);
-
-    logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
-
-    return this.workerManager.toPublicWorker(worker);
+    return this.workerLifecycleManager.createWorker(sessionId, request, continueConversation, initialPrompt);
   }
 
+  /** Get a worker by session and worker ID. */
   getWorker(sessionId: string, workerId: string): InternalWorker | undefined {
-    const session = this.sessions.get(sessionId);
-    return session?.workers.get(workerId);
+    return this.workerLifecycleManager.getWorker(sessionId, workerId);
   }
 
   /**
    * Get a worker that is ready for PTY operations.
-   * If the worker exists but PTY is not activated (after server restart),
-   * this method will activate the PTY before returning the worker.
-   * Returns null if worker doesn't exist or activation fails.
+   * Activates PTY if needed (after server restart).
    */
   async getAvailableWorker(sessionId: string, workerId: string): Promise<InternalPtyWorker | null> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-
-    const worker = session.workers.get(workerId);
-    if (!worker) return null;
-
-    // git-diff workers don't have PTY
-    if (worker.type === 'git-diff') return null;
-
-    // If PTY is already active, return the worker
-    if (worker.pty) {
-      return worker;
-    }
-
-    // PTY is not active - need to activate it
-    // SECURITY: Verify session's locationPath still exists before activating
-    const pathExistsResult = await this.pathExists(session.locationPath);
-    if (!pathExistsResult) {
-      logger.warn({ sessionId, workerId, locationPath: session.locationPath }, 'Cannot activate worker: session path no longer exists');
-      return null;
-    }
-
-    const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
-    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-
-    // Activate PTY based on worker type
-    if (worker.type === 'agent') {
-      // SECURITY: Verify agentId is still valid
-      const agentManager = await getAgentManager();
-      const agent = agentManager.getAgent(worker.agentId);
-      if (!agent) {
-        logger.warn({ sessionId, workerId, agentId: worker.agentId }, 'Agent no longer valid, falling back to default');
-      }
-
-      await this.workerManager.activateAgentWorkerPty(worker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-        agentId: agent ? worker.agentId : CLAUDE_CODE_AGENT_ID,
-        continueConversation: true,
-        repositoryId,
-      });
-    } else {
-      // terminal worker
-      this.workerManager.activateTerminalWorkerPty(worker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-      });
-    }
-
-    await this.persistSession(session);
-    logger.info({ workerId, sessionId, workerType: worker.type }, 'Worker PTY activated');
-
-    return worker;
+    return this.workerLifecycleManager.getAvailableWorker(sessionId, workerId);
   }
 
+  /** Delete a worker from the session. */
   async deleteWorker(sessionId: string, workerId: string): Promise<boolean> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return false;
-
-    const worker = session.workers.get(workerId);
-    if (!worker) return false;
-
-    // Clean up based on worker type
-    if (worker.type === 'agent' || worker.type === 'terminal') {
-      this.workerManager.killWorker(worker);
-      await this.cleanupWorkerOutput(sessionId, workerId);
-    } else {
-      // git-diff worker: stop file watcher (synchronous operation)
-      stopWatching(session.locationPath);
-    }
-
-    // Clean up notification state (debounce timers, previous state)
-    try {
-      const notificationManager = getNotificationManager();
-      notificationManager.cleanupWorker(sessionId, workerId);
-    } catch {
-      // NotificationManager not initialized yet, skip
-    }
-
-    session.workers.delete(workerId);
-    await this.persistSession(session);
-
-    logger.info({ workerId, sessionId }, 'Worker deleted');
-    return true;
+    return this.workerLifecycleManager.deleteWorker(sessionId, workerId);
   }
 
-  private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): Promise<string> {
-    if (type === 'agent') {
-      // Get agent name from agentManager
-      const agentManager = await getAgentManager();
-      const agent = agentId ? agentManager.getAgent(agentId) : undefined;
-      // Fall back to generic "AI" if agent not found
-      return agent?.name ?? 'AI';
-    }
-
-    if (type === 'git-diff') {
-      return 'Git Diff';
-    }
-
-    // Count existing terminal workers
-    let count = 0;
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'terminal') {
-        count++;
-      }
-    }
-    return `Terminal ${count + 1}`;
-  }
-
-  /**
-   * Attach callbacks for a WebSocket connection to a worker.
-   * Supports multiple concurrent connections (e.g., multiple browser tabs).
-   * @returns Connection ID for later detachment, or null if worker not found
-   */
+  /** Attach callbacks for a WebSocket connection to a worker. */
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): string | null {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
-
-    return this.workerManager.attachCallbacks(worker, callbacks);
+    return this.workerLifecycleManager.attachWorkerCallbacks(sessionId, workerId, callbacks);
   }
 
-  /**
-   * Detach callbacks for a specific WebSocket connection.
-   * @param connectionId The connection ID returned by attachWorkerCallbacks
-   */
+  /** Detach callbacks for a specific WebSocket connection. */
   detachWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
-
-    return this.workerManager.detachCallbacks(worker, connectionId);
+    return this.workerLifecycleManager.detachWorkerCallbacks(sessionId, workerId, connectionId);
   }
 
+  /** Write input data to a worker's PTY. */
   writeWorkerInput(sessionId: string, workerId: string, data: string): boolean {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
-
-    return this.workerManager.writeInput(worker, data);
+    return this.workerLifecycleManager.writeWorkerInput(sessionId, workerId, data);
   }
 
+  /** Resize a worker's PTY. */
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
-
-    return this.workerManager.resize(worker, cols, rows);
+    return this.workerLifecycleManager.resizeWorker(sessionId, workerId, cols, rows);
   }
 
+  /** Get the output buffer for a worker. */
   getWorkerOutputBuffer(sessionId: string, workerId: string): string {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return '';
-    return this.workerManager.getOutputBuffer(worker);
+    return this.workerLifecycleManager.getWorkerOutputBuffer(sessionId, workerId);
   }
 
+  /** Get the activity state for an agent worker. */
   getWorkerActivityState(sessionId: string, workerId: string): AgentActivityState | undefined {
-    const worker = this.getWorker(sessionId, workerId);
-    if (worker?.type === 'agent') {
-      return this.workerManager.getActivityState(worker);
-    }
-    return undefined;
+    return this.workerLifecycleManager.getWorkerActivityState(sessionId, workerId);
   }
 
-  /**
-   * Get worker output history from file with optional offset for incremental sync.
-   * @param sessionId Session ID
-   * @param workerId Worker ID
-   * @param fromOffset If specified, return only data after this offset
-   * @param maxLines If specified and fromOffset is 0 or undefined, limit to last N lines
-   * @returns History data and current offset, or null if not available
-   */
+  /** Get worker output history from file with optional offset for incremental sync. */
   async getWorkerOutputHistory(
     sessionId: string,
     workerId: string,
     fromOffset?: number,
     maxLines?: number
   ): Promise<HistoryReadResult | null> {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
-
-    // Use line-limited read for initial connection (fromOffset is 0 or undefined)
-    if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
-      return workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines);
-    }
-
-    return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, fromOffset);
+    return this.workerLifecycleManager.getWorkerOutputHistory(sessionId, workerId, fromOffset, maxLines);
   }
 
-  /**
-   * Get current output offset for a worker.
-   * Used to mark the boundary before registering callbacks.
-   * @returns Current file offset (0 if file doesn't exist)
-   */
+  /** Get current output offset for a worker. */
   async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
-    const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return 0;
-
-    return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
+    return this.workerLifecycleManager.getCurrentOutputOffset(sessionId, workerId);
   }
 
+  /** Restart an agent worker, optionally changing agent or branch. */
   async restartAgentWorker(
     sessionId: string,
     workerId: string,
@@ -1280,192 +1037,12 @@ export class SessionManager {
     agentId?: string,
     branch?: string
   ): Promise<Worker | null> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-
-    const existingWorker = session.workers.get(workerId);
-    if (!existingWorker || existingWorker.type !== 'agent') return null;
-
-    // Resolve agent ID: use provided agentId or fall back to existing
-    const workerAgentId = agentId ?? existingWorker.agentId;
-
-    // Validate that the agent exists if a new agentId was provided
-    if (agentId) {
-      const agentManager = await getAgentManager();
-      const agent = agentManager.getAgent(agentId);
-      if (!agent) {
-        logger.warn({ workerId, sessionId, agentId }, 'Cannot restart worker: agent not found');
-        return null;
-      }
-    }
-
-    // Handle branch rename if requested (must happen before restart)
-    if (branch && session.type === 'worktree') {
-      const currentBranch = await gitGetCurrentBranch(session.locationPath);
-      if (currentBranch !== branch) {
-        await gitRenameBranch(currentBranch, branch, session.locationPath);
-      }
-      session.worktreeId = branch;
-    }
-
-    const isAgentChanged = workerAgentId !== existingWorker.agentId;
-
-    // Capture worker metadata before killing (needed for new worker creation)
-    const workerName = isAgentChanged
-      ? await this.generateWorkerName(session, 'agent', workerAgentId)
-      : existingWorker.name;
-    const workerCreatedAt = existingWorker.createdAt;
-    const locationPath = session.locationPath;
-
-    // Kill existing worker
-    this.workerManager.killWorker(existingWorker);
-
-    // Reset the output file to prevent offset mismatch with client cache.
-    await workerOutputFileManager.resetWorkerOutput(sessionId, workerId);
-
-    // Create new worker with same ID, preserving original createdAt for tab order
-    const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
-    const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-    const newWorker = await this.workerManager.initializeAgentWorker({
-      id: workerId,
-      name: workerName,
-      createdAt: workerCreatedAt,
-      agentId: workerAgentId,
-    });
-    await this.workerManager.activateAgentWorkerPty(newWorker, {
-      sessionId,
-      locationPath,
-      repositoryEnvVars,
-      agentId: workerAgentId,
-      continueConversation,
-      repositoryId,
-    });
-
-    // Re-check session still exists after async gap
-    // Session may have been deleted during async operations above
-    const currentSession = this.sessions.get(sessionId);
-    if (!currentSession) {
-      logger.warn({ sessionId, workerId }, 'Session deleted during worker restart, killing new worker');
-      this.workerManager.killWorker(newWorker);
-      return null;
-    }
-
-    currentSession.workers.set(workerId, newWorker);
-    await this.persistSession(currentSession);
-
-    // Broadcast session update so all clients learn about agent/name/branch changes
-    const isBranchChanged = branch && session.type === 'worktree';
-    if (isAgentChanged || isBranchChanged) {
-      this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(currentSession));
-    }
-
-    logger.info(
-      { workerId, sessionId, continueConversation, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
-      isAgentChanged ? 'Agent worker switched to different agent' : (isBranchChanged ? 'Agent worker restarted with branch rename' : 'Agent worker restarted')
-    );
-
-    return this.workerManager.toPublicWorker(newWorker);
+    return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
   }
 
-  /**
-   * Restore a PTY worker and ensure its PTY is active.
-   * Called when WebSocket connection is established to ensure the worker is ready for I/O.
-   *
-   * - If worker exists with active PTY, return it as-is
-   * - If worker exists without PTY (loaded from persistence), activate its PTY
-   * - Returns error for git-diff workers (they don't need PTY restoration)
-   * - Returns error with specific code if worker cannot be restored
-   */
+  /** Restore a PTY worker, activating its PTY if needed after server restart. */
   async restoreWorker(sessionId: string, workerId: string): Promise<RestoreWorkerResult> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      return {
-        success: false,
-        errorCode: 'WORKER_NOT_FOUND',
-        message: 'Session not found',
-      };
-    }
-
-    const existingWorker = session.workers.get(workerId);
-    if (!existingWorker) {
-      return {
-        success: false,
-        errorCode: 'WORKER_NOT_FOUND',
-        message: 'Worker not found in session',
-      };
-    }
-
-    // Git-diff workers don't need PTY restoration
-    if (existingWorker.type === 'git-diff') {
-      return {
-        success: false,
-        errorCode: 'WORKER_NOT_FOUND',
-        message: 'Git-diff workers do not support PTY restoration',
-      };
-    }
-
-    // If PTY is already active, return as-is (normal browser reload case)
-    if (existingWorker.pty) {
-      return { success: true, worker: existingWorker, wasRestored: false };
-    }
-
-    // SECURITY: Verify session's locationPath still exists before activating PTY
-    const pathExistsResult = await this.pathExists(session.locationPath);
-    if (!pathExistsResult) {
-      logger.warn({ sessionId, workerId, locationPath: session.locationPath }, 'Cannot restore worker: session path no longer exists');
-      return {
-        success: false,
-        errorCode: 'PATH_NOT_FOUND',
-        message: 'Session directory was deleted or is inaccessible',
-      };
-    }
-
-    // Activate PTY for the worker
-    try {
-      const repositoryEnvVars = this.getRepositoryEnvVars(sessionId);
-      const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-
-      if (existingWorker.type === 'agent') {
-        // SECURITY: Verify agentId is still valid before activating
-        const agentManager = await getAgentManager();
-        const agent = agentManager.getAgent(existingWorker.agentId);
-        const effectiveAgentId = agent ? existingWorker.agentId : CLAUDE_CODE_AGENT_ID;
-        if (!agent) {
-          logger.warn({ sessionId, workerId, originalAgentId: existingWorker.agentId, fallbackAgentId: effectiveAgentId }, 'Agent no longer valid, falling back to default');
-        }
-
-        await this.workerManager.activateAgentWorkerPty(existingWorker, {
-          sessionId,
-          locationPath: session.locationPath,
-          repositoryEnvVars,
-          agentId: effectiveAgentId,
-          continueConversation: true,
-          repositoryId,
-        });
-      } else {
-        this.workerManager.activateTerminalWorkerPty(existingWorker, {
-          sessionId,
-          locationPath: session.locationPath,
-          repositoryEnvVars,
-        });
-      }
-    } catch (err) {
-      logger.error({ sessionId, workerId, err }, 'Failed to activate PTY for worker');
-      return {
-        success: false,
-        errorCode: 'ACTIVATION_FAILED',
-        message: 'Failed to start process. Check permissions and system resources.',
-      };
-    }
-
-    await this.persistSession(session);
-
-    logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');
-
-    // Notify listeners that the worker was activated (broadcasts to app clients)
-    this.sessionLifecycleCallbacks?.onWorkerActivated?.(sessionId, workerId);
-
-    return { success: true, worker: existingWorker, wasRestored: true };
+    return this.workerLifecycleManager.restoreWorker(sessionId, workerId);
   }
 
   /**
