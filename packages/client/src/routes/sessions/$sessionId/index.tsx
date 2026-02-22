@@ -15,5 +15,5 @@ export const Route = createFileRoute('/sessions/$sessionId/')({
 function SessionIndexPage() {
   const { sessionId } = Route.useParams();
 
-  return <SessionPage sessionId={sessionId} />;
+  return <SessionPage key={sessionId} sessionId={sessionId} />;
 }

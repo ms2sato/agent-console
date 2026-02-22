@@ -21,7 +21,7 @@ interface SessionSettingsProps {
   session?: Session;
   /** Activity states for workers in this session: { workerId: state } */
   workerActivityStates?: Record<string, AgentActivityState>;
-  onBranchChange: (newBranch: string) => void;
+  onBranchChange?: (newBranch: string) => void;
   onTitleChange?: (newTitle: string) => void;
   onSessionRestart?: () => void;
 }
