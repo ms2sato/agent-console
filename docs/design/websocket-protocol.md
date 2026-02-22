@@ -24,6 +24,7 @@ Singleton WebSocket connection for app-wide state synchronization. Persists acro
 | `session-paused` | `{ sessionId: string }` | Session paused (removed from memory, preserved in database) |
 | `session-resumed` | `{ session: Session }` | Session resumed (restored from database to memory) |
 | `worker-activity` | `{ sessionId, workerId, activityState }` | Worker activity state changed |
+| `worker-restarted` | `{ sessionId: string, workerId: string }` | Worker PTY was restarted. Clients should clear cached terminal state and reconnect the worker WebSocket. |
 | `inbound-event` | `{ sessionId: string, event: InboundEventSummary }` | Inbound integration event notification |
 
 ### Client → Server Messages

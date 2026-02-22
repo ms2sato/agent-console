@@ -37,6 +37,7 @@ describe('WorkerLifecycleManager', () => {
   let mockCallbacks: SessionLifecycleCallbacks;
   let mockOnSessionUpdated: ReturnType<typeof mock>;
   let mockOnWorkerActivated: ReturnType<typeof mock>;
+  let mockOnWorkerRestarted: ReturnType<typeof mock>;
   let originalAgentConsoleHome: string | undefined;
 
   function createTestSession(overrides: Partial<InternalSession> = {}): InternalSession {
@@ -110,9 +111,11 @@ describe('WorkerLifecycleManager', () => {
     mockPathExists = mock(() => Promise.resolve(true));
     mockOnSessionUpdated = mock(() => {});
     mockOnWorkerActivated = mock(() => {});
+    mockOnWorkerRestarted = mock(() => {});
     mockCallbacks = {
       onSessionUpdated: mockOnSessionUpdated as any,
       onWorkerActivated: mockOnWorkerActivated as any,
+      onWorkerRestarted: mockOnWorkerRestarted as any,
     };
 
     workerManager = new WorkerManager(ptyFactory.provider);
@@ -543,6 +546,71 @@ describe('WorkerLifecycleManager', () => {
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('original-branch');
       }
+    });
+
+    it('should call onWorkerRestarted callback after successful restart', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+
+      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id);
+    });
+
+    it('should call onWorkerRestarted even when agent is not changed', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      // Restart with same agent ID and no branch change
+      await lifecycleManager.restartAgentWorker(
+        session.id, worker!.id, true, CLAUDE_CODE_AGENT_ID
+      );
+
+      // onWorkerRestarted should be called regardless of agent/branch changes
+      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id);
+      // onSessionUpdated should NOT be called since agent and branch did not change
+      expect(mockOnSessionUpdated).not.toHaveBeenCalled();
+    });
+
+    it('should NOT call onWorkerRestarted when session is deleted during restart', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      // Create a lifecycle manager where getSession returns undefined on the re-check
+      let getSessionCallCount = 0;
+      const managerWithDelete = new WorkerLifecycleManager(createDeps({
+        getSession: (id: string) => {
+          getSessionCallCount++;
+          if (getSessionCallCount >= 2) {
+            return undefined;
+          }
+          return sessions.get(id);
+        },
+      }));
+
+      const result = await managerWithDelete.restartAgentWorker(
+        session.id, worker!.id, true
+      );
+
+      // Should return null since session was deleted
+      expect(result).toBeNull();
+      // Should NOT call onWorkerRestarted since the restart effectively failed
+      expect(mockOnWorkerRestarted).not.toHaveBeenCalled();
     });
   });
 

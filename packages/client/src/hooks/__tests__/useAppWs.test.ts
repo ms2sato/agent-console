@@ -428,6 +428,26 @@ describe('useAppWsEvent', () => {
 
       expect(onAgentDeleted).toHaveBeenCalledWith('agent-1');
     });
+
+    it('should call onWorkerRestarted for worker-restarted message', () => {
+      const onWorkerRestarted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onWorkerRestarted }));
+
+      const ws = MockWebSocket.getLastInstance();
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'worker-restarted',
+            sessionId: 'session-1',
+            workerId: 'worker-1',
+          })
+        );
+      });
+
+      expect(onWorkerRestarted).toHaveBeenCalledWith('session-1', 'worker-1');
+    });
   });
 
   // Note: Reconnection logic is now handled by the singleton module (app-websocket.ts)

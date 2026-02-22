@@ -158,6 +158,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'session-paused': 20,
   'session-resumed': 21,
   'inbound-event': 22,
+  'worker-restarted': 23,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -187,7 +188,8 @@ export type AppServerMessage =
   | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
   | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload)
   | { type: 'worker-message'; message: WorkerMessage }
-  | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary };
+  | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
+  | { type: 'worker-restarted'; sessionId: string; workerId: string };
 
 /**
  * Valid message types for AppClientMessage.
