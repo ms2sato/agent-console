@@ -247,6 +247,59 @@ The agent will use the `delegate_to_worktree` MCP tool, which:
 
 See [docs/design/self-worktree-delegation.md](docs/design/self-worktree-delegation.md) for the full design document.
 
+## GitHub Webhook Integration (Inbound Events)
+
+Agent Console can receive GitHub webhooks and route them to active sessions. When a webhook arrives (e.g., CI failure, PR merged), Agent Console:
+
+- Matches the event to sessions working on the same repository
+- Notifies agent workers by writing a structured message to the agent's PTY input
+- Sends UI notifications via WebSocket to connected browsers
+
+### Setup
+
+1. **Set the webhook secret** environment variable:
+
+   ```bash
+   GITHUB_WEBHOOK_SECRET=your-secret-here
+   ```
+
+   Add to `.env` for development, or set in your shell/systemd for production.
+
+2. **Configure the webhook in GitHub**:
+
+   - Go to **Settings > Webhooks > Add webhook** in your repository (or organization)
+   - **Payload URL**: `http://<your-host>:<port>/webhooks/github`
+     - Development: `http://localhost:3457/webhooks/github`
+     - Production: `http://localhost:6340/webhooks/github`
+   - **Content type**: `application/json`
+   - **Secret**: Same value as `GITHUB_WEBHOOK_SECRET`
+   - **Events**: Select individual events: `Workflow runs`, `Issues`, `Pull requests`
+
+3. **For external access** (receiving webhooks from GitHub.com):
+
+   Use a tunnel service like [ngrok](https://ngrok.com), [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), or similar to expose the local server.
+
+### Supported Events
+
+| GitHub Event | Condition | Inbound Event | Actions |
+|---|---|---|---|
+| Workflow run | Completed successfully | `ci:completed` | Notify agent, refresh diff view |
+| Workflow run | Completed with failure | `ci:failed` | Notify agent, show UI alert |
+| Issue | Closed | `issue:closed` | Show UI alert |
+| Pull request | Merged | `pr:merged` | Refresh diff view, show UI alert |
+
+### How Events Are Routed
+
+- Events are matched to sessions by comparing the webhook's repository name with each session's git remote URL
+- If the event includes a branch name, only sessions working on that branch are notified
+- Events without a branch (e.g., issue closed) are delivered to all sessions for that repository
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_WEBHOOK_SECRET` | Yes | (empty) | Shared secret for HMAC-SHA256 signature verification. Webhooks are silently dropped if not set. |
+
 ## Project Structure
 
 ```
