@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
-import { Link, useNavigate } from '@tanstack/react-router';
+import { useState, useEffect, useCallback } from 'react';
+import { Link } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
 import { SessionSettings } from '../SessionSettings';
@@ -7,12 +7,13 @@ import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
-import { getSession, createWorker, deleteWorker, restartAgentWorker, resumeSession, openPath, ServerUnavailableError } from '../../lib/api';
+import { getSession, restartAgentWorker, resumeSession, openPath, ServerUnavailableError } from '../../lib/api';
 import { formatPath } from '../../lib/path';
 import { useAppWsEvent } from '../../hooks/useAppWs';
+import { useWorkerRouting } from '../../hooks/useWorkerRouting';
+import { useTabManagement } from '../../hooks/useTabManagement';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
-import { getDefaultTabId, isWorkerIdReady } from './sessionTabRouting';
-import type { Session, Worker, AgentWorker, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 
 type PageState =
@@ -24,13 +25,6 @@ type PageState =
   | { type: 'restarting' }
   | { type: 'paused'; session: Session };
 
-// Tab representation - links to workers
-interface Tab {
-  id: string;           // Worker ID
-  workerType: 'agent' | 'terminal' | 'git-diff';
-  name: string;
-}
-
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
   return session.type === 'worktree' ? session.worktreeId : '(quick)';
@@ -39,20 +33,6 @@ function getBranchName(session: Session): string {
 // Get repository ID from session (for worktree sessions)
 function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
-}
-
-// Convert workers to tabs
-function workersToTabs(workers: Worker[]): Tab[] {
-  return workers.map(worker => ({
-    id: worker.id,
-    workerType: worker.type,
-    name: worker.name,
-  }));
-}
-
-// Find the first agent worker in the list
-function findFirstAgentWorker(workers: Worker[]): AgentWorker | undefined {
-  return workers.find((w): w is AgentWorker => w.type === 'agent');
 }
 
 // Error fallback UI for worker tabs
@@ -90,7 +70,6 @@ export interface SessionPageProps {
 }
 
 export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
-  const navigate = useNavigate();
   const [state, setState] = useState<PageState>({ type: 'loading' });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
@@ -103,41 +82,35 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
-  // Tab management
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const pendingWorkerIdRef = useRef<string | null>(null);
+  const { navigateToWorker, navigateToSession } = useWorkerRouting(sessionId);
 
-  // Navigate to specific worker
-  const navigateToWorker = useCallback((newWorkerId: string, replace: boolean = false) => {
-    navigate({
-      to: '/sessions/$sessionId/$workerId',
-      params: { sessionId, workerId: newWorkerId },
-      replace,
-    });
-  }, [navigate, sessionId]);
+  // Derive branchName and sessionTitle from state
+  const branchName = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
+    ? getBranchName(state.session) : '';
+  const sessionTitle = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
+    ? (state.session.title ?? '') : '';
 
-  // Navigate to session base (will redirect to default worker)
-  const navigateToSession = useCallback(() => {
-    navigate({
-      to: '/sessions/$sessionId',
-      params: { sessionId },
-      replace: true,
-    });
-  }, [navigate, sessionId]);
+  const activeSession = state.type === 'active' ? state.session : null;
 
-  // Local branch name state (can be updated by settings dialog)
-  const [branchName, setBranchName] = useState<string>('');
-  // Local session title state (can be updated by settings dialog)
-  const [sessionTitle, setSessionTitle] = useState<string>('');
-
-  // Sync branch name and title when state changes
-  useEffect(() => {
-    if (state.type === 'active' || state.type === 'disconnected') {
-      setBranchName(getBranchName(state.session));
-      setSessionTitle(state.session.title ?? '');
-    }
-  }, [state]);
+  const {
+    tabs,
+    activeTabId,
+    activeTabIdRef,
+    addTerminalTab,
+    closeTab,
+    handleTabClick,
+    updateTabsFromSession,
+  } = useTabManagement({
+    sessionId,
+    activeSession,
+    urlWorkerId,
+    navigateToWorker,
+    navigateToSession,
+    showError,
+    workerActivityStates,
+    setActivityState,
+    setExitInfo,
+  });
 
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
     setConnectionStatus(status);
@@ -147,10 +120,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const handleActivityChange = useCallback((newState: AgentActivityState) => {
     setActivityState(newState);
   }, []);
-
-  // Track active tab for app-websocket activity filtering
-  const activeTabIdRef = useRef<string | null>(null);
-  activeTabIdRef.current = activeTabId;
 
   // Subscribe to app-websocket for real-time activity state updates
   // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
@@ -169,8 +138,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   const handleSessionUpdated = useCallback((updatedSession: Session) => {
     if (updatedSession.id === sessionId) {
-      const newTabs = workersToTabs(updatedSession.workers);
-      setTabs(newTabs);
+      updateTabsFromSession(updatedSession.workers);
 
       setState(prev => {
         if (prev.type === 'active' || prev.type === 'disconnected') {
@@ -182,7 +150,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         return prev;
       });
     }
-  }, [sessionId]);
+  }, [sessionId, updateTabsFromSession]);
 
   // Handle session paused (by another client or via settings menu)
   const handleSessionPaused = useCallback((pausedSessionId: string) => {
@@ -207,7 +175,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     onSessionPaused: handleSessionPaused,
   });
 
-  // Update page title and favicon based on state
+  // Update page title based on state
   useEffect(() => {
     if (state.type !== 'active' && state.type !== 'disconnected') return;
 
@@ -219,133 +187,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     return () => {
       document.title = 'Agent Console';
     };
-  }, [state, sessionTitle, branchName]);
-
-  // Reset state and tabs when sessionId changes (navigating to different session)
-  useEffect(() => {
-    setState({ type: 'loading' });
-    setTabs([]);
-    setActiveTabId(null);
-    pendingWorkerIdRef.current = null;
-    setConnectionStatus('connecting');
-    setActivityState('unknown');
-    setExitInfo(undefined);
-    setWorkerActivityStates({});
-    setLastMessage(null);
-  }, [sessionId]);
-
-  // Initialize tabs when state becomes active
-  useEffect(() => {
-    if (state.type === 'active' && tabs.length === 0) {
-      const workers = state.session.workers;
-      const newTabs = workersToTabs(workers);
-      setTabs(newTabs);
-
-      // Determine initial active tab:
-      // 1. If urlWorkerId is valid (exists in workers), use it
-      // 2. Otherwise, redirect to default (first agent or first tab)
-      const urlWorkerExists = urlWorkerId && workers.some(w => w.id === urlWorkerId);
-
-      if (urlWorkerExists) {
-        setActiveTabId(urlWorkerId);
-      } else {
-        // Calculate default tab
-        const defaultTabId = findFirstAgentWorker(workers)?.id ?? newTabs[0]?.id ?? null;
-        setActiveTabId(defaultTabId);
-
-        // Redirect to the default worker URL
-        if (defaultTabId) {
-          navigateToWorker(defaultTabId, true);
-        }
-      }
-    }
-  }, [state, tabs.length, sessionId, urlWorkerId, navigateToWorker]);
-
-  // Handle URL workerId changes (user navigates directly to URL or uses back/forward)
-  useEffect(() => {
-    // Only handle when tabs are already initialized
-    if (tabs.length === 0 || state.type !== 'active') return;
-
-    const defaultTabId = getDefaultTabId(tabs);
-
-    if (urlWorkerId) {
-      // Check if the URL workerId is valid
-      if (isWorkerIdReady(urlWorkerId, tabs, pendingWorkerIdRef.current)) {
-        // Valid workerId - sync activeTabId
-        if (activeTabId !== urlWorkerId) {
-          setActiveTabId(urlWorkerId);
-        }
-        if (pendingWorkerIdRef.current === urlWorkerId) {
-          pendingWorkerIdRef.current = null;
-        }
-      } else {
-        // Invalid workerId - redirect to session base
-        navigateToSession();
-      }
-    } else {
-      // No workerId in URL - redirect to default worker
-      if (defaultTabId) {
-        navigateToWorker(defaultTabId, true);
-      }
-    }
-  }, [urlWorkerId, tabs, state, activeTabId, navigateToSession, navigateToWorker]);
-
-  // Add a new terminal (shell) tab
-  const addTerminalTab = useCallback(async () => {
-    if (state.type !== 'active') return;
-
-    try {
-      const { worker } = await createWorker(sessionId, {
-        type: 'terminal',
-        name: `Shell ${tabs.filter(t => t.workerType === 'terminal').length + 1}`,
-      });
-
-      const newTab: Tab = {
-        id: worker.id,
-        workerType: 'terminal',
-        name: worker.name,
-      };
-      pendingWorkerIdRef.current = worker.id;
-      setTabs(prev => [...prev, newTab]);
-      setActiveTabId(worker.id);
-      navigateToWorker(worker.id);
-    } catch (error) {
-      console.error('Failed to create terminal worker:', error);
-      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
-    }
-  }, [state, sessionId, tabs, navigateToWorker, showError]);
-
-  // Close a tab (delete worker)
-  const closeTab = useCallback(async (tabId: string) => {
-    const tab = tabs.find(t => t.id === tabId);
-    if (!tab) return;
-
-    // Don't allow closing agent or git-diff workers (fixed tabs)
-    // Only terminal workers can be closed
-    if (tab.workerType === 'agent' || tab.workerType === 'git-diff') return;
-
-    try {
-      await deleteWorker(sessionId, tabId);
-
-      // Calculate new tabs and new active tab
-      const newTabs = tabs.filter(t => t.id !== tabId);
-      let newActiveTabId = activeTabId;
-
-      // If closing the active tab, switch to first agent or first remaining tab
-      if (activeTabId === tabId) {
-        const firstAgent = newTabs.find(t => t.workerType === 'agent');
-        newActiveTabId = firstAgent?.id ?? newTabs[0]?.id ?? null;
-      }
-
-      setTabs(newTabs);
-      if (activeTabId === tabId && newActiveTabId) {
-        setActiveTabId(newActiveTabId);
-        navigateToWorker(newActiveTabId);
-      }
-    } catch (error) {
-      console.error('Failed to delete worker:', error);
-    }
-  }, [sessionId, tabs, activeTabId, navigateToWorker]);
+  }, [state.type, sessionTitle, branchName]);
 
   // Load session data
   useEffect(() => {
@@ -381,7 +223,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     const session = state.session;
 
     // Find the first agent worker to restart
-    const agentWorker = findFirstAgentWorker(session.workers);
+    const agentWorker = session.workers.find(w => w.type === 'agent');
     if (!agentWorker) {
       console.error('No agent worker found to restart');
       return;
@@ -394,7 +236,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       const updatedSession = await getSession(sessionId);
       if (updatedSession && updatedSession.status === 'active') {
         // Reset tabs to pick up new worker state
-        setTabs([]);
+        updateTabsFromSession([]);
         setState({ type: 'active', session: updatedSession });
       } else {
         setState({ type: 'disconnected', session });
@@ -552,19 +394,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
-  const handleTabClick = (tabId: string) => {
-    // Use startTransition to mark this update as non-urgent
-    // This keeps the UI responsive during the state update
-    // Status resets are inside startTransition to render atomically with tab switch
-    startTransition(() => {
-      const knownState = workerActivityStates[tabId];
-      setActivityState(knownState ?? 'unknown');
-      setExitInfo(undefined);
-      setActiveTabId(tabId);
-      navigateToWorker(tabId);
-    });
-  };
-
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
@@ -662,8 +491,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               isMainWorktree={session.isMainWorktree}
               session={session}
               workerActivityStates={workerActivityStates}
-              onBranchChange={setBranchName}
-              onTitleChange={setSessionTitle}
               onSessionRestart={() => {
                 // Reload page to reconnect WebSocket to restarted session
                 window.location.reload();
