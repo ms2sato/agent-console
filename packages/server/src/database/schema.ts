@@ -12,6 +12,7 @@ export interface Database {
   jobs: JobsTable;
   repository_slack_integrations: RepositorySlackIntegrationsTable;
   worktrees: WorktreesTable;
+  inbound_event_notifications: InboundEventNotificationsTable;
 }
 
 /**
@@ -237,3 +238,35 @@ export type WorktreeRow = Selectable<WorktreesTable>;
 export type NewWorktree = Insertable<WorktreesTable>;
 /** Worktree data for UPDATE queries */
 export type WorktreeUpdate = Updateable<WorktreesTable>;
+
+/**
+ * Inbound Event Notifications table schema.
+ * Tracks delivery of inbound events to session/worker targets for idempotency.
+ */
+export interface InboundEventNotificationsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Job ID that triggered this notification */
+  job_id: string;
+  /** Target session ID */
+  session_id: string;
+  /** Target worker ID */
+  worker_id: string;
+  /** Handler that processed this notification */
+  handler_id: string;
+  /** Event type (e.g., 'ci:completed') */
+  event_type: string;
+  /** Human-readable event summary */
+  event_summary: string;
+  /** Notification status ('pending' or 'delivered') */
+  status: string;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+  /** Timestamp when notification was delivered (null if pending) */
+  notified_at: string | null;
+}
+
+/** Inbound event notification row as returned from SELECT queries */
+export type InboundEventNotification = Selectable<InboundEventNotificationsTable>;
+/** Inbound event notification data for INSERT queries */
+export type NewInboundEventNotification = Insertable<InboundEventNotificationsTable>;

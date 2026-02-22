@@ -23,6 +23,7 @@ const JOB_TYPE_LABELS: Record<JobType, string> = {
   [JOB_TYPES.CLEANUP_SESSION_OUTPUTS]: 'Session Outputs Cleanup',
   [JOB_TYPES.CLEANUP_WORKER_OUTPUT]: 'Worker Output Cleanup',
   [JOB_TYPES.CLEANUP_REPOSITORY]: 'Repository Cleanup',
+  [JOB_TYPES.INBOUND_EVENT_PROCESS]: 'Webhook Event',
 };
 
 function JobsPage() {
@@ -197,6 +198,9 @@ function JobsPage() {
             </option>
             <option value={JOB_TYPES.CLEANUP_REPOSITORY}>
               {JOB_TYPE_LABELS[JOB_TYPES.CLEANUP_REPOSITORY]}
+            </option>
+            <option value={JOB_TYPES.INBOUND_EVENT_PROCESS}>
+              {JOB_TYPE_LABELS[JOB_TYPES.INBOUND_EVENT_PROCESS]}
             </option>
           </select>
         </div>

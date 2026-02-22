@@ -31,4 +31,5 @@ export {
   type CleanupSessionOutputsPayload,
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
+  type InboundEventJobPayload,
 } from './job-types.js';

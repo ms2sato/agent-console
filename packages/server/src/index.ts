@@ -2,8 +2,9 @@ import { serveStatic, upgradeWebSocket, websocket } from 'hono/bun';
 import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
+import { webhooks } from './routes/webhooks.js';
 import { mcpApp } from './mcp/mcp-server.js';
-import { setupWebSocketRoutes } from './websocket/routes.js';
+import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
@@ -76,7 +77,7 @@ const isProduction = serverConfig.NODE_ENV === 'production';
 // Initialize all services via AppContext BEFORE creating the Hono app
 // This ensures services are available when routes are registered
 try {
-  appContext = await createAppContext();
+  appContext = await createAppContext({ broadcastToApp });
   logger.info('Application context initialized');
 } catch (error) {
   logger.fatal({ err: error }, 'Failed to initialize application context');
@@ -99,8 +100,6 @@ setSystemCapabilities(appContext.systemCapabilities);
 logger.info('Singletons populated from AppContext');
 
 // Create Hono app
-// Note: AppBindings type is available for routes that want to use c.get('appContext'),
-// but for Phase 1 we keep using the singleton shims for backward compatibility.
 const app = new Hono();
 
 // Global error handler
@@ -124,9 +123,13 @@ app.use('*', async (c, next) => {
   return httpLogger(c as any, next);
 });
 
-// Note: In Phase 2, we'll add middleware to inject AppContext into Hono request context:
-// app.use('*', async (c, next) => { c.set('appContext', appContext); await next(); });
-// For Phase 1, routes continue using singleton shims (getSessionManager(), etc.)
+// Inject AppContext into Hono request context for routes that need it (e.g., webhooks).
+// Type assertion is needed because the root app uses BlankEnv, while sub-routes
+// that consume appContext declare AppBindings on their own Hono instances.
+app.use('*', async (c, next) => {
+  (c as any).set('appContext', appContext!);
+  await next();
+});
 
 // Health check
 app.get('/health', (c) => {
@@ -135,6 +138,9 @@ app.get('/health', (c) => {
 
 // Mount API routes
 app.route('/api', api);
+
+// Mount webhook routes for inbound integrations (e.g., GitHub webhooks)
+app.route('/webhooks', webhooks);
 
 // Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
 app.route('', mcpApp);

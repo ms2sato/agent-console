@@ -212,6 +212,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 10) {
     await migrateToV10(database);
   }
+
+  if (currentVersion < 11) {
+    await migrateToV11(database);
+  }
 }
 
 /**
@@ -572,6 +576,53 @@ async function migrateToV10(database: Kysely<Database>): Promise<void> {
 
   await sql`PRAGMA user_version = 10`.execute(database);
   logger.info('Migration to v10 completed');
+}
+
+/**
+ * Migration v11: Create inbound_event_notifications table.
+ * Tracks delivery of inbound events to session/worker targets for idempotency.
+ */
+async function migrateToV11(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v11: Creating inbound_event_notifications table');
+
+  await database.schema
+    .createTable('inbound_event_notifications')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('job_id', 'text', (col) => col.notNull())
+    .addColumn('session_id', 'text', (col) =>
+      col.notNull().references('sessions.id').onDelete('cascade')
+    )
+    .addColumn('worker_id', 'text', (col) => col.notNull())
+    .addColumn('handler_id', 'text', (col) => col.notNull())
+    .addColumn('event_type', 'text', (col) => col.notNull())
+    .addColumn('event_summary', 'text', (col) => col.notNull())
+    .addColumn('status', 'text', (col) => col.notNull().defaultTo('pending'))
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('notified_at', 'text')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_inbound_notifications_job')
+    .on('inbound_event_notifications')
+    .column('job_id')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_inbound_notifications_session_worker')
+    .on('inbound_event_notifications')
+    .columns(['session_id', 'worker_id'])
+    .execute();
+
+  // Unique constraint for idempotency
+  await database.schema
+    .createIndex('idx_inbound_notifications_unique')
+    .on('inbound_event_notifications')
+    .columns(['job_id', 'session_id', 'worker_id', 'handler_id'])
+    .unique()
+    .execute();
+
+  await sql`PRAGMA user_version = 11`.execute(database);
+  logger.info('Migration to v11 completed');
 }
 
 /**

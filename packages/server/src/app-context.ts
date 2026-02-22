@@ -18,6 +18,8 @@ import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
+import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
+import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
 import { JobQueue as JobQueueClass } from './jobs/job-queue.js';
 import { registerJobHandlers } from './jobs/handlers.js';
@@ -60,7 +62,8 @@ export interface AppContext {
   /** System capabilities (VS Code availability, etc.) */
   systemCapabilities: SystemCapabilitiesService;
 
-  // Note: inboundIntegration is planned but not yet implemented
+  /** Inbound integration for processing external events (webhooks) */
+  inboundIntegration: InboundIntegrationInstance;
 }
 
 /**
@@ -71,6 +74,8 @@ export interface CreateAppContextOptions {
   dbPath?: string;
   /** Job queue concurrency (default: 4) */
   jobConcurrency?: number;
+  /** Callback to broadcast messages to app WebSocket clients */
+  broadcastToApp?: InboundIntegrationOptions['broadcastToApp'];
 }
 
 /**
@@ -138,7 +143,15 @@ export async function createAppContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
-  // 7. Detect system capabilities
+  // 7. Initialize inbound integration
+  const inboundIntegration = initializeInboundIntegration({
+    jobQueue,
+    sessionManager,
+    repositoryManager,
+    broadcastToApp: options?.broadcastToApp ?? (() => {}),
+  });
+
+  // 8. Detect system capabilities
   const systemCapabilities = new SystemCapabilitiesServiceClass();
   await systemCapabilities.detect();
 
@@ -152,6 +165,7 @@ export async function createAppContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    inboundIntegration,
   };
 }
 
@@ -228,6 +242,14 @@ export async function createTestContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
+  // Initialize inbound integration
+  const inboundIntegration = initializeInboundIntegration({
+    jobQueue,
+    sessionManager,
+    repositoryManager,
+    broadcastToApp: () => {},
+  });
+
   // Use provided or detect system capabilities
   let systemCapabilities: SystemCapabilitiesService;
   if (overrides?.systemCapabilities) {
@@ -245,6 +267,7 @@ export async function createTestContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    inboundIntegration,
   };
 }
 
