@@ -1,23 +1,83 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
-
-// Mock API calls
-const mockCreateWorker = mock(() =>
-  Promise.resolve({
-    worker: { id: 'new-terminal-1', type: 'terminal' as const, name: 'Shell 1', createdAt: new Date().toISOString(), activated: true },
-  })
-);
-const mockDeleteWorker = mock(() => Promise.resolve());
-
-mock.module('../../lib/api', () => ({
-  createWorker: mockCreateWorker,
-  deleteWorker: mockDeleteWorker,
-}));
-
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useTabManagement } from '../useTabManagement';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
 
 type UseTabManagementOptions = Parameters<typeof useTabManagement>[0];
+
+// --- Fetch-level mocking ---
+
+const originalFetch = globalThis.fetch;
+
+/** Tracks fetch calls for assertions */
+let fetchCalls: Array<{ url: string; method: string; body?: unknown }> = [];
+
+/** Default response for createWorker POST */
+const defaultCreateWorkerResponse = () => ({
+  worker: {
+    id: 'new-terminal-1',
+    type: 'terminal' as const,
+    name: 'Shell 1',
+    createdAt: new Date().toISOString(),
+    activated: true,
+  },
+});
+
+/** Configurable response for createWorker */
+let createWorkerResponse: () => unknown = defaultCreateWorkerResponse;
+
+/**
+ * Mock fetch that intercepts worker API calls.
+ * POST to /workers -> createWorker
+ * DELETE to /workers/:id -> deleteWorker
+ */
+const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input instanceof Request ? input.url : String(input);
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+
+  // Parse body if present
+  let body: unknown;
+  if (init?.body) {
+    try {
+      body = JSON.parse(String(init.body));
+    } catch {
+      body = init.body;
+    }
+  } else if (input instanceof Request) {
+    try {
+      body = await input.clone().json();
+    } catch {
+      // no body
+    }
+  }
+
+  fetchCalls.push({ url, method, body });
+
+  // POST /api/sessions/:sessionId/workers -> createWorker
+  if (method === 'POST' && /\/sessions\/[^/]+\/workers$/.test(url)) {
+    return new Response(JSON.stringify(createWorkerResponse()), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // DELETE /api/sessions/:sessionId/workers/:workerId -> deleteWorker
+  if (method === 'DELETE' && /\/sessions\/[^/]+\/workers\/[^/]+$/.test(url)) {
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Fallback: return 404
+  return new Response('Not Found', { status: 404 });
+});
+
+globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
 
 // --- Helpers ---
 
@@ -48,16 +108,16 @@ function createDefaultOptions(overrides: Partial<UseTabManagementOptions> = {}):
   };
 }
 
+/** Find fetch calls matching a URL pattern */
+function findFetchCalls(pattern: RegExp) {
+  return fetchCalls.filter(c => pattern.test(c.url));
+}
+
 describe('useTabManagement', () => {
   beforeEach(() => {
-    mockCreateWorker.mockClear();
-    mockDeleteWorker.mockClear();
-    // Reset createWorker to default return value
-    mockCreateWorker.mockImplementation(() =>
-      Promise.resolve({
-        worker: { id: 'new-terminal-1', type: 'terminal' as const, name: 'Shell 1', createdAt: new Date().toISOString(), activated: true },
-      })
-    );
+    mockFetch.mockClear();
+    fetchCalls = [];
+    createWorkerResponse = defaultCreateWorkerResponse;
   });
 
   describe('tab initialization', () => {
@@ -207,7 +267,11 @@ describe('useTabManagement', () => {
         await result.current.addTerminalTab();
       });
 
-      expect(mockCreateWorker).toHaveBeenCalledWith('session-1', {
+      // Verify the POST was made to the workers endpoint
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].method).toBe('POST');
+      expect(postCalls[0].body).toEqual({
         type: 'terminal',
         name: 'Shell 1',
       });
@@ -232,7 +296,10 @@ describe('useTabManagement', () => {
         await result.current.closeTab('terminal-1');
       });
 
-      expect(mockDeleteWorker).toHaveBeenCalledWith('session-1', 'terminal-1');
+      // Verify the DELETE was made
+      const deleteCalls = findFetchCalls(/\/sessions\/session-1\/workers\/terminal-1$/);
+      expect(deleteCalls).toHaveLength(1);
+      expect(deleteCalls[0].method).toBe('DELETE');
       expect(result.current.tabs).toHaveLength(1);
       expect(result.current.tabs[0].id).toBe('agent-1');
     });
@@ -273,7 +340,9 @@ describe('useTabManagement', () => {
         await result.current.closeTab('agent-1');
       });
 
-      expect(mockDeleteWorker).not.toHaveBeenCalled();
+      // No DELETE should have been made
+      const deleteCalls = findFetchCalls(/\/workers\//);
+      expect(deleteCalls).toHaveLength(0);
       expect(result.current.tabs).toHaveLength(1);
     });
 
@@ -290,7 +359,9 @@ describe('useTabManagement', () => {
         await result.current.closeTab('gitdiff-1');
       });
 
-      expect(mockDeleteWorker).not.toHaveBeenCalled();
+      // No DELETE should have been made
+      const deleteCalls = findFetchCalls(/\/workers\//);
+      expect(deleteCalls).toHaveLength(0);
       expect(result.current.tabs).toHaveLength(2);
     });
   });
