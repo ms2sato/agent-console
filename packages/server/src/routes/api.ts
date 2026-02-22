@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { homedir } from 'node:os';
 import { sessions } from './sessions.js';
+import { workers } from './workers.js';
 import { repositories } from './repositories.js';
+import { worktrees } from './worktrees.js';
 import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
@@ -23,8 +25,11 @@ const api = new Hono()
     });
   })
   // Mount domain-specific routers
+  // Multiple .route() calls with the same base path are merged by Hono
   .route('/sessions', sessions)
+  .route('/sessions', workers)
   .route('/repositories', repositories)
+  .route('/repositories', worktrees)
   .route('/agents', agents)
   .route('/jobs', jobs)
   .route('/settings', settings)

@@ -1682,7 +1682,7 @@ describe('API Routes Integration', () => {
         const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
 
         // Pre-populate the deletion guard to simulate an in-progress deletion
-        const { _getDeletionsInProgress } = await import('../routes/repositories.js');
+        const { _getDeletionsInProgress } = await import('../routes/worktrees.js');
         const deletionsInProgress = _getDeletionsInProgress();
         deletionsInProgress.add(worktreePath);
 
