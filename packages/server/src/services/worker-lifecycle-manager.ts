@@ -44,7 +44,6 @@ import {
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
 
-// Import types from session-manager using `import type` to avoid circular runtime dependencies
 import type { SessionLifecycleCallbacks } from './session-manager.js';
 
 const logger = createLogger('worker-lifecycle-manager');
@@ -195,23 +194,16 @@ export class WorkerLifecycleManager {
 
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
-      // SECURITY: Verify agentId is still valid
-      const agentManager = await getAgentManager();
-      const agent = agentManager.getAgent(worker.agentId);
-      if (!agent) {
-        logger.warn({ sessionId, workerId, agentId: worker.agentId }, 'Agent no longer valid, falling back to default');
-      }
-
+      const effectiveAgentId = await this.resolveEffectiveAgentId(worker.agentId, { sessionId, workerId });
       await this.deps.workerManager.activateAgentWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
-        agentId: agent ? worker.agentId : CLAUDE_CODE_AGENT_ID,
+        agentId: effectiveAgentId,
         continueConversation: true,
         repositoryId,
       });
     } else {
-      // terminal worker
       this.deps.workerManager.activateTerminalWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
@@ -284,11 +276,19 @@ export class WorkerLifecycleManager {
 
     // Handle branch rename if requested (must happen before restart)
     if (branch && session.type === 'worktree') {
-      const currentBranch = await gitGetCurrentBranch(session.locationPath);
-      if (currentBranch !== branch) {
-        await gitRenameBranch(currentBranch, branch, session.locationPath);
+      try {
+        const currentBranch = await gitGetCurrentBranch(session.locationPath);
+        if (currentBranch !== branch) {
+          await gitRenameBranch(currentBranch, branch, session.locationPath);
+        }
+        session.worktreeId = branch;
+      } catch (err) {
+        logger.error(
+          { sessionId, workerId, branch, locationPath: session.locationPath, err },
+          'Failed to rename branch during worker restart'
+        );
+        throw err;
       }
-      session.worktreeId = branch;
     }
 
     const isAgentChanged = workerAgentId !== existingWorker.agentId;
@@ -337,14 +337,21 @@ export class WorkerLifecycleManager {
     await this.deps.persistSession(currentSession);
 
     // Broadcast session update so all clients learn about agent/name/branch changes
-    const isBranchChanged = branch && session.type === 'worktree';
-    if (isAgentChanged || isBranchChanged) {
+    const hasBranchChange = branch !== undefined && session.type === 'worktree';
+    if (isAgentChanged || hasBranchChange) {
       this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(currentSession));
+    }
+
+    let restartReason = 'Agent worker restarted';
+    if (isAgentChanged) {
+      restartReason = 'Agent worker switched to different agent';
+    } else if (hasBranchChange) {
+      restartReason = 'Agent worker restarted with branch rename';
     }
 
     logger.info(
       { workerId, sessionId, continueConversation, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
-      isAgentChanged ? 'Agent worker switched to different agent' : (isBranchChanged ? 'Agent worker restarted with branch rename' : 'Agent worker restarted')
+      restartReason
     );
 
     return this.deps.workerManager.toPublicWorker(newWorker);
@@ -409,14 +416,7 @@ export class WorkerLifecycleManager {
       const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
       if (existingWorker.type === 'agent') {
-        // SECURITY: Verify agentId is still valid before activating
-        const agentManager = await getAgentManager();
-        const agent = agentManager.getAgent(existingWorker.agentId);
-        const effectiveAgentId = agent ? existingWorker.agentId : CLAUDE_CODE_AGENT_ID;
-        if (!agent) {
-          logger.warn({ sessionId, workerId, originalAgentId: existingWorker.agentId, fallbackAgentId: effectiveAgentId }, 'Agent no longer valid, falling back to default');
-        }
-
+        const effectiveAgentId = await this.resolveEffectiveAgentId(existingWorker.agentId, { sessionId, workerId });
         await this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
           sessionId,
           locationPath: session.locationPath,
@@ -543,12 +543,22 @@ export class WorkerLifecycleManager {
 
   // ========== Private Helpers ==========
 
+  /**
+   * Resolve effective agent ID, falling back to default if the original agent is no longer registered.
+   */
+  private async resolveEffectiveAgentId(agentId: string, context: { sessionId: string; workerId: string }): Promise<string> {
+    const agentManager = await getAgentManager();
+    const agent = agentManager.getAgent(agentId);
+    if (agent) return agentId;
+
+    logger.warn({ ...context, originalAgentId: agentId, fallbackAgentId: CLAUDE_CODE_AGENT_ID }, 'Agent no longer valid, falling back to default');
+    return CLAUDE_CODE_AGENT_ID;
+  }
+
   private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): Promise<string> {
     if (type === 'agent') {
-      // Get agent name from agentManager
       const agentManager = await getAgentManager();
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
-      // Fall back to generic "AI" if agent not found
       return agent?.name ?? 'AI';
     }
 
@@ -556,24 +566,20 @@ export class WorkerLifecycleManager {
       return 'Git Diff';
     }
 
-    // Count existing terminal workers
-    let count = 0;
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'terminal') {
-        count++;
-      }
-    }
-    return `Terminal ${count + 1}`;
+    const terminalCount = Array.from(session.workers.values())
+      .filter((w) => w.type === 'terminal').length;
+    return `Terminal ${terminalCount + 1}`;
   }
 
   /**
    * Clean up worker output file via job queue.
-   * @throws Error if jobQueue is not available
+   * If jobQueue is not available, logs a warning and skips cleanup gracefully.
    */
   private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
     const jobQueue = this.deps.getJobQueue();
     if (!jobQueue) {
-      throw new Error('JobQueue not available for worker output cleanup. Ensure initializeSessionManager() was called with jobQueue.');
+      logger.warn({ sessionId, workerId }, 'JobQueue not available, skipping async output cleanup');
+      return;
     }
     await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
   }

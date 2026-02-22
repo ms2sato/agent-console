@@ -24,20 +24,10 @@ import type {
 } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
-import { WorkerLifecycleManager } from './worker-lifecycle-manager.js';
-import type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
+import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
-
-/**
- * Callbacks for resolving dependencies without circular imports.
- * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
- */
-export interface SessionRepositoryCallbacks {
-  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
-  isInitialized: () => boolean;
-}
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
@@ -50,11 +40,18 @@ import { getNotificationManager } from './notifications/index.js';
 import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
 import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
-import { workerOutputFileManager } from '../lib/worker-output-file.js';
-import type { HistoryReadResult } from '../lib/worker-output-file.js';
-import type { SessionRepository } from '../repositories/index.js';
-import { JsonSessionRepository } from '../repositories/index.js';
+import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+
+/**
+ * Callbacks for resolving dependencies without circular imports.
+ * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
+ */
+export interface SessionRepositoryCallbacks {
+  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
+  isInitialized: () => boolean;
+}
 
 const logger = createLogger('session-manager');
 
@@ -70,7 +67,6 @@ export interface SessionLifecycleCallbacks {
   onSessionResumed?: (session: Session) => void;
 }
 
-// Re-export RestoreWorkerResult from worker-lifecycle-manager (moved during refactoring)
 export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
 /**

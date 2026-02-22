@@ -10,12 +10,13 @@ import type { CreateWorkerParams, Session } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import { resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { resetGitMocks, mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetAgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { WorkerManager } from '../worker-manager.js';
 import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-lifecycle-manager.js';
-import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker, InternalWorker } from '../worker-types.js';
+import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
+import type { InternalSession } from '../internal-types.js';
 import type { SessionLifecycleCallbacks } from '../session-manager.js';
 import { JobQueue } from '../../jobs/index.js';
 
@@ -27,33 +28,18 @@ const ptyFactory = createMockPtyFactory(10000);
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
 
-/**
- * Internal session type matching WorkerLifecycleManager's expectations.
- */
-interface TestSession {
-  id: string;
-  type: 'worktree' | 'quick';
-  locationPath: string;
-  status: 'active' | 'inactive';
-  createdAt: string;
-  workers: Map<string, InternalWorker>;
-  repositoryId?: string;
-  worktreeId?: string;
-  initialPrompt?: string;
-  title?: string;
-}
-
 describe('WorkerLifecycleManager', () => {
   let workerManager: WorkerManager;
   let lifecycleManager: WorkerLifecycleManager;
-  let sessions: Map<string, TestSession>;
+  let sessions: Map<string, InternalSession>;
   let mockPersistSession: ReturnType<typeof mock>;
   let mockPathExists: ReturnType<typeof mock>;
   let mockCallbacks: SessionLifecycleCallbacks;
   let mockOnSessionUpdated: ReturnType<typeof mock>;
   let mockOnWorkerActivated: ReturnType<typeof mock>;
+  let originalAgentConsoleHome: string | undefined;
 
-  function createTestSession(overrides: Partial<TestSession> = {}): TestSession {
+  function createTestSession(overrides: Partial<InternalSession> = {}): InternalSession {
     return {
       id: crypto.randomUUID(),
       type: 'worktree',
@@ -64,31 +50,31 @@ describe('WorkerLifecycleManager', () => {
       repositoryId: 'repo-1',
       worktreeId: 'main',
       ...overrides,
-    };
+    } as InternalSession;
   }
 
-  function createQuickSession(overrides: Partial<TestSession> = {}): TestSession {
+  function createQuickSession(overrides: Partial<InternalSession> = {}): InternalSession {
     return {
-      id: crypto.randomUUID(),
       type: 'quick',
+      id: crypto.randomUUID(),
       locationPath: '/test/project',
       status: 'active',
       createdAt: new Date().toISOString(),
       workers: new Map(),
       ...overrides,
-    };
+    } as InternalSession;
   }
 
   function createDeps(overrides: Partial<WorkerLifecycleDeps> = {}): WorkerLifecycleDeps {
     return {
       workerManager,
       pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
-      getSession: (id: string) => sessions.get(id) as any,
-      persistSession: mockPersistSession as unknown as (session: any) => Promise<void>,
+      getSession: (id: string) => sessions.get(id),
+      persistSession: mockPersistSession as unknown as (session: InternalSession) => Promise<void>,
       getRepositoryEnvVars: () => ({}),
-      toPublicSession: (session: any) => ({
+      toPublicSession: (session: InternalSession) => ({
         ...session,
-        workers: Array.from(session.workers.values()).map((w: any) =>
+        workers: Array.from(session.workers.values()).map((w) =>
           workerManager.toPublicWorker(w)
         ),
       }) as Session,
@@ -100,6 +86,8 @@ describe('WorkerLifecycleManager', () => {
 
   beforeEach(async () => {
     await closeDatabase();
+
+    originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
 
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
@@ -139,6 +127,13 @@ describe('WorkerLifecycleManager', () => {
     resetAgentManager();
     await closeDatabase();
     cleanupMemfs();
+
+    // Restore original environment variable to prevent test pollution
+    if (originalAgentConsoleHome !== undefined) {
+      process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+    } else {
+      delete process.env.AGENT_CONSOLE_HOME;
+    }
   });
 
   // ========== Worker Creation ==========
@@ -483,7 +478,7 @@ describe('WorkerLifecycleManager', () => {
           if (getSessionCallCount >= 2) {
             return undefined;
           }
-          return sessions.get(id) as any;
+          return sessions.get(id);
         },
       }));
 
@@ -492,6 +487,62 @@ describe('WorkerLifecycleManager', () => {
       );
 
       expect(result).toBeNull();
+    });
+
+    it('should throw and not update worktreeId when branch rename fails', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      // Configure git mocks: getCurrentBranch returns the current branch,
+      // renameBranch throws an error
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+
+      await expect(
+        lifecycleManager.restartAgentWorker(
+          session.id, worker!.id, true, undefined, 'new-branch'
+        )
+      ).rejects.toThrow('git branch rename failed');
+
+      // worktreeId should NOT have been updated since rename failed
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
+      }
+    });
+
+    it('should not update worktreeId when getCurrentBranch fails', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      // getCurrentBranch throws
+      mockGit.getCurrentBranch.mockImplementation(() => {
+        throw new Error('could not determine current branch');
+      });
+
+      await expect(
+        lifecycleManager.restartAgentWorker(
+          session.id, worker!.id, true, undefined, 'new-branch'
+        )
+      ).rejects.toThrow('could not determine current branch');
+
+      // worktreeId should remain unchanged
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
+      }
     });
   });
 
@@ -1155,7 +1206,7 @@ describe('WorkerLifecycleManager', () => {
   // ========== Edge Cases ==========
 
   describe('edge cases', () => {
-    it('cleanupWorkerOutput should throw when no jobQueue', async () => {
+    it('deleteWorker should succeed gracefully when jobQueue is not available', async () => {
       const managerNoQueue = new WorkerLifecycleManager(createDeps({
         getJobQueue: () => null,
       }));
@@ -1168,10 +1219,10 @@ describe('WorkerLifecycleManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       });
 
-      // deleteWorker calls cleanupWorkerOutput internally which should throw
-      await expect(
-        managerNoQueue.deleteWorker(session.id, worker!.id)
-      ).rejects.toThrow('JobQueue not available');
+      // deleteWorker should succeed even without jobQueue (cleanup is skipped with a warning)
+      const result = await managerNoQueue.deleteWorker(session.id, worker!.id);
+      expect(result).toBe(true);
+      expect(session.workers.size).toBe(0);
     });
 
     it('should handle quick sessions (no repositoryId)', async () => {
