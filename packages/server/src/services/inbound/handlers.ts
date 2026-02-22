@@ -77,8 +77,13 @@ class AgentWorkerHandler implements InboundEventHandler {
   }
 }
 
-function formatFieldValue(value: string): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
+/** @internal Exported for testing */
+export function formatFieldValue(value: string): string {
+  // Strip non-whitespace control characters (ESC, null, bell, backspace, etc.)
+  // Whitespace controls (tab \x09, newline \x0a, carriage return \x0d) are left
+  // for the \s+ normalization below to collapse into spaces.
+  const sanitized = value.replace(/[\x00-\x08\x0e-\x1f\x7f]/g, '');
+  const normalized = sanitized.replace(/\s+/g, ' ').trim();
   if (normalized.includes('"')) {
     return `"${normalized.replace(/"/g, '\\"')}"`;
   }

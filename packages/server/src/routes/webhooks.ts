@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import { JOB_TYPES } from '../jobs/index.js';
@@ -20,7 +22,15 @@ const webhooks = new Hono<AppBindings>();
  * Note: Consider adding rate limiting at the infrastructure level (e.g., nginx, cloudflare)
  * to protect against webhook replay attacks.
  */
-webhooks.post('/github', async (c) => {
+webhooks.post('/github',
+  bodyLimit({
+    maxSize: 1 * 1024 * 1024, // 1MB
+    onError: (c) => {
+      logger.warn('Webhook payload too large — dropping webhook');
+      return c.json({ ok: true });
+    },
+  }) as MiddlewareHandler<AppBindings>,
+  async (c) => {
   if (!serverConfig.GITHUB_WEBHOOK_SECRET) {
     logger.warn('GitHub webhook secret not configured — dropping webhook');
     return c.json({ ok: true });
