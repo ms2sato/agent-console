@@ -633,7 +633,7 @@ GITHUB_WEBHOOK_SECRET=your-secret-here
    - Add `InboundEventType`, `SystemEvent`, and `EventTarget` types under `packages/shared/src/types` (new `system-events.ts` or augment existing shared types).
    - Extend `AppServerMessage` with `inbound-event` payload and document it in `docs/design/websocket-protocol.md`.
 2. **Database + repository layer**
-   - Add `inbound_event_notifications` table to `packages/server/src/database/schema.ts` and migration v7 in `packages/server/src/database/connection.ts`.
+   - Add `inbound_event_notifications` table to `packages/server/src/database/schema.ts` and migration v11 in `packages/server/src/database/connection.ts`.
    - Implement a repository for `inbound_event_notifications` with `create()` and `listBySession/Worker()` queries.
 3. **Inbound job + handler**
    - Add `inbound-event:process` to `packages/server/src/jobs/job-types.ts` and register a handler in `packages/server/src/jobs/handlers.ts` that:

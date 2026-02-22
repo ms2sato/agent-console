@@ -9,11 +9,7 @@ const mockFindInboundEventNotification = mock<() => Promise<InboundEventNotifica
   async () => null
 );
 const mockCreatePendingNotification = mock(
-  async (notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>) => ({
-    ...notification,
-    status: 'pending',
-    notified_at: null,
-  })
+  async (_notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>): Promise<void> => {}
 );
 const mockMarkNotificationDelivered = mock(async () => {});
 const notificationRepository = {

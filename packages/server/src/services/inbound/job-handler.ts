@@ -27,17 +27,17 @@ export class PermanentHandlerError extends Error {
 }
 
 /**
- * Error indicating a transient failure that should be retried.
+ * Error indicating a handler execution failure.
  *
- * Use this for errors like:
- * - Network timeouts
- * - Temporary database unavailability
- * - Rate limiting
+ * This error is thrown when a handler fails during execution (e.g., network timeout,
+ * WebSocket disconnection). Under the current at-most-once delivery semantics,
+ * handler failures are intentionally NOT retried. The pending notification record
+ * prevents duplicate execution if the job itself is retried.
  */
-export class TransientHandlerError extends Error {
+export class HandlerExecutionError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'TransientHandlerError';
+    this.name = 'HandlerExecutionError';
   }
 }
 
@@ -75,7 +75,7 @@ export interface InboundEventNotificationRepository {
   ) => Promise<InboundEventNotification | null>;
   createPendingNotification: (
     notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>
-  ) => Promise<InboundEventNotification>;
+  ) => Promise<void>;
   markNotificationDelivered: (
     jobId: string,
     sessionId: string,
@@ -202,7 +202,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
             },
             'Inbound event handler failed'
           );
-          throw new TransientHandlerError(
+          throw new HandlerExecutionError(
             `Handler ${handler.handlerId} failed for session ${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`
           );
         }

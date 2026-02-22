@@ -283,8 +283,8 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
 
 | GitHub Event | Condition | Inbound Event | Actions |
 |---|---|---|---|
-| Workflow run | Completed successfully | `ci:completed` | Notify agent, refresh diff view |
-| Workflow run | Completed with failure | `ci:failed` | Notify agent, show UI alert |
+| Workflow runs | Completed successfully | `ci:completed` | Notify agent, refresh diff view |
+| Workflow runs | Completed with failure | `ci:failed` | Notify agent, show UI alert |
 | Issue | Closed | `issue:closed` | Show UI alert |
 | Pull request | Merged | `pr:merged` | Refresh diff view, show UI alert |
 
@@ -298,7 +298,7 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_WEBHOOK_SECRET` | Yes | (empty) | Shared secret for HMAC-SHA256 signature verification. Webhooks are silently dropped if not set. |
+| `GITHUB_WEBHOOK_SECRET` | Yes | (empty) | Shared secret for HMAC-SHA256 signature verification. If unset, incoming webhooks are accepted but not processed (the endpoint still returns 200 OK). Check server logs or `GET /api/system/health` to verify configuration. |
 
 ## Project Structure
 

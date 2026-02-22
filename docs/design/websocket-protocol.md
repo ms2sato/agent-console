@@ -24,7 +24,7 @@ Singleton WebSocket connection for app-wide state synchronization. Persists acro
 | `session-paused` | `{ sessionId: string }` | Session paused (removed from memory, preserved in database) |
 | `session-resumed` | `{ session: Session }` | Session resumed (restored from database to memory) |
 | `worker-activity` | `{ sessionId, workerId, activityState }` | Worker activity state changed |
-| `inbound-event` | `{ sessionId, event }` | Inbound integration event notification |
+| `inbound-event` | `{ sessionId: string, event: InboundEventSummary }` | Inbound integration event notification |
 
 ### Client → Server Messages
 

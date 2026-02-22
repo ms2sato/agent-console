@@ -113,7 +113,7 @@ export class GitHubServiceParser implements ServiceParser {
     return {
       type: eventType,
       source: 'github',
-      timestamp: new Date().toISOString(),
+      timestamp: getString(workflowRun, 'updated_at') ?? new Date().toISOString(),
       metadata: {
         repositoryName,
         branch: branch ?? undefined,
@@ -139,7 +139,7 @@ export class GitHubServiceParser implements ServiceParser {
     return {
       type: 'issue:closed',
       source: 'github',
-      timestamp: new Date().toISOString(),
+      timestamp: getString(issue, 'updated_at') ?? new Date().toISOString(),
       metadata: {
         repositoryName,
         url: url ?? undefined,
@@ -172,7 +172,7 @@ export class GitHubServiceParser implements ServiceParser {
     return {
       type: 'pr:merged',
       source: 'github',
-      timestamp: new Date().toISOString(),
+      timestamp: getString(pullRequest, 'merged_at') ?? new Date().toISOString(),
       metadata: {
         repositoryName,
         branch: branch ?? undefined,

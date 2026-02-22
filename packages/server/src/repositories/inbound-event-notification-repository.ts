@@ -55,18 +55,16 @@ export async function findInboundEventNotification(
 export async function createPendingNotification(
   notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>,
   dbOverride?: Kysely<Database>
-): Promise<InboundEventNotification> {
+): Promise<void> {
   const db = dbOverride ?? getDatabase();
-
-  const pendingNotification: InboundEventNotification = {
-    ...notification,
-    status: NOTIFICATION_STATUS.PENDING,
-    notified_at: null,
-  };
 
   await db
     .insertInto('inbound_event_notifications')
-    .values(pendingNotification)
+    .values({
+      ...notification,
+      status: NOTIFICATION_STATUS.PENDING,
+      notified_at: null,
+    })
     .onConflict((oc) =>
       oc.columns(['job_id', 'session_id', 'worker_id', 'handler_id']).doNothing()
     )
@@ -76,8 +74,6 @@ export async function createPendingNotification(
     { id: notification.id, sessionId: notification.session_id, handlerId: notification.handler_id },
     'Pending inbound event notification created'
   );
-
-  return pendingNotification;
 }
 
 /**
