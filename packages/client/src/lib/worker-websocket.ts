@@ -556,6 +556,11 @@ export function sendGitDiffMessage(sessionId: string, workerId: string, msg: Git
     }
     return true;
   }
+
+  // Set error state when send fails for operations that would set loading
+  if (msg.type === 'refresh' || msg.type === 'set-base-commit' || msg.type === 'set-target-commit') {
+    updateState(key, { diffError: 'Connection lost. Please try again.', diffLoading: false });
+  }
   return false;
 }
 
