@@ -7,10 +7,11 @@ import '@xterm/xterm/css/xterm.css';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
+import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -70,6 +71,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
   const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [restartNotification, setRestartNotification] = useState<string | null>(null);
+  const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
   // Mutation for deleting session on error recovery
@@ -220,6 +223,48 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       requestHistory(sessionId, workerId, 0);
     }
   }, [sessionId, workerId]);
+
+  // Handle worker-restarted event from app WebSocket
+  const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string) => {
+    if (restartedSessionId !== sessionId || restartedWorkerId !== workerId) {
+      return;
+    }
+
+    console.log(`[Terminal] Worker restarted: ${sessionId}/${workerId}`);
+
+    // Show restart notification with auto-dismiss
+    if (restartNotificationTimeoutRef.current) {
+      clearTimeout(restartNotificationTimeoutRef.current);
+    }
+    setRestartNotification('Terminal restarted');
+    restartNotificationTimeoutRef.current = setTimeout(() => {
+      setRestartNotification(null);
+      restartNotificationTimeoutRef.current = null;
+    }, 5000);
+
+    // Clear IndexedDB terminal cache (fire-and-forget)
+    clearTerminalState(sessionId, workerId).catch((e) =>
+      console.warn('[Terminal] Failed to clear terminal cache on restart:', e)
+    );
+
+    // Reset terminal state (similar to handleOutputTruncated)
+    offsetRef.current = 0;
+    stateRef.current.historyRequested = false;
+    stateRef.current.requestedWithOffset = 0;
+    terminalRef.current?.reset();
+
+    // Reset exit state so the terminal reconnects
+    setExitInfo(null);
+    setStatus('connecting');
+
+    // Disconnect and trigger reconnection
+    disconnect(sessionId, workerId);
+    setRetryCount((c) => c + 1);
+  }, [sessionId, workerId]);
+
+  useAppWsEvent({
+    onWorkerRestarted: handleWorkerRestarted,
+  });
 
   const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(
     sessionId,
@@ -553,11 +598,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     }
   }, [connected, cacheProcessed, sessionId, workerId]);
 
-  // Clean up truncation warning timeout on unmount
+  // Clean up notification timeouts on unmount
   useEffect(() => {
     return () => {
       if (truncationTimeoutRef.current) {
         clearTimeout(truncationTimeoutRef.current);
+      }
+      if (restartNotificationTimeoutRef.current) {
+        clearTimeout(restartNotificationTimeoutRef.current);
       }
     };
   }, []);
@@ -622,6 +670,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
               onClick={() => setTruncationWarning(null)}
               className="ml-4 text-white/80 hover:text-white font-bold"
               aria-label="Dismiss warning"
+            >
+              x
+            </button>
+          </div>
+        )}
+        {/* Restart notification banner */}
+        {restartNotification && (
+          <div className="absolute top-0 left-0 right-0 bg-blue-600/90 text-white px-4 py-2 text-sm flex items-center justify-between z-10">
+            <span>{restartNotification}</span>
+            <button
+              onClick={() => setRestartNotification(null)}
+              className="ml-4 text-white/80 hover:text-white font-bold"
+              aria-label="Dismiss notification"
             >
               x
             </button>

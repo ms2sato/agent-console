@@ -63,6 +63,7 @@ export interface SessionLifecycleCallbacks {
   onSessionUpdated?: (session: Session) => void;
   onSessionDeleted?: (sessionId: string) => void;
   onWorkerActivated?: (sessionId: string, workerId: string) => void;
+  onWorkerRestarted?: (sessionId: string, workerId: string) => void;
   onSessionPaused?: (sessionId: string) => void;
   onSessionResumed?: (session: Session) => void;
 }

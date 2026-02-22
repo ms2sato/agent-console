@@ -36,6 +36,8 @@ interface UseAppWsEventOptions {
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   /** Called when a worker is activated (PTY started) */
   onWorkerActivated?: (sessionId: string, workerId: string) => void;
+  /** Called when a worker is restarted */
+  onWorkerRestarted?: (sessionId: string, workerId: string) => void;
   /** Called when initial agent sync is received */
   onAgentsSync?: (agents: AgentDefinition[]) => void;
   /** Called when a new agent is created */
@@ -128,6 +130,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'worker-activated':
           console.log(`[WebSocket] worker-activated: ${msg.sessionId}/${msg.workerId}`);
           optionsRef.current.onWorkerActivated?.(msg.sessionId, msg.workerId);
+          break;
+        case 'worker-restarted':
+          console.log(`[WebSocket] worker-restarted: ${msg.sessionId}/${msg.workerId}`);
+          optionsRef.current.onWorkerRestarted?.(msg.sessionId, msg.workerId);
           break;
         case 'agents-sync':
           console.log(`[WebSocket] agents-sync received: ${msg.agents.length} agents`);
