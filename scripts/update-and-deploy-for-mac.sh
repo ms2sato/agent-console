@@ -21,6 +21,11 @@ sed -e "s|{{HOME}}|$HOME|g" \
     "$SCRIPT_DIR/com.agent-console.plist.template" \
     > ~/Library/LaunchAgents/com.agent-console.plist
 
+echo "==> Generating start script..."
+sed -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
+    "$SCRIPT_DIR/start.sh.template" \
+    > /tmp/agent-console-start.sh
+
 echo "==> Cleaning up old logs..."
 rm -rf ~/Library/Logs/agent-console
 mkdir -p ~/Library/Logs/agent-console
@@ -31,6 +36,9 @@ NODE_ENV=production bun run build
 echo "==> Deploying files..."
 mkdir -p ~/.agent-console/server
 rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/
+cp /tmp/agent-console-start.sh ~/.agent-console/server/start.sh
+chmod +x ~/.agent-console/server/start.sh
+rm /tmp/agent-console-start.sh
 cd ~/.agent-console/server
 bun install --production
 
