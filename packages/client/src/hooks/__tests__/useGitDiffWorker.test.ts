@@ -218,6 +218,75 @@ describe('useGitDiffWorker', () => {
     expect(ws?.send).not.toHaveBeenCalled();
   });
 
+  it('should set error when refresh fails due to disconnected WebSocket', async () => {
+    const { result } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    // Simulate disconnect
+    act(() => {
+      ws?.simulateClose();
+    });
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    expect(result.current.error).toBe('Connection lost. Please try again.');
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('should set error when setBaseCommit fails due to disconnected WebSocket', async () => {
+    const { result } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    // Simulate disconnect
+    act(() => {
+      ws?.simulateClose();
+    });
+
+    act(() => {
+      result.current.setBaseCommit('main');
+    });
+
+    expect(result.current.error).toBe('Connection lost. Please try again.');
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('should set error when setTargetCommit fails due to disconnected WebSocket', async () => {
+    const { result } = renderHook(() =>
+      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    // Simulate disconnect
+    act(() => {
+      ws?.simulateClose();
+    });
+
+    act(() => {
+      result.current.setTargetCommit('HEAD');
+    });
+
+    expect(result.current.error).toBe('Connection lost. Please try again.');
+    expect(result.current.loading).toBe(false);
+  });
+
   it('should handle connection close', async () => {
     const onConnectionChange = mock(() => {});
     const { result } = renderHook(() =>
