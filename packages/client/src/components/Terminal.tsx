@@ -199,6 +199,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onActivityChange?.(state);
   }, [onActivityChange]);
 
+  /**
+   * Reset terminal state to prepare for fresh history.
+   * Shared by handleOutputTruncated and handleWorkerRestarted.
+   */
+  const resetTerminalForFreshHistory = useCallback(() => {
+    offsetRef.current = 0;
+    stateRef.current.historyRequested = false;
+    stateRef.current.requestedWithOffset = 0;
+    terminalRef.current?.reset();
+  }, []);
+
   const handleOutputTruncated = useCallback((message: string) => {
     if (truncationTimeoutRef.current) {
       clearTimeout(truncationTimeoutRef.current);
@@ -209,12 +220,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       truncationTimeoutRef.current = null;
     }, 10000);
 
-    // Reset state for fresh history request
-    offsetRef.current = 0;
-    stateRef.current.historyRequested = false;
-    stateRef.current.requestedWithOffset = 0;
-
-    terminalRef.current?.reset();
+    resetTerminalForFreshHistory();
 
     // Request immediately if connected (no need to wait for cacheProcessed since truncation means we're already past that)
     if (connectedRef.current) {
@@ -222,7 +228,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       stateRef.current.requestedWithOffset = 0;
       requestHistory(sessionId, workerId, 0);
     }
-  }, [sessionId, workerId]);
+  }, [sessionId, workerId, resetTerminalForFreshHistory]);
 
   // Handle worker-restarted event from app WebSocket
   const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string) => {
@@ -247,11 +253,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       console.warn('[Terminal] Failed to clear terminal cache on restart:', e)
     );
 
-    // Reset terminal state (similar to handleOutputTruncated)
-    offsetRef.current = 0;
-    stateRef.current.historyRequested = false;
-    stateRef.current.requestedWithOffset = 0;
-    terminalRef.current?.reset();
+    resetTerminalForFreshHistory();
 
     // Reset exit state so the terminal reconnects
     setExitInfo(null);
@@ -260,7 +262,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Disconnect and trigger reconnection
     disconnect(sessionId, workerId);
     setRetryCount((c) => c + 1);
-  }, [sessionId, workerId]);
+  }, [sessionId, workerId, resetTerminalForFreshHistory]);
 
   useAppWsEvent({
     onWorkerRestarted: handleWorkerRestarted,
