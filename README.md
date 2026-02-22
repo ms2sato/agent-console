@@ -111,6 +111,40 @@ NODE_ENV=production bun dist/index.js
 
 The server runs at http://localhost:3457
 
+### macOS Launch Agent
+
+A deployment script is provided to install Agent Console as a macOS Launch Agent (auto-start on login):
+
+```bash
+# Deploy with defaults (port 6340)
+./scripts/update-and-deploy-for-mac.sh
+
+# Deploy with custom port
+PORT=8080 APP_URL=http://localhost:8080 ./scripts/update-and-deploy-for-mac.sh
+```
+
+The script builds the project, copies files to `~/.agent-console/server/`, installs a launchd plist, and starts the service.
+
+#### Environment Configuration via `~/.agent-console/.env`
+
+The Launch Agent loads `~/.agent-console/.env` on every startup. This is the recommended way to configure the server in production — especially for secrets that should not be embedded in the plist file.
+
+```bash
+# Example: ~/.agent-console/.env
+GITHUB_WEBHOOK_SECRET=your-secret-here
+LOG_LEVEL=info
+```
+
+After editing `.env`, restart the service to apply changes (no redeployment required):
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.agent-console"
+```
+
+Available server environment variables are defined in [`packages/server/src/lib/server-config.ts`](packages/server/src/lib/server-config.ts).
+
+> **Note**: Variables set in `.env` override values from the launchd plist. `PORT`, `APP_URL`, `NODE_ENV`, and `PATH` are set in the plist at deploy time; all other variables should be configured via `.env`.
+
 ## Standalone Distribution
 
 The `dist/` directory can be distributed independently. Users only need to:
@@ -263,7 +297,7 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
    GITHUB_WEBHOOK_SECRET=your-secret-here
    ```
 
-   Add to `.env` for development, or set in your shell/systemd for production.
+   For the macOS Launch Agent, add it to [`~/.agent-console/.env`](#environment-configuration-via-agent-consoleenv).
 
 2. **Expose the webhook endpoint** to the internet:
 

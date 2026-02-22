@@ -1,0 +1,8 @@
+#!/bin/bash
+# Load environment variables from ~/.agent-console/.env if it exists.
+# This allows configuring secrets (e.g., GITHUB_WEBHOOK_SECRET) without
+# embedding them in the launchd plist file.
+set -a
+[ -f "$HOME/.agent-console/.env" ] && source "$HOME/.agent-console/.env"
+set +a
+exec {{COMMAND_PATH}} "$HOME/.agent-console/server/index.js"
