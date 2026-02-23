@@ -7,8 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{COMMAND_PATH}}</string>
-        <string>{{HOME}}/.agent-console/server/index.js</string>
+        <string>{{HOME}}/.agent-console/server/start.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
