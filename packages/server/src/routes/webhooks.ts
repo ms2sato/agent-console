@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createLogger } from '../lib/logger.js';
-import { serverConfig } from '../lib/server-config.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import type { AppBindings } from '../app-context.js';
 
@@ -31,11 +30,6 @@ webhooks.post('/github',
     },
   }) as MiddlewareHandler<AppBindings>,
   async (c) => {
-  if (!serverConfig.GITHUB_WEBHOOK_SECRET) {
-    logger.warn('GitHub webhook secret not configured — dropping webhook');
-    return c.json({ ok: true });
-  }
-
   const appContext = c.get('appContext');
   const parser = appContext.inboundIntegration.parserRegistry.get('github');
   if (!parser) {
