@@ -394,6 +394,53 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
+  describe('default agent checkbox', () => {
+    it('should not pre-check "Set as default" even when defaultAgentId is provided', async () => {
+      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // The "Set as default" checkbox should NOT be checked
+      const checkbox = screen.getByLabelText('Set as default') as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
+    });
+
+    it('should not update default agent when changing agent without checking the checkbox', async () => {
+      const user = userEvent.setup();
+      const updateCalls: string[] = [];
+
+      mockFetch.mockImplementation((input) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+        if (url.includes('/repositories/') && !url.includes('/agents') && !url.includes('/remote-status') && !url.includes('/github-issue') && !url.includes('/branches/')) {
+          updateCalls.push(url);
+          return Promise.resolve(createMockResponse({}));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Change the agent via the selector
+      const agentSelector = screen.getByRole('combobox');
+      await user.selectOptions(agentSelector, 'custom-agent');
+
+      // No update to repository default should have been triggered
+      expect(updateCalls.length).toBe(0);
+    });
+  });
+
   describe('UI state', () => {
     it('should call onCancel when cancel button is clicked', async () => {
       const user = userEvent.setup();

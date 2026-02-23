@@ -105,7 +105,7 @@ export function CreateWorktreeForm({
   });
 
   // State for "set as default agent" checkbox
-  const [setAsDefault, setSetAsDefault] = useState(!!defaultAgentId);
+  const [setAsDefault, setSetAsDefault] = useState(false);
 
   // Mutation to update repository's default agent
   const updateDefaultAgentMutation = useMutation({

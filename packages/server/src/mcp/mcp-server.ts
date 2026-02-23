@@ -308,7 +308,10 @@ mcpServer.tool(
     agentId: z
       .string()
       .optional()
-      .describe(`Agent to use (defaults to ${CLAUDE_CODE_AGENT_ID})`),
+      .describe(
+        `Agent to use. If omitted, falls back to the repository's configured default agent, ` +
+          `then to ${CLAUDE_CODE_AGENT_ID}.`,
+      ),
     title: z.string().optional().describe('Human-readable session title'),
     useRemote: z
       .boolean()
@@ -325,7 +328,7 @@ mcpServer.tool(
       }
 
       // Validate agent
-      const selectedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
+      const selectedAgentId = agentId ?? repo.defaultAgentId ?? CLAUDE_CODE_AGENT_ID;
       const agentManager = await getAgentManager();
       const agent = agentManager.getAgent(selectedAgentId);
       if (!agent) {
