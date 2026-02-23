@@ -1,14 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import { createTestContext, shutdownAppContext, type AppContext, type AppBindings } from '../../app-context.js';
 import { webhooks } from '../webhooks.js';
-
-// Mock server config to set GITHUB_WEBHOOK_SECRET for tests
-mock.module('../../lib/server-config.js', () => ({
-  serverConfig: {
-    GITHUB_WEBHOOK_SECRET: 'test-secret',
-  },
-}));
 
 describe('Webhooks route', () => {
   let app: Hono<AppBindings>;

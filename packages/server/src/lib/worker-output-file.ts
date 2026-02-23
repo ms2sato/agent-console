@@ -48,12 +48,32 @@ interface PendingFlush {
 }
 
 /**
+ * Configuration for WorkerOutputFileManager.
+ * Allows overriding defaults for testing without module-level mocking.
+ */
+export interface WorkerOutputFileConfig {
+  flushThreshold: number;
+  flushInterval: number;
+  fileMaxSize: number;
+}
+
+/**
  * Manages file-based output persistence for workers.
  * Uses buffering to reduce file I/O frequency.
  */
 export class WorkerOutputFileManager {
   /** Pending buffers waiting to be flushed: sessionId/workerId -> PendingFlush */
   private pendingFlushes = new Map<string, PendingFlush>();
+
+  private readonly config: WorkerOutputFileConfig;
+
+  constructor(config?: Partial<WorkerOutputFileConfig>) {
+    this.config = {
+      flushThreshold: config?.flushThreshold ?? serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD,
+      flushInterval: config?.flushInterval ?? serverConfig.WORKER_OUTPUT_FLUSH_INTERVAL,
+      fileMaxSize: config?.fileMaxSize ?? serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE,
+    };
+  }
 
   /**
    * Get the output file path for a worker.
@@ -150,7 +170,7 @@ export class WorkerOutputFileManager {
     pending.buffer += data;
 
     // Flush immediately if buffer exceeds threshold
-    if (pending.buffer.length >= serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD) {
+    if (pending.buffer.length >= this.config.flushThreshold) {
       void this.flushBuffer(sessionId, workerId).catch((err) => {
         logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on threshold');
       });
@@ -163,7 +183,7 @@ export class WorkerOutputFileManager {
         void this.flushBuffer(sessionId, workerId).catch((err) => {
           logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on timer');
         });
-      }, serverConfig.WORKER_OUTPUT_FLUSH_INTERVAL);
+      }, this.config.flushInterval);
     }
   }
 
@@ -216,7 +236,7 @@ export class WorkerOutputFileManager {
 
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
-        if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
+        if (stats.size > this.config.fileMaxSize) {
           await this.truncateFile(filePath, stats.size, sessionId, workerId);
         }
       } else {
@@ -225,7 +245,7 @@ export class WorkerOutputFileManager {
 
         // Check file size and truncate if necessary
         const stats = await fs.stat(filePath);
-        if (stats.size > serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE) {
+        if (stats.size > this.config.fileMaxSize) {
           await this.truncateFile(filePath, stats.size, sessionId, workerId);
         }
       }
@@ -249,7 +269,7 @@ export class WorkerOutputFileManager {
     sessionId: string,
     workerId: string
   ): Promise<void> {
-    const maxSize = serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE;
+    const maxSize = this.config.fileMaxSize;
     const targetSize = Math.floor(maxSize * 0.8); // Truncate to 80% to avoid frequent truncation
 
     try {

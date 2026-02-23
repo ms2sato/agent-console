@@ -30,6 +30,10 @@ function getRecord(record: Record<string, unknown>, key: string): Record<string,
   return isRecord(value) ? value : null;
 }
 
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
 export class GitHubServiceParser implements ServiceParser {
   readonly serviceId = 'github';
   private webhookSecret: string;
@@ -90,6 +94,9 @@ export class GitHubServiceParser implements ServiceParser {
         return this.parseIssueClosed(body);
       case 'pull_request':
         return this.parsePullRequest(body);
+      case 'pull_request_review_comment':
+        if (getString(body, 'action') !== 'created') return null;
+        return this.parsePullRequestReviewComment(body);
       default:
         return null;
     }
@@ -182,4 +189,52 @@ export class GitHubServiceParser implements ServiceParser {
       summary: `PR #${prNumber} merged: ${title}`,
     };
   }
+
+  private parsePullRequestReviewComment(body: Record<string, unknown>): SystemEvent | null {
+    const comment = getRecord(body, 'comment');
+    const pullRequest = getRecord(body, 'pull_request');
+    const repository = getRecord(body, 'repository');
+    if (!comment || !pullRequest || !repository) return null;
+
+    const commentBody = getString(comment, 'body');
+    const prNumber = getNumber(pullRequest, 'number');
+    const repositoryName = getString(repository, 'full_name');
+    if (!commentBody || !prNumber || !repositoryName) return null;
+
+    const path = getString(comment, 'path');
+    const line = getNumber(comment, 'line') ?? getNumber(comment, 'original_line');
+    const commentUrl = getString(comment, 'html_url');
+    const commentUser = getRecord(comment, 'user');
+    const userLogin = commentUser ? getString(commentUser, 'login') : null;
+    const head = getRecord(pullRequest, 'head');
+    const branch = head ? getString(head, 'ref') : null;
+
+    const summary = buildReviewCommentSummary(prNumber, commentBody, userLogin, path, line);
+
+    return {
+      type: 'pr:review_comment',
+      source: 'github',
+      timestamp: getString(comment, 'created_at') ?? new Date().toISOString(),
+      metadata: {
+        repositoryName,
+        branch: branch ?? undefined,
+        url: commentUrl ?? undefined,
+      },
+      payload: body,
+      summary,
+    };
+  }
+}
+
+function buildReviewCommentSummary(
+  prNumber: number,
+  commentBody: string,
+  userLogin: string | null,
+  path: string | null,
+  line: number | null
+): string {
+  const byUser = userLogin ? ` by ${truncate(userLogin, 100)}` : '';
+  const location = path ? truncate(path, 200) + (line ? `:${line}` : '') : null;
+  const locationSuffix = location ? ` (${location})` : '';
+  return `Review comment on PR #${prNumber}${byUser}${locationSuffix}: ${truncate(commentBody, 200)}`;
 }

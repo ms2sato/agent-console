@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { vol } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
@@ -9,26 +9,6 @@ const TEST_WORKER_OUTPUT_FILE_MAX_SIZE = 1024; // 1KB for easier testing
 const TEST_WORKER_OUTPUT_FLUSH_INTERVAL = 100; // 100ms (same as default)
 const TEST_WORKER_OUTPUT_FLUSH_THRESHOLD = 256; // 256 bytes for easier testing
 
-// We need to mock serverConfig for this test file, but must preserve all original values
-// that other tests depend on (especially WORKER_OUTPUT_BUFFER_SIZE)
-mock.module('../server-config.js', () => ({
-  serverConfig: {
-    // Preserve all original values that other tests might use
-    NODE_ENV: process.env.NODE_ENV,
-    PORT: process.env.PORT || '3457',
-    HOST: process.env.HOST || 'localhost',
-    LOG_LEVEL: process.env.LOG_LEVEL,
-    WORKER_OUTPUT_BUFFER_SIZE: 100000, // Preserve original for session-manager tests
-    // Override only the values we need for worker-output-file tests
-    WORKER_OUTPUT_FILE_MAX_SIZE: TEST_WORKER_OUTPUT_FILE_MAX_SIZE,
-    WORKER_OUTPUT_FLUSH_INTERVAL: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
-    WORKER_OUTPUT_FLUSH_THRESHOLD: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
-    WORKER_OUTPUT_INITIAL_HISTORY_LINES: 5000,
-    // Notification settings - preserve defaults for notification tests
-    APP_URL: process.env.APP_URL || '',
-  },
-}));
-
 describe('WorkerOutputFileManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
   let manager: WorkerOutputFileManager;
@@ -36,7 +16,11 @@ describe('WorkerOutputFileManager', () => {
   beforeEach(() => {
     setupMemfs({});
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
-    manager = new WorkerOutputFileManager();
+    manager = new WorkerOutputFileManager({
+      flushThreshold: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
+      flushInterval: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
+      fileMaxSize: TEST_WORKER_OUTPUT_FILE_MAX_SIZE,
+    });
   });
 
   afterEach(() => {
