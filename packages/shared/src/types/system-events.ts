@@ -2,10 +2,11 @@ import type { OutboundTriggerEventType } from './notification.js';
 
 /** Event types received from external sources */
 export type InboundEventType =
-  | 'ci:completed'   // CI/CD pipeline succeeded
-  | 'ci:failed'      // CI/CD pipeline failed
-  | 'issue:closed'   // Issue was closed
-  | 'pr:merged';     // Pull request was merged
+  | 'ci:completed'        // CI/CD pipeline succeeded
+  | 'ci:failed'           // CI/CD pipeline failed
+  | 'issue:closed'        // Issue was closed
+  | 'pr:merged'           // Pull request was merged
+  | 'pr:review_comment';  // PR review comment was posted
 
 /** All system event types (inbound + outbound triggers) */
 export type SystemEventType = InboundEventType | OutboundTriggerEventType;

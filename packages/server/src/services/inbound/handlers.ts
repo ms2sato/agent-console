@@ -40,7 +40,7 @@ export function createInboundHandlers(deps: InboundHandlerDependencies): Inbound
 
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed'];
+  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed', 'pr:review_comment'];
   private sessionManager: SessionManager;
 
   constructor(sessionManager: SessionManager) {
@@ -66,7 +66,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       branch: event.metadata.branch ?? 'unknown',
       url: event.metadata.url ?? 'N/A',
       summary: event.summary,
-      intent: event.type === 'ci:failed' ? 'triage' : 'inform',
+      intent: event.type === 'ci:failed' || event.type === 'pr:review_comment' ? 'triage' : 'inform',
     };
 
     const fields = Object.entries(values)
@@ -118,7 +118,7 @@ class DiffWorkerHandler implements InboundEventHandler {
 
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
-  readonly supportedEvents: InboundEventType[] = ['ci:failed', 'issue:closed', 'pr:merged'];
+  readonly supportedEvents: InboundEventType[] = ['ci:failed', 'issue:closed', 'pr:merged', 'pr:review_comment'];
   private broadcastToApp: InboundHandlerDependencies['broadcastToApp'];
 
   constructor(broadcastToApp: InboundHandlerDependencies['broadcastToApp']) {
