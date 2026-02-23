@@ -737,6 +737,7 @@ describe('MCP Server Tools', () => {
       id: string;
       name: string;
       path: string;
+      defaultAgentId?: string | null;
     }> = []): Promise<void> {
       const { getDatabase } = await import('../../database/connection.js');
       const db = getDatabase();
@@ -760,10 +761,12 @@ describe('MCP Server Tools', () => {
      * Sets up memfs with repo and config dirs, git mocks, and RepositoryManager.
      *
      * @param worktreeBranch - Branch name that the created worktree will report
+     * @param options.defaultAgentId - Optional default agent ID for the repository
      * @returns The worktree path that createWorktree will produce
      */
     async function setupDelegateEnvironment(
       worktreeBranch: string = 'feat/test-branch',
+      options?: { defaultAgentId?: string | null },
     ): Promise<string> {
       // The orgRepo extracted from the mock remote URL (git@github.com:owner/repo.git)
       const orgRepo = 'owner/repo';
@@ -809,9 +812,22 @@ describe('MCP Server Tools', () => {
         id: 'test-repo',
         name: 'test',
         path: TEST_REPO_PATH,
+        defaultAgentId: options?.defaultAgentId,
       }]);
 
       return repoWorktreeDir;
+    }
+
+    /**
+     * Find a PTY spawn call whose command arguments contain the given substring.
+     * Returns undefined if no matching call is found.
+     */
+    function findSpawnCallByCommand(commandSubstring: string): unknown[] | undefined {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], unknown]>;
+      return calls.find((call) => {
+        const cmd = call[1]?.join(' ') ?? '';
+        return cmd.includes(commandSubstring);
+      });
     }
 
     it('should return error when repository not found', async () => {
@@ -1093,6 +1109,103 @@ describe('MCP Server Tools', () => {
 
       // Verify removeWorktree was called for rollback
       expect(mockGit.removeWorktree).toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // Agent selection priority: agentId > repo.defaultAgentId > CLAUDE_CODE
+    // -----------------------------------------------------------------------
+
+    it('should use repository defaultAgentId when agentId is not provided', async () => {
+      const agentManager = await getAgentManager();
+      const registered = await agentManager.registerAgent({
+        name: 'Repo Default Agent',
+        commandTemplate: 'repo-default-agent {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/repo-default', {
+        defaultAgentId: registered.id,
+      });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test repo default agent selection',
+        branch: 'feat/repo-default',
+        // agentId is intentionally omitted
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(findSpawnCallByCommand('repo-default-agent')).toBeDefined();
+    });
+
+    it('should fall back to claude-code-builtin when agentId is not provided and repository has no defaultAgentId', async () => {
+      await setupDelegateEnvironment('feat/no-default');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test fallback to claude-code-builtin',
+        branch: 'feat/no-default',
+        // agentId is intentionally omitted
+      }, nextId++);
+
+      // Success proves claude-code-builtin was used (the only registered agent)
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      expect(data.sessionId).toBeDefined();
+    });
+
+    it('should use explicit agentId even when repository has defaultAgentId', async () => {
+      const agentManager = await getAgentManager();
+      const repoDefault = await agentManager.registerAgent({
+        name: 'Repo Default Agent',
+        commandTemplate: 'repo-default-agent {{prompt}}',
+      });
+      const explicitAgent = await agentManager.registerAgent({
+        name: 'Explicit Agent',
+        commandTemplate: 'explicit-agent {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/explicit-override', {
+        defaultAgentId: repoDefault.id,
+      });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test explicit agentId overrides repo default',
+        branch: 'feat/explicit-override',
+        agentId: explicitAgent.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(findSpawnCallByCommand('explicit-agent')).toBeDefined();
+      expect(findSpawnCallByCommand('repo-default-agent')).toBeUndefined();
+    });
+
+    it('should return error when repository defaultAgentId references a deleted agent', async () => {
+      // Register an agent, then set it as the repository default
+      const agentManager = await getAgentManager();
+      const tempAgent = await agentManager.registerAgent({
+        name: 'Soon Deleted Agent',
+        commandTemplate: 'soon-deleted {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/deleted-default', {
+        defaultAgentId: tempAgent.id,
+      });
+
+      // Delete the agent. The DB cascades ON DELETE SET NULL for default_agent_id,
+      // but RepositoryManager's in-memory cache still holds the stale defaultAgentId.
+      await agentManager.unregisterAgent(tempAgent.id);
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test deleted default agent',
+        branch: 'feat/deleted-default',
+        // agentId is intentionally omitted so the stale defaultAgentId is used
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Agent not found');
     });
   });
 
