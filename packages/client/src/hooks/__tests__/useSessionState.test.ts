@@ -173,23 +173,23 @@ describe('useSessionState', () => {
       expect(result.current.sessions[1].title).toBe('Session 2');
     });
 
-    it('should handle non-existent session gracefully', () => {
+    it('should add session if not yet in the list', () => {
       const { result } = renderHook(() => useSessionState());
 
       const session = createMockSession({ id: 'session-1' });
-      const nonExistentSession = createMockSession({ id: 'non-existent' });
+      const newSession = createMockSession({ id: 'session-2', title: 'New' });
 
       act(() => {
         result.current.handleSessionsSync([session], []);
       });
 
       act(() => {
-        result.current.handleSessionUpdated(nonExistentSession);
+        result.current.handleSessionUpdated(newSession);
       });
 
-      // Original session should remain unchanged
-      expect(result.current.sessions).toHaveLength(1);
-      expect(result.current.sessions[0].id).toBe('session-1');
+      expect(result.current.sessions).toHaveLength(2);
+      expect(result.current.sessions[1].id).toBe('session-2');
+      expect(result.current.sessionsRef.current).toHaveLength(2);
     });
   });
 
@@ -248,6 +248,86 @@ describe('useSessionState', () => {
       });
 
       expect(result.current.sessions).toHaveLength(1);
+    });
+  });
+
+  describe('handleSessionPaused', () => {
+    it('should mark session as paused and hibernated', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const session = createMockSession({ id: 'session-1', activationState: 'running' });
+
+      act(() => {
+        result.current.handleSessionsSync([session], []);
+      });
+
+      act(() => {
+        result.current.handleSessionPaused('session-1');
+      });
+
+      expect(result.current.sessions[0].paused).toBe(true);
+      expect(result.current.sessions[0].activationState).toBe('hibernated');
+      expect(result.current.sessionsRef.current[0].paused).toBe(true);
+      expect(result.current.sessionsRef.current[0].activationState).toBe('hibernated');
+    });
+
+    it('should not affect other sessions', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const session1 = createMockSession({ id: 'session-1', activationState: 'running' });
+      const session2 = createMockSession({ id: 'session-2', activationState: 'running' });
+
+      act(() => {
+        result.current.handleSessionsSync([session1, session2], []);
+      });
+
+      act(() => {
+        result.current.handleSessionPaused('session-1');
+      });
+
+      expect(result.current.sessions[0].paused).toBe(true);
+      expect(result.current.sessions[1].paused).toBeUndefined();
+      expect(result.current.sessions[1].activationState).toBe('running');
+    });
+  });
+
+  describe('handleSessionResumed', () => {
+    it('should add resumed session if not in list', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      act(() => {
+        result.current.handleSessionsSync([], []);
+      });
+
+      const resumedSession = createMockSession({ id: 'session-1', activationState: 'running' });
+
+      act(() => {
+        result.current.handleSessionResumed(resumedSession);
+      });
+
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.sessions[0].id).toBe('session-1');
+      expect(result.current.sessionsRef.current).toHaveLength(1);
+    });
+
+    it('should update existing session when resumed', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const session = createMockSession({ id: 'session-1', activationState: 'hibernated', paused: true });
+
+      act(() => {
+        result.current.handleSessionsSync([session], []);
+      });
+
+      const resumedSession = createMockSession({ id: 'session-1', activationState: 'running' });
+
+      act(() => {
+        result.current.handleSessionResumed(resumedSession);
+      });
+
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.sessions[0].activationState).toBe('running');
+      expect(result.current.sessions[0].paused).toBeUndefined();
     });
   });
 

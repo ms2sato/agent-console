@@ -41,9 +41,10 @@ function getSessionActivityState(
 
 /**
  * Hook that returns sessions filtered and sorted by activity state.
- * - Only includes running sessions (excludes hibernated sessions)
- * - Only includes sessions with activity state != 'unknown'
- * - Sorted by priority: asking > idle > active
+ * - Excludes paused sessions (they are handled separately in the dashboard)
+ * - Includes running sessions with known activity state
+ * - Includes phantom sessions (hibernated, not paused) with 'unknown' activity state
+ * - Sorted by priority: asking > idle > active, then hibernated at the end
  */
 export function useActiveSessionsWithActivity(
   sessions: Session[],
@@ -52,21 +53,28 @@ export function useActiveSessionsWithActivity(
   return useMemo(() => {
     const sessionsWithActivity: SessionWithActivity[] = [];
 
-    // Filter to only running sessions (exclude hibernated)
-    const runningSessions = sessions.filter(s => s.activationState === 'running');
+    for (const session of sessions) {
+      // Exclude paused sessions (they're handled separately in the dashboard)
+      if (session.paused) continue;
 
-    for (const session of runningSessions) {
       const activityState = getSessionActivityState(session, workerActivityStates);
-      // Only include sessions with known activity state
-      if (activityState !== 'unknown') {
-        sessionsWithActivity.push({ session, activityState });
+
+      // Include sessions with known activity state OR phantom (hibernated) sessions
+      if (activityState !== 'unknown' || session.activationState === 'hibernated') {
+        sessionsWithActivity.push({
+          session,
+          activityState: session.activationState === 'hibernated' ? 'unknown' : activityState,
+        });
       }
     }
 
-    // Sort by activity priority (asking first, then idle, then active)
-    sessionsWithActivity.sort(
-      (a, b) => activityPriority[a.activityState] - activityPriority[b.activityState]
-    );
+    // Sort: running sessions first (by priority), then hibernated at the end
+    sessionsWithActivity.sort((a, b) => {
+      const aHibernated = a.session.activationState === 'hibernated' ? 1 : 0;
+      const bHibernated = b.session.activationState === 'hibernated' ? 1 : 0;
+      if (aHibernated !== bHibernated) return aHibernated - bHibernated;
+      return activityPriority[a.activityState] - activityPriority[b.activityState];
+    });
 
     return sessionsWithActivity;
   }, [sessions, workerActivityStates]);

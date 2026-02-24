@@ -18,6 +18,10 @@ interface UseSessionStateReturn {
   handleSessionUpdated: (session: Session) => void;
   /** Handle session deleted */
   handleSessionDeleted: (sessionId: string) => void;
+  /** Handle session paused (removed from memory but preserved in DB) */
+  handleSessionPaused: (sessionId: string) => void;
+  /** Handle paused session resumed */
+  handleSessionResumed: (session: Session) => void;
   /** Handle worker activity state change */
   handleWorkerActivity: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   /** Set sessions from REST API fallback */
@@ -52,8 +56,16 @@ export function useSessionState(): UseSessionStateReturn {
   }, []);
 
   const handleSessionUpdated = useCallback((session: Session) => {
-    setSessions(prev => prev.map(s => s.id === session.id ? session : s));
-    sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
+    setSessions(prev => {
+      const exists = prev.some(s => s.id === session.id);
+      if (exists) {
+        return prev.map(s => s.id === session.id ? session : s);
+      }
+      return [...prev, session];
+    });
+    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
+      : [...sessionsRef.current, session];
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
@@ -65,6 +77,28 @@ export function useSessionState(): UseSessionStateReturn {
       delete next[sessionId];
       return next;
     });
+  }, []);
+
+  const handleSessionPaused = useCallback((sessionId: string) => {
+    setSessions(prev => prev.map(s =>
+      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+    ));
+    sessionsRef.current = sessionsRef.current.map(s =>
+      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+    );
+  }, []);
+
+  const handleSessionResumed = useCallback((session: Session) => {
+    setSessions(prev => {
+      const exists = prev.some(s => s.id === session.id);
+      if (exists) {
+        return prev.map(s => s.id === session.id ? session : s);
+      }
+      return [...prev, session];
+    });
+    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
+      : [...sessionsRef.current, session];
   }, []);
 
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -89,6 +123,8 @@ export function useSessionState(): UseSessionStateReturn {
     handleSessionCreated,
     handleSessionUpdated,
     handleSessionDeleted,
+    handleSessionPaused,
+    handleSessionResumed,
     handleWorkerActivity,
     setSessionsFromApi,
   };

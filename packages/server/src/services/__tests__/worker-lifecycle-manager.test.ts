@@ -73,12 +73,21 @@ describe('WorkerLifecycleManager', () => {
       getSession: (id: string) => sessions.get(id),
       persistSession: mockPersistSession as unknown as (session: InternalSession) => Promise<void>,
       getRepositoryEnvVars: () => ({}),
-      toPublicSession: (session: InternalSession) => ({
-        ...session,
-        workers: Array.from(session.workers.values()).map((w) =>
-          workerManager.toPublicWorker(w)
-        ),
-      }) as Session,
+      toPublicSession: (session: InternalSession) => {
+        const ptyWorkers = Array.from(session.workers.values()).filter(
+          (w) => w.type === 'agent' || w.type === 'terminal'
+        ) as Array<InternalAgentWorker | InternalTerminalWorker>;
+        const activationState = ptyWorkers.length === 0
+          ? 'running' as const
+          : ptyWorkers.some((w) => w.pty !== null) ? 'running' as const : 'hibernated' as const;
+        return {
+          ...session,
+          activationState,
+          workers: Array.from(session.workers.values()).map((w) =>
+            workerManager.toPublicWorker(w)
+          ),
+        } as Session;
+      },
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
       ...overrides,
@@ -829,6 +838,33 @@ describe('WorkerLifecycleManager', () => {
       expect(mockPersistSession).toHaveBeenCalled();
     });
 
+    it('should call onSessionUpdated callback after restoration', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker: InternalAgentWorker = {
+        id: 'restored-session-update',
+        type: 'agent',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(updatedSession.id).toBe(session.id);
+      expect(updatedSession.activationState).toBe('running');
+    });
+
     it('should call onWorkerActivated callback after restoration', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -954,6 +990,30 @@ describe('WorkerLifecycleManager', () => {
       const result = await manager.getAvailableWorker(session.id, terminalWorker.id);
 
       expect(result).toBeNull();
+    });
+
+    it('should call onSessionUpdated callback after activating PTY', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const terminalWorker: InternalTerminalWorker = {
+        id: 'session-update-on-activate',
+        type: 'terminal',
+        name: 'Terminal',
+        createdAt: new Date().toISOString(),
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(terminalWorker.id, terminalWorker);
+
+      await lifecycleManager.getAvailableWorker(session.id, terminalWorker.id);
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(updatedSession.id).toBe(session.id);
+      expect(updatedSession.activationState).toBe('running');
     });
 
     it('should persist session after activating PTY', async () => {

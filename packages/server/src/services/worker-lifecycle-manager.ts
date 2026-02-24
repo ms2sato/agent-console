@@ -214,6 +214,9 @@ export class WorkerLifecycleManager {
     await this.deps.persistSession(session);
     logger.info({ workerId, sessionId, workerType: worker.type }, 'Worker PTY activated');
 
+    // Broadcast session-updated since activationState may have changed
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
+
     return worker;
   }
 
@@ -450,6 +453,9 @@ export class WorkerLifecycleManager {
 
     // Notify listeners that the worker was activated (broadcasts to app clients)
     this.deps.getSessionLifecycleCallbacks()?.onWorkerActivated?.(sessionId, workerId);
+
+    // Broadcast session-updated so clients learn the activationState changed (e.g., hibernated -> running)
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
 
     return { success: true, worker: existingWorker, wasRestored: true };
   }
