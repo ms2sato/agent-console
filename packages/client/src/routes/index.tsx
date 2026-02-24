@@ -169,20 +169,19 @@ function DashboardPage() {
   const handleSessionsSync = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
 
-    // Separate active sessions from paused sessions by activationState
-    const activeSessions = sessions.filter(s => s.activationState === 'running');
-    const hibernatedSessions = sessions.filter(s => s.activationState === 'hibernated');
+    // Separate paused sessions (DB-only, explicitly paused) from active/phantom sessions
+    const activeSessions = sessions.filter(s => !s.paused);
+    const pausedSessionsList = sessions.filter(s => s.paused === true);
 
-    console.log(`[Sync] Active: ${activeSessions.length}, Paused: ${hibernatedSessions.length}`);
+    console.log(`[Sync] Active/Phantom: ${activeSessions.length}, Paused: ${pausedSessionsList.length}`);
 
-    // Update active sessions list (only running sessions)
+    // Update active sessions list (running + phantom/hibernated)
     setWsSessions(activeSessions);
     sessionsRef.current = activeSessions;
 
-    // Build pausedSessions map from hibernated worktree sessions
-    // Store full session objects to preserve title and other metadata
+    // Build pausedSessions map from truly paused worktree sessions
     const newPausedSessions: Record<string, Session> = {};
-    for (const session of hibernatedSessions) {
+    for (const session of pausedSessionsList) {
       if (session.type === 'worktree') {
         newPausedSessions[session.locationPath] = session;
       }
@@ -219,8 +218,20 @@ function DashboardPage() {
   // Handle session updated
   const handleSessionUpdated = useCallback((session: Session) => {
     console.log(`[Session] Updated: ${session.id}`);
-    setWsSessions(prev => prev.map(s => s.id === session.id ? session : s));
-    sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
+    setWsSessions(prev => {
+      const exists = prev.some(s => s.id === session.id);
+      if (exists) {
+        return prev.map(s => s.id === session.id ? session : s);
+      }
+      // Session not in list yet - add it if it's not paused
+      if (!session.paused) {
+        return [...prev, session];
+      }
+      return prev;
+    });
+    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
+      : (!session.paused ? [...sessionsRef.current, session] : sessionsRef.current);
   }, []);
 
   // Handle session deleted
@@ -266,7 +277,7 @@ function DashboardPage() {
     if (session && session.type === 'worktree') {
       // Track as paused session for "Resume" button, storing full session to preserve title
       // Update activationState to 'hibernated' since it's now paused
-      const pausedSession: Session = { ...session, activationState: 'hibernated' };
+      const pausedSession: Session = { ...session, activationState: 'hibernated', paused: true };
       setPausedSessions(prev => ({
         ...prev,
         [session.locationPath]: pausedSession,
@@ -946,12 +957,14 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
   };
 
   const statusColor = session
-    ? session.status === 'active'
-      ? 'bg-green-500'
-      : 'bg-gray-500'
+    ? session.activationState === 'hibernated'
+      ? 'bg-yellow-500'   // Phantom session (hibernated but in-memory)
+      : session.status === 'active'
+        ? 'bg-green-500'
+        : 'bg-gray-500'
     : pausedSession
-      ? 'bg-yellow-500'  // Paused session
-      : 'bg-gray-600';   // No session
+      ? 'bg-yellow-500'    // Paused session
+      : 'bg-gray-600';     // No session
 
   return (
     <div className="flex items-center gap-3 p-2 bg-slate-800 rounded">
@@ -989,7 +1002,12 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
               <VSCodeIcon className="w-4 h-4" />
             </button>
           )}
-          {session && <ActivityBadge state={session.activityState} />}
+          {session && session.activationState === 'hibernated' && (
+            <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-500/20 text-yellow-400">
+              Hibernated
+            </span>
+          )}
+          {session && session.activationState !== 'hibernated' && <ActivityBadge state={session.activityState} />}
         </div>
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
@@ -1101,9 +1119,11 @@ function SessionCard({ session }: SessionCardProps) {
   });
 
   const statusColor =
-    session.status === 'active'
-      ? 'bg-green-500'
-      : 'bg-gray-500';
+    session.activationState === 'hibernated'
+      ? 'bg-yellow-500'
+      : session.status === 'active'
+        ? 'bg-green-500'
+        : 'bg-gray-500';
 
   return (
     <>
@@ -1117,7 +1137,13 @@ function SessionCard({ session }: SessionCardProps) {
           )}
           <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
             <PathLink path={session.locationPath} className="truncate" />
-            <ActivityBadge state={session.activityState} />
+            {session.activationState === 'hibernated' ? (
+              <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-500/20 text-yellow-400">
+                Hibernated
+              </span>
+            ) : (
+              <ActivityBadge state={session.activityState} />
+            )}
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}

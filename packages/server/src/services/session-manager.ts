@@ -706,6 +706,7 @@ export class SessionManager {
       workers,
       initialPrompt: p.initialPrompt,
       title: p.title,
+      paused: true,
     };
 
     if (p.type === 'worktree') {

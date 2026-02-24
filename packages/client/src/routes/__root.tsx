@@ -77,6 +77,8 @@ function RootLayout() {
     handleSessionCreated,
     handleSessionUpdated,
     handleSessionDeleted,
+    handleSessionPaused,
+    handleSessionResumed,
     handleWorkerActivity,
   } = useSessionState();
 
@@ -99,6 +101,8 @@ function RootLayout() {
     onSessionCreated: handleSessionCreated,
     onSessionUpdated: handleSessionUpdated,
     onSessionDeleted: handleSessionDeleted,
+    onSessionPaused: handleSessionPaused,
+    onSessionResumed: handleSessionResumed,
     onWorkerActivity: handleWorkerActivity,
     onWorktreeCreationCompleted: worktreeCreationTasks.handleWorktreeCreationCompleted,
     onWorktreeCreationFailed: worktreeCreationTasks.handleWorktreeCreationFailed,

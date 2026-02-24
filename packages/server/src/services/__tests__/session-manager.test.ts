@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import * as fs from 'fs';
-import type { CreateSessionRequest, CreateWorkerParams, Worker } from '@agent-console/shared';
+import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -2287,6 +2287,49 @@ describe('SessionManager', () => {
 
       const result = await managerWithMissingPath.resumeSession(session.id);
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getAllPausedSessions', () => {
+    it('should return paused sessions with paused: true', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      await manager.pauseSession(session.id);
+
+      // Get paused sessions
+      const pausedSessions = await manager.getAllPausedSessions();
+
+      expect(pausedSessions.length).toBe(1);
+      expect(pausedSessions[0].id).toBe(session.id);
+      expect(pausedSessions[0].paused).toBe(true);
+      expect(pausedSessions[0].activationState).toBe('hibernated');
+    });
+
+    it('should not set paused on active in-memory sessions', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Active sessions via getAllSessions should not have paused: true
+      const allSessions: Session[] = manager.getAllSessions();
+      const activeSession = allSessions.find((s) => s.id === session.id);
+      expect(activeSession).toBeDefined();
+      expect(activeSession?.paused).toBeUndefined();
     });
   });
 
