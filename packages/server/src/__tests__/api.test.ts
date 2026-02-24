@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -14,6 +14,7 @@ import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-f
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
 import { MockPty } from './utils/mock-pty.js';
 import { mockGit, GitError } from './utils/mock-git-helper.js';
+import * as wsRoutes from '../websocket/routes.js';
 
 // Set up test config directory BEFORE any service imports to ensure
 // services use the test config path when their modules are loaded
@@ -54,12 +55,6 @@ const mockSuggestSessionMetadata = mock(async () => ({
 }));
 mock.module('../services/session-metadata-suggester.js', () => ({
   suggestSessionMetadata: mockSuggestSessionMetadata,
-}));
-
-// Mock broadcastToApp for async path tests (worktree deletion with taskId)
-const mockBroadcastToApp = mock((_msg: unknown) => {});
-mock.module('../websocket/routes.js', () => ({
-  broadcastToApp: mockBroadcastToApp,
 }));
 
 // =============================================================================
@@ -223,8 +218,8 @@ describe('API Routes Integration', () => {
       title: 'Suggested Title',
     }));
 
-    // Reset broadcast mock
-    mockBroadcastToApp.mockClear();
+    // Spy on broadcastToApp to capture calls from async route handlers
+    spyOn(wsRoutes, 'broadcastToApp');
 
     // Setup default git command responses
     setupDefaultGitMocks();
@@ -1861,7 +1856,8 @@ describe('API Routes Integration', () => {
           expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
 
           // Verify broadcastToApp was called with deletion-completed and cleanup result
-          const completedCall = mockBroadcastToApp.mock.calls.find(
+          const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+          const completedCall = broadcastSpy.mock.calls.find(
             (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-completed'
           );
           expect(completedCall).toBeDefined();
