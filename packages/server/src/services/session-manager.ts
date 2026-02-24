@@ -10,6 +10,7 @@ import type {
   CreateWorkerParams,
   SessionActivationState,
   WorkerMessage,
+  AppServerMessage,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -37,7 +38,7 @@ import {
 } from '../lib/git.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
-import { notifySessionDeleted, broadcastToApp } from '../websocket/routes.js';
+import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
@@ -53,20 +54,23 @@ export interface SessionRepositoryCallbacks {
   isInitialized: () => boolean;
 }
 
+/**
+ * Callbacks for WebSocket operations.
+ * Injected to avoid circular dependency with websocket/routes.ts.
+ */
+export interface WebSocketCallbacks {
+  /** Notify all Worker WebSocket connections for a session that it's being deleted */
+  notifySessionDeleted: (sessionId: string) => void;
+  /** Broadcast a message to all connected app clients */
+  broadcastToApp: (msg: AppServerMessage) => void;
+}
+
 const logger = createLogger('session-manager');
 
 // Re-export worker types for consumers that need them
 export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
 
-export interface SessionLifecycleCallbacks {
-  onSessionCreated?: (session: Session) => void;
-  onSessionUpdated?: (session: Session) => void;
-  onSessionDeleted?: (sessionId: string) => void;
-  onWorkerActivated?: (sessionId: string, workerId: string) => void;
-  onWorkerRestarted?: (sessionId: string, workerId: string) => void;
-  onSessionPaused?: (sessionId: string) => void;
-  onSessionResumed?: (session: Session) => void;
-}
+export type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 
 export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
@@ -86,6 +90,7 @@ export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
+  private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
   private messageService = new MessageService();
@@ -398,7 +403,7 @@ export class SessionManager {
 
     // Store and broadcast
     this.messageService.addMessage(message);
-    broadcastToApp({ type: 'worker-message', message });
+    this.webSocketCallbacks?.broadcastToApp({ type: 'worker-message', message });
 
     return message;
   }
@@ -415,6 +420,14 @@ export class SessionManager {
    */
   setSessionLifecycleCallbacks(callbacks: SessionLifecycleCallbacks): void {
     this.sessionLifecycleCallbacks = callbacks;
+  }
+
+  /**
+   * Set callbacks for WebSocket operations.
+   * Must be called after WebSocket routes are set up.
+   */
+  setWebSocketCallbacks(callbacks: WebSocketCallbacks): void {
+    this.webSocketCallbacks = callbacks;
   }
 
   /**
@@ -573,7 +586,7 @@ export class SessionManager {
 
     // Notify all active Worker WebSocket connections that session is being deleted
     // This must happen BEFORE killing workers so clients receive the notification
-    notifySessionDeleted(id);
+    this.webSocketCallbacks?.notifySessionDeleted(id);
 
     // Kill all workers first (before removing from memory)
     for (const worker of session.workers.values()) {

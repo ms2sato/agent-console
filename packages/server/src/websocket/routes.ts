@@ -308,6 +308,13 @@ export async function setupWebSocketRoutes(
     },
   });
 
+  // Wire WebSocket callbacks to break circular dependency
+  // SessionManager needs these to notify clients during session deletion and message broadcast
+  sessionManager.setWebSocketCallbacks({
+    notifySessionDeleted,
+    broadcastToApp,
+  });
+
   // Set up PTY exit callback to broadcast session activation state changes
   sessionManager.setupPtyExitCallback();
 
