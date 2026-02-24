@@ -44,7 +44,7 @@ import {
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
 
-import type { SessionLifecycleCallbacks } from './session-manager.js';
+import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 
 const logger = createLogger('worker-lifecycle-manager');
 

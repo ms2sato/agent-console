@@ -17,7 +17,7 @@ import { WorkerManager } from '../worker-manager.js';
 import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-lifecycle-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
 import type { InternalSession } from '../internal-types.js';
-import type { SessionLifecycleCallbacks } from '../session-manager.js';
+import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
 import { JobQueue } from '../../jobs/index.js';
 
 const TEST_CONFIG_DIR = '/test/config';
