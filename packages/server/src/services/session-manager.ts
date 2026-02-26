@@ -178,18 +178,18 @@ export class SessionManager {
   }
 
   /**
-   * Load persisted sessions into memory (without starting processes).
-   * Only inherits sessions whose serverPid is dead (or missing).
+   * Process persisted sessions on startup.
+   * Sessions whose serverPid is dead (or missing) are marked as paused (serverPid = null)
+   * after killing any orphan worker processes. They are NOT loaded into memory.
    * Sessions owned by other live servers are left untouched.
-   * Also kills orphan worker processes from inherited sessions.
-   * Sessions whose locationPath no longer exists are marked as orphans.
+   * Sessions whose locationPath no longer exists are removed as orphans.
    */
   private async initializeSessions(): Promise<void> {
     const persistedSessions = await this.sessionRepository.findAll();
     const currentServerPid = getServerPid();
     const sessionsToSave: PersistedSession[] = [];
     const orphanSessionIds: string[] = [];
-    let inheritedCount = 0;
+    let markedPausedCount = 0;
     let killedWorkerCount = 0;
     let pathNotFoundCount = 0;
 
@@ -249,38 +249,12 @@ export class SessionManager {
         }
       }
 
-      // Create internal session with workers restored from persistence (pty: null)
-      const workers = this.workerManager.restoreWorkersFromPersistence(session.workers);
-      const baseSession = {
-        id: session.id,
-        locationPath: session.locationPath,
-        status: 'active' as const, // Mark as active so it appears in the list
-        createdAt: session.createdAt,
-        workers,
-        initialPrompt: session.initialPrompt,
-        title: session.title,
-      };
-
-      const internalSession: InternalSession = session.type === 'worktree'
-        ? {
-            ...baseSession,
-            type: 'worktree',
-            repositoryId: session.repositoryId,
-            worktreeId: session.worktreeId,
-          }
-        : {
-            ...baseSession,
-            type: 'quick',
-          };
-
-      this.sessions.set(session.id, internalSession);
-      inheritedCount++;
-
-      // Update serverPid to claim ownership
+      // Mark as paused in DB (not loaded into memory) - user can resume later
       sessionsToSave.push({
         ...session,
-        serverPid: currentServerPid,
+        serverPid: null,
       });
+      markedPausedCount++;
     }
 
     // Delete orphan sessions (path no longer exists)
@@ -300,13 +274,13 @@ export class SessionManager {
       }
     }
 
-    // Save all sessions (inherited with updated PID, others unchanged)
+    // Save all sessions (dead-server sessions marked as paused, others unchanged)
     if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
       await this.sessionRepository.saveAll(sessionsToSave);
     }
 
     logger.info({
-      inheritedSessions: inheritedCount,
+      markedPausedSessions: markedPausedCount,
       killedWorkerProcesses: killedWorkerCount,
       removedOrphanSessions: pathNotFoundCount,
       serverPid: currentServerPid,

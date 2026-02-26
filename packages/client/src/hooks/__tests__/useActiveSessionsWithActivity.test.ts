@@ -340,62 +340,6 @@ describe('useActiveSessionsWithActivity', () => {
     });
   });
 
-  describe('phantom sessions (hibernated, not paused)', () => {
-    it('should include phantom sessions with unknown activity state', () => {
-      const session = createMockSession({
-        id: 'phantom-1',
-        activationState: 'hibernated',
-      });
-
-      const { result } = renderHook(() =>
-        useActiveSessionsWithActivity([session], {})
-      );
-
-      expect(result.current).toHaveLength(1);
-      expect(result.current[0].session.id).toBe('phantom-1');
-      expect(result.current[0].activityState).toBe('unknown');
-    });
-
-    it('should sort phantom sessions after running sessions', () => {
-      const sessions = [
-        createMockSession({ id: 'phantom-1', activationState: 'hibernated' }),
-        createMockSession({ id: 'running-1', activationState: 'running' }),
-      ];
-      const activityStates = createWorkerActivityStates([
-        { sessionId: 'running-1', workerId: 'worker-1', state: 'active' },
-      ]);
-
-      const { result } = renderHook(() =>
-        useActiveSessionsWithActivity(sessions, activityStates)
-      );
-
-      expect(result.current).toHaveLength(2);
-      expect(result.current[0].session.id).toBe('running-1');
-      expect(result.current[1].session.id).toBe('phantom-1');
-    });
-
-    it('should sort multiple running sessions by priority before phantom sessions', () => {
-      const sessions = [
-        createMockSession({ id: 'phantom-1', activationState: 'hibernated' }),
-        createMockSession({ id: 'active-1', activationState: 'running' }),
-        createMockSession({ id: 'asking-1', activationState: 'running' }),
-      ];
-      const activityStates = createWorkerActivityStates([
-        { sessionId: 'active-1', workerId: 'worker-1', state: 'active' },
-        { sessionId: 'asking-1', workerId: 'worker-1', state: 'asking' },
-      ]);
-
-      const { result } = renderHook(() =>
-        useActiveSessionsWithActivity(sessions, activityStates)
-      );
-
-      expect(result.current).toHaveLength(3);
-      expect(result.current[0].session.id).toBe('asking-1');
-      expect(result.current[1].session.id).toBe('active-1');
-      expect(result.current[2].session.id).toBe('phantom-1');
-    });
-  });
-
   describe('paused sessions exclusion', () => {
     it('should exclude paused sessions', () => {
       const session = createMockSession({
@@ -428,14 +372,15 @@ describe('useActiveSessionsWithActivity', () => {
       expect(result.current).toEqual([]);
     });
 
-    it('should include phantom but exclude paused when mixed', () => {
+    it('should exclude paused sessions and include only running sessions', () => {
       const sessions = [
-        createMockSession({ id: 'phantom-1', activationState: 'hibernated' }),
         createMockSession({ id: 'paused-1', activationState: 'hibernated', paused: true }),
         createMockSession({ id: 'running-1', activationState: 'running' }),
+        createMockSession({ id: 'running-2', activationState: 'running' }),
       ];
       const activityStates = createWorkerActivityStates([
         { sessionId: 'running-1', workerId: 'worker-1', state: 'idle' },
+        { sessionId: 'running-2', workerId: 'worker-1', state: 'active' },
       ]);
 
       const { result } = renderHook(() =>
@@ -444,7 +389,7 @@ describe('useActiveSessionsWithActivity', () => {
 
       expect(result.current).toHaveLength(2);
       expect(result.current[0].session.id).toBe('running-1');
-      expect(result.current[1].session.id).toBe('phantom-1');
+      expect(result.current[1].session.id).toBe('running-2');
     });
   });
 
