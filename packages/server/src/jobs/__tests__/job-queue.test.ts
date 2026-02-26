@@ -5,6 +5,15 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import type { Database } from '../../database/schema.js';
 import type { Kysely } from 'kysely';
 
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 5000, intervalMs = 50): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
 describe('JobQueue', () => {
   let jobQueue: JobQueue;
   let db: Kysely<Database>;
@@ -213,7 +222,7 @@ describe('JobQueue', () => {
       await jobQueue.start();
 
       // Wait for initial attempt and retry
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await waitFor(() => attempts >= 2, 10000);
 
       expect(attempts).toBe(2);
       const job = await jobQueue.getJob(id);
@@ -245,7 +254,7 @@ describe('JobQueue', () => {
       await jobQueue.start();
 
       // Wait for all attempts
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await waitFor(() => attempts >= 2, 10000);
 
       expect(attempts).toBe(2);
       const job = await jobQueue.getJob(id);
@@ -268,8 +277,8 @@ describe('JobQueue', () => {
       await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
-      // Wait for retries (1s + 2s = 3s, plus some buffer)
-      await new Promise((resolve) => setTimeout(resolve, 4000));
+      // Wait for all 3 attempts to complete
+      await waitFor(() => attempts >= 3, 10000);
 
       expect(timestamps.length).toBe(3);
 
