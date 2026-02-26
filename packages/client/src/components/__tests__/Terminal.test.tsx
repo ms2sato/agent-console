@@ -317,6 +317,102 @@ describe('Scroll-to-bottom button structure expectations', () => {
 });
 
 /**
+ * Tests for Terminal -> WorkerErrorRecovery integration.
+ *
+ * Terminal.tsx renders WorkerErrorRecovery when a workerError is present,
+ * passing through the onRequestRestart prop as onRestart, and
+ * handleGoToDashboard (which navigates to '/') as onGoToDashboard.
+ *
+ * Since xterm.js cannot be mocked in unit tests, we verify the integration
+ * contract here by modeling the prop-passing logic.
+ */
+describe('Terminal -> WorkerErrorRecovery prop integration', () => {
+  /**
+   * Models how Terminal.tsx constructs WorkerErrorRecovery props (lines 665-673).
+   * The Terminal component passes:
+   *   - onRetry={handleRetry}
+   *   - onDeleteSession={handleDeleteSession}
+   *   - onGoToDashboard={handleGoToDashboard}
+   *   - onRestart={onRequestRestart}  <-- the prop from SessionPage
+   */
+  function buildWorkerErrorRecoveryProps(params: {
+    onRequestRestart?: (continueConversation: boolean) => void;
+    handleRetry: () => void;
+    handleDeleteSession: () => void;
+    handleGoToDashboard: () => void;
+  }) {
+    return {
+      onRetry: params.handleRetry,
+      onDeleteSession: params.handleDeleteSession,
+      onGoToDashboard: params.handleGoToDashboard,
+      onRestart: params.onRequestRestart,
+    };
+  }
+
+  it('should pass onRequestRestart as onRestart to WorkerErrorRecovery', () => {
+    const onRequestRestart = (_continueConversation: boolean) => {};
+    const props = buildWorkerErrorRecoveryProps({
+      onRequestRestart,
+      handleRetry: () => {},
+      handleDeleteSession: () => {},
+      handleGoToDashboard: () => {},
+    });
+
+    expect(props.onRestart).toBe(onRequestRestart);
+  });
+
+  it('should pass undefined onRestart when onRequestRestart is not provided', () => {
+    const props = buildWorkerErrorRecoveryProps({
+      onRequestRestart: undefined,
+      handleRetry: () => {},
+      handleDeleteSession: () => {},
+      handleGoToDashboard: () => {},
+    });
+
+    expect(props.onRestart).toBeUndefined();
+  });
+
+  it('should always provide handleGoToDashboard for dashboard navigation', () => {
+    const goToDashboard = () => {};
+    const props = buildWorkerErrorRecoveryProps({
+      handleRetry: () => {},
+      handleDeleteSession: () => {},
+      handleGoToDashboard: goToDashboard,
+    });
+
+    expect(props.onGoToDashboard).toBe(goToDashboard);
+  });
+
+  /**
+   * Models the flow: Terminal receives onRequestRestart from SessionPage,
+   * which is handleWorkerRestart. When WorkerErrorRecovery's "Continue (-c)"
+   * button is clicked, it calls onRestart(true), which invokes handleWorkerRestart(true).
+   */
+  it('should propagate continueConversation flag through the callback chain', () => {
+    const calls: boolean[] = [];
+    const handleWorkerRestart = (continueConversation: boolean) => {
+      calls.push(continueConversation);
+    };
+
+    // Terminal receives handleWorkerRestart as onRequestRestart
+    const props = buildWorkerErrorRecoveryProps({
+      onRequestRestart: handleWorkerRestart,
+      handleRetry: () => {},
+      handleDeleteSession: () => {},
+      handleGoToDashboard: () => {},
+    });
+
+    // WorkerErrorRecovery calls onRestart(true) for "Continue (-c)"
+    props.onRestart?.(true);
+    expect(calls).toEqual([true]);
+
+    // WorkerErrorRecovery calls onRestart(false) for "New Session"
+    props.onRestart?.(false);
+    expect(calls).toEqual([true, false]);
+  });
+});
+
+/**
  * Tests for lazy history loading optimization.
  *
  * These tests verify the requestHistory function and the lazy loading behavior

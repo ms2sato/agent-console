@@ -620,7 +620,7 @@ export async function setupWebSocketRoutes(
 
           const session = sessionManager.getSession(sessionId);
           if (!session) {
-            sendErrorAndClose(ws, 'Session not found', 'WORKER_NOT_FOUND');
+            sendErrorAndClose(ws, 'Session not found', 'SESSION_DELETED');
             return;
           }
 

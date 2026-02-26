@@ -418,5 +418,113 @@ describe('ActiveSessionsSidebar', () => {
       expect(onResumeSession).toHaveBeenCalledTimes(1);
       expect(onResumeSession).toHaveBeenCalledWith('paused-session-1');
     });
+
+    it('should navigate to session page when paused session is clicked (optimistic navigation)', async () => {
+      const onResumeSession = mock(() => {});
+      const pausedSessions = [
+        createPausedSession({ id: 'paused-session-nav', repositoryName: 'repo-nav' }),
+      ];
+
+      const { router } = await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          pausedSessions={pausedSessions}
+          onResumeSession={onResumeSession}
+        />
+      );
+
+      // Expand the paused section
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      // Click the paused session
+      const sessionButton = screen.getByText('repo-nav').closest('button')!;
+      fireEvent.click(sessionButton);
+
+      // Navigation happens optimistically regardless of resume result
+      expect(router.state.location.pathname).toBe('/sessions/paused-session-nav');
+    });
+
+    it('should handle onResumeSession returning a rejected promise without crashing', async () => {
+      const consoleErrorSpy = mock(() => {});
+      const originalError = console.error;
+      console.error = consoleErrorSpy;
+
+      const onResumeSession = mock(() => Promise.reject(new Error('Resume failed')));
+      const pausedSessions = [
+        createPausedSession({ id: 'paused-fail', repositoryName: 'repo-fail' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          pausedSessions={pausedSessions}
+          onResumeSession={onResumeSession}
+        />
+      );
+
+      // Expand the paused section
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      // Click the paused session
+      const sessionButton = screen.getByText('repo-fail').closest('button')!;
+      fireEvent.click(sessionButton);
+
+      // Allow the promise rejection to be caught
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // The error should be caught and logged, not thrown as unhandled rejection
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const errorCall = consoleErrorSpy.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Failed to resume session')
+      );
+      expect(errorCall).toBeTruthy();
+
+      console.error = originalError;
+    });
+
+    it('should sort paused sessions deterministically when pausedAt values are equal', async () => {
+      const samePausedAt = '2025-02-01T00:00:00Z';
+      const pausedSessions = [
+        createPausedSession({
+          id: 'session-c',
+          repositoryName: 'repo-c',
+          pausedAt: samePausedAt,
+        }),
+        createPausedSession({
+          id: 'session-a',
+          repositoryName: 'repo-a',
+          pausedAt: samePausedAt,
+        }),
+        createPausedSession({
+          id: 'session-b',
+          repositoryName: 'repo-b',
+          pausedAt: samePausedAt,
+        }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      // Click the "Paused" accordion to expand it
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      // All three paused sessions should be visible
+      const allButtons = screen.getAllByRole('button');
+      const pausedSessionButtons = allButtons.filter(btn =>
+        btn.textContent?.includes('repo-a') ||
+        btn.textContent?.includes('repo-b') ||
+        btn.textContent?.includes('repo-c')
+      );
+
+      expect(pausedSessionButtons).toHaveLength(3);
+      // With equal pausedAt, should sort by id ascending (session-a, session-b, session-c)
+      expect(pausedSessionButtons[0].textContent).toContain('repo-a');
+      expect(pausedSessionButtons[1].textContent).toContain('repo-b');
+      expect(pausedSessionButtons[2].textContent).toContain('repo-c');
+    });
   });
 });

@@ -707,7 +707,7 @@ describe('WorkerLifecycleManager', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+        expect(result.errorCode).toBe('SESSION_DELETED');
       }
     });
 

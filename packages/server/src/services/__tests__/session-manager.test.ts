@@ -1148,11 +1148,12 @@ describe('SessionManager', () => {
 
       const manager2 = await getSessionManager();
 
-      // Restore should return error for git-diff worker
+      // After server restart, session is paused (not in memory).
+      // restoreWorker returns SESSION_DELETED because the session is unavailable.
       const result = await manager2.restoreWorker(session.id, gitDiffWorker!.id);
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+        expect(result.errorCode).toBe('SESSION_DELETED');
       }
     });
 
@@ -1162,7 +1163,7 @@ describe('SessionManager', () => {
       const result = await manager.restoreWorker('non-existent', 'worker-1');
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+        expect(result.errorCode).toBe('SESSION_DELETED');
       }
     });
 
@@ -1180,11 +1181,12 @@ describe('SessionManager', () => {
 
       const manager2 = await getSessionManager();
 
-      // Try to restore non-existent worker
+      // After server restart, session is paused (not in memory).
+      // restoreWorker returns SESSION_DELETED because the session is unavailable.
       const result = await manager2.restoreWorker(session.id, 'non-existent-worker');
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorCode).toBe('WORKER_NOT_FOUND');
+        expect(result.errorCode).toBe('SESSION_DELETED');
       }
     });
 
