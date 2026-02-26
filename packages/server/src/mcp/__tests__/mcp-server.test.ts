@@ -1417,6 +1417,129 @@ describe('MCP Server Tools', () => {
       expect(response.result?.isError).toBe(true);
       expect(data.error).toContain('Agent not found');
     });
+
+    // -----------------------------------------------------------------------
+    // Message callback prompt (callerSessionId / callerWorkerId)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Extract the __AGENT_PROMPT__ env var from the PTY spawn call
+     * that matches the given session ID.
+     */
+    function getAgentPromptForSession(sessionId: string): string {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const matchingCall = calls.find((call) =>
+        call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
+      );
+      expect(matchingCall).toBeDefined();
+      const agentPrompt = matchingCall![2].env!.__AGENT_PROMPT__;
+      expect(agentPrompt).toBeDefined();
+      return agentPrompt!;
+    }
+
+    it('should append callback instructions to prompt when caller IDs are provided', async () => {
+      await setupDelegateEnvironment('feat/callback-test');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Implement callback feature',
+        branch: 'feat/callback-test',
+        callerSessionId: 'caller-session-123',
+        callerWorkerId: 'caller-worker-456',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+
+      // Should contain both the original prompt and callback instructions
+      expect(agentPrompt).toContain('Implement callback feature');
+      expect(agentPrompt).toContain('toSessionId: "caller-session-123"');
+      expect(agentPrompt).toContain('toWorkerId: "caller-worker-456"');
+      expect(agentPrompt).toContain('[Message Callback Instructions]');
+
+      // Verify structure includes separator and all required fields
+      expect(agentPrompt).toContain('\n---\n');
+      expect(agentPrompt).toContain('After completing this task');
+      expect(agentPrompt).toContain('send_session_message');
+      expect(agentPrompt).toContain('fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable');
+    });
+
+    it('should NOT append callback instructions when skipMessageCallbackPrompt is true', async () => {
+      await setupDelegateEnvironment('feat/skip-callback');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Implement feature without callback',
+        branch: 'feat/skip-callback',
+        callerSessionId: 'caller-session-123',
+        callerWorkerId: 'caller-worker-456',
+        skipMessageCallbackPrompt: true,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+
+      expect(agentPrompt).toContain('Implement feature without callback');
+      expect(agentPrompt).not.toContain('[Message Callback Instructions]');
+      expect(agentPrompt).not.toContain('toSessionId');
+      expect(agentPrompt).not.toContain('toWorkerId');
+    });
+
+    it('should return validation error when only callerSessionId is provided', async () => {
+      await setupDelegateEnvironment('feat/partial-caller');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test partial caller IDs',
+        branch: 'feat/partial-caller',
+        callerSessionId: 'caller-session-123',
+        // callerWorkerId is intentionally omitted
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('callerSessionId and callerWorkerId must be provided together');
+    });
+
+    it('should return validation error when only callerWorkerId is provided', async () => {
+      await setupDelegateEnvironment('feat/partial-worker');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test partial caller IDs',
+        branch: 'feat/partial-worker',
+        // callerSessionId is intentionally omitted
+        callerWorkerId: 'caller-worker-456',
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('callerSessionId and callerWorkerId must be provided together');
+    });
+
+    it('should NOT include callback instructions when caller IDs are not provided', async () => {
+      await setupDelegateEnvironment('feat/no-caller');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Normal delegation without caller IDs',
+        branch: 'feat/no-caller',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+
+      expect(agentPrompt).toContain('Normal delegation without caller IDs');
+      expect(agentPrompt).not.toContain('[Message Callback Instructions]');
+      expect(agentPrompt).not.toContain('toSessionId');
+      expect(agentPrompt).not.toContain('toWorkerId');
+    });
   });
 
   // ===========================================================================
