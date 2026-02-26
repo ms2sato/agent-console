@@ -227,10 +227,25 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
     }
   }
 
+  /**
+   * Update the base commit for an active connection and send fresh diff data.
+   * If no active connection exists for the workerId, silently returns.
+   */
+  async function updateBaseCommit(workerId: string, newBaseCommit: string): Promise<void> {
+    const state = activeConnections.get(workerId);
+    if (!state) {
+      return;
+    }
+
+    state.baseCommit = newBaseCommit;
+    await sendDiffData(state.ws, state.locationPath, newBaseCommit, state.targetRef);
+  }
+
   return {
     handleConnection,
     handleDisconnection,
     handleMessage,
+    updateBaseCommit,
   };
 }
 
@@ -243,3 +258,4 @@ const defaultHandlers = createGitDiffHandlers();
 export const handleGitDiffConnection = defaultHandlers.handleConnection;
 export const handleGitDiffDisconnection = defaultHandlers.handleDisconnection;
 export const handleGitDiffMessage = defaultHandlers.handleMessage;
+export const updateGitDiffBaseCommit = defaultHandlers.updateBaseCommit;

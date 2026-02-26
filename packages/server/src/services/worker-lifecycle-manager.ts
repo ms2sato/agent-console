@@ -36,7 +36,7 @@ import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
-import { stopWatching } from './git-diff-service.js';
+import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -303,6 +303,17 @@ export class WorkerLifecycleManager {
         );
         throw err;
       }
+
+      // Update git-diff workers' base commit after successful branch rename.
+      // This is a secondary concern - failure should not abort the agent restart.
+      try {
+        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
+      } catch (err) {
+        logger.error(
+          { sessionId, err },
+          'Failed to update git-diff workers after branch rename'
+        );
+      }
     }
 
     const isAgentChanged = workerAgentId !== existingWorker.agentId;
@@ -372,6 +383,31 @@ export class WorkerLifecycleManager {
     );
 
     return this.deps.workerManager.toPublicWorker(newWorker);
+  }
+
+  /**
+   * Update git-diff workers' base commit after a branch rename.
+   * Recalculates the merge-base once and updates all git-diff workers.
+   * Fires onDiffBaseCommitChanged callback for each updated worker.
+   * Does NOT persist the session - callers are responsible for persistence.
+   */
+  async updateGitDiffWorkersAfterBranchRename(sessionId: string): Promise<void> {
+    const session = this.deps.getSession(sessionId);
+    if (!session) return;
+
+    // Calculate base commit once for the session (same locationPath for all workers)
+    const newBaseCommit = await calculateBaseCommit(session.locationPath);
+    const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
+
+    for (const worker of session.workers.values()) {
+      if (worker.type !== 'git-diff') continue;
+
+      worker.baseCommit = resolvedBaseCommit;
+
+      this.deps.getSessionLifecycleCallbacks()?.onDiffBaseCommitChanged?.(
+        sessionId, worker.id, resolvedBaseCommit
+      );
+    }
   }
 
   /**

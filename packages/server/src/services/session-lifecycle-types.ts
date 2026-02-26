@@ -15,4 +15,5 @@ export interface SessionLifecycleCallbacks {
   onWorkerRestarted?: (sessionId: string, workerId: string) => void;
   onSessionPaused?: (sessionId: string, pausedAt: string) => void;
   onSessionResumed?: (session: Session) => void;
+  onDiffBaseCommitChanged?: (sessionId: string, workerId: string, newBaseCommit: string) => void;
 }
