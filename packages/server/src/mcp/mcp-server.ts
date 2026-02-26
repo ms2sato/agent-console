@@ -353,12 +353,33 @@ mcpServer.tool(
 
 // ---------- Tool: delegate_to_worktree ----------
 
+/**
+ * Build a prompt that includes callback instructions telling the delegated agent
+ * to report results back to the caller via send_session_message.
+ */
+function buildMessageCallbackPrompt(
+  prompt: string,
+  callerSessionId: string,
+  callerWorkerId: string,
+): string {
+  return `${prompt}
+---
+[Message Callback Instructions]
+After completing this task (whether successful or not), you MUST report your results back to the requesting session.
+Use the \`send_session_message\` MCP tool with the following parameters:
+- toSessionId: "${callerSessionId}"
+- toWorkerId: "${callerWorkerId}"
+- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable
+- content: A concise summary of what you accomplished, the outcome (success/failure), and any important details the caller needs to know.`;
+}
+
 mcpServer.tool(
   'delegate_to_worktree',
   'Create a new worktree, start a session with an agent, and send a prompt. ' +
     'Use this to delegate work to a new agent running in an isolated worktree. ' +
     'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
-    'To delegate to a repository other than your own, use list_repositories to discover available repositories.',
+    'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
+    'Optionally pass callerSessionId and callerWorkerId to have the delegated agent report results back via send_session_message.',
   {
     repositoryId: z.string().describe(
       'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable. ' +
@@ -389,9 +410,55 @@ mcpServer.tool(
       .boolean()
       .optional()
       .describe('If true, branch from origin/<baseBranch> instead of local branch'),
+    callerSessionId: z
+      .string()
+      .min(1, 'callerSessionId must be non-empty')
+      .optional()
+      .describe(
+        "The calling agent's session ID, from the AGENT_CONSOLE_SESSION_ID environment variable. " +
+          'When provided together with callerWorkerId, callback instructions are appended to the prompt ' +
+          'so the delegated agent reports results back via send_session_message.',
+      ),
+    callerWorkerId: z
+      .string()
+      .min(1, 'callerWorkerId must be non-empty')
+      .optional()
+      .describe(
+        "The calling agent's worker ID, from the AGENT_CONSOLE_WORKER_ID environment variable. " +
+          'Must be provided together with callerSessionId.',
+      ),
+    skipMessageCallbackPrompt: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, skip auto-appending callback instructions to the prompt. ' +
+          'Use this when you want to include your own custom reporting instructions in the prompt.',
+      ),
   },
-  async ({ repositoryId, prompt, baseBranch, branch, agentId, title, useRemote }) => {
+  async ({
+    repositoryId,
+    prompt,
+    baseBranch,
+    branch,
+    agentId,
+    title,
+    useRemote,
+    callerSessionId,
+    callerWorkerId,
+    skipMessageCallbackPrompt,
+  }) => {
     try {
+      // Validate caller IDs: both must be provided together
+      if (!!callerSessionId !== !!callerWorkerId) {
+        return errorResult('callerSessionId and callerWorkerId must be provided together');
+      }
+
+      // Build effective prompt with optional callback instructions
+      const effectivePrompt =
+        callerSessionId && callerWorkerId && !skipMessageCallbackPrompt
+          ? buildMessageCallbackPrompt(prompt, callerSessionId, callerWorkerId)
+          : prompt;
+
       // Validate repository
       const repositoryManager = getRepositoryManager();
       const repo = repositoryManager.getRepository(repositoryId);
@@ -502,7 +569,7 @@ mcpServer.tool(
           worktreeId: worktree.branch,
           locationPath: worktree.path,
           agentId: selectedAgentId,
-          initialPrompt: prompt,
+          initialPrompt: effectivePrompt,
           title: effectiveTitle,
         });
 
