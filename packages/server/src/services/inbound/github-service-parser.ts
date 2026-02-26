@@ -111,6 +111,7 @@ export class GitHubServiceParser implements ServiceParser {
     const name = getString(workflowRun, 'name');
     const url = getString(workflowRun, 'html_url');
     const branch = getString(workflowRun, 'head_branch');
+    const headSha = getString(workflowRun, 'head_sha');
     const repositoryName = getString(repository, 'full_name');
 
     if (!conclusion || !name || !repositoryName) return null;
@@ -125,6 +126,7 @@ export class GitHubServiceParser implements ServiceParser {
         repositoryName,
         branch: branch ?? undefined,
         url: url ?? undefined,
+        commitSha: headSha ?? undefined,
       },
       payload: body,
       summary: `${name} ${conclusion}`,

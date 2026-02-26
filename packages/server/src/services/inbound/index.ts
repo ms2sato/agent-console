@@ -7,6 +7,7 @@ import { GitHubServiceParser } from './github-service-parser.js';
 import { createInboundEventJobHandler } from './job-handler.js';
 import { createInboundHandlers } from './handlers.js';
 import { ServiceParserRegistry } from './parser-registry.js';
+import { createCICompletionChecker } from './ci-completion-checker.js';
 import { resolveTargets as resolveTargetsImpl } from './resolve-targets.js';
 import {
   createPendingNotification,
@@ -67,6 +68,7 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
         createPendingNotification,
         markNotificationDelivered,
       },
+      ciCompletionChecker: createCICompletionChecker(),
     })
   );
 
