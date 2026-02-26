@@ -41,6 +41,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('title', 'text')
       .addColumn('repository_id', 'text')
       .addColumn('worktree_id', 'text')
+      .addColumn('paused_at', 'text')
       .execute();
 
     await db.schema
@@ -1116,6 +1117,66 @@ describe('SqliteSessionRepository', () => {
 
       expect(sessions).toHaveLength(1);
       expect(sessions[0].id).toBe('valid-session');
+    });
+  });
+
+  describe('update', () => {
+    it('should update pausedAt field', async () => {
+      const session = createWorktreeSession({
+        id: 'update-paused-test',
+        serverPid: process.pid,
+      });
+      await repository.save(session);
+
+      const pausedAt = '2025-06-15T12:00:00.000Z';
+      const result = await repository.update('update-paused-test', {
+        serverPid: null,
+        pausedAt,
+      });
+
+      expect(result).toBe(true);
+
+      const found = await repository.findById('update-paused-test');
+      expect(found).not.toBeNull();
+      // Mapper converts SQL null to undefined for serverPid
+      expect(found?.serverPid).toBeUndefined();
+      expect(found?.pausedAt).toBe(pausedAt);
+    });
+
+    it('should clear pausedAt when set to null', async () => {
+      // Save session with pausedAt set
+      const session = createWorktreeSession({
+        id: 'clear-paused-test',
+        serverPid: undefined,
+        pausedAt: '2025-06-15T12:00:00.000Z',
+      });
+      await repository.save(session);
+
+      // Verify pausedAt is set
+      const before = await repository.findById('clear-paused-test');
+      expect(before?.pausedAt).toBe('2025-06-15T12:00:00.000Z');
+
+      // Clear pausedAt by setting to null
+      const result = await repository.update('clear-paused-test', {
+        serverPid: process.pid,
+        pausedAt: null,
+      });
+
+      expect(result).toBe(true);
+
+      const found = await repository.findById('clear-paused-test');
+      expect(found).not.toBeNull();
+      expect(found?.serverPid).toBe(process.pid);
+      expect(found?.pausedAt).toBeUndefined();
+    });
+
+    it('should return false if session not found', async () => {
+      const result = await repository.update('non-existent', {
+        serverPid: null,
+        pausedAt: '2025-06-15T12:00:00.000Z',
+      });
+
+      expect(result).toBe(false);
     });
   });
 

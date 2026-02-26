@@ -170,8 +170,8 @@ function DashboardPage() {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
 
     // Separate paused sessions (DB-only, explicitly paused) from active/phantom sessions
-    const activeSessions = sessions.filter(s => !s.paused);
-    const pausedSessionsList = sessions.filter(s => s.paused === true);
+    const activeSessions = sessions.filter(s => !s.pausedAt);
+    const pausedSessionsList = sessions.filter(s => !!s.pausedAt);
 
     console.log(`[Sync] Active/Phantom: ${activeSessions.length}, Paused: ${pausedSessionsList.length}`);
 
@@ -218,20 +218,43 @@ function DashboardPage() {
   // Handle session updated
   const handleSessionUpdated = useCallback((session: Session) => {
     console.log(`[Session] Updated: ${session.id}`);
-    setWsSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
+    if (session.pausedAt) {
+      // Session became paused - remove from active list
+      setWsSessions(prev => prev.filter(s => s.id !== session.id));
+      sessionsRef.current = sessionsRef.current.filter(s => s.id !== session.id);
+      // Track as paused session for resume UI
+      if (session.type === 'worktree') {
+        setPausedSessions(prev => ({
+          ...prev,
+          [session.locationPath]: session,
+        }));
       }
-      // Session not in list yet - add it if it's not paused
-      if (!session.paused) {
+    } else {
+      // Active session update - upsert
+      setWsSessions(prev => {
+        const exists = prev.some(s => s.id === session.id);
+        if (exists) {
+          return prev.map(s => s.id === session.id ? session : s);
+        }
         return [...prev, session];
+      });
+      sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+        ? sessionsRef.current.map(s => s.id === session.id ? session : s)
+        : [...sessionsRef.current, session];
+      // Remove from paused sessions if it was there
+      if (session.type === 'worktree') {
+        setPausedSessions(prev => {
+          const next = { ...prev };
+          for (const [path, pausedSession] of Object.entries(next)) {
+            if (pausedSession.id === session.id) {
+              delete next[path];
+              break;
+            }
+          }
+          return next;
+        });
       }
-      return prev;
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : (!session.paused ? [...sessionsRef.current, session] : sessionsRef.current);
+    }
   }, []);
 
   // Handle session deleted
@@ -270,14 +293,13 @@ function DashboardPage() {
   }, []);
 
   // Handle session paused (removed from memory but preserved in DB)
-  const handleSessionPaused = useCallback((sessionId: string) => {
+  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
     console.log(`[Session] Paused: ${sessionId}`);
     // Find the session to get its worktree path before removing
     const session = sessionsRef.current.find(s => s.id === sessionId);
     if (session && session.type === 'worktree') {
       // Track as paused session for "Resume" button, storing full session to preserve title
-      // Update activationState to 'hibernated' since it's now paused
-      const pausedSession: Session = { ...session, activationState: 'hibernated', paused: true };
+      const pausedSession: Session = { ...session, pausedAt };
       setPausedSessions(prev => ({
         ...prev,
         [session.locationPath]: pausedSession,
@@ -957,11 +979,9 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
   };
 
   const statusColor = session
-    ? session.activationState === 'hibernated'
-      ? 'bg-yellow-500'   // Phantom session (hibernated but in-memory)
-      : session.status === 'active'
-        ? 'bg-green-500'
-        : 'bg-gray-500'
+    ? session.status === 'active'
+      ? 'bg-green-500'
+      : 'bg-gray-500'
     : pausedSession
       ? 'bg-yellow-500'    // Paused session
       : 'bg-gray-600';     // No session
@@ -1002,12 +1022,7 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
               <VSCodeIcon className="w-4 h-4" />
             </button>
           )}
-          {session && session.activationState === 'hibernated' && (
-            <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-500/20 text-yellow-400">
-              Hibernated
-            </span>
-          )}
-          {session && session.activationState !== 'hibernated' && <ActivityBadge state={session.activityState} />}
+          {session && <ActivityBadge state={session.activityState} />}
         </div>
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
@@ -1119,11 +1134,9 @@ function SessionCard({ session }: SessionCardProps) {
   });
 
   const statusColor =
-    session.activationState === 'hibernated'
-      ? 'bg-yellow-500'
-      : session.status === 'active'
-        ? 'bg-green-500'
-        : 'bg-gray-500';
+    session.status === 'active'
+      ? 'bg-green-500'
+      : 'bg-gray-500';
 
   return (
     <>
@@ -1137,13 +1150,7 @@ function SessionCard({ session }: SessionCardProps) {
           )}
           <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
             <PathLink path={session.locationPath} className="truncate" />
-            {session.activationState === 'hibernated' ? (
-              <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-500/20 text-yellow-400">
-                Hibernated
-              </span>
-            ) : (
-              <ActivityBadge state={session.activityState} />
-            )}
+            <ActivityBadge state={session.activityState} />
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}

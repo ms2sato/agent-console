@@ -77,6 +77,7 @@ export class SqliteSessionRepository implements SessionRepository {
             title: sessionRow.title,
             repository_id: sessionRow.repository_id,
             worktree_id: sessionRow.worktree_id,
+            paused_at: sessionRow.paused_at,
           })
         )
         .execute();
@@ -168,6 +169,9 @@ export class SqliteSessionRepository implements SessionRepository {
     // worktreeId is only valid for worktree sessions
     if (updates.worktreeId !== undefined) {
       updateValues.worktree_id = updates.worktreeId;
+    }
+    if (updates.pausedAt !== undefined) {
+      updateValues.paused_at = updates.pausedAt ?? null;
     }
 
     const result = await this.db

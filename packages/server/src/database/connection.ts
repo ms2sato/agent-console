@@ -216,6 +216,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 11) {
     await migrateToV11(database);
   }
+
+  if (currentVersion < 12) {
+    await migrateToV12(database);
+  }
 }
 
 /**
@@ -623,6 +627,24 @@ async function migrateToV11(database: Kysely<Database>): Promise<void> {
 
   await sql`PRAGMA user_version = 11`.execute(database);
   logger.info('Migration to v11 completed');
+}
+
+/**
+ * Migration v12: Add paused_at column to sessions table.
+ * Tracks when a session was paused. NULL = not paused.
+ */
+async function migrateToV12(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v12: Adding paused_at column to sessions');
+
+  await database.schema
+    .alterTable('sessions')
+    .addColumn('paused_at', 'text')
+    .execute();
+
+  // Update schema version
+  await sql`PRAGMA user_version = 12`.execute(database);
+
+  logger.info('Migration to v12 completed');
 }
 
 /**

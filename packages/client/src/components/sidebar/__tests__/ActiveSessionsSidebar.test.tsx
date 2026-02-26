@@ -7,7 +7,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
-import type { AgentActivityState, WorktreeSession, QuickSession } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
 // Helper to create mock worktree session
 function createMockWorktreeSession(
@@ -303,6 +303,120 @@ describe('ActiveSessionsSidebar', () => {
       );
 
       expect(screen.queryByTitle('Drag to resize')).toBeNull();
+    });
+  });
+
+  describe('Paused sessions', () => {
+    function createPausedSession(overrides: Partial<Session> = {}): Session {
+      return createMockWorktreeSession({
+        pausedAt: new Date().toISOString(),
+        ...overrides,
+      });
+    }
+
+    it('should show paused section when pausedSessions is provided and not empty', async () => {
+      const pausedSessions = [createPausedSession({ repositoryName: 'paused-repo' })];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      expect(screen.getByText('Paused')).toBeTruthy();
+    });
+
+    it('should not show paused section when pausedSessions is empty', async () => {
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={[]} />
+      );
+
+      expect(screen.queryByText('Paused')).toBeNull();
+    });
+
+    it('should show paused count in header', async () => {
+      const pausedSessions = [
+        createPausedSession({ repositoryName: 'repo-1' }),
+        createPausedSession({ repositoryName: 'repo-2' }),
+        createPausedSession({ repositoryName: 'repo-3' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      // The count badge shows the number of paused sessions
+      expect(screen.getByText('3')).toBeTruthy();
+    });
+
+    it('should sort paused sessions by pausedAt descending', async () => {
+      const pausedSessions = [
+        createPausedSession({
+          id: 'oldest',
+          repositoryName: 'repo-oldest',
+          pausedAt: '2025-01-01T00:00:00Z',
+        }),
+        createPausedSession({
+          id: 'newest',
+          repositoryName: 'repo-newest',
+          pausedAt: '2025-03-01T00:00:00Z',
+        }),
+        createPausedSession({
+          id: 'middle',
+          repositoryName: 'repo-middle',
+          pausedAt: '2025-02-01T00:00:00Z',
+        }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      // Click the "Paused" accordion to expand it
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      // All three paused sessions should now be visible
+      expect(screen.getByText('repo-oldest')).toBeTruthy();
+      expect(screen.getByText('repo-newest')).toBeTruthy();
+      expect(screen.getByText('repo-middle')).toBeTruthy();
+
+      // Verify order: newest first, then middle, then oldest
+      const allButtons = screen.getAllByRole('button');
+      const pausedSessionButtons = allButtons.filter(btn =>
+        btn.textContent?.includes('repo-oldest') ||
+        btn.textContent?.includes('repo-newest') ||
+        btn.textContent?.includes('repo-middle')
+      );
+
+      expect(pausedSessionButtons).toHaveLength(3);
+      expect(pausedSessionButtons[0].textContent).toContain('repo-newest');
+      expect(pausedSessionButtons[1].textContent).toContain('repo-middle');
+      expect(pausedSessionButtons[2].textContent).toContain('repo-oldest');
+    });
+
+    it('should call onResumeSession when paused session is clicked', async () => {
+      const onResumeSession = mock(() => {});
+      const pausedSessions = [
+        createPausedSession({ id: 'paused-session-1', repositoryName: 'repo-to-resume' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          pausedSessions={pausedSessions}
+          onResumeSession={onResumeSession}
+        />
+      );
+
+      // Expand the paused section
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      // Click the paused session
+      const sessionButton = screen.getByText('repo-to-resume').closest('button')!;
+      fireEvent.click(sessionButton);
+
+      expect(onResumeSession).toHaveBeenCalledTimes(1);
+      expect(onResumeSession).toHaveBeenCalledWith('paused-session-1');
     });
   });
 });

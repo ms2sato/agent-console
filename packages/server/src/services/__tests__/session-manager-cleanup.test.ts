@@ -66,7 +66,7 @@ describe('SessionManager cleanup on initialization', () => {
     return SessionManager.create({ ptyProvider: ptyFactory.provider });
   }
 
-  it('should inherit sessions without serverPid (legacy sessions) and kill worker processes', async () => {
+  it('should mark legacy sessions as paused and kill worker processes', async () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
@@ -96,14 +96,14 @@ describe('SessionManager cleanup on initialization', () => {
     // Create SessionManager - cleanup runs during async initialization
     await createSessionManager();
 
-    // Legacy session worker should be killed (session is inherited)
+    // Legacy session worker should be killed (session is marked as paused)
     expect(mockProcess.wasKilled(11111)).toBe(true);
 
-    // Session should be inherited with updated serverPid
+    // Session should be marked as paused
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-    const inheritedSession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
-    expect(inheritedSession).toBeDefined();
-    expect(inheritedSession.serverPid).toBe(process.pid);
+    const pausedSession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
+    expect(pausedSession).toBeDefined();
+    expect(pausedSession.serverPid).toBeNull();
   });
 
   it('should preserve sessions when parent server is still alive', async () => {
@@ -142,7 +142,7 @@ describe('SessionManager cleanup on initialization', () => {
     expect(mockProcess.wasKilled(22222)).toBe(false);
   });
 
-  it('should kill orphan worker processes and inherit session when parent server is dead', async () => {
+  it('should kill orphan worker processes and mark session as paused when parent server is dead', async () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
@@ -175,11 +175,11 @@ describe('SessionManager cleanup on initialization', () => {
     // Orphan worker process should be killed
     expect(mockProcess.wasKilled(44444)).toBe(true);
 
-    // Session should be inherited (not removed), with serverPid updated to current server
+    // Session should be marked as paused (not removed)
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-    const inheritedSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
-    expect(inheritedSession).toBeDefined();
-    expect(inheritedSession.serverPid).toBe(process.pid); // Updated to current server PID
+    const pausedSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
+    expect(pausedSession).toBeDefined();
+    expect(pausedSession.serverPid).toBeNull();
   });
 
   it('should handle mixed sessions correctly', async () => {
@@ -255,23 +255,23 @@ describe('SessionManager cleanup on initialization', () => {
 
     await createSessionManager();
 
-    // Only orphan worker process should be killed (legacy session worker is also killed because serverPid is missing)
-    expect(mockProcess.wasKilled(10001)).toBe(true);  // Legacy session (serverPid missing = inherited)
-    expect(mockProcess.wasKilled(10002)).toBe(false); // Active session (serverPid alive = not inherited)
-    expect(mockProcess.wasKilled(10003)).toBe(true);  // Orphan session (serverPid dead = inherited)
+    // Legacy and orphan session workers should be killed before marking sessions as paused
+    expect(mockProcess.wasKilled(10001)).toBe(true);  // Legacy session (serverPid missing = marked paused)
+    expect(mockProcess.wasKilled(10002)).toBe(false); // Active session (serverPid alive = untouched)
+    expect(mockProcess.wasKilled(10003)).toBe(true);  // Orphan session (serverPid dead = marked paused)
 
-    // All sessions should remain in persistence (orphan and legacy are inherited, active is untouched)
+    // All sessions should remain in persistence (orphan and legacy marked as paused, active is untouched)
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
     expect(savedData.find((s: PersistedSession) => s.id === 'legacy-session')).toBeDefined();
     expect(savedData.find((s: PersistedSession) => s.id === 'active-session')).toBeDefined();
     expect(savedData.find((s: PersistedSession) => s.id === 'orphan-session')).toBeDefined();
 
-    // Inherited sessions should have updated serverPid
+    // Orphan and legacy sessions should be marked as paused
     const legacySession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
     const orphanSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
     const activeSession = savedData.find((s: PersistedSession) => s.id === 'active-session');
-    expect(legacySession.serverPid).toBe(process.pid);
-    expect(orphanSession.serverPid).toBe(process.pid);
+    expect(legacySession.serverPid).toBeNull();
+    expect(orphanSession.serverPid).toBeNull();
     expect(activeSession.serverPid).toBe(20001); // Unchanged
   });
 

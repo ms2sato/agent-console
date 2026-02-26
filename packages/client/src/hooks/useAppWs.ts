@@ -29,7 +29,7 @@ interface UseAppWsEventOptions {
   /** Called when a session is deleted */
   onSessionDeleted?: (sessionId: string) => void;
   /** Called when a session is paused (removed from memory but preserved in DB) */
-  onSessionPaused?: (sessionId: string) => void;
+  onSessionPaused?: (sessionId: string, pausedAt: string) => void;
   /** Called when a paused session is resumed */
   onSessionResumed?: (session: Session) => void;
   /** Called when worker activity state changes */
@@ -118,7 +118,7 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           break;
         case 'session-paused':
           console.log(`[WebSocket] session-paused: ${msg.sessionId}`);
-          optionsRef.current.onSessionPaused?.(msg.sessionId);
+          optionsRef.current.onSessionPaused?.(msg.sessionId, msg.pausedAt);
           break;
         case 'session-resumed':
           console.log(`[WebSocket] session-resumed: ${msg.session.id}`);

@@ -88,6 +88,7 @@ async function defaultPathExists(path: string): Promise<boolean> {
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
+  private resumingSessionIds = new Set<string>();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private webSocketCallbacks: WebSocketCallbacks | null = null;
@@ -178,18 +179,18 @@ export class SessionManager {
   }
 
   /**
-   * Load persisted sessions into memory (without starting processes).
-   * Only inherits sessions whose serverPid is dead (or missing).
+   * Process persisted sessions on startup.
+   * Sessions whose serverPid is dead (or missing) are marked as paused (serverPid = null)
+   * after killing any orphan worker processes. They are NOT loaded into memory.
    * Sessions owned by other live servers are left untouched.
-   * Also kills orphan worker processes from inherited sessions.
-   * Sessions whose locationPath no longer exists are marked as orphans.
+   * Sessions whose locationPath no longer exists are removed as orphans.
    */
   private async initializeSessions(): Promise<void> {
     const persistedSessions = await this.sessionRepository.findAll();
     const currentServerPid = getServerPid();
     const sessionsToSave: PersistedSession[] = [];
     const orphanSessionIds: string[] = [];
-    let inheritedCount = 0;
+    let markedPausedCount = 0;
     let killedWorkerCount = 0;
     let pathNotFoundCount = 0;
 
@@ -249,38 +250,13 @@ export class SessionManager {
         }
       }
 
-      // Create internal session with workers restored from persistence (pty: null)
-      const workers = this.workerManager.restoreWorkersFromPersistence(session.workers);
-      const baseSession = {
-        id: session.id,
-        locationPath: session.locationPath,
-        status: 'active' as const, // Mark as active so it appears in the list
-        createdAt: session.createdAt,
-        workers,
-        initialPrompt: session.initialPrompt,
-        title: session.title,
-      };
-
-      const internalSession: InternalSession = session.type === 'worktree'
-        ? {
-            ...baseSession,
-            type: 'worktree',
-            repositoryId: session.repositoryId,
-            worktreeId: session.worktreeId,
-          }
-        : {
-            ...baseSession,
-            type: 'quick',
-          };
-
-      this.sessions.set(session.id, internalSession);
-      inheritedCount++;
-
-      // Update serverPid to claim ownership
+      // Mark as paused in DB (not loaded into memory) - user can resume later
       sessionsToSave.push({
         ...session,
-        serverPid: currentServerPid,
+        serverPid: null,
+        pausedAt: new Date().toISOString(),
       });
+      markedPausedCount++;
     }
 
     // Delete orphan sessions (path no longer exists)
@@ -300,13 +276,13 @@ export class SessionManager {
       }
     }
 
-    // Save all sessions (inherited with updated PID, others unchanged)
+    // Save all sessions (dead-server sessions marked as paused, others unchanged)
     if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
       await this.sessionRepository.saveAll(sessionsToSave);
     }
 
     logger.info({
-      inheritedSessions: inheritedCount,
+      markedPausedSessions: markedPausedCount,
       killedWorkerProcesses: killedWorkerCount,
       removedOrphanSessions: pathNotFoundCount,
       serverPid: currentServerPid,
@@ -706,7 +682,7 @@ export class SessionManager {
       workers,
       initialPrompt: p.initialPrompt,
       title: p.title,
-      paused: true,
+      pausedAt: p.pausedAt,
     };
 
     if (p.type === 'worktree') {
@@ -773,9 +749,11 @@ export class SessionManager {
     // Clean up inter-worker message history
     this.messageService.clearSession(id);
 
-    // Save session with serverPid = null and worker PIDs cleared
+    // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
     // Using save() instead of update() to persist the full session state including worker PID changes
     const persistedSession = this.toPersistedSessionWithServerPid(session, null);
+    const pausedAt = new Date().toISOString();
+    persistedSession.pausedAt = pausedAt;
     await this.sessionRepository.save(persistedSession);
 
     // Remove from in-memory sessions Map (after successful persistence)
@@ -784,7 +762,7 @@ export class SessionManager {
     logger.info({ sessionId: id }, 'Session paused');
 
     // Call lifecycle callback
-    this.sessionLifecycleCallbacks?.onSessionPaused?.(id);
+    this.sessionLifecycleCallbacks?.onSessionPaused?.(id, pausedAt);
 
     return true;
   }
@@ -803,6 +781,25 @@ export class SessionManager {
       return this.toPublicSession(existingSession);
     }
 
+    // Prevent concurrent resume attempts for the same session
+    if (this.resumingSessionIds.has(id)) {
+      logger.warn({ sessionId: id }, 'Resume already in progress');
+      return null;
+    }
+
+    this.resumingSessionIds.add(id);
+
+    try {
+      return await this.resumeSessionInternal(id);
+    } finally {
+      this.resumingSessionIds.delete(id);
+    }
+  }
+
+  /**
+   * Internal implementation of resumeSession, called after concurrency guard.
+   */
+  private async resumeSessionInternal(id: string): Promise<Session | null> {
     // Load from database
     const persisted = await this.sessionRepository.findById(id);
     if (!persisted) {
@@ -885,11 +882,45 @@ export class SessionManager {
       // Remove session from memory
       this.sessions.delete(id);
 
+      // Restore paused state in DB to allow future resume attempts
+      try {
+        await this.sessionRepository.update(id, {
+          serverPid: null,
+          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
+        });
+      } catch (updateErr) {
+        logger.error({ sessionId: id, err: updateErr }, 'Failed to restore paused state after resume failure');
+      }
+
       return null;
     }
 
-    // Update DB: set serverPid = process.pid (marks session as owned by this server)
-    await this.sessionRepository.update(id, { serverPid: getServerPid() });
+    // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
+    try {
+      await this.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
+    } catch (err) {
+      logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
+
+      // Kill all workers that were successfully activated
+      for (const worker of activatedWorkers) {
+        this.workerManager.killWorker(worker);
+      }
+
+      // Remove session from memory
+      this.sessions.delete(id);
+
+      // Restore paused state in DB to allow future resume attempts
+      try {
+        await this.sessionRepository.update(id, {
+          serverPid: null,
+          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
+        });
+      } catch (rollbackErr) {
+        logger.error({ sessionId: id, err: rollbackErr }, 'Failed to persist rollback after resume persistence failure');
+      }
+
+      return null;
+    }
 
     logger.info({ sessionId: id }, 'Session resumed');
 
