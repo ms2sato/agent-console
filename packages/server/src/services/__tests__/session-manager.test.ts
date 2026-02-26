@@ -2272,6 +2272,93 @@ describe('SessionManager', () => {
       const result = await managerWithMissingPath.resumeSession(session.id);
       expect(result).toBeNull();
     });
+
+    it('should restore paused state in DB if PTY activation fails', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+
+      await manager.pauseSession(sessionId);
+
+      // Verify session is paused in persistence (serverPid is null)
+      const savedDataBeforeResume = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      expect(savedDataBeforeResume[0].serverPid).toBeNull();
+      expect(savedDataBeforeResume[0].pausedAt).toBeDefined();
+
+      // Create a new manager with a PTY provider that throws on spawn
+      // This simulates PTY activation failure during resume
+      const failingPtyProvider = {
+        spawn: () => {
+          throw new Error('PTY spawn failed');
+        },
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const managerWithFailingPty = await module.SessionManager.create({
+        ptyProvider: failingPtyProvider as any,
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+      });
+
+      // Resume should fail because PTY activation throws
+      const result = await managerWithFailingPty.resumeSession(sessionId);
+      expect(result).toBeNull();
+
+      // Session should NOT be in memory
+      expect(managerWithFailingPty.getSession(sessionId)).toBeUndefined();
+
+      // DB should be restored to paused state (serverPid cleared, pausedAt set)
+      // The session should still be findable as "paused" for future resume attempts
+      const pausedSessions = await managerWithFailingPty.getAllPausedSessions();
+      const failedSession = pausedSessions.find((s: Session) => s.id === sessionId);
+      expect(failedSession).toBeDefined();
+      expect(failedSession?.pausedAt).toBeDefined();
+    });
+
+    it('should prevent concurrent resume attempts for the same session', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+
+      await manager.pauseSession(sessionId);
+
+      // PTY count before resume
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Call resumeSession concurrently - both should not cause orphan PTYs
+      const [result1, result2] = await Promise.all([
+        manager.resumeSession(sessionId),
+        manager.resumeSession(sessionId),
+      ]);
+
+      // One should succeed and the other should return null (blocked by guard)
+      const successCount = [result1, result2].filter((r) => r !== null).length;
+      expect(successCount).toBe(1);
+
+      // Session should be in memory exactly once
+      expect(manager.getSession(sessionId)).toBeDefined();
+
+      // Only one set of PTYs should have been created (not two)
+      // Each resume creates 1 PTY for the agent worker
+      const ptysCreated = ptyFactory.instances.length - ptyCountBefore;
+      expect(ptysCreated).toBe(1);
+    });
   });
 
   describe('getAllPausedSessions', () => {

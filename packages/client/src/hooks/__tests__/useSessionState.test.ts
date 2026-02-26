@@ -252,7 +252,7 @@ describe('useSessionState', () => {
   });
 
   describe('handleSessionPaused', () => {
-    it('should mark session as paused and hibernated', () => {
+    it('should set pausedAt without changing activationState', () => {
       const { result } = renderHook(() => useSessionState());
 
       const session = createMockSession({ id: 'session-1', activationState: 'running' });
@@ -266,9 +266,9 @@ describe('useSessionState', () => {
       });
 
       expect(result.current.sessions[0].pausedAt).toBeDefined();
-      expect(result.current.sessions[0].activationState).toBe('hibernated');
+      expect(result.current.sessions[0].activationState).toBe('running');
       expect(result.current.sessionsRef.current[0].pausedAt).toBeDefined();
-      expect(result.current.sessionsRef.current[0].activationState).toBe('hibernated');
+      expect(result.current.sessionsRef.current[0].activationState).toBe('running');
     });
 
     it('should not affect other sessions', () => {

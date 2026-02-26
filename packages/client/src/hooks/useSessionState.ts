@@ -34,6 +34,15 @@ export function useSessionState(): UseSessionStateReturn {
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   const sessionsRef = useRef<Session[]>([]);
 
+  /** Upsert a session: replace if exists, append if new. Used by updated/resumed handlers. */
+  function upsertSession(list: Session[], session: Session): Session[] {
+    const exists = list.some(s => s.id === session.id);
+    if (exists) {
+      return list.map(s => s.id === session.id ? session : s);
+    }
+    return [...list, session];
+  }
+
   const handleSessionsSync = useCallback((newSessions: Session[], activityStates: WorkerActivityInfo[]) => {
     setSessions(newSessions);
     setWsInitialized(true);
@@ -56,16 +65,8 @@ export function useSessionState(): UseSessionStateReturn {
   }, []);
 
   const handleSessionUpdated = useCallback((session: Session) => {
-    setSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
-      }
-      return [...prev, session];
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : [...sessionsRef.current, session];
+    setSessions(prev => upsertSession(prev, session));
+    sessionsRef.current = upsertSession(sessionsRef.current, session);
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
@@ -82,24 +83,16 @@ export function useSessionState(): UseSessionStateReturn {
   const handleSessionPaused = useCallback((sessionId: string) => {
     const pausedAt = new Date().toISOString();
     setSessions(prev => prev.map(s =>
-      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt } : s
     ));
     sessionsRef.current = sessionsRef.current.map(s =>
-      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt } : s
     );
   }, []);
 
   const handleSessionResumed = useCallback((session: Session) => {
-    setSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
-      }
-      return [...prev, session];
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : [...sessionsRef.current, session];
+    setSessions(prev => upsertSession(prev, session));
+    sessionsRef.current = upsertSession(sessionsRef.current, session);
   }, []);
 
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {

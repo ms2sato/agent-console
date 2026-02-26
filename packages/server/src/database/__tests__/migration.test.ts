@@ -1263,6 +1263,57 @@ describe('migration', () => {
     });
   });
 
+  describe('schema migration v12: paused_at column', () => {
+    it('should add paused_at column to sessions table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-paused',
+          type: 'quick',
+          location_path: '/test/paused',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+          paused_at: '2025-06-15T12:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].paused_at).toBe('2025-06-15T12:00:00.000Z');
+    });
+
+    it('should allow null paused_at values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-not-paused',
+          type: 'quick',
+          location_path: '/test/not-paused',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].paused_at).toBeNull();
+    });
+  });
+
   describe('migrateFromJson error handling', () => {
     it('should handle unparseable JSON gracefully', async () => {
       // Create an invalid sessions.json with malformed JSON

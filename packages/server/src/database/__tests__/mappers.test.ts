@@ -87,6 +87,35 @@ describe('mappers', () => {
       expect(row.repository_id).toBeNull();
       expect(row.worktree_id).toBeNull();
     });
+
+    it('should map pausedAt to paused_at', () => {
+      const session: PersistedQuickSession = {
+        id: 'session-1',
+        type: 'quick',
+        locationPath: '/path/to/project',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        workers: [],
+        pausedAt: '2025-06-15T12:00:00.000Z',
+      };
+
+      const row = toSessionRow(session);
+
+      expect(row.paused_at).toBe('2025-06-15T12:00:00.000Z');
+    });
+
+    it('should map undefined pausedAt to null paused_at', () => {
+      const session: PersistedQuickSession = {
+        id: 'session-1',
+        type: 'quick',
+        locationPath: '/path/to/project',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        workers: [],
+      };
+
+      const row = toSessionRow(session);
+
+      expect(row.paused_at).toBeNull();
+    });
   });
 
   describe('toWorkerRow', () => {
@@ -371,6 +400,27 @@ describe('mappers', () => {
       expect(session.serverPid).toBeUndefined();
       expect(session.initialPrompt).toBeUndefined();
       expect(session.title).toBeUndefined();
+      expect(session.pausedAt).toBeUndefined();
+    });
+
+    it('should map paused_at timestamp to pausedAt', () => {
+      const dbSession: Session = {
+        id: 'session-1',
+        type: 'quick',
+        location_path: '/path',
+        server_pid: null,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        initial_prompt: null,
+        title: null,
+        repository_id: null,
+        worktree_id: null,
+        paused_at: '2025-06-15T12:00:00.000Z',
+      };
+
+      const session = toPersistedSession(dbSession, []);
+
+      expect(session.pausedAt).toBe('2025-06-15T12:00:00.000Z');
     });
   });
 

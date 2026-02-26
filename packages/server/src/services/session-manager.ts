@@ -88,6 +88,7 @@ async function defaultPathExists(path: string): Promise<boolean> {
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
+  private resumingSessionIds = new Set<string>();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private webSocketCallbacks: WebSocketCallbacks | null = null;
@@ -779,6 +780,25 @@ export class SessionManager {
       return this.toPublicSession(existingSession);
     }
 
+    // Prevent concurrent resume attempts for the same session
+    if (this.resumingSessionIds.has(id)) {
+      logger.warn({ sessionId: id }, 'Resume already in progress');
+      return null;
+    }
+
+    this.resumingSessionIds.add(id);
+
+    try {
+      return await this.resumeSessionInternal(id);
+    } finally {
+      this.resumingSessionIds.delete(id);
+    }
+  }
+
+  /**
+   * Internal implementation of resumeSession, called after concurrency guard.
+   */
+  private async resumeSessionInternal(id: string): Promise<Session | null> {
     // Load from database
     const persisted = await this.sessionRepository.findById(id);
     if (!persisted) {
@@ -860,6 +880,16 @@ export class SessionManager {
 
       // Remove session from memory
       this.sessions.delete(id);
+
+      // Restore paused state in DB to allow future resume attempts
+      try {
+        await this.sessionRepository.update(id, {
+          serverPid: null,
+          pausedAt: new Date().toISOString(),
+        });
+      } catch (updateErr) {
+        logger.error({ sessionId: id, err: updateErr }, 'Failed to restore paused state after resume failure');
+      }
 
       return null;
     }
