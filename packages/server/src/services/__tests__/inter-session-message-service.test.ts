@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vol } from 'memfs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { InterSessionMessageService, validateId } from '../inter-session-message-service.js';
+import {
+  InterSessionMessageService,
+  validateId,
+  MAX_MESSAGE_CONTENT_BYTES,
+} from '../inter-session-message-service.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -83,6 +87,33 @@ describe('InterSessionMessageService', () => {
       const files = vol.readdirSync(dirPath) as string[];
       const tmpFiles = files.filter((f) => f.startsWith('.tmp-'));
       expect(tmpFiles).toHaveLength(0);
+    });
+
+    it('should reject message content exceeding 64 KB', async () => {
+      const oversizedContent = 'x'.repeat(MAX_MESSAGE_CONTENT_BYTES + 1);
+
+      await expect(
+        service.sendMessage({
+          toSessionId: 'session-target',
+          toWorkerId: 'worker-1',
+          fromSessionId: 'session-sender',
+          content: oversizedContent,
+        }),
+      ).rejects.toThrow('Message content too large');
+    });
+
+    it('should accept message content at exactly 64 KB', async () => {
+      const exactContent = 'x'.repeat(MAX_MESSAGE_CONTENT_BYTES);
+
+      const result = await service.sendMessage({
+        toSessionId: 'session-target',
+        toWorkerId: 'worker-1',
+        fromSessionId: 'session-sender',
+        content: exactContent,
+      });
+
+      expect(result.messageId).toBeDefined();
+      expect(vol.existsSync(result.path)).toBe(true);
     });
 
     it('should handle concurrent messages from different senders without collision', async () => {

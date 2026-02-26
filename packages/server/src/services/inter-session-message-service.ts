@@ -17,6 +17,9 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('inter-session-message');
 
+/** Maximum message content size: 64 KB */
+export const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
+
 /**
  * Validate that an ID contains only safe characters and cannot be used
  * for path traversal. Allows alphanumeric characters, dots, hyphens,
@@ -68,6 +71,13 @@ export class InterSessionMessageService {
     validateId(toSessionId, 'toSessionId');
     validateId(toWorkerId, 'toWorkerId');
     validateId(fromSessionId, 'fromSessionId');
+
+    const contentBytes = Buffer.byteLength(content, 'utf-8');
+    if (contentBytes > MAX_MESSAGE_CONTENT_BYTES) {
+      throw new Error(
+        `Message content too large (${contentBytes} bytes). Maximum allowed: ${MAX_MESSAGE_CONTENT_BYTES} bytes (64 KB).`,
+      );
+    }
 
     const messagesDir = getMessagesDir();
     const dir = path.resolve(messagesDir, toSessionId, toWorkerId);

@@ -113,7 +113,7 @@ The agent then reads the file at its own pace to get the actual content.
 
 ### Decision 7: No prescribed message format
 
-The message content is free-form. The system does not enforce a schema. Agents determine what to write based on the context:
+The message content is free-form. The system does not enforce a schema but enforces a maximum size of **64 KB** per message. Agents determine what to write based on the context:
 
 - Completion notification: `{ "status": "completed", "summary": "..." }`
 - Question: `{ "type": "question", "content": "Should I use approach A or B?" }`
@@ -167,12 +167,13 @@ When `send_session_message` is called:
 
 1. Validate target session exists
 2. Resolve target worker (explicit or sole agent worker; error if ambiguous)
-3. Ensure directory exists: `~/.agent-console/messages/{sessionId}/{workerId}/`
-4. Write message to temp file in the same directory
-5. Atomic rename to final path: `{timestamp}-{senderSessionId}-{randomHex}.json`
-6. Deliver PTY notification to the target worker (synchronous, within the same MCP tool handler)
-7. Optionally broadcast via app WebSocket for UI notification
-8. Return message ID and path
+3. Validate message content size (max 64 KB)
+4. Ensure directory exists: `~/.agent-console/messages/{sessionId}/{workerId}/`
+5. Write message to temp file in the same directory
+6. Atomic rename to final path: `{timestamp}-{senderSessionId}-{randomHex}.json`
+7. Deliver PTY notification to the target worker (synchronous, within the same MCP tool handler)
+8. Optionally broadcast via app WebSocket for UI notification
+9. Return message ID and path
 
 ### Notification delivery
 
@@ -197,7 +198,7 @@ Message files are cleaned up when:
 - A session is deleted → remove `~/.agent-console/messages/{sessionId}/` entirely
 - A worker is deleted → remove `~/.agent-console/messages/{sessionId}/{workerId}/`
 
-Message files are not automatically expired. Since messages are small and messaging frequency is low in typical usage, unbounded growth is not a practical concern. If this assumption proves wrong, a TTL-based cleanup can be added later.
+Message files are not automatically expired. Since messages are small (max 64 KB each), messaging frequency is low in typical usage, and files are cleaned up on session/worker deletion, unbounded growth is not a practical concern. If this assumption proves wrong, a TTL-based cleanup or per-worker quota can be added later.
 
 ## Use Cases
 

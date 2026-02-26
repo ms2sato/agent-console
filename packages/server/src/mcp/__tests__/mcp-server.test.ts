@@ -889,6 +889,26 @@ describe('MCP Server Tools', () => {
       expect(fileContent).toBe('explicit target message');
     });
 
+    it('should return error when message content exceeds size limit', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const oversizedContent = 'x'.repeat(64 * 1024 + 1);
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: oversizedContent,
+        fromSessionId: 'test-sender',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Message content too large');
+    });
+
     it('should return validation error when fromSessionId is omitted', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
