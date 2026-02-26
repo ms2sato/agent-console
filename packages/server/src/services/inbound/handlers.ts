@@ -5,6 +5,8 @@ import type {
 } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
+import { writePtyNotification } from '../../lib/pty-notification.js';
+import { createLogger } from '../../lib/logger.js';
 
 export interface EventTarget {
   sessionId: string;
@@ -38,6 +40,8 @@ export function createInboundHandlers(deps: InboundHandlerDependencies): Inbound
   ];
 }
 
+const handlerLogger = createLogger('inbound-handlers');
+
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
   readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed', 'pr:review_comment'];
@@ -54,45 +58,31 @@ class AgentWorkerHandler implements InboundEventHandler {
     const workerId = target.workerId ?? session.workers.find((worker) => worker.type === 'agent')?.id;
     if (!workerId) return false;
 
-    const message = this.formatMessage(event);
-    return this.sessionManager.writeWorkerInput(target.sessionId, workerId, message);
-  }
+    const sessionId = target.sessionId;
+    try {
+      writePtyNotification({
+        tag: `inbound:${event.type}`,
+        fields: {
+          type: event.type,
+          source: event.source,
+          repo: event.metadata.repositoryName ?? 'unknown',
+          branch: event.metadata.branch ?? 'unknown',
+          url: event.metadata.url ?? 'N/A',
+          summary: event.summary,
+          intent: event.type === 'ci:failed' || event.type === 'pr:review_comment' ? 'triage' : 'inform',
+        },
+        writeInput: (data) => this.sessionManager.writeWorkerInput(sessionId, workerId, data),
+      });
+    } catch (err) {
+      handlerLogger.warn(
+        { err, sessionId, workerId, eventType: event.type },
+        'PTY notification failed for inbound event',
+      );
+      return false;
+    }
 
-  private formatMessage(event: InboundSystemEvent): string {
-    const values = {
-      type: event.type,
-      source: event.source,
-      repo: event.metadata.repositoryName ?? 'unknown',
-      branch: event.metadata.branch ?? 'unknown',
-      url: event.metadata.url ?? 'N/A',
-      summary: event.summary,
-      intent: event.type === 'ci:failed' || event.type === 'pr:review_comment' ? 'triage' : 'inform',
-    };
-
-    const fields = Object.entries(values)
-      .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
-      .join(' ');
-
-    return `\n[inbound:${event.type}] ${fields}\n`;
+    return true;
   }
-}
-
-/** @internal Exported for testing */
-export function formatFieldValue(value: string): string {
-  // Strip control characters that terminals may interpret:
-  // - ASCII C0 range (\x00-\x08, \x0e-\x1f) excluding whitespace (\x09 tab, \x0a LF, \x0d CR)
-  // - DEL (\x7f)
-  // - Unicode C1 range (\x80-\x9f) — includes 8-bit CSI (U+009B) recognized by terminals in 8-bit mode
-  // Whitespace controls are left for the \s+ normalization below to collapse into spaces.
-  const sanitized = value.replace(/[\x00-\x08\x0e-\x1f\x7f\x80-\x9f]/g, '');
-  const normalized = sanitized.replace(/\s+/g, ' ').trim();
-  if (normalized.includes('"')) {
-    return `"${normalized.replace(/"/g, '\\"')}"`;
-  }
-  if (normalized.includes(' ') || normalized.includes('=')) {
-    return `"${normalized}"`;
-  }
-  return normalized;
 }
 
 class DiffWorkerHandler implements InboundEventHandler {

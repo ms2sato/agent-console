@@ -6,7 +6,7 @@
  * to ensure concurrent safety.
  *
  * Directory structure:
- *   ~/.agent-console/messages/{sessionId}/{workerId}/{timestamp}-{fromSessionId}.json
+ *   ~/.agent-console/messages/{sessionId}/{workerId}/{timestamp}-{fromSessionId}-{randomHex}.json
  */
 
 import { randomBytes } from 'crypto';
@@ -47,7 +47,7 @@ export interface SendMessageParams {
 }
 
 export interface SendMessageResult {
-  /** Filename: {timestamp}-{senderSessionId}.json */
+  /** Filename: {timestamp}-{senderSessionId}-{randomHex}.json */
   messageId: string;
   /** Absolute path to the message file */
   path: string;
@@ -59,7 +59,7 @@ export class InterSessionMessageService {
    *
    * 1. Create directory: {messagesDir}/{toSessionId}/{toWorkerId}/ (recursive)
    * 2. Write to temp file `.tmp-{messageId}` in the same directory
-   * 3. Atomic rename to `{timestamp}-{fromSessionId}.json`
+   * 3. Atomic rename to `{timestamp}-{fromSessionId}-{randomHex}.json`
    * 4. Return { messageId, path }
    */
   async sendMessage(params: SendMessageParams): Promise<SendMessageResult> {

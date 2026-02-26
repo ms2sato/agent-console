@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { vol } from 'memfs';
 import { Hono } from 'hono';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -763,6 +763,45 @@ describe('MCP Server Tools', () => {
       expect(allWritten).toContain('source=session');
       expect(allWritten).toContain('from=sender-session-123');
       expect(allWritten).toContain('intent=triage');
+    });
+
+    it('should split notification text and Enter keystroke into separate writes with delay', async () => {
+      jest.useFakeTimers();
+      try {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        // Clear any writes from session creation
+        mockPty.writtenData.length = 0;
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'split test',
+          fromSessionId: 'sender-abc',
+        }, nextId++);
+
+        // Before the timer fires, only the notification text should be written
+        expect(mockPty.writtenData).toHaveLength(1);
+        expect(mockPty.writtenData[0]).toContain('[inbound:message]');
+        expect(mockPty.writtenData[0]).not.toContain('\r');
+        // The notification text should NOT end with \n (no trailing newline)
+        expect(mockPty.writtenData[0].endsWith('\n')).toBe(false);
+
+        // Advance past the 150ms delay
+        jest.advanceTimersByTime(150);
+
+        // Now the Enter keystroke should have been sent as a second write
+        expect(mockPty.writtenData).toHaveLength(2);
+        expect(mockPty.writtenData[1]).toBe('\r');
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('should include sender session title in notification summary', async () => {

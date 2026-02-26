@@ -28,6 +28,17 @@ interface UseSessionStateReturn {
   setSessionsFromApi: (sessions: Session[]) => void;
 }
 
+/**
+ * Upsert a session in an array: replace if exists, append if new.
+ */
+function upsertSession(sessions: Session[], session: Session): Session[] {
+  const exists = sessions.some(s => s.id === session.id);
+  if (exists) {
+    return sessions.map(s => s.id === session.id ? session : s);
+  }
+  return [...sessions, session];
+}
+
 export function useSessionState(): UseSessionStateReturn {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [wsInitialized, setWsInitialized] = useState(false);
@@ -55,17 +66,9 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef.current = [...sessionsRef.current, session];
   }, []);
 
-  const handleSessionUpdated = useCallback((session: Session) => {
-    setSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
-      }
-      return [...prev, session];
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : [...sessionsRef.current, session];
+  const handleSessionUpsert = useCallback((session: Session) => {
+    setSessions(prev => upsertSession(prev, session));
+    sessionsRef.current = upsertSession(sessionsRef.current, session);
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
@@ -88,19 +91,6 @@ export function useSessionState(): UseSessionStateReturn {
     );
   }, []);
 
-  const handleSessionResumed = useCallback((session: Session) => {
-    setSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
-      }
-      return [...prev, session];
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : [...sessionsRef.current, session];
-  }, []);
-
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
     setWorkerActivityStates(prev => ({
       ...prev,
@@ -121,10 +111,10 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef,
     handleSessionsSync,
     handleSessionCreated,
-    handleSessionUpdated,
+    handleSessionUpdated: handleSessionUpsert,
     handleSessionDeleted,
     handleSessionPaused,
-    handleSessionResumed,
+    handleSessionResumed: handleSessionUpsert,
     handleWorkerActivity,
     setSessionsFromApi,
   };

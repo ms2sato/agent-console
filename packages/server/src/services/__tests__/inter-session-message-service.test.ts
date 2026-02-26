@@ -32,7 +32,7 @@ describe('InterSessionMessageService', () => {
       expect(dirExists).toBe(true);
     });
 
-    it('should create file with correct name pattern: {timestamp}-{fromSessionId}.json', async () => {
+    it('should create file with correct name pattern: {timestamp}-{fromSessionId}-{randomHex}.json', async () => {
       const result = await service.sendMessage({
         toSessionId: 'session-target',
         toWorkerId: 'worker-1',

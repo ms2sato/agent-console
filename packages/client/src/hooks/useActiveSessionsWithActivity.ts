@@ -59,12 +59,11 @@ export function useActiveSessionsWithActivity(
 
       const activityState = getSessionActivityState(session, workerActivityStates);
 
-      // Include sessions with known activity state OR phantom (hibernated) sessions
+      // Include sessions with known activity state OR phantom (hibernated) sessions.
+      // Note: getSessionActivityState already returns 'unknown' for hibernated sessions,
+      // so the condition below correctly includes them.
       if (activityState !== 'unknown' || session.activationState === 'hibernated') {
-        sessionsWithActivity.push({
-          session,
-          activityState: session.activationState === 'hibernated' ? 'unknown' : activityState,
-        });
+        sessionsWithActivity.push({ session, activityState });
       }
     }
 

@@ -18,7 +18,7 @@ import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
-import { formatFieldValue } from '../services/inbound/handlers.js';
+import { writePtyNotification } from '../lib/pty-notification.js';
 import { fetchRemote, getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
@@ -312,23 +312,29 @@ mcpServer.tool(
         content,
       });
 
-      // 4. PTY notification (best-effort)
-      const senderTitle = fromSessionId
-        ? (sessionManager.getSession(fromSessionId)?.title ?? fromSessionId)
-        : 'unknown';
+      // 4. PTY notification (best-effort -- message file is already written)
+      try {
+        const senderTitle = fromSessionId
+          ? (sessionManager.getSession(fromSessionId)?.title ?? fromSessionId)
+          : 'unknown';
 
-      const notificationFields = {
-        source: 'session',
-        from: effectiveFromSessionId,
-        summary: `Message from session ${senderTitle}`,
-        path: result.path,
-        intent: 'triage',
-      };
-      const fields = Object.entries(notificationFields)
-        .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
-        .join(' ');
-      const notification = `\n[inbound:message] ${fields}\n`;
-      sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, notification);
+        writePtyNotification({
+          tag: 'inbound:message',
+          fields: {
+            source: 'session',
+            from: effectiveFromSessionId,
+            summary: `Message from session ${senderTitle}`,
+            path: result.path,
+            intent: 'triage',
+          },
+          writeInput: (data) => sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data),
+        });
+      } catch (notifyErr) {
+        logger.warn(
+          { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+          'PTY notification failed (message file was written successfully)',
+        );
+      }
 
       return textResult({
         messageId: result.messageId,
