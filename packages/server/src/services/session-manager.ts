@@ -1141,28 +1141,38 @@ export class SessionManager {
 
         try {
           await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
-
-          // Recalculate base commit for git-diff workers after branch rename
-          const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
-          const updatedWorkers = metadata.workers.map(w => {
-            if (w.type === 'git-diff' && newBaseCommit) {
-              return { ...w, baseCommit: newBaseCommit };
-            }
-            return w;
-          });
-
-          // Persist the updated branch name (worktreeId) and base commit for inactive sessions
-          await this.sessionRepository.save({
-            ...metadata,
-            worktreeId: updates.branch,
-            workers: updatedWorkers,
-          });
-
-          return { success: true, branch: updates.branch };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
           return { success: false, error: message };
         }
+
+        // Update git-diff workers' base commit after successful branch rename.
+        // This is a secondary concern - failure should not abort the branch rename.
+        let updatedWorkers = metadata.workers;
+        try {
+          const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
+          const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
+          updatedWorkers = metadata.workers.map(w => {
+            if (w.type === 'git-diff') {
+              return { ...w, baseCommit: resolvedBaseCommit };
+            }
+            return w;
+          });
+        } catch (diffUpdateError) {
+          logger.error(
+            { sessionId, err: diffUpdateError },
+            'Failed to update git-diff workers after branch rename for inactive session'
+          );
+        }
+
+        // Persist the updated branch name (worktreeId) and base commit for inactive sessions
+        await this.sessionRepository.save({
+          ...metadata,
+          worktreeId: updates.branch,
+          workers: updatedWorkers,
+        });
+
+        return { success: true, branch: updates.branch };
       }
 
       return { success: true };
@@ -1185,8 +1195,16 @@ export class SessionManager {
         await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
         session.worktreeId = updates.branch;
 
-        // Update git-diff workers' base commit after successful branch rename
-        await this.workerLifecycleManager.updateGitDiffWorkersAfterBranchRename(sessionId);
+        // Update git-diff workers' base commit after successful branch rename.
+        // This is a secondary concern - failure should not abort the branch rename.
+        try {
+          await this.workerLifecycleManager.updateGitDiffWorkersAfterBranchRename(sessionId);
+        } catch (diffUpdateError) {
+          logger.error(
+            { sessionId, err: diffUpdateError },
+            'Failed to update git-diff workers after branch rename for active session'
+          );
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: message };

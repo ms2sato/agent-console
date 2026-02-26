@@ -296,15 +296,23 @@ export class WorkerLifecycleManager {
           await gitRenameBranch(currentBranch, branch, session.locationPath);
         }
         session.worktreeId = branch;
-
-        // Update git-diff workers' base commit after successful branch rename
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
       } catch (err) {
         logger.error(
           { sessionId, workerId, branch, locationPath: session.locationPath, err },
           'Failed to rename branch during worker restart'
         );
         throw err;
+      }
+
+      // Update git-diff workers' base commit after successful branch rename.
+      // This is a secondary concern - failure should not abort the agent restart.
+      try {
+        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
+      } catch (err) {
+        logger.error(
+          { sessionId, err },
+          'Failed to update git-diff workers after branch rename'
+        );
       }
     }
 
@@ -379,7 +387,7 @@ export class WorkerLifecycleManager {
 
   /**
    * Update git-diff workers' base commit after a branch rename.
-   * Recalculates the merge-base and updates the worker state.
+   * Recalculates the merge-base once and updates all git-diff workers.
    * Fires onDiffBaseCommitChanged callback for each updated worker.
    * Does NOT persist the session - callers are responsible for persistence.
    */
@@ -387,11 +395,13 @@ export class WorkerLifecycleManager {
     const session = this.deps.getSession(sessionId);
     if (!session) return;
 
+    // Calculate base commit once for the session (same locationPath for all workers)
+    const newBaseCommit = await calculateBaseCommit(session.locationPath);
+    const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
+
     for (const worker of session.workers.values()) {
       if (worker.type !== 'git-diff') continue;
 
-      const newBaseCommit = await calculateBaseCommit(session.locationPath);
-      const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
       worker.baseCommit = resolvedBaseCommit;
 
       this.deps.getSessionLifecycleCallbacks()?.onDiffBaseCommitChanged?.(

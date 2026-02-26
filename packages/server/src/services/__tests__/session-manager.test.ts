@@ -2039,6 +2039,112 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('updateSessionMetadata - error isolation for git-diff updates', () => {
+    it('should succeed branch rename for active session even when git-diff update fails', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Configure mocks: getCurrentBranch returns old branch, renameBranch succeeds,
+      // but getMergeBaseSafe throws (causing calculateBaseCommit to fail)
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getMergeBaseSafe.mockImplementation(() => {
+        throw new Error('git merge-base failed');
+      });
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      // Branch rename should still succeed despite git-diff update failure
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+
+      // Verify the session's worktreeId was updated
+      const updatedSession = manager.getSession(session.id);
+      expect(updatedSession?.type).toBe('worktree');
+      if (updatedSession?.type === 'worktree') {
+        expect(updatedSession.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('should succeed branch rename for inactive session even when calculateBaseCommit fails', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Pause the session to make it inactive
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Configure mocks: getCurrentBranch returns old branch, renameBranch succeeds,
+      // but getDefaultBranch throws (causing calculateBaseCommit to fail)
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getDefaultBranch.mockImplementation(() => {
+        throw new Error('git default branch lookup failed');
+      });
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      // Branch rename should still succeed
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+
+      // Verify the persisted session has the new branch name
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.type).toBe('worktree');
+      if (persisted!.type === 'worktree') {
+        expect(persisted!.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('should use HEAD as fallback when calculateBaseCommit returns null for inactive session', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Pause the session to make it inactive
+      await manager.pauseSession(session.id);
+
+      // Configure mocks: getCurrentBranch returns old branch, renameBranch succeeds,
+      // getDefaultBranch returns null AND gitSafe returns null (calculateBaseCommit returns null)
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
+      mockGit.gitSafe.mockImplementation(() => Promise.resolve(null));
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      expect(result.success).toBe(true);
+
+      // Verify the persisted git-diff worker's baseCommit was updated to 'HEAD' (not skipped)
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
+      expect(persistedGitDiffWorker).toBeDefined();
+      expect(persistedGitDiffWorker!.type).toBe('git-diff');
+      if (persistedGitDiffWorker!.type === 'git-diff') {
+        expect(persistedGitDiffWorker!.baseCommit).toBe('HEAD');
+      }
+    });
+  });
+
   describe('pauseSession', () => {
     it('should return false for non-existent session', async () => {
       const manager = await getSessionManager();

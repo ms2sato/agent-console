@@ -688,6 +688,48 @@ describe('WorkerLifecycleManager', () => {
       );
     });
 
+    it('should complete restart even when updateGitDiffWorkersAfterBranchRename fails', async () => {
+      const session = createTestSession({ worktreeId: 'old-branch' });
+      sessions.set(session.id, session);
+
+      const agentWorker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-fail',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'old-base-commit',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      // Configure git mocks: branch rename succeeds, but calculateBaseCommit throws
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getDefaultBranch.mockImplementation(() => {
+        throw new Error('calculateBaseCommit failure');
+      });
+
+      // The restart should complete successfully despite the git-diff update failure
+      const restarted = await lifecycleManager.restartAgentWorker(
+        session.id, agentWorker!.id, true, undefined, 'new-branch'
+      );
+
+      expect(restarted).not.toBeNull();
+      expect(restarted!.id).toBe(agentWorker!.id);
+      expect(restarted!.type).toBe('agent');
+      // Branch rename should have succeeded
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('new-branch');
+      }
+      // Old PTY killed, new PTY spawned
+      expect(ptyFactory.instances[0].killed).toBe(true);
+      expect(ptyFactory.instances.length).toBe(2);
+    });
+
     it('should NOT update git-diff workers when no branch parameter is provided', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -750,6 +792,37 @@ describe('WorkerLifecycleManager', () => {
     it('should not fail when session does not exist', async () => {
       // Should silently return without error
       await lifecycleManager.updateGitDiffWorkersAfterBranchRename('non-existent');
+    });
+
+    it('should propagate error when calculateBaseCommit throws', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-1',
+        type: 'git-diff',
+        name: 'Git Diff 1',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'old-base',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      // Make calculateBaseCommit throw
+      mockGit.getDefaultBranch.mockImplementation(() => {
+        throw new Error('calculateBaseCommit failure');
+      });
+
+      // Error should propagate to callers (callers wrap in try/catch)
+      await expect(
+        lifecycleManager.updateGitDiffWorkersAfterBranchRename(session.id)
+      ).rejects.toThrow('calculateBaseCommit failure');
+
+      // Worker should remain unchanged since the operation failed
+      const unchangedWorker = session.workers.get(gitDiffWorker.id) as InternalGitDiffWorker;
+      expect(unchangedWorker.baseCommit).toBe('old-base');
+
+      // Callback should not have been called
+      expect(mockOnDiffBaseCommitChanged).not.toHaveBeenCalled();
     });
 
     it('should skip non-git-diff workers', async () => {
