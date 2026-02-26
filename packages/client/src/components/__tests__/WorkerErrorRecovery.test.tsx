@@ -195,6 +195,46 @@ describe('WorkerErrorRecovery', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
       expect(onRetry).toHaveBeenCalledTimes(1);
     });
+
+    it('shows fallback Dashboard and Reconnect buttons for WORKER_NOT_FOUND when onRestart is not provided', () => {
+      const onGoToDashboard = mock(() => {});
+      const onRetry = mock(() => {});
+
+      renderComponent({
+        errorCode: 'WORKER_NOT_FOUND',
+        errorMessage: 'test error',
+        onGoToDashboard,
+        onRetry,
+      });
+
+      // Should NOT show Continue or New Session since onRestart is not provided
+      expect(screen.queryByRole('button', { name: 'Continue (-c)' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'New Session' })).toBeNull();
+
+      // Should show fallback buttons
+      expect(screen.getByRole('button', { name: 'Dashboard' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy();
+
+      // Verify click handlers work
+      fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+      expect(onGoToDashboard).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows no buttons for WORKER_NOT_FOUND when onRestart, onGoToDashboard, and onRetry are all missing', () => {
+      renderComponent({
+        errorCode: 'WORKER_NOT_FOUND',
+        errorMessage: 'test error',
+      });
+
+      // No action buttons should be rendered
+      expect(screen.queryByRole('button', { name: 'Continue (-c)' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'New Session' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Dashboard' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+    });
   });
 
   describe('error message display', () => {

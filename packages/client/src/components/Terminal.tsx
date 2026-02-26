@@ -741,6 +741,11 @@ export const MemoizedTerminal = React.memo(Terminal, (prevProps, nextProps) => {
     return false; // Changed (re-render)
   }
 
+  // onRequestRestart drives error recovery behavior and must stay current
+  if (prevProps.onRequestRestart !== nextProps.onRequestRestart) {
+    return false; // Changed (re-render)
+  }
+
   // Ignore callback reference changes (onStatusChange, onActivityChange)
   // These are likely recreated on parent re-render but functionally equivalent
   return true; // No meaningful change (skip re-render)

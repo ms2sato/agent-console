@@ -225,6 +225,33 @@ describe('SessionPage handleWorkerRestart logic', () => {
       expect(result).toBe(state);
       expect(mockRestartAgentWorker).not.toHaveBeenCalled();
     });
+
+    it('should return original state when state is not_found', async () => {
+      const state: PageState = { type: 'not_found' };
+
+      const result = await callRestart({ state });
+
+      expect(result).toBe(state);
+      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
+    });
+
+    it('should return original state when state is server_unavailable', async () => {
+      const state: PageState = { type: 'server_unavailable' };
+
+      const result = await callRestart({ state });
+
+      expect(result).toBe(state);
+      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
+    });
+
+    it('should return original state when state is restarting', async () => {
+      const state: PageState = { type: 'restarting' };
+
+      const result = await callRestart({ state });
+
+      expect(result).toBe(state);
+      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
+    });
   });
 
   describe('API failure handling', () => {

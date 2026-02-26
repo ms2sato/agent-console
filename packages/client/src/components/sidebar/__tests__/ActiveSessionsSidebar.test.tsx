@@ -450,38 +450,40 @@ describe('ActiveSessionsSidebar', () => {
       const originalError = console.error;
       console.error = consoleErrorSpy;
 
-      const onResumeSession = mock(() => Promise.reject(new Error('Resume failed')));
-      const pausedSessions = [
-        createPausedSession({ id: 'paused-fail', repositoryName: 'repo-fail' }),
-      ];
+      try {
+        const onResumeSession = mock(() => Promise.reject(new Error('Resume failed')));
+        const pausedSessions = [
+          createPausedSession({ id: 'paused-fail', repositoryName: 'repo-fail' }),
+        ];
 
-      await renderWithRouter(
-        <ActiveSessionsSidebar
-          {...defaultProps()}
-          pausedSessions={pausedSessions}
-          onResumeSession={onResumeSession}
-        />
-      );
+        await renderWithRouter(
+          <ActiveSessionsSidebar
+            {...defaultProps()}
+            pausedSessions={pausedSessions}
+            onResumeSession={onResumeSession}
+          />
+        );
 
-      // Expand the paused section
-      const pausedButton = screen.getByText('Paused').closest('button')!;
-      fireEvent.click(pausedButton);
+        // Expand the paused section
+        const pausedButton = screen.getByText('Paused').closest('button')!;
+        fireEvent.click(pausedButton);
 
-      // Click the paused session
-      const sessionButton = screen.getByText('repo-fail').closest('button')!;
-      fireEvent.click(sessionButton);
+        // Click the paused session
+        const sessionButton = screen.getByText('repo-fail').closest('button')!;
+        fireEvent.click(sessionButton);
 
-      // Allow the promise rejection to be caught
-      await new Promise(resolve => setTimeout(resolve, 10));
+        // Allow the promise rejection to be caught
+        await new Promise(resolve => setTimeout(resolve, 10));
 
-      // The error should be caught and logged, not thrown as unhandled rejection
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      const errorCall = consoleErrorSpy.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Failed to resume session')
-      );
-      expect(errorCall).toBeTruthy();
-
-      console.error = originalError;
+        // The error should be caught and logged, not thrown as unhandled rejection
+        expect(consoleErrorSpy).toHaveBeenCalled();
+        const errorCall = consoleErrorSpy.mock.calls.find(
+          (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Failed to resume session')
+        );
+        expect(errorCall).toBeTruthy();
+      } finally {
+        console.error = originalError;
+      }
     });
 
     it('should sort paused sessions deterministically when pausedAt values are equal', async () => {

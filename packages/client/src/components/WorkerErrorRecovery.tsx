@@ -120,16 +120,40 @@ function renderActions(
         </button>
       );
     case 'restart':
+      if (!onRestart) {
+        // Fallback: restart handler not available, show navigation/reconnect options
+        return (
+          <>
+            {onGoToDashboard && (
+              <button
+                onClick={() => onGoToDashboard()}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+              >
+                Dashboard
+              </button>
+            )}
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+              >
+                <RefreshIcon className="w-4 h-4" />
+                Reconnect
+              </button>
+            )}
+          </>
+        );
+      }
       return (
         <>
           <button
-            onClick={() => onRestart?.(true)}
+            onClick={() => onRestart(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
           >
             Continue (-c)
           </button>
           <button
-            onClick={() => onRestart?.(false)}
+            onClick={() => onRestart(false)}
             className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
           >
             New Session
