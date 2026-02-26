@@ -342,6 +342,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     stateRef.current.currentWorkerId = workerId;
     // Increment mount generation counter to detect stale async operations
     const currentGeneration = ++stateRef.current.mountGeneration;
+    // Create AbortController for this mount cycle to cancel in-flight cache loads on tab switch
+    const abortController = new AbortController();
 
     // Register state getter with save manager for idle-based saves
     const stateGetter = () => {
@@ -369,8 +371,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Try to restore terminal state from cache before processing server history
     // This eliminates flickering when switching between workers
-    loadTerminalState(sessionId, workerId)
+    loadTerminalState(sessionId, workerId, abortController.signal)
       .then(async (cached) => {
+        // AbortController cancelled this operation (tab switched during cache load)
+        if (abortController.signal.aborted) return;
+
+        // Existing stale checks remain as defense-in-depth
         // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
           console.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
@@ -402,6 +408,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         setCacheProcessed(true);
       })
       .catch((e) => {
+        // Silently ignore aborted operations (not an error)
+        if (abortController.signal.aborted) return;
+
         console.warn('[Terminal] Failed to load cached state:', e);
         setCacheError('Failed to load cached terminal state');
 
@@ -541,6 +550,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
+      // Abort any in-flight cache load to prevent stale data from being written to terminal
+      abortController.abort();
+
       // Unregister from save manager - this triggers final save (async, best-effort)
       unregisterSaveManager(sessionId, workerId)
         .catch((e) => console.warn('[Terminal] Failed to save on unmount:', e));

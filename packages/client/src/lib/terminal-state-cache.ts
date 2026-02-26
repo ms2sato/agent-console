@@ -143,11 +143,17 @@ export async function saveTerminalState(
  */
 export async function loadTerminalState(
   sessionId: string,
-  workerId: string
+  workerId: string,
+  signal?: AbortSignal
 ): Promise<CachedState | null> {
   try {
     const key = buildKey(sessionId, workerId);
+
+    if (signal?.aborted) return null;
+
     const value = await get(key);
+
+    if (signal?.aborted) return null;
 
     if (value === undefined) {
       return null;
@@ -174,6 +180,7 @@ export async function loadTerminalState(
 
     return value;
   } catch (error) {
+    if (signal?.aborted) return null;
     console.warn('Failed to load terminal state from IndexedDB:', error);
     return null;
   }

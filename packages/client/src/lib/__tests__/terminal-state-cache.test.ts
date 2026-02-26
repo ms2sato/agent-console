@@ -218,6 +218,57 @@ describe('terminal-state-cache', () => {
 
       expect(result).toBeNull();
     });
+
+    it('should return null immediately when signal is already aborted', async () => {
+      const state = createValidState();
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await loadTerminalState('session-1', 'worker-1', controller.signal);
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when signal is aborted and IndexedDB throws', async () => {
+      getMockThrows = true;
+
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await loadTerminalState('session-1', 'worker-1', controller.signal);
+
+      expect(result).toBeNull();
+    });
+
+    it('should load normally when signal is not aborted', async () => {
+      const state = createValidState();
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      const controller = new AbortController();
+
+      const result = await loadTerminalState('session-1', 'worker-1', controller.signal);
+
+      expect(result).toEqual(state);
+    });
+
+    it('should return null when signal is aborted during IndexedDB read', async () => {
+      const state = createValidState();
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      const controller = new AbortController();
+
+      // Start the load - the mock get() returns synchronously but await yields
+      const loadPromise = loadTerminalState('session-1', 'worker-1', controller.signal);
+
+      // Abort after loadTerminalState starts but before it processes the result
+      // The signal.aborted check after `await get(key)` will catch this
+      controller.abort();
+
+      const result = await loadPromise;
+      expect(result).toBeNull();
+    });
   });
 
   describe('clearTerminalState', () => {
