@@ -393,4 +393,40 @@ describe('GitDiffHandler', () => {
       });
     });
   });
+
+  describe('updateBaseCommit', () => {
+    it('should update connection state and send fresh diff data when connection exists', async () => {
+      await connectWorker('old-base');
+
+      await handlers.updateBaseCommit('worker-1', 'new-base-commit');
+
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'new-base-commit', 'working-dir');
+      expect(sentMessages.length).toBe(1);
+
+      const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+      expect(sentMsg.type).toBe('diff-data');
+    });
+
+    it('should not throw when no connection exists for the workerId', async () => {
+      // No connection established - should silently return
+      await expect(
+        handlers.updateBaseCommit('nonexistent-worker', 'some-commit')
+      ).resolves.toBeUndefined();
+
+      expect(mockGetDiffData).not.toHaveBeenCalled();
+    });
+
+    it('should use the new baseCommit (not the old one) when sending diff data', async () => {
+      await connectWorker('original-base');
+
+      await handlers.updateBaseCommit('worker-1', 'updated-base');
+      sentMessages = [];
+      mockGetDiffData.mockClear();
+
+      // A subsequent refresh should also use the updated base commit
+      await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'updated-base', 'working-dir');
+    });
+  });
 });

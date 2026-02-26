@@ -36,7 +36,7 @@ import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
-import { stopWatching } from './git-diff-service.js';
+import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
@@ -1142,10 +1142,20 @@ export class SessionManager {
         try {
           await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
 
-          // Persist the updated branch name (worktreeId) for inactive sessions
+          // Recalculate base commit for git-diff workers after branch rename
+          const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
+          const updatedWorkers = metadata.workers.map(w => {
+            if (w.type === 'git-diff' && newBaseCommit) {
+              return { ...w, baseCommit: newBaseCommit };
+            }
+            return w;
+          });
+
+          // Persist the updated branch name (worktreeId) and base commit for inactive sessions
           await this.sessionRepository.save({
             ...metadata,
             worktreeId: updates.branch,
+            workers: updatedWorkers,
           });
 
           return { success: true, branch: updates.branch };
@@ -1174,6 +1184,9 @@ export class SessionManager {
       try {
         await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
         session.worktreeId = updates.branch;
+
+        // Update git-diff workers' base commit after successful branch rename
+        await this.workerLifecycleManager.updateGitDiffWorkersAfterBranchRename(sessionId);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return { success: false, error: message };

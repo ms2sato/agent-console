@@ -13,7 +13,7 @@ import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
 import { getNotificationManager } from '../services/notifications/index.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
-import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection } from './git-diff-handler.js';
+import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -305,6 +305,12 @@ export async function setupWebSocketRoutes(
     onSessionResumed: (session) => {
       logger.debug({ sessionId: session.id }, 'Broadcasting session-resumed');
       broadcastToApp({ type: 'session-resumed', session });
+    },
+    onDiffBaseCommitChanged: (sessionId, workerId, newBaseCommit) => {
+      logger.debug({ sessionId, workerId }, 'Updating git-diff base commit via WebSocket');
+      updateGitDiffBaseCommit(workerId, newBaseCommit).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Failed to update diff base commit via WebSocket');
+      });
     },
   });
 

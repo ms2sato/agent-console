@@ -7,6 +7,7 @@ import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-proces
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetAgentManager } from '../agent-manager.js';
+import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 
@@ -1933,6 +1934,108 @@ describe('SessionManager', () => {
       // No old PTY should be killed (no auto-restart)
       const agentPty = ptyFactory.instances[0];
       expect(agentPty.killed).toBe(false);
+    });
+
+    it('should recalculate git-diff worker baseCommit for active sessions', async () => {
+      const manager = await getSessionManager();
+
+      // Create session first with default getMergeBaseSafe (returns 'abc1234')
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
+      expect(gitDiffWorker).toBeDefined();
+      // Confirm initial baseCommit is the default mock value
+      if (gitDiffWorker.type === 'git-diff') {
+        expect(gitDiffWorker.baseCommit).toBe('abc1234');
+      }
+
+      // Now configure mocks for branch rename: getCurrentBranch returns old branch,
+      // and getMergeBaseSafe returns a new hash (simulating recalculation after rename)
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base-hash'));
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      expect(result.success).toBe(true);
+
+      // Verify the git-diff worker's baseCommit has been updated to the new merge-base
+      const updatedSession = manager.getSession(session.id);
+      const updatedGitDiffWorker = updatedSession?.workers.find((w: Worker) => w.type === 'git-diff');
+      expect(updatedGitDiffWorker?.type).toBe('git-diff');
+      if (updatedGitDiffWorker?.type === 'git-diff') {
+        expect(updatedGitDiffWorker.baseCommit).toBe('new-merge-base-hash');
+      }
+    });
+
+    it('should fire onDiffBaseCommitChanged callback for active sessions after branch rename', async () => {
+      const manager = await getSessionManager();
+
+      const onDiffBaseCommitChanged = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onDiffBaseCommitChanged });
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
+
+      // Set mocks AFTER session creation so the rename triggers recalculation
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base-hash'));
+
+      await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      expect(onDiffBaseCommitChanged).toHaveBeenCalledTimes(1);
+      expect(onDiffBaseCommitChanged).toHaveBeenCalledWith(
+        session.id,
+        gitDiffWorker.id,
+        'new-merge-base-hash',
+      );
+    });
+
+    it('should update persisted git-diff worker baseCommit for inactive sessions', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Pause the session to make it inactive (removed from memory, persisted only)
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Configure mocks for the branch rename on the inactive session
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base-for-inactive'));
+
+      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+
+      // Read the persisted session and verify the git-diff worker's baseCommit was updated
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
+      expect(persistedGitDiffWorker).toBeDefined();
+      expect(persistedGitDiffWorker!.type).toBe('git-diff');
+      if (persistedGitDiffWorker!.type === 'git-diff') {
+        expect(persistedGitDiffWorker!.baseCommit).toBe('new-merge-base-for-inactive');
+      }
     });
   });
 

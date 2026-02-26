@@ -38,6 +38,7 @@ describe('WorkerLifecycleManager', () => {
   let mockOnSessionUpdated: ReturnType<typeof mock>;
   let mockOnWorkerActivated: ReturnType<typeof mock>;
   let mockOnWorkerRestarted: ReturnType<typeof mock>;
+  let mockOnDiffBaseCommitChanged: ReturnType<typeof mock>;
   let originalAgentConsoleHome: string | undefined;
 
   function createTestSession(overrides: Partial<InternalSession> = {}): InternalSession {
@@ -121,10 +122,12 @@ describe('WorkerLifecycleManager', () => {
     mockOnSessionUpdated = mock(() => {});
     mockOnWorkerActivated = mock(() => {});
     mockOnWorkerRestarted = mock(() => {});
+    mockOnDiffBaseCommitChanged = mock(() => {});
     mockCallbacks = {
       onSessionUpdated: mockOnSessionUpdated as any,
       onWorkerActivated: mockOnWorkerActivated as any,
       onWorkerRestarted: mockOnWorkerRestarted as any,
+      onDiffBaseCommitChanged: mockOnDiffBaseCommitChanged as any,
     };
 
     workerManager = new WorkerManager(ptyFactory.provider);
@@ -620,6 +623,149 @@ describe('WorkerLifecycleManager', () => {
       expect(result).toBeNull();
       // Should NOT call onWorkerRestarted since the restart effectively failed
       expect(mockOnWorkerRestarted).not.toHaveBeenCalled();
+    });
+
+    it('should recalculate git-diff worker baseCommit after branch rename', async () => {
+      const session = createTestSession({ worktreeId: 'old-branch' });
+      sessions.set(session.id, session);
+
+      // Create an agent worker and a git-diff worker
+      const agentWorker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-1',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'old-base-commit',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      // Configure git mocks for branch rename
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      // Configure calculateBaseCommit's underlying mock to return new merge-base
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base'));
+
+      await lifecycleManager.restartAgentWorker(
+        session.id, agentWorker!.id, true, undefined, 'new-branch'
+      );
+
+      // git-diff worker's baseCommit should be updated
+      const updatedDiffWorker = session.workers.get(gitDiffWorker.id) as InternalGitDiffWorker;
+      expect(updatedDiffWorker.baseCommit).toBe('new-merge-base');
+    });
+
+    it('should fire onDiffBaseCommitChanged callback after branch rename', async () => {
+      const session = createTestSession({ worktreeId: 'old-branch' });
+      sessions.set(session.id, session);
+
+      const agentWorker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-cb',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'old-base-commit',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base'));
+
+      await lifecycleManager.restartAgentWorker(
+        session.id, agentWorker!.id, true, undefined, 'new-branch'
+      );
+
+      expect(mockOnDiffBaseCommitChanged).toHaveBeenCalledWith(
+        session.id, gitDiffWorker.id, 'new-merge-base'
+      );
+    });
+
+    it('should NOT update git-diff workers when no branch parameter is provided', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-no-branch',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'original-base',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      // Restart without branch parameter
+      await lifecycleManager.restartAgentWorker(
+        session.id, agentWorker!.id, true
+      );
+
+      // git-diff worker's baseCommit should remain unchanged
+      const unchangedDiffWorker = session.workers.get(gitDiffWorker.id) as InternalGitDiffWorker;
+      expect(unchangedDiffWorker.baseCommit).toBe('original-base');
+      expect(mockOnDiffBaseCommitChanged).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========== Update Git-Diff Workers After Branch Rename ==========
+
+  describe('updateGitDiffWorkersAfterBranchRename', () => {
+    it('should fall back to HEAD when calculateBaseCommit returns null', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'diff-worker-null',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'old-base',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      // Make calculateBaseCommit return null (no default branch, no first commit)
+      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
+      mockGit.gitSafe.mockImplementation(() => Promise.resolve(null));
+
+      await lifecycleManager.updateGitDiffWorkersAfterBranchRename(session.id);
+
+      const updatedWorker = session.workers.get(gitDiffWorker.id) as InternalGitDiffWorker;
+      expect(updatedWorker.baseCommit).toBe('HEAD');
+      expect(mockOnDiffBaseCommitChanged).toHaveBeenCalledWith(
+        session.id, gitDiffWorker.id, 'HEAD'
+      );
+    });
+
+    it('should not fail when session does not exist', async () => {
+      // Should silently return without error
+      await lifecycleManager.updateGitDiffWorkersAfterBranchRename('non-existent');
+    });
+
+    it('should skip non-git-diff workers', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // Create an agent worker only (no git-diff)
+      await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await lifecycleManager.updateGitDiffWorkersAfterBranchRename(session.id);
+
+      // No callback should be fired since there are no git-diff workers
+      expect(mockOnDiffBaseCommitChanged).not.toHaveBeenCalled();
     });
   });
 

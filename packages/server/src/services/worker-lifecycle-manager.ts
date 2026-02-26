@@ -36,7 +36,7 @@ import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
-import { stopWatching } from './git-diff-service.js';
+import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -296,6 +296,9 @@ export class WorkerLifecycleManager {
           await gitRenameBranch(currentBranch, branch, session.locationPath);
         }
         session.worktreeId = branch;
+
+        // Update git-diff workers' base commit after successful branch rename
+        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
       } catch (err) {
         logger.error(
           { sessionId, workerId, branch, locationPath: session.locationPath, err },
@@ -372,6 +375,29 @@ export class WorkerLifecycleManager {
     );
 
     return this.deps.workerManager.toPublicWorker(newWorker);
+  }
+
+  /**
+   * Update git-diff workers' base commit after a branch rename.
+   * Recalculates the merge-base and updates the worker state.
+   * Fires onDiffBaseCommitChanged callback for each updated worker.
+   * Does NOT persist the session - callers are responsible for persistence.
+   */
+  async updateGitDiffWorkersAfterBranchRename(sessionId: string): Promise<void> {
+    const session = this.deps.getSession(sessionId);
+    if (!session) return;
+
+    for (const worker of session.workers.values()) {
+      if (worker.type !== 'git-diff') continue;
+
+      const newBaseCommit = await calculateBaseCommit(session.locationPath);
+      const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
+      worker.baseCommit = resolvedBaseCommit;
+
+      this.deps.getSessionLifecycleCallbacks()?.onDiffBaseCommitChanged?.(
+        sessionId, worker.id, resolvedBaseCommit
+      );
+    }
   }
 
   /**
