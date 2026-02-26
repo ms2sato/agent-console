@@ -412,6 +412,7 @@ mcpServer.tool(
       .describe('If true, branch from origin/<baseBranch> instead of local branch'),
     callerSessionId: z
       .string()
+      .min(1, 'callerSessionId must be non-empty')
       .optional()
       .describe(
         "The calling agent's session ID, from the AGENT_CONSOLE_SESSION_ID environment variable. " +
@@ -420,6 +421,7 @@ mcpServer.tool(
       ),
     callerWorkerId: z
       .string()
+      .min(1, 'callerWorkerId must be non-empty')
       .optional()
       .describe(
         "The calling agent's worker ID, from the AGENT_CONSOLE_WORKER_ID environment variable. " +
