@@ -624,6 +624,7 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: 'non-existent',
         content: 'hello',
+        fromSessionId: 'test-sender',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -642,6 +643,7 @@ describe('MCP Server Tools', () => {
         toSessionId: session.id,
         toWorkerId: 'non-existent-worker',
         content: 'hello',
+        fromSessionId: 'test-sender',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -664,6 +666,7 @@ describe('MCP Server Tools', () => {
         toSessionId: session.id,
         toWorkerId: gitDiffWorker!.id,
         content: 'hello',
+        fromSessionId: 'test-sender',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -687,6 +690,7 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'hello',
+        fromSessionId: 'test-sender',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -710,6 +714,7 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'hello',
+        fromSessionId: 'test-sender',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -729,6 +734,7 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'task completed successfully',
+        fromSessionId: 'test-sender',
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -883,7 +889,7 @@ describe('MCP Server Tools', () => {
       expect(fileContent).toBe('explicit target message');
     });
 
-    it('should use "unknown" as fromSessionId when not provided', async () => {
+    it('should return validation error when fromSessionId is omitted', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -896,16 +902,15 @@ describe('MCP Server Tools', () => {
         // fromSessionId is intentionally omitted
       }, nextId++);
 
-      expect(response.result?.isError).toBeUndefined();
-
-      const data = parseToolResult(response) as { messageId: string; path: string };
-      // The messageId should include "unknown" as the fromSessionId
-      expect(data.messageId).toContain('unknown');
-
-      // Verify PTY notification includes from=unknown
-      const mockPty = ptyFactory.instances[0];
-      const allWritten = mockPty.writtenData.join('');
-      expect(allWritten).toContain('from=unknown');
+      // The MCP SDK validates parameters via zod schema and returns a JSON-RPC error
+      // when required parameters are missing
+      if (response.error) {
+        // JSON-RPC level error
+        expect(response.error).toBeDefined();
+      } else {
+        // Or the tool handler catches it and returns isError
+        expect(response.result?.isError).toBe(true);
+      }
     });
   });
 

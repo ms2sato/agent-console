@@ -265,8 +265,8 @@ mcpServer.tool(
       'Target worker ID. If omitted, auto-selects the sole agent worker in the target session.',
     ),
     content: z.string().describe('Message content (free-form)'),
-    fromSessionId: z.string().optional().describe(
-      'Sender session ID (from AGENT_CONSOLE_SESSION_ID env var). Used for notification metadata.',
+    fromSessionId: z.string().describe(
+      'The sender session ID. The calling agent can get this from the AGENT_CONSOLE_SESSION_ID environment variable.',
     ),
   },
   async ({ toSessionId, toWorkerId, content, fromSessionId }) => {
@@ -309,25 +309,23 @@ mcpServer.tool(
       }
 
       // 3. Write message file
-      const effectiveFromSessionId = fromSessionId ?? 'unknown';
       const result = await interSessionMessageService.sendMessage({
         toSessionId,
         toWorkerId: resolvedWorkerId,
-        fromSessionId: effectiveFromSessionId,
+        fromSessionId,
         content,
       });
 
       // 4. PTY notification (best-effort -- message file is already written)
       try {
-        const senderTitle = fromSessionId
-          ? (sessionManager.getSession(fromSessionId)?.title ?? fromSessionId)
-          : 'unknown';
+        const senderTitle =
+          sessionManager.getSession(fromSessionId)?.title ?? fromSessionId;
 
         writePtyNotification({
           tag: 'inbound:message',
           fields: {
             source: 'session',
-            from: effectiveFromSessionId,
+            from: fromSessionId,
             summary: `Message from session ${senderTitle}`,
             path: result.path,
             intent: 'triage',
