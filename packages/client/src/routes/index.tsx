@@ -222,6 +222,13 @@ function DashboardPage() {
       // Session became paused - remove from active list
       setWsSessions(prev => prev.filter(s => s.id !== session.id));
       sessionsRef.current = sessionsRef.current.filter(s => s.id !== session.id);
+      // Track as paused session for resume UI
+      if (session.type === 'worktree') {
+        setPausedSessions(prev => ({
+          ...prev,
+          [session.locationPath]: session,
+        }));
+      }
     } else {
       // Active session update - upsert
       setWsSessions(prev => {
@@ -234,6 +241,19 @@ function DashboardPage() {
       sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
         ? sessionsRef.current.map(s => s.id === session.id ? session : s)
         : [...sessionsRef.current, session];
+      // Remove from paused sessions if it was there
+      if (session.type === 'worktree') {
+        setPausedSessions(prev => {
+          const next = { ...prev };
+          for (const [path, pausedSession] of Object.entries(next)) {
+            if (pausedSession.id === session.id) {
+              delete next[path];
+              break;
+            }
+          }
+          return next;
+        });
+      }
     }
   }, []);
 

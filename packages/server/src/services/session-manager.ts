@@ -886,7 +886,7 @@ export class SessionManager {
       try {
         await this.sessionRepository.update(id, {
           serverPid: null,
-          pausedAt: new Date().toISOString(),
+          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
         });
       } catch (updateErr) {
         logger.error({ sessionId: id, err: updateErr }, 'Failed to restore paused state after resume failure');
@@ -896,7 +896,31 @@ export class SessionManager {
     }
 
     // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
-    await this.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
+    try {
+      await this.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
+    } catch (err) {
+      logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
+
+      // Kill all workers that were successfully activated
+      for (const worker of activatedWorkers) {
+        this.workerManager.killWorker(worker);
+      }
+
+      // Remove session from memory
+      this.sessions.delete(id);
+
+      // Restore paused state in DB to allow future resume attempts
+      try {
+        await this.sessionRepository.update(id, {
+          serverPid: null,
+          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
+        });
+      } catch (rollbackErr) {
+        logger.error({ sessionId: id, err: rollbackErr }, 'Failed to persist rollback after resume persistence failure');
+      }
+
+      return null;
+    }
 
     logger.info({ sessionId: id }, 'Session resumed');
 
