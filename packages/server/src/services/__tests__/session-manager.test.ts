@@ -2275,7 +2275,7 @@ describe('SessionManager', () => {
   });
 
   describe('getAllPausedSessions', () => {
-    it('should return paused sessions with paused: true', async () => {
+    it('should return paused sessions with pausedAt timestamp', async () => {
       const manager = await getSessionManager();
 
       // Create and pause a worktree session
@@ -2294,11 +2294,11 @@ describe('SessionManager', () => {
 
       expect(pausedSessions.length).toBe(1);
       expect(pausedSessions[0].id).toBe(session.id);
-      expect(pausedSessions[0].paused).toBe(true);
+      expect(pausedSessions[0].pausedAt).toBeDefined();
       expect(pausedSessions[0].activationState).toBe('hibernated');
     });
 
-    it('should not set paused on active in-memory sessions', async () => {
+    it('should not set pausedAt on active in-memory sessions', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -2309,11 +2309,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      // Active sessions via getAllSessions should not have paused: true
+      // Active sessions via getAllSessions should not have pausedAt set
       const allSessions: Session[] = manager.getAllSessions();
       const activeSession = allSessions.find((s) => s.id === session.id);
       expect(activeSession).toBeDefined();
-      expect(activeSession?.paused).toBeUndefined();
+      expect(activeSession?.pausedAt).toBeUndefined();
     });
   });
 

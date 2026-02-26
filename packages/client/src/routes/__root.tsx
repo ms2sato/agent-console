@@ -113,7 +113,7 @@ function RootLayout() {
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();
   const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
-  const pausedSessions = useMemo(() => sessions.filter(s => s.paused), [sessions]);
+  const pausedSessions = useMemo(() => sessions.filter(s => s.pausedAt), [sessions]);
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {

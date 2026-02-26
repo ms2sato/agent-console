@@ -253,6 +253,7 @@ export class SessionManager {
       sessionsToSave.push({
         ...session,
         serverPid: null,
+        pausedAt: new Date().toISOString(),
       });
       markedPausedCount++;
     }
@@ -680,7 +681,7 @@ export class SessionManager {
       workers,
       initialPrompt: p.initialPrompt,
       title: p.title,
-      paused: true,
+      pausedAt: p.pausedAt,
     };
 
     if (p.type === 'worktree') {
@@ -747,9 +748,10 @@ export class SessionManager {
     // Clean up inter-worker message history
     this.messageService.clearSession(id);
 
-    // Save session with serverPid = null and worker PIDs cleared
+    // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
     // Using save() instead of update() to persist the full session state including worker PID changes
     const persistedSession = this.toPersistedSessionWithServerPid(session, null);
+    persistedSession.pausedAt = new Date().toISOString();
     await this.sessionRepository.save(persistedSession);
 
     // Remove from in-memory sessions Map (after successful persistence)
@@ -862,8 +864,8 @@ export class SessionManager {
       return null;
     }
 
-    // Update DB: set serverPid = process.pid (marks session as owned by this server)
-    await this.sessionRepository.update(id, { serverPid: getServerPid() });
+    // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
+    await this.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
 
     logger.info({ sessionId: id }, 'Session resumed');
 

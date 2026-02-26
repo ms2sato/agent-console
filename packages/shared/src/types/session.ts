@@ -56,8 +56,8 @@ export interface SessionBase {
   workers: Worker[];
   initialPrompt?: string;    // The prompt used to start the session
   title?: string;            // Human-readable title for the session
-  /** Whether this session is explicitly paused (not in server memory, requires resume API) */
-  paused?: boolean;
+  /** ISO 8601 timestamp when this session was paused (undefined = not paused) */
+  pausedAt?: string;
 }
 
 export interface WorktreeSession extends SessionBase {

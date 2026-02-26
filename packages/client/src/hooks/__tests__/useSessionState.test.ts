@@ -265,9 +265,9 @@ describe('useSessionState', () => {
         result.current.handleSessionPaused('session-1');
       });
 
-      expect(result.current.sessions[0].paused).toBe(true);
+      expect(result.current.sessions[0].pausedAt).toBeDefined();
       expect(result.current.sessions[0].activationState).toBe('hibernated');
-      expect(result.current.sessionsRef.current[0].paused).toBe(true);
+      expect(result.current.sessionsRef.current[0].pausedAt).toBeDefined();
       expect(result.current.sessionsRef.current[0].activationState).toBe('hibernated');
     });
 
@@ -285,8 +285,8 @@ describe('useSessionState', () => {
         result.current.handleSessionPaused('session-1');
       });
 
-      expect(result.current.sessions[0].paused).toBe(true);
-      expect(result.current.sessions[1].paused).toBeUndefined();
+      expect(result.current.sessions[0].pausedAt).toBeDefined();
+      expect(result.current.sessions[1].pausedAt).toBeUndefined();
       expect(result.current.sessions[1].activationState).toBe('running');
     });
   });
@@ -313,7 +313,7 @@ describe('useSessionState', () => {
     it('should update existing session when resumed', () => {
       const { result } = renderHook(() => useSessionState());
 
-      const session = createMockSession({ id: 'session-1', activationState: 'hibernated', paused: true });
+      const session = createMockSession({ id: 'session-1', activationState: 'hibernated', pausedAt: '2024-01-01T00:00:00.000Z' });
 
       act(() => {
         result.current.handleSessionsSync([session], []);
@@ -327,7 +327,7 @@ describe('useSessionState', () => {
 
       expect(result.current.sessions).toHaveLength(1);
       expect(result.current.sessions[0].activationState).toBe('running');
-      expect(result.current.sessions[0].paused).toBeUndefined();
+      expect(result.current.sessions[0].pausedAt).toBeUndefined();
     });
   });
 

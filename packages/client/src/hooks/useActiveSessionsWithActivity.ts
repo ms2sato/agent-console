@@ -48,7 +48,7 @@ export function useActiveSessionsWithActivity(
 
     for (const session of sessions) {
       // Exclude paused sessions (they're handled separately in the dashboard)
-      if (session.paused) continue;
+      if (session.pausedAt) continue;
 
       const activityState = getSessionActivityState(session, workerActivityStates);
 

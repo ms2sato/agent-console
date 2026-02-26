@@ -554,14 +554,16 @@ export function ActiveSessionsSidebar({
                   </div>
                 </button>
                 {pausedExpanded &&
-                  pausedSessions.map((session) => (
-                    <PausedSessionItem
-                      key={session.id}
-                      session={session}
-                      collapsed={collapsed}
-                      onClick={() => handlePausedSessionClick(session.id)}
-                    />
-                  ))}
+                  [...pausedSessions]
+                    .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? ''))
+                    .map((session) => (
+                      <PausedSessionItem
+                        key={session.id}
+                        session={session}
+                        collapsed={collapsed}
+                        onClick={() => handlePausedSessionClick(session.id)}
+                      />
+                    ))}
               </>
             )}
           </>

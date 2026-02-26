@@ -40,6 +40,8 @@ export interface SessionsTable {
   repository_id: string | null;
   /** Worktree identifier for worktree sessions (null for quick sessions) */
   worktree_id: string | null;
+  /** ISO 8601 timestamp when session was paused (null = not paused) */
+  paused_at: string | null;
 }
 
 /**

@@ -170,8 +170,8 @@ function DashboardPage() {
     console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
 
     // Separate paused sessions (DB-only, explicitly paused) from active/phantom sessions
-    const activeSessions = sessions.filter(s => !s.paused);
-    const pausedSessionsList = sessions.filter(s => s.paused === true);
+    const activeSessions = sessions.filter(s => !s.pausedAt);
+    const pausedSessionsList = sessions.filter(s => !!s.pausedAt);
 
     console.log(`[Sync] Active/Phantom: ${activeSessions.length}, Paused: ${pausedSessionsList.length}`);
 
@@ -224,14 +224,14 @@ function DashboardPage() {
         return prev.map(s => s.id === session.id ? session : s);
       }
       // Session not in list yet - add it if it's not paused
-      if (!session.paused) {
+      if (!session.pausedAt) {
         return [...prev, session];
       }
       return prev;
     });
     sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
       ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : (!session.paused ? [...sessionsRef.current, session] : sessionsRef.current);
+      : (!session.pausedAt ? [...sessionsRef.current, session] : sessionsRef.current);
   }, []);
 
   // Handle session deleted
@@ -277,7 +277,7 @@ function DashboardPage() {
     if (session && session.type === 'worktree') {
       // Track as paused session for "Resume" button, storing full session to preserve title
       // Update activationState to 'hibernated' since it's now paused
-      const pausedSession: Session = { ...session, activationState: 'hibernated', paused: true };
+      const pausedSession: Session = { ...session, activationState: 'hibernated', pausedAt: new Date().toISOString() };
       setPausedSessions(prev => ({
         ...prev,
         [session.locationPath]: pausedSession,

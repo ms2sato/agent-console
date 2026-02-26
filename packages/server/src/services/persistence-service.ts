@@ -65,6 +65,8 @@ interface PersistedSessionBase {
   workers: PersistedWorker[];
   initialPrompt?: string;
   title?: string;
+  /** ISO 8601 timestamp when session was paused (undefined = not paused) */
+  pausedAt?: string;
 }
 
 export interface PersistedWorktreeSession extends PersistedSessionBase {

@@ -117,6 +117,9 @@ export class JsonSessionRepository implements SessionRepository {
     if (updates.worktreeId !== undefined && existing.type === 'worktree') {
       (updated as typeof existing).worktreeId = updates.worktreeId;
     }
+    if (updates.pausedAt !== undefined) {
+      updated.pausedAt = updates.pausedAt ?? undefined;
+    }
 
     sessions[index] = updated;
     await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));

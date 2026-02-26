@@ -80,11 +80,12 @@ export function useSessionState(): UseSessionStateReturn {
   }, []);
 
   const handleSessionPaused = useCallback((sessionId: string) => {
+    const pausedAt = new Date().toISOString();
     setSessions(prev => prev.map(s =>
-      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' as const } : s
     ));
     sessionsRef.current = sessionsRef.current.map(s =>
-      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' as const } : s
     );
   }, []);
 

@@ -250,6 +250,7 @@ describe('mappers', () => {
         title: null,
         repository_id: null, // Missing required field
         worktree_id: 'branch',
+        paused_at: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -268,6 +269,7 @@ describe('mappers', () => {
         title: null,
         repository_id: 'repo-1',
         worktree_id: null, // Missing required field
+        paused_at: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -286,6 +288,7 @@ describe('mappers', () => {
         title: 'Test',
         repository_id: null,
         worktree_id: null,
+        paused_at: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -306,6 +309,7 @@ describe('mappers', () => {
         title: 'Test Session',
         repository_id: 'repo-1',
         worktree_id: 'feature-branch',
+        paused_at: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -327,6 +331,7 @@ describe('mappers', () => {
         title: null,
         repository_id: null,
         worktree_id: null,
+        paused_at: null,
       };
 
       const workers: PersistedAgentWorker[] = [
@@ -358,6 +363,7 @@ describe('mappers', () => {
         title: null,
         repository_id: null,
         worktree_id: null,
+        paused_at: null,
       };
 
       const session = toPersistedSession(dbSession, []);

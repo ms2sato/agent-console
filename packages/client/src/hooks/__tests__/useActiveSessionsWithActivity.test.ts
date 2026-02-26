@@ -345,7 +345,7 @@ describe('useActiveSessionsWithActivity', () => {
       const session = createMockSession({
         id: 'paused-1',
         activationState: 'hibernated',
-        paused: true,
+        pausedAt: '2024-01-01T00:00:00.000Z',
       });
 
       const { result } = renderHook(() =>
@@ -359,7 +359,7 @@ describe('useActiveSessionsWithActivity', () => {
       const session = createMockSession({
         id: 'paused-1',
         activationState: 'hibernated',
-        paused: true,
+        pausedAt: '2024-01-01T00:00:00.000Z',
       });
       const activityStates = createWorkerActivityStates([
         { sessionId: 'paused-1', workerId: 'worker-1', state: 'active' },
@@ -374,7 +374,7 @@ describe('useActiveSessionsWithActivity', () => {
 
     it('should exclude paused sessions and include only running sessions', () => {
       const sessions = [
-        createMockSession({ id: 'paused-1', activationState: 'hibernated', paused: true }),
+        createMockSession({ id: 'paused-1', activationState: 'hibernated', pausedAt: '2024-01-01T00:00:00.000Z' }),
         createMockSession({ id: 'running-1', activationState: 'running' }),
         createMockSession({ id: 'running-2', activationState: 'running' }),
       ];
