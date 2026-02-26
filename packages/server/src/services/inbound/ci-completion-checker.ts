@@ -90,7 +90,7 @@ export function createCICompletionChecker(): CICompletionChecker {
   return async (repositoryName: string, headSha: string): Promise<CICompletionCheckResult | null> => {
     try {
       const endpoint = `repos/${repositoryName}/actions/runs?head_sha=${headSha}`;
-      const proc = Bun.spawn(['gh', 'api', endpoint], {
+      const proc = Bun.spawn(['gh', 'api', '--paginate', endpoint], {
         stdout: 'pipe',
         stderr: 'pipe',
       });

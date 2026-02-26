@@ -197,7 +197,7 @@ describe('ci-completion-checker', () => {
     await checker('owner/repo', 'abc123');
 
     expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0].args).toEqual(['gh', 'api', 'repos/owner/repo/actions/runs?head_sha=abc123']);
+    expect(spawnCalls[0].args).toEqual(['gh', 'api', '--paginate', 'repos/owner/repo/actions/runs?head_sha=abc123']);
   });
 
   it('does not pass cwd to Bun.spawn', async () => {
