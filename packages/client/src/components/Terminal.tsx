@@ -43,10 +43,11 @@ export interface TerminalProps {
   workerId: string;
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
+  onRequestRestart?: (continueConversation: boolean) => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, hideStatusBar }: TerminalProps) {
   const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -96,6 +97,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const handleDeleteSession = useCallback(() => {
     deleteSessionMutation.mutate();
   }, [deleteSessionMutation]);
+
+  // Handler for navigating to dashboard
+  const handleGoToDashboard = useCallback(() => {
+    navigate({ to: '/' });
+  }, [navigate]);
 
   // Notify parent of status changes
   useEffect(() => {
@@ -662,6 +668,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             errorMessage={workerError.message}
             onRetry={handleRetry}
             onDeleteSession={handleDeleteSession}
+            onGoToDashboard={handleGoToDashboard}
+            onRestart={onRequestRestart}
           />
         )}
         {/* Truncation warning banner */}

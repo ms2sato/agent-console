@@ -6,12 +6,14 @@ export interface WorkerErrorRecoveryProps {
   errorMessage: string;
   onRetry?: () => void;
   onDeleteSession?: () => void;
+  onGoToDashboard?: () => void;
+  onRestart?: (continueConversation: boolean) => void;
 }
 
 interface ErrorDetails {
   title: string;
   description: string;
-  primaryAction: 'retry' | 'delete-session';
+  primaryAction: 'retry' | 'delete-session' | 'go-dashboard' | 'restart';
 }
 
 function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
@@ -37,8 +39,8 @@ function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
     case 'WORKER_NOT_FOUND':
       return {
         title: 'Worker Not Found',
-        description: 'The worker no longer exists in this session.',
-        primaryAction: 'retry',
+        description: 'The worker no longer exists in this session. Restart to recover.',
+        primaryAction: 'restart',
       };
     case 'HISTORY_LOAD_FAILED':
       return {
@@ -50,7 +52,7 @@ function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
       return {
         title: 'Session Deleted',
         description: 'This session has been deleted.',
-        primaryAction: 'delete-session',
+        primaryAction: 'go-dashboard',
       };
     default:
       return {
@@ -61,11 +63,95 @@ function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
   }
 }
 
+function renderActions(
+  primaryAction: ErrorDetails['primaryAction'],
+  { onRetry, onDeleteSession, onGoToDashboard, onRestart }: Pick<WorkerErrorRecoveryProps, 'onRetry' | 'onDeleteSession' | 'onGoToDashboard' | 'onRestart'>,
+) {
+  switch (primaryAction) {
+    case 'retry':
+      return (
+        <>
+          <button
+            onClick={onRetry}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+          >
+            <RefreshIcon className="w-4 h-4" />
+            Reconnect
+          </button>
+          {onDeleteSession && (
+            <button
+              onClick={onDeleteSession}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+            >
+              <TrashIcon className="w-4 h-4" />
+              Delete Session
+            </button>
+          )}
+        </>
+      );
+    case 'delete-session':
+      return (
+        <>
+          <button
+            onClick={onDeleteSession}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md transition-colors"
+          >
+            <TrashIcon className="w-4 h-4" />
+            Delete Session
+          </button>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+            >
+              <RefreshIcon className="w-4 h-4" />
+              Reconnect
+            </button>
+          )}
+        </>
+      );
+    case 'go-dashboard':
+      return (
+        <button
+          onClick={() => onGoToDashboard?.()}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+        >
+          Go to Dashboard
+        </button>
+      );
+    case 'restart':
+      return (
+        <>
+          <button
+            onClick={() => onRestart?.(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+          >
+            Continue (-c)
+          </button>
+          <button
+            onClick={() => onRestart?.(false)}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+          >
+            New Session
+          </button>
+          <button
+            onClick={() => onGoToDashboard?.()}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+          >
+            Dashboard
+          </button>
+        </>
+      );
+  }
+}
+
 export function WorkerErrorRecovery({
   errorCode,
   errorMessage,
   onRetry,
   onDeleteSession,
+  onGoToDashboard,
+  onRestart,
 }: WorkerErrorRecoveryProps) {
   const { title, description, primaryAction } = getErrorDetails(errorCode);
 
@@ -79,45 +165,7 @@ export function WorkerErrorRecovery({
         <p className="text-gray-300 mb-2">{description}</p>
         <p className="text-gray-500 text-sm mb-6">{errorMessage}</p>
         <div className="flex justify-center gap-3">
-          {primaryAction === 'retry' ? (
-            <>
-              <button
-                onClick={onRetry}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
-              >
-                <RefreshIcon className="w-4 h-4" />
-                Retry
-              </button>
-              {onDeleteSession && (
-                <button
-                  onClick={onDeleteSession}
-                  className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
-                >
-                  <TrashIcon className="w-4 h-4" />
-                  Delete Session
-                </button>
-              )}
-            </>
-          ) : (
-            <>
-              <button
-                onClick={onDeleteSession}
-                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md transition-colors"
-              >
-                <TrashIcon className="w-4 h-4" />
-                Delete Session
-              </button>
-              {onRetry && (
-                <button
-                  onClick={onRetry}
-                  className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
-                >
-                  <RefreshIcon className="w-4 h-4" />
-                  Retry
-                </button>
-              )}
-            </>
-          )}
+          {renderActions(primaryAction, { onRetry, onDeleteSession, onGoToDashboard, onRestart })}
         </div>
       </div>
     </div>

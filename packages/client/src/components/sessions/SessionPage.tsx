@@ -248,6 +248,38 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   };
 
+  // Restart handler for worker error recovery overlay (works from both active and disconnected states)
+  const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
+    const session = (state.type === 'active' || state.type === 'disconnected') ? state.session : null;
+    if (!session) return;
+
+    const agentWorker = session.workers.find(w => w.type === 'agent');
+    if (!agentWorker) {
+      showError('Restart Failed', 'No agent worker found in session');
+      return;
+    }
+
+    setState({ type: 'restarting' });
+    try {
+      await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
+      const updatedSession = await getSession(sessionId);
+      if (!updatedSession) {
+        setState({ type: 'not_found' });
+        return;
+      }
+      if (updatedSession.status === 'active') {
+        updateTabsFromSession([]);
+        setState({ type: 'active', session: updatedSession });
+      } else {
+        setState({ type: 'disconnected', session: updatedSession });
+      }
+    } catch (error) {
+      console.error('Failed to restart session:', error);
+      showError('Restart Failed', error instanceof Error ? error.message : 'Failed to restart session');
+      setState({ type: 'disconnected', session });
+    }
+  }, [sessionId, state, updateTabsFromSession, showError]);
+
   // Loading state
   if (state.type === 'loading' || state.type === 'restarting') {
     return (
@@ -454,6 +486,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
             onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
             hideStatusBar
           />
         )}
