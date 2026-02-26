@@ -42,16 +42,16 @@ function makeWorkflowRunsResponse(runs: Array<{
   conclusion: string | null;
   run_number: number;
 }>): string {
-  return JSON.stringify({
+  return JSON.stringify([{
     total_count: runs.length,
     workflow_runs: runs,
-  });
+  }]);
 }
 
 describe('ci-completion-checker', () => {
   beforeEach(() => {
     spawnCalls = [];
-    setSpawnResponse('{}');
+    setSpawnResponse('[{}]');
 
     (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
       spawnCalls.push({ args, options: options || {} });
@@ -178,7 +178,7 @@ describe('ci-completion-checker', () => {
   });
 
   it('returns null when workflow_runs array is empty', async () => {
-    setSpawnResponse(JSON.stringify({ total_count: 0, workflow_runs: [] }));
+    setSpawnResponse(JSON.stringify([{ total_count: 0, workflow_runs: [] }]));
 
     const { createCICompletionChecker } = await getModule();
     const checker = createCICompletionChecker();
@@ -197,7 +197,7 @@ describe('ci-completion-checker', () => {
     await checker('owner/repo', 'abc123');
 
     expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0].args).toEqual(['gh', 'api', '--paginate', 'repos/owner/repo/actions/runs?head_sha=abc123']);
+    expect(spawnCalls[0].args).toEqual(['gh', 'api', '--paginate', '--slurp', 'repos/owner/repo/actions/runs?head_sha=abc123']);
   });
 
   it('does not pass cwd to Bun.spawn', async () => {
@@ -213,7 +213,7 @@ describe('ci-completion-checker', () => {
   });
 
   it('returns null when workflow_runs field is missing', async () => {
-    setSpawnResponse(JSON.stringify({ total_count: 0 }));
+    setSpawnResponse(JSON.stringify([{ total_count: 0 }]));
 
     const { createCICompletionChecker } = await getModule();
     const checker = createCICompletionChecker();

@@ -90,7 +90,7 @@ export function createCICompletionChecker(): CICompletionChecker {
   return async (repositoryName: string, headSha: string): Promise<CICompletionCheckResult | null> => {
     try {
       const endpoint = `repos/${repositoryName}/actions/runs?head_sha=${headSha}`;
-      const proc = Bun.spawn(['gh', 'api', '--paginate', endpoint], {
+      const proc = Bun.spawn(['gh', 'api', '--paginate', '--slurp', endpoint], {
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -119,20 +119,21 @@ export function createCICompletionChecker(): CICompletionChecker {
         cleanup();
       }
 
-      let response: WorkflowRunsResponse;
+      let allWorkflowRuns: WorkflowRun[];
       try {
-        response = JSON.parse(responseText) as WorkflowRunsResponse;
+        const pages = JSON.parse(responseText) as WorkflowRunsResponse[];
+        allWorkflowRuns = pages.flatMap((page) => page.workflow_runs ?? []);
       } catch {
         logger.warn({ repositoryName, headSha }, 'Failed to parse gh api response as JSON');
         return null;
       }
 
-      if (!Array.isArray(response.workflow_runs) || response.workflow_runs.length === 0) {
+      if (allWorkflowRuns.length === 0) {
         logger.warn({ repositoryName, headSha }, 'No workflow runs found for commit');
         return null;
       }
 
-      const latestRuns = deduplicateByLatestRun(response.workflow_runs);
+      const latestRuns = deduplicateByLatestRun(allWorkflowRuns);
       return checkCompletion(latestRuns);
     } catch (error) {
       logger.warn({ err: error, repositoryName, headSha }, 'CI completion check failed');
