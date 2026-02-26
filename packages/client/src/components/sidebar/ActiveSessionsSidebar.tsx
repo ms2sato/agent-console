@@ -1,7 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
-import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask } from '@agent-console/shared';
-import { ChevronLeftIcon, ChevronRightIcon, AlertCircleIcon } from '../Icons';
+import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
@@ -25,6 +25,10 @@ interface ActiveSessionsSidebarProps {
   worktreeDeletionTasks?: WorktreeDeletionTask[];
   /** Called to remove a worktree deletion task */
   onRemoveWorktreeDeletionTask?: (taskId: string) => void;
+  /** Paused sessions available for resume */
+  pausedSessions?: Session[];
+  /** Called when user clicks to resume a paused session */
+  onResumeSession?: (sessionId: string) => void | Promise<void>;
 }
 
 /**
@@ -84,9 +88,8 @@ interface SessionItemProps {
 
 function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
-  const isHibernated = session.activationState === 'hibernated';
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
-  const label = isHibernated ? 'Hibernated' : getActivityLabel(activityState);
+  const label = getActivityLabel(activityState);
 
   if (collapsed) {
     return (
@@ -258,6 +261,44 @@ function WorktreeDeletionTaskItem({ task, collapsed, isActive, onClick }: Worktr
   );
 }
 
+interface PausedSessionItemProps {
+  session: Session;
+  collapsed: boolean;
+  onClick: () => void;
+}
+
+function PausedSessionItem({ session, collapsed, onClick }: PausedSessionItemProps) {
+  const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
+
+  if (collapsed) {
+    return (
+      <button
+        onClick={onClick}
+        className="w-full p-3 flex justify-center hover:bg-slate-800 transition-colors"
+        title={`${tooltip} (Paused)`}
+      >
+        <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0" />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full p-3 text-left hover:bg-slate-800 transition-colors"
+      title={tooltip}
+    >
+      <div className="flex items-start gap-2">
+        <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0 mt-1.5" />
+        <div className="min-w-0 flex-1">
+          <div className="text-gray-400 text-sm font-medium truncate">{primary}</div>
+          <div className="text-gray-600 text-xs truncate">{secondary}</div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
 export function ActiveSessionsSidebar({
   collapsed,
   onToggle,
@@ -268,10 +309,13 @@ export function ActiveSessionsSidebar({
   onRemoveCreationTask,
   worktreeDeletionTasks = [],
   onRemoveWorktreeDeletionTask,
+  pausedSessions = [],
+  onResumeSession,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [isResizing, setIsResizing] = useState(false);
+  const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const currentWidthRef = useRef(width);
   // Keep ref in sync with prop (no useEffect needed for simple ref sync)
@@ -348,6 +392,11 @@ export function ActiveSessionsSidebar({
         throw new Error(`Unhandled deletion task status: ${_exhaustive}`);
       }
     }
+  };
+
+  const handlePausedSessionClick = (sessionId: string) => {
+    onResumeSession?.(sessionId);
+    navigate({ to: '/sessions/$sessionId', params: { sessionId } });
   };
 
   const handleResizeMouseDown = useCallback(
@@ -474,6 +523,50 @@ export function ActiveSessionsSidebar({
               onClick={() => handleSessionClick(session.id)}
             />
           ))
+        )}
+        {/* Paused sessions section */}
+        {pausedSessions.length > 0 && (
+          <>
+            {!collapsed && <div className="border-t border-slate-700 my-1" />}
+            {collapsed ? (
+              <div className="flex justify-center p-2" title={`${pausedSessions.length} paused`}>
+                <span className="relative inline-flex items-center justify-center w-5 h-5">
+                  <span className="inline-block w-2 h-2 rounded-full bg-gray-600" />
+                  <span className="absolute -top-0.5 -right-0.5 text-[9px] text-gray-500 font-medium">
+                    {pausedSessions.length}
+                  </span>
+                </span>
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => setPausedExpanded((prev) => !prev)}
+                  className="w-full px-3 py-2 flex items-center justify-between text-gray-500 hover:text-gray-400 transition-colors"
+                >
+                  <span className="text-xs font-medium uppercase tracking-wider">Paused</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs bg-slate-800 text-gray-500 px-1.5 py-0.5 rounded">
+                      {pausedSessions.length}
+                    </span>
+                    <ChevronDownIcon
+                      className={`w-3.5 h-3.5 transition-transform ${pausedExpanded ? '' : '-rotate-90'}`}
+                    />
+                  </div>
+                </button>
+                {pausedExpanded &&
+                  [...pausedSessions]
+                    .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? ''))
+                    .map((session) => (
+                      <PausedSessionItem
+                        key={session.id}
+                        session={session}
+                        collapsed={collapsed}
+                        onClick={() => handlePausedSessionClick(session.id)}
+                      />
+                    ))}
+              </>
+            )}
+          </>
         )}
       </div>
 

@@ -1,8 +1,8 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useMemo } from 'react';
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
 import { createContext, useContext } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { validateSessions } from '../lib/api';
+import { validateSessions, resumeSession } from '../lib/api';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
@@ -113,6 +113,16 @@ function RootLayout() {
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();
   const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
+  const pausedSessions = useMemo(() => sessions.filter(s => s.pausedAt), [sessions]);
+
+  const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
+    try {
+      const resumed = await resumeSession(sessionId);
+      handleSessionResumed(resumed);
+    } catch (error) {
+      console.error('Failed to resume session:', error);
+    }
+  }, [handleSessionResumed]);
 
   // Update favicon based on worker activity states
   useEffect(() => {
@@ -189,6 +199,8 @@ function RootLayout() {
             onRemoveCreationTask={worktreeCreationTasks.removeTask}
             worktreeDeletionTasks={worktreeDeletionTasks.tasks}
             onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+            pausedSessions={pausedSessions}
+            onResumeSession={handleResumeFromSidebar}
           />
           <main style={{
             flex: 1,

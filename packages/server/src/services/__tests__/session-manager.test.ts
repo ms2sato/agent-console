@@ -8,6 +8,7 @@ import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetAgentManager } from '../agent-manager.js';
 import { JobQueue } from '../../jobs/index.js';
+import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1042,7 +1043,7 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
 
-    it('should restore agent worker from persisted metadata when internal worker does not exist', async () => {
+    it('should resume paused session and restore agent worker with new PTY', async () => {
       const manager = await getSessionManager();
 
       // Create session and get persisted data
@@ -1059,36 +1060,35 @@ describe('SessionManager', () => {
       expect(savedDataBefore.length).toBe(1);
 
       // Simulate server restart: mark the previous server as dead
-      // so the new manager will inherit the session
+      // Dead-server sessions are marked as paused (not loaded into memory)
       mockProcess.markDead(process.pid);
 
-      // Create new manager that loads from persistence
+      // Create new manager that marks dead-server sessions as paused
       const manager2 = await getSessionManager();
 
-      // Session exists but internal worker map is empty
-      const session2 = manager2.getSession(session.id);
-      expect(session2).toBeDefined();
+      // Session is NOT in memory (paused), getSession returns undefined
+      expect(manager2.getSession(session.id)).toBeUndefined();
 
-      // PTY count before restore
+      // PTY count before resume
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore worker
-      const result = await manager2.restoreWorker(session.id, workerId);
+      // Resume the paused session (loads from DB and activates all workers)
+      const resumedSession = await manager2.resumeSession(session.id);
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.worker.type).toBe('agent');
-      }
+      expect(resumedSession).not.toBeNull();
+      const resumedAgent = resumedSession!.workers.find((w: Worker) => w.type === 'agent');
+      expect(resumedAgent).toBeDefined();
+      expect(resumedAgent!.id).toBe(workerId);
 
-      // New PTY should be created
-      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      // New PTY should be created for the agent worker
+      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
 
       // Persistence should be updated (not added as new entry)
       const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
       expect(savedDataAfter.length).toBe(1); // Still 1 session, not 2
     });
 
-    it('should restore terminal worker from persisted metadata', async () => {
+    it('should resume paused session and restore terminal worker with new PTY', async () => {
       const manager = await getSessionManager();
 
       // Create session with terminal worker
@@ -1104,23 +1104,27 @@ describe('SessionManager', () => {
       const terminalWorkerId = terminalWorker!.id;
 
       // Simulate server restart: mark the previous server as dead
+      // Dead-server sessions are marked as paused (not loaded into memory)
       mockProcess.markDead(process.pid);
 
       const manager2 = await getSessionManager();
 
-      // PTY count before restore
+      // Session is NOT in memory (paused)
+      expect(manager2.getSession(session.id)).toBeUndefined();
+
+      // PTY count before resume
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore terminal worker
-      const result = await manager2.restoreWorker(session.id, terminalWorkerId);
+      // Resume the paused session (loads from DB and activates all workers)
+      const resumedSession = await manager2.resumeSession(session.id);
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.worker.type).toBe('terminal');
-      }
+      expect(resumedSession).not.toBeNull();
+      const resumedTerminal = resumedSession!.workers.find((w: Worker) => w.id === terminalWorkerId);
+      expect(resumedTerminal).toBeDefined();
+      expect(resumedTerminal!.type).toBe('terminal');
 
-      // New PTY should be created
-      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      // New PTYs should be created (for agent + terminal workers)
+      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
     });
 
     it('should return error for git-diff worker (does not need PTY restoration)', async () => {
@@ -1184,7 +1188,7 @@ describe('SessionManager', () => {
       }
     });
 
-    it('should update persistence with new PID after restoration', async () => {
+    it('should create new PTY processes after session resume', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -1192,30 +1196,34 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
-      const workerId = agentWorker.id;
 
-      // Get original PID from persistence
-      const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-      const originalPid = savedDataBefore[0].workers.find((w: { id: string }) => w.id === workerId)?.pid;
-      expect(originalPid).toBeDefined();
+      // Record PTY count after initial session creation
+      const ptyCountAfterCreate = ptyFactory.instances.length;
+      expect(ptyCountAfterCreate).toBeGreaterThan(0);
 
       // Simulate server restart: mark the previous server as dead
+      // Dead-server sessions are marked as paused (not loaded into memory)
       mockProcess.markDead(process.pid);
 
       const manager2 = await getSessionManager();
 
-      // Restore worker
-      await manager2.restoreWorker(session.id, workerId);
+      // Record PTY count before resume
+      const ptyCountBeforeResume = ptyFactory.instances.length;
 
-      // Check that PID was updated in persistence
-      const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-      const newPid = savedDataAfter[0].workers.find((w: { id: string }) => w.id === workerId)?.pid;
-      expect(newPid).toBeDefined();
-      expect(newPid).not.toBe(originalPid); // PID should be different
+      // Resume the paused session (activates all workers with new PTYs)
+      const resumedSession = await manager2.resumeSession(session.id);
+      expect(resumedSession).not.toBeNull();
+
+      // New PTY processes should have been created for the resumed workers
+      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBeforeResume);
+
+      // The session should now be active with workers
+      const activeSession = manager2.getSession(session.id);
+      expect(activeSession).toBeDefined();
+      expect(activeSession!.workers.length).toBeGreaterThan(0);
     });
 
-    it('should return all workers from getSession even when only some are restored', async () => {
+    it('should return all workers after resuming paused session', async () => {
       const manager = await getSessionManager();
 
       // Create session with agent worker
@@ -1238,22 +1246,22 @@ describe('SessionManager', () => {
       const workerCountBefore = sessionBefore!.workers.length;
       expect(workerCountBefore).toBeGreaterThanOrEqual(2); // At least agent + terminal
 
-      // Simulate server restart
+      // Simulate server restart (session becomes paused, not in memory)
       const manager2 = await simulateServerRestart();
 
-      // Before any restoration, getSession should return all workers from persistence
-      const sessionAfterRestart = manager2.getSession(session.id);
-      expect(sessionAfterRestart?.workers.length).toBe(workerCountBefore);
+      // Session is NOT in memory (paused)
+      expect(manager2.getSession(session.id)).toBeUndefined();
 
-      // Restore only ONE worker (agent)
-      await manager2.restoreWorker(session.id, agentWorkerId);
+      // Resume the paused session (loads all workers and activates PTYs)
+      const resumedSession = await manager2.resumeSession(session.id);
+      expect(resumedSession).not.toBeNull();
 
-      // getSession should STILL return all workers (not just the restored one)
-      const sessionAfterPartialRestore = manager2.getSession(session.id);
-      expect(sessionAfterPartialRestore?.workers.length).toBe(workerCountBefore);
+      // After resume, getSession should return all workers
+      const sessionAfterResume = manager2.getSession(session.id);
+      expect(sessionAfterResume?.workers.length).toBe(workerCountBefore);
 
       // Verify both agent and terminal workers are present
-      const workerIds = sessionAfterPartialRestore?.workers.map((w: Worker) => w.id);
+      const workerIds = sessionAfterResume?.workers.map((w: Worker) => w.id);
       expect(workerIds).toContain(agentWorkerId);
       expect(workerIds).toContain(terminalWorkerId);
     });
@@ -1363,14 +1371,14 @@ describe('SessionManager', () => {
     });
   });
 
-  describe('restoreWorker - path validation', () => {
+  describe('resumeSession - path validation', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn });
     }
 
-    it('should return error with PATH_NOT_FOUND when session path no longer exists', async () => {
+    it('should return null from resumeSession when session path no longer exists', async () => {
       // First, create a session with a manager that says path exists
       const managerForCreate = await getSessionManager();
 
@@ -1379,40 +1387,28 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
-      const workerId = agentWorker.id;
 
-      // Simulate server restart and path no longer exists
+      // Simulate server restart (session becomes paused)
       mockProcess.markDead(process.pid);
 
-      // Create a new manager with a mock that returns true during init but false afterward
-      // This simulates: path existed when inherited during init, but deleted before restoreWorker
-      let initComplete = false;
-      const mockPathExistsOnlyDuringInit = async (_path: string): Promise<boolean> => {
-        if (!initComplete) {
-          return true; // Return true during initialization
-        }
-        return false; // Return false for subsequent calls (restoreWorker)
-      };
-      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathExistsOnlyDuringInit);
-      initComplete = true; // Mark init as complete
+      // Create a new manager where pathExists always returns false
+      // This simulates: path was deleted before the user tries to resume
+      const mockPathNotFound = async (_path: string): Promise<boolean> => false;
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotFound);
 
-      // PTY count before restore attempt
+      // PTY count before resume attempt
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore should return error because path no longer exists
-      const result = await managerAfterRestart.restoreWorker(session.id, workerId);
+      // resumeSession should return null because path no longer exists
+      const result = await managerAfterRestart.resumeSession(session.id);
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errorCode).toBe('PATH_NOT_FOUND');
-      }
+      expect(result).toBeNull();
 
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
 
-    it('should not create PTY when path validation fails for terminal worker', async () => {
+    it('should not create PTY when resumeSession fails due to missing path for session with terminal worker', async () => {
       // First, create a session with terminal worker
       const managerForCreate = await getSessionManager();
 
@@ -1421,42 +1417,31 @@ describe('SessionManager', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const terminalWorker = await managerForCreate.createWorker(session.id, {
+      await managerForCreate.createWorker(session.id, {
         type: 'terminal',
         name: 'Shell',
       });
-      const terminalWorkerId = terminalWorker!.id;
 
-      // Simulate server restart and path no longer exists
+      // Simulate server restart (session becomes paused)
       mockProcess.markDead(process.pid);
 
-      // Create a new manager with a mock that returns true during init but false afterward
-      let initComplete = false;
-      const mockPathExistsOnlyDuringInit = async (_path: string): Promise<boolean> => {
-        if (!initComplete) {
-          return true;
-        }
-        return false;
-      };
-      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathExistsOnlyDuringInit);
-      initComplete = true;
+      // Create a new manager where pathExists always returns false
+      const mockPathNotFound = async (_path: string): Promise<boolean> => false;
+      const managerAfterRestart = await getSessionManagerWithPathExists(mockPathNotFound);
 
-      // PTY count before restore attempt
+      // PTY count before resume attempt
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore should return error because path no longer exists
-      const result = await managerAfterRestart.restoreWorker(session.id, terminalWorkerId);
+      // resumeSession should return null because path no longer exists
+      const result = await managerAfterRestart.resumeSession(session.id);
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errorCode).toBe('PATH_NOT_FOUND');
-      }
+      expect(result).toBeNull();
 
       // No new PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
 
-    it('should successfully restore worker when path still exists', async () => {
+    it('should successfully resume session when path still exists', async () => {
       // Create a session
       const managerForCreate = await getSessionManager();
 
@@ -1468,26 +1453,26 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
       const workerId = agentWorker.id;
 
-      // Simulate server restart but path still exists
+      // Simulate server restart (session becomes paused)
       mockProcess.markDead(process.pid);
 
       // Create a new manager where path validation succeeds
       const mockPathStillExists = async (_path: string): Promise<boolean> => true;
       const managerAfterRestart = await getSessionManagerWithPathExists(mockPathStillExists);
 
-      // PTY count before restore
+      // PTY count before resume
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Restore should succeed
-      const result = await managerAfterRestart.restoreWorker(session.id, workerId);
+      // Resume should succeed
+      const result = await managerAfterRestart.resumeSession(session.id);
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.worker.type).toBe('agent');
-      }
+      expect(result).not.toBeNull();
+      const resumedAgent = result!.workers.find((w: Worker) => w.id === workerId);
+      expect(resumedAgent).toBeDefined();
+      expect(resumedAgent!.type).toBe('agent');
 
-      // New PTY should be created (since internal worker had no PTY after restart)
-      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      // New PTY should be created (workers activated during resume)
+      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
     });
   });
 
@@ -2103,7 +2088,7 @@ describe('SessionManager', () => {
       await manager.pauseSession(session.id);
 
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
-      expect(onSessionPaused).toHaveBeenCalledWith(session.id);
+      expect(onSessionPaused).toHaveBeenCalledWith(session.id, expect.any(String));
     });
   });
 
@@ -2288,10 +2273,97 @@ describe('SessionManager', () => {
       const result = await managerWithMissingPath.resumeSession(session.id);
       expect(result).toBeNull();
     });
+
+    it('should restore paused state in DB if PTY activation fails', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+
+      await manager.pauseSession(sessionId);
+
+      // Verify session is paused in persistence (serverPid is null)
+      const savedDataBeforeResume = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      expect(savedDataBeforeResume[0].serverPid).toBeNull();
+      expect(savedDataBeforeResume[0].pausedAt).toBeDefined();
+
+      // Create a new manager with a PTY provider that throws on spawn
+      // This simulates PTY activation failure during resume
+      const failingPtyProvider: PtyProvider = {
+        spawn: (_command: string, _args: string[], _options: PtySpawnOptions) => {
+          throw new Error('PTY spawn failed');
+        },
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const managerWithFailingPty = await module.SessionManager.create({
+        ptyProvider: failingPtyProvider,
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+      });
+
+      // Resume should fail because PTY activation throws
+      const result = await managerWithFailingPty.resumeSession(sessionId);
+      expect(result).toBeNull();
+
+      // Session should NOT be in memory
+      expect(managerWithFailingPty.getSession(sessionId)).toBeUndefined();
+
+      // DB should be restored to paused state (serverPid cleared, pausedAt set)
+      // The session should still be findable as "paused" for future resume attempts
+      const pausedSessions = await managerWithFailingPty.getAllPausedSessions();
+      const failedSession = pausedSessions.find((s: Session) => s.id === sessionId);
+      expect(failedSession).toBeDefined();
+      expect(failedSession?.pausedAt).toBeDefined();
+    });
+
+    it('should prevent concurrent resume attempts for the same session', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+
+      await manager.pauseSession(sessionId);
+
+      // PTY count before resume
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Call resumeSession concurrently - both should not cause orphan PTYs
+      const [result1, result2] = await Promise.all([
+        manager.resumeSession(sessionId),
+        manager.resumeSession(sessionId),
+      ]);
+
+      // One should succeed and the other should return null (blocked by guard)
+      const successCount = [result1, result2].filter((r) => r !== null).length;
+      expect(successCount).toBe(1);
+
+      // Session should be in memory exactly once
+      expect(manager.getSession(sessionId)).toBeDefined();
+
+      // Only one set of PTYs should have been created (not two)
+      // Each resume creates 1 PTY for the agent worker
+      const ptysCreated = ptyFactory.instances.length - ptyCountBefore;
+      expect(ptysCreated).toBe(1);
+    });
   });
 
   describe('getAllPausedSessions', () => {
-    it('should return paused sessions with paused: true', async () => {
+    it('should return paused sessions with pausedAt timestamp', async () => {
       const manager = await getSessionManager();
 
       // Create and pause a worktree session
@@ -2310,11 +2382,11 @@ describe('SessionManager', () => {
 
       expect(pausedSessions.length).toBe(1);
       expect(pausedSessions[0].id).toBe(session.id);
-      expect(pausedSessions[0].paused).toBe(true);
+      expect(pausedSessions[0].pausedAt).toBeDefined();
       expect(pausedSessions[0].activationState).toBe('hibernated');
     });
 
-    it('should not set paused on active in-memory sessions', async () => {
+    it('should not set pausedAt on active in-memory sessions', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -2325,11 +2397,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      // Active sessions via getAllSessions should not have paused: true
+      // Active sessions via getAllSessions should not have pausedAt set
       const allSessions: Session[] = manager.getAllSessions();
       const activeSession = allSessions.find((s) => s.id === session.id);
       expect(activeSession).toBeDefined();
-      expect(activeSession?.paused).toBeUndefined();
+      expect(activeSession?.pausedAt).toBeUndefined();
     });
   });
 

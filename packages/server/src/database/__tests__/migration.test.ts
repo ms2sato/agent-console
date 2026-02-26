@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(11);
+      expect(result.rows[0]?.user_version).toBe(12);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(11);
+      expect(result.rows[0]?.user_version).toBe(12);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1260,6 +1260,57 @@ describe('migration', () => {
       const rows = await db.selectFrom('repositories').selectAll().execute();
       expect(rows).toHaveLength(1);
       expect(rows[0].default_agent_id).toBeNull();
+    });
+  });
+
+  describe('schema migration v12: paused_at column', () => {
+    it('should add paused_at column to sessions table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-paused',
+          type: 'quick',
+          location_path: '/test/paused',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+          paused_at: '2025-06-15T12:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].paused_at).toBe('2025-06-15T12:00:00.000Z');
+    });
+
+    it('should allow null paused_at values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-not-paused',
+          type: 'quick',
+          location_path: '/test/not-paused',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].paused_at).toBeNull();
     });
   });
 

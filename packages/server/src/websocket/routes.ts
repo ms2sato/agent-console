@@ -298,9 +298,9 @@ export async function setupWebSocketRoutes(
       logger.debug({ sessionId, workerId }, 'Broadcasting worker-restarted');
       broadcastToApp({ type: 'worker-restarted', sessionId, workerId });
     },
-    onSessionPaused: (sessionId) => {
+    onSessionPaused: (sessionId, pausedAt) => {
       logger.debug({ sessionId }, 'Broadcasting session-paused');
-      broadcastToApp({ type: 'session-paused', sessionId });
+      broadcastToApp({ type: 'session-paused', sessionId, pausedAt });
     },
     onSessionResumed: (session) => {
       logger.debug({ sessionId: session.id }, 'Broadcasting session-resumed');

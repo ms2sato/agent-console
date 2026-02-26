@@ -16,6 +16,7 @@ export interface SessionUpdateFields {
   initialPrompt?: string | null;
   locationPath?: string;
   worktreeId?: string;
+  pausedAt?: string | null;
 }
 
 /**

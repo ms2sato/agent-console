@@ -243,6 +243,7 @@ External Agent:
   2. send_session_message({
        toSessionId: "target",
        toWorkerId: "w2",          ← explicitly target the reviewer
+       fromSessionId: "external-session",
        content: "Please review the changes on branch fix/auth"
      })
 ```

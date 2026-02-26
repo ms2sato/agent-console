@@ -19,7 +19,7 @@ interface UseSessionStateReturn {
   /** Handle session deleted */
   handleSessionDeleted: (sessionId: string) => void;
   /** Handle session paused (removed from memory but preserved in DB) */
-  handleSessionPaused: (sessionId: string) => void;
+  handleSessionPaused: (sessionId: string, pausedAt: string) => void;
   /** Handle paused session resumed */
   handleSessionResumed: (session: Session) => void;
   /** Handle worker activity state change */
@@ -73,13 +73,6 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
   }, []);
 
-  // Upsert: replace if exists, append if new (used for session:resumed which
-  // may re-introduce a previously hibernated session not yet in the list).
-  const handleSessionUpsert = useCallback((session: Session) => {
-    setSessions(prev => upsertSession(prev, session));
-    sessionsRef.current = upsertSession(sessionsRef.current, session);
-  }, []);
-
   const handleSessionDeleted = useCallback((sessionId: string) => {
     setSessions(prev => prev.filter(s => s.id !== sessionId));
     sessionsRef.current = sessionsRef.current.filter(s => s.id !== sessionId);
@@ -91,13 +84,18 @@ export function useSessionState(): UseSessionStateReturn {
     });
   }, []);
 
-  const handleSessionPaused = useCallback((sessionId: string) => {
+  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
     setSessions(prev => prev.map(s =>
-      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt } : s
     ));
     sessionsRef.current = sessionsRef.current.map(s =>
-      s.id === sessionId ? { ...s, paused: true, activationState: 'hibernated' as const } : s
+      s.id === sessionId ? { ...s, pausedAt } : s
     );
+  }, []);
+
+  const handleSessionResumed = useCallback((session: Session) => {
+    setSessions(prev => upsertSession(prev, session));
+    sessionsRef.current = upsertSession(sessionsRef.current, session);
   }, []);
 
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -123,7 +121,7 @@ export function useSessionState(): UseSessionStateReturn {
     handleSessionUpdated,
     handleSessionDeleted,
     handleSessionPaused,
-    handleSessionResumed: handleSessionUpsert,
+    handleSessionResumed,
     handleWorkerActivity,
     setSessionsFromApi,
   };

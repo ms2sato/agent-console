@@ -63,6 +63,7 @@ export function toSessionRow(session: PersistedSession): NewSession {
     updated_at: now,
     initial_prompt: session.initialPrompt ?? null,
     title: session.title ?? null,
+    paused_at: session.pausedAt ?? null,
   };
 
   if (session.type === 'worktree') {
@@ -226,6 +227,7 @@ export function toPersistedSession(
       workers,
       initialPrompt: session.initial_prompt ?? undefined,
       title: session.title ?? undefined,
+      pausedAt: session.paused_at ?? undefined,
     } as PersistedWorktreeSession;
   } else if (session.type === 'quick') {
     return {
@@ -237,6 +239,7 @@ export function toPersistedSession(
       workers,
       initialPrompt: session.initial_prompt ?? undefined,
       title: session.title ?? undefined,
+      pausedAt: session.paused_at ?? undefined,
     } as PersistedQuickSession;
   } else {
     // This should never be reached due to the validation above,
