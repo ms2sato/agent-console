@@ -217,36 +217,38 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     checkSession();
   }, [sessionId]);
 
-  const handleRestart = async (continueConversation: boolean) => {
-    if (state.type !== 'disconnected') return;
+  // Restart handler: works from both active and disconnected states.
+  // Used by the disconnected state UI and by the worker error recovery overlay in Terminal.
+  const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
+    const session = (state.type === 'active' || state.type === 'disconnected') ? state.session : null;
+    if (!session) return;
 
-    const session = state.session;
-
-    // Find the first agent worker to restart
     const agentWorker = session.workers.find(w => w.type === 'agent');
     if (!agentWorker) {
-      console.error('No agent worker found to restart');
+      showError('Restart Failed', 'No agent worker found in session');
       return;
     }
 
     setState({ type: 'restarting' });
     try {
       await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
-      // Reload session to get updated state
       const updatedSession = await getSession(sessionId);
-      if (updatedSession && updatedSession.status === 'active') {
-        // Reset tabs to pick up new worker state
+      if (!updatedSession) {
+        setState({ type: 'not_found' });
+        return;
+      }
+      if (updatedSession.status === 'active') {
         updateTabsFromSession([]);
         setState({ type: 'active', session: updatedSession });
       } else {
-        setState({ type: 'disconnected', session });
+        setState({ type: 'disconnected', session: updatedSession });
       }
     } catch (error) {
       console.error('Failed to restart session:', error);
       showError('Restart Failed', error instanceof Error ? error.message : 'Failed to restart session');
       setState({ type: 'disconnected', session });
     }
-  };
+  }, [sessionId, state, updateTabsFromSession, showError]);
 
   // Loading state
   if (state.type === 'loading' || state.type === 'restarting') {
@@ -365,13 +367,13 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           </p>
           <div className="flex gap-3 justify-center">
             <button
-              onClick={() => handleRestart(true)}
+              onClick={() => handleWorkerRestart(true)}
               className="btn btn-primary"
             >
               Continue (-c)
             </button>
             <button
-              onClick={() => handleRestart(false)}
+              onClick={() => handleWorkerRestart(false)}
               className="btn bg-slate-600 hover:bg-slate-500"
             >
               New Session
@@ -454,6 +456,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
             onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
             hideStatusBar
           />
         )}

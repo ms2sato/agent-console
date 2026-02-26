@@ -395,7 +395,13 @@ export function ActiveSessionsSidebar({
   };
 
   const handlePausedSessionClick = (sessionId: string) => {
-    onResumeSession?.(sessionId);
+    // Fire-and-forget: navigate immediately (optimistic), but catch errors from resume
+    const result = onResumeSession?.(sessionId);
+    if (result instanceof Promise) {
+      result.catch((error) => {
+        console.error('Failed to resume session:', error);
+      });
+    }
     navigate({ to: '/sessions/$sessionId', params: { sessionId } });
   };
 
@@ -555,7 +561,7 @@ export function ActiveSessionsSidebar({
                 </button>
                 {pausedExpanded &&
                   [...pausedSessions]
-                    .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? ''))
+                    .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? '') || a.id.localeCompare(b.id))
                     .map((session) => (
                       <PausedSessionItem
                         key={session.id}

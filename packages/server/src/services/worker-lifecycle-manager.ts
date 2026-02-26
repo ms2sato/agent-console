@@ -388,7 +388,7 @@ export class WorkerLifecycleManager {
     if (!session) {
       return {
         success: false,
-        errorCode: 'WORKER_NOT_FOUND',
+        errorCode: 'SESSION_DELETED',
         message: 'Session not found',
       };
     }
