@@ -16,9 +16,10 @@ import {
   ServerUnavailableError,
 } from '../api';
 
-// Workaround: Bun's expect is stricter than vitest's for toEqual type checking
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const expect = (value: unknown): any => bunExpect(value);
+// Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
+// Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
+// expect to accept unknown values. This avoids `any` while allowing structural comparison.
+const expect = (value: unknown) => bunExpect(value);
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -610,6 +611,80 @@ describe('API Client', () => {
       } as unknown as Response);
 
       await expect(generateRepositoryDescription('repo-1')).rejects.toThrow('No README file found in repository');
+    });
+  });
+
+  describe('handleApiError', () => {
+    it('should extract error from response with both error and message fields', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'Error field', message: 'Message field' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Error field');
+    });
+
+    it('should use message field when error field is empty string', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: '', message: 'Message fallback' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Message fallback');
+    });
+
+    it('should use message field when error field is not present', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ message: 'Only message' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Only message');
+    });
+
+    it('should combine fallback message with statusText when response has no error or message', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({})),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Bad Request');
+    });
+
+    it('should use fallback message when statusText is empty string', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: '',
+        json: mock(() => Promise.resolve({})),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session');
+    });
+
+    it('should handle non-object JSON response gracefully', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: mock(() => Promise.resolve('string response')),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Internal Server Error');
     });
   });
 });

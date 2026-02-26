@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchSystemHealth } from '../../lib/api';
+import { systemKeys } from '../../lib/query-keys';
 import { WarningIcon, CloseIcon } from '../Icons';
 
 const DISMISS_KEY = 'webhook-config-banner-dismissed';
@@ -22,7 +23,7 @@ export function WebhookConfigBanner() {
   });
 
   const { data: health } = useQuery({
-    queryKey: ['system', 'health'],
+    queryKey: systemKeys.health(),
     queryFn: fetchSystemHealth,
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,

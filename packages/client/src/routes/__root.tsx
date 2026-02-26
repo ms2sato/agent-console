@@ -3,6 +3,7 @@ import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-rout
 import { createContext, useContext } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, resumeSession } from '../lib/api';
+import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
@@ -92,7 +93,7 @@ function RootLayout() {
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {
     worktreeDeletionTasks.handleWorktreeDeletionCompleted(payload);
     // Invalidate all worktree queries to refresh dashboard
-    queryClient.invalidateQueries({ queryKey: ['worktrees'] });
+    queryClient.invalidateQueries({ queryKey: worktreeKeys.root() });
   }, [worktreeDeletionTasks, queryClient]);
 
   // Subscribe to app WebSocket events for real-time session updates
@@ -283,7 +284,7 @@ function RepositoriesNavLink() {
 
 function ValidationWarningIndicator() {
   const { data } = useQuery({
-    queryKey: ['session-validation'],
+    queryKey: sessionKeys.validation(),
     queryFn: validateSessions,
     // Only check once on initial load, don't refetch automatically
     staleTime: Infinity,

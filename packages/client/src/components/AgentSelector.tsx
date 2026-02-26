@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { fetchAgents } from '../lib/api';
+import { agentKeys } from '../lib/query-keys';
 
 interface AgentSelectorProps {
   value?: string;
@@ -16,7 +17,7 @@ export function AgentSelector({
   disabled = false,
 }: AgentSelectorProps) {
   const { data, isLoading } = useQuery({
-    queryKey: ['agents'],
+    queryKey: agentKeys.all(),
     queryFn: fetchAgents,
   });
 
@@ -53,7 +54,7 @@ export function AgentSelector({
 // Hook to get agents list for use in other components
 export function useAgents() {
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['agents'],
+    queryKey: agentKeys.all(),
     queryFn: fetchAgents,
   });
 

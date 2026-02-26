@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { JOB_STATUS, JOB_TYPES, type Job, type JobStatus, type JobType } from '@agent-console/shared';
 import { fetchJobs, fetchJobStats, retryJob, cancelJob, type FetchJobsParams } from '../../lib/api';
+import { jobKeys } from '../../lib/query-keys';
 import { formatTimestamp } from '../../lib/format';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { StatusBadge } from '../../components/jobs';
@@ -51,7 +52,7 @@ function JobsPage() {
     error: jobsError,
     refetch: refetchJobs,
   } = useQuery({
-    queryKey: ['jobs', queryParams],
+    queryKey: jobKeys.list(queryParams),
     queryFn: () => fetchJobs(queryParams),
     refetchInterval: 5000,
   });
@@ -62,7 +63,7 @@ function JobsPage() {
     isLoading: isLoadingStats,
     error: statsError,
   } = useQuery({
-    queryKey: ['jobs', 'stats'],
+    queryKey: jobKeys.stats(),
     queryFn: fetchJobStats,
     refetchInterval: 5000,
   });
@@ -71,7 +72,7 @@ function JobsPage() {
   const retryMutation = useMutation({
     mutationFn: retryJob,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.root() });
     },
     onError: (error) => {
       showError('Failed to Retry Job', error.message);
@@ -82,7 +83,7 @@ function JobsPage() {
   const cancelMutation = useMutation({
     mutationFn: cancelJob,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.root() });
       setJobToCancel(null);
     },
     onError: (error) => {

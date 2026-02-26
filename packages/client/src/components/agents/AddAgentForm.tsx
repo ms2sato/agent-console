@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { registerAgent } from '../../lib/api';
+import { agentKeys } from '../../lib/query-keys';
 import { AgentForm, parseAskingPatterns, type AgentFormData } from './AgentForm';
 
 export interface AddAgentFormProps {
@@ -18,7 +19,7 @@ export function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
     onSuccess: (response) => {
       // Optimistic cache update (don't rely solely on WebSocket in case of disconnection)
       const newAgent = response.agent;
-      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
         if (!old) return { agents: [newAgent] };
         return { agents: [...old.agents, newAgent] };
       });

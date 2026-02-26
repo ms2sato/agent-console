@@ -40,6 +40,7 @@ import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../componen
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
 import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext } from './__root';
+import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, HookCommandResult } from '@agent-console/shared';
 
 // Request notification permission on load
@@ -351,13 +352,13 @@ function DashboardPage() {
   // Handle initial agent sync from WebSocket
   const handleAgentsSync = useCallback((agents: AgentDefinition[]) => {
     console.log(`[Sync] Initializing ${agents.length} agents from WebSocket`);
-    queryClient.setQueryData(['agents'], { agents });
+    queryClient.setQueryData(agentKeys.all(), { agents });
   }, [queryClient]);
 
   // Handle new agent created
   const handleAgentCreated = useCallback((agent: AgentDefinition) => {
     console.log(`[Agent] Created: ${agent.id}`);
-    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return { agents: [agent] };
       return { agents: [...old.agents, agent] };
     });
@@ -367,48 +368,48 @@ function DashboardPage() {
   const handleAgentUpdated = useCallback((agent: AgentDefinition) => {
     console.log(`[Agent] Updated: ${agent.id}`);
     // Update list cache
-    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return { agents: [agent] };
       return { agents: old.agents.map(a => a.id === agent.id ? agent : a) };
     });
     // Update individual agent cache for detail/edit pages
-    queryClient.setQueryData(['agent', agent.id], { agent });
+    queryClient.setQueryData(agentKeys.detail(agent.id), { agent });
   }, [queryClient]);
 
   // Handle agent deleted
   const handleAgentDeleted = useCallback((agentId: string) => {
     console.log(`[Agent] Deleted: ${agentId}`);
     // Update list cache
-    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+    queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return old;
       return { agents: old.agents.filter(a => a.id !== agentId) };
     });
     // Invalidate individual agent cache to trigger refetch (will 404)
-    queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+    queryClient.invalidateQueries({ queryKey: agentKeys.detail(agentId) });
   }, [queryClient]);
 
   // Handle initial repository sync from WebSocket
   const handleRepositoriesSync = useCallback(() => {
     console.log('[Sync] Repositories sync received');
-    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle new repository created
   const handleRepositoryCreated = useCallback(() => {
     console.log('[Repository] Created');
-    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle repository deleted
   const handleRepositoryDeleted = useCallback(() => {
     console.log('[Repository] Deleted');
-    queryClient.invalidateQueries({ queryKey: ['repositories'] });
+    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle repository updated
   const handleRepositoryUpdated = useCallback((repository: Repository) => {
     console.log(`[Repository] Updated: ${repository.id}`);
-    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(['repositories'], (old) => {
+    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
       if (!old) return old;
       return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
     });
@@ -523,7 +524,7 @@ function DashboardPage() {
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
   const { data: reposData } = useQuery({
-    queryKey: ['repositories'],
+    queryKey: repositoryKeys.all(),
     queryFn: fetchRepositories,
   });
 
@@ -536,7 +537,7 @@ function DashboardPage() {
   const registerMutation = useMutation({
     mutationFn: registerRepository,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['repositories'] });
+      queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
       setShowAddRepo(false);
     },
   });
@@ -544,7 +545,7 @@ function DashboardPage() {
   const unregisterMutation = useMutation({
     mutationFn: unregisterRepository,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['repositories'] });
+      queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
     },
   });
 
@@ -569,7 +570,7 @@ function DashboardPage() {
           updateRepository(repoId, { description: genResult.description })
         )
         .then(() => {
-          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+          queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
         })
         .catch((err) => {
           const message = err instanceof Error ? err.message : 'Unknown error';
@@ -584,7 +585,7 @@ function DashboardPage() {
   const createSessionMutation = useMutation({
     mutationFn: createSession,
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       setShowAddSession(false);
       navigate({ to: `/sessions/${data.session.id}` });
     },
@@ -738,14 +739,14 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, ge
   );
 
   const { data: worktreesData } = useQuery({
-    queryKey: ['worktrees', repository.id],
+    queryKey: worktreeKeys.byRepository(repository.id),
     queryFn: () => fetchWorktrees(repository.id),
   });
 
   const worktrees = worktreesData?.worktrees ?? [];
 
   const { data: branchesData } = useQuery({
-    queryKey: ['branches', repository.id],
+    queryKey: branchKeys.byRepository(repository.id),
     queryFn: () => fetchBranches(repository.id),
     enabled: showCreateWorktree, // Only fetch when modal is open
   });
@@ -899,7 +900,7 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       navigate({ to: '/sessions/$sessionId', params: { sessionId: data.session.id } });
     },
     onError: (error: Error) => {
@@ -910,7 +911,7 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
   const resumeSessionMutation = useMutation({
     mutationFn: (sessionId: string) => resumeSession(sessionId),
     onSuccess: (session) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
     },
     onError: (error: Error) => {
@@ -1128,7 +1129,7 @@ function SessionCard({ session }: SessionCardProps) {
       // Emit session-deleted locally for immediate UI update
       // WebSocket event will arrive later but will be processed idempotently
       emitSessionDeleted(session.id);
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       setShowStopConfirm(false);
     },
   });

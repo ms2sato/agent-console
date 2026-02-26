@@ -29,6 +29,18 @@ import { api } from './api-client';
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
 const API_BASE = '/api';
 
+/**
+ * Extract an error message from a failed API response and throw.
+ * Attempts to parse JSON with `error` or `message` fields;
+ * falls back to `fallbackMessage` combined with the HTTP status text.
+ */
+async function handleApiError(res: Response, fallbackMessage: string): Promise<never> {
+  const body = await res.json().catch(() => null) as { error?: string; message?: string } | null;
+  const serverMessage = (body?.error?.trim() || body?.message?.trim() || undefined);
+  const message = serverMessage ?? (res.statusText ? `${fallbackMessage}: ${res.statusText}` : fallbackMessage);
+  throw new Error(message);
+}
+
 export interface ConfigResponse {
   homeDir: string;
   capabilities: {
@@ -40,7 +52,7 @@ export interface ConfigResponse {
 export async function fetchConfig(): Promise<ConfigResponse> {
   const res = await api.config.$get();
   if (!res.ok) {
-    throw new Error(`Failed to fetch config: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch config');
   }
   return res.json();
 }
@@ -54,8 +66,7 @@ export async function createSession(
 ): Promise<CreateSessionResponse> {
   const res = await api.sessions.$post({ json: request });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to create session');
+    await handleApiError(res, 'Failed to create session');
   }
   return res.json() as Promise<CreateSessionResponse>;
 }
@@ -71,7 +82,7 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       throw new ServerUnavailableError();
     }
     if (!res.ok) {
-      throw new Error(`Failed to get session: ${res.statusText}`);
+      await handleApiError(res, 'Failed to get session');
     }
     const data = (await res.json()) as { session: Session };
     return data.session;
@@ -99,7 +110,7 @@ export interface WorkersResponse {
 export async function fetchWorkers(sessionId: string): Promise<WorkersResponse> {
   const res = await api.sessions[':sessionId'].workers.$get({ param: { sessionId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch workers: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch workers');
   }
   return res.json() as Promise<WorkersResponse>;
 }
@@ -113,8 +124,7 @@ export async function createWorker(
     json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to create worker');
+    await handleApiError(res, 'Failed to create worker');
   }
   return res.json() as Promise<CreateWorkerResponse>;
 }
@@ -124,8 +134,7 @@ export async function deleteWorker(sessionId: string, workerId: string): Promise
     param: { sessionId, workerId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to delete worker');
+    await handleApiError(res, 'Failed to delete worker');
   }
 }
 
@@ -141,8 +150,7 @@ export async function restartAgentWorker(
     json: { continueConversation, ...(agentId ? { agentId } : {}), ...(branch ? { branch } : {}) },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to restart worker');
+    await handleApiError(res, 'Failed to restart worker');
   }
   return res.json() as Promise<{ worker: Worker }>;
 }
@@ -150,8 +158,7 @@ export async function restartAgentWorker(
 export async function deleteSession(sessionId: string): Promise<void> {
   const res = await api.sessions[':id'].$delete({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to delete session');
+    await handleApiError(res, 'Failed to delete session');
   }
 }
 
@@ -163,8 +170,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export async function pauseSession(sessionId: string): Promise<void> {
   const res = await api.sessions[':id'].pause.$post({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to pause session');
+    await handleApiError(res, 'Failed to pause session');
   }
 }
 
@@ -175,8 +181,7 @@ export async function pauseSession(sessionId: string): Promise<void> {
 export async function resumeSession(sessionId: string): Promise<Session> {
   const res = await api.sessions[':id'].resume.$post({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to resume session');
+    await handleApiError(res, 'Failed to resume session');
   }
   const data = await res.json() as { session: Session };
   return data.session;
@@ -201,8 +206,7 @@ export async function updateSessionMetadata(
     json: updates,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to update session');
+    await handleApiError(res, 'Failed to update session');
   }
   return res.json() as Promise<UpdateSessionMetadataResponse>;
 }
@@ -218,7 +222,7 @@ export interface CreateRepositoryResponse {
 export async function fetchRepositories(): Promise<RepositoriesResponse> {
   const res = await api.repositories.$get();
   if (!res.ok) {
-    throw new Error(`Failed to fetch repositories: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch repositories');
   }
   return res.json();
 }
@@ -226,8 +230,7 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
 export async function registerRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResponse> {
   const res = await api.repositories.$post({ json: request });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to register repository');
+    await handleApiError(res, 'Failed to register repository');
   }
   return res.json() as Promise<CreateRepositoryResponse>;
 }
@@ -235,7 +238,7 @@ export async function registerRepository(request: CreateRepositoryRequest): Prom
 export async function unregisterRepository(repositoryId: string): Promise<void> {
   const res = await api.repositories[':id'].$delete({ param: { id: repositoryId } });
   if (!res.ok) {
-    throw new Error(`Failed to unregister repository: ${res.statusText}`);
+    await handleApiError(res, 'Failed to unregister repository');
   }
 }
 
@@ -252,8 +255,7 @@ export async function updateRepository(
     json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to update repository');
+    await handleApiError(res, 'Failed to update repository');
   }
   return res.json() as Promise<UpdateRepositoryResponse>;
 }
@@ -278,7 +280,7 @@ export interface CreateWorktreeAsyncResponse {
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {
   const res = await api.repositories[':id'].worktrees.$get({ param: { id: repositoryId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch worktrees: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch worktrees');
   }
   return res.json() as Promise<WorktreesResponse>;
 }
@@ -286,7 +288,7 @@ export async function fetchWorktrees(repositoryId: string): Promise<WorktreesRes
 export async function fetchBranches(repositoryId: string): Promise<BranchesResponse> {
   const res = await api.repositories[':id'].branches.$get({ param: { id: repositoryId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch branches: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch branches');
   }
   return res.json() as Promise<BranchesResponse>;
 }
@@ -294,7 +296,7 @@ export async function fetchBranches(repositoryId: string): Promise<BranchesRespo
 export async function fetchSessionBranches(sessionId: string): Promise<BranchesResponse> {
   const res = await api.sessions[':sessionId'].branches.$get({ param: { sessionId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch session branches: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch session branches');
   }
   return res.json() as Promise<BranchesResponse>;
 }
@@ -317,7 +319,7 @@ export async function fetchBranchCommits(sessionId: string, baseRef: string): Pr
     query: { base: baseRef },
   });
   if (!res.ok) {
-    throw new Error(`Failed to fetch branch commits: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch branch commits');
   }
   return res.json() as Promise<BranchCommitsResponse>;
 }
@@ -335,8 +337,7 @@ export async function createWorktree(
     json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to create worktree');
+    await handleApiError(res, 'Failed to create worktree');
   }
   return res.json() as Promise<CreateWorktreeAsyncResponse>;
 }
@@ -356,8 +357,7 @@ export async function createWorktreeAsync(
     json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to create worktree');
+    await handleApiError(res, 'Failed to create worktree');
   }
   return res.json() as Promise<CreateWorktreeAsyncResponse>;
 }
@@ -375,8 +375,7 @@ export async function fetchGitHubIssue(
     json: { reference },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to fetch GitHub issue');
+    await handleApiError(res, 'Failed to fetch GitHub issue');
   }
   return res.json() as Promise<GitHubIssueResponse>;
 }
@@ -396,8 +395,7 @@ export async function deleteWorktree(
     method: 'DELETE',
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(error.error || 'Failed to delete worktree');
+    await handleApiError(res, 'Failed to delete worktree');
   }
 }
 
@@ -424,8 +422,7 @@ export async function deleteWorktreeAsync(
     method: 'DELETE',
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(error.error || 'Failed to delete worktree');
+    await handleApiError(res, 'Failed to delete worktree');
   }
   return res.json();
 }
@@ -441,7 +438,7 @@ export interface AgentResponse {
 export async function fetchAgents(): Promise<AgentsResponse> {
   const res = await api.agents.$get();
   if (!res.ok) {
-    throw new Error(`Failed to fetch agents: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch agents');
   }
   return res.json();
 }
@@ -449,7 +446,7 @@ export async function fetchAgents(): Promise<AgentsResponse> {
 export async function fetchAgent(agentId: string): Promise<AgentResponse> {
   const res = await api.agents[':id'].$get({ param: { id: agentId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch agent: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch agent');
   }
   return res.json() as Promise<AgentResponse>;
 }
@@ -457,8 +454,7 @@ export async function fetchAgent(agentId: string): Promise<AgentResponse> {
 export async function registerAgent(request: CreateAgentRequest): Promise<AgentResponse> {
   const res = await api.agents.$post({ json: request });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to register agent');
+    await handleApiError(res, 'Failed to register agent');
   }
   return res.json() as Promise<AgentResponse>;
 }
@@ -472,8 +468,7 @@ export async function updateAgent(
     json: request,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to update agent');
+    await handleApiError(res, 'Failed to update agent');
   }
   return res.json() as Promise<AgentResponse>;
 }
@@ -481,24 +476,21 @@ export async function updateAgent(
 export async function unregisterAgent(agentId: string): Promise<void> {
   const res = await api.agents[':id'].$delete({ param: { id: agentId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to unregister agent');
+    await handleApiError(res, 'Failed to unregister agent');
   }
 }
 
 export async function openPath(path: string): Promise<void> {
   const res = await api.system.open.$post({ json: { path } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to open path');
+    await handleApiError(res, 'Failed to open path');
   }
 }
 
 export async function openInVSCode(path: string): Promise<void> {
   const res = await api.system['open-in-vscode'].$post({ json: { path } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to open in VS Code');
+    await handleApiError(res, 'Failed to open in VS Code');
   }
 }
 
@@ -506,7 +498,7 @@ export async function openInVSCode(path: string): Promise<void> {
 export async function validateSessions(): Promise<SessionsValidationResponse> {
   const res = await api.sessions.validate.$get();
   if (!res.ok) {
-    throw new Error(`Failed to validate sessions: ${res.statusText}`);
+    await handleApiError(res, 'Failed to validate sessions');
   }
   return res.json() as Promise<SessionsValidationResponse>;
 }
@@ -514,8 +506,7 @@ export async function validateSessions(): Promise<SessionsValidationResponse> {
 export async function deleteInvalidSession(sessionId: string): Promise<void> {
   const res = await api.sessions[':id'].invalid.$delete({ param: { id: sessionId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to delete invalid session');
+    await handleApiError(res, 'Failed to delete invalid session');
   }
 }
 
@@ -554,7 +545,7 @@ export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse>
 
   const res = await api.jobs.$get({ query });
   if (!res.ok) {
-    throw new Error(`Failed to fetch jobs: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch jobs');
   }
   return res.json();
 }
@@ -562,7 +553,7 @@ export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse>
 export async function fetchJobStats(): Promise<JobStats> {
   const res = await api.jobs.stats.$get();
   if (!res.ok) {
-    throw new Error(`Failed to fetch job stats: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch job stats');
   }
   return res.json();
 }
@@ -570,7 +561,7 @@ export async function fetchJobStats(): Promise<JobStats> {
 export async function fetchJob(jobId: string): Promise<Job> {
   const res = await api.jobs[':id'].$get({ param: { id: jobId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch job: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch job');
   }
   return res.json();
 }
@@ -578,16 +569,14 @@ export async function fetchJob(jobId: string): Promise<Job> {
 export async function retryJob(jobId: string): Promise<void> {
   const res = await api.jobs[':id'].retry.$post({ param: { id: jobId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to retry job');
+    await handleApiError(res, 'Failed to retry job');
   }
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
   const res = await api.jobs[':id'].$delete({ param: { id: jobId } });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to cancel job');
+    await handleApiError(res, 'Failed to cancel job');
   }
 }
 
@@ -600,8 +589,7 @@ export async function refreshDefaultBranch(repositoryId: string): Promise<Refres
     param: { id: repositoryId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to refresh default branch');
+    await handleApiError(res, 'Failed to refresh default branch');
   }
   return res.json() as Promise<RefreshDefaultBranchResponse>;
 }
@@ -621,8 +609,7 @@ export async function generateRepositoryDescription(
     method: 'POST',
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to generate description');
+    await handleApiError(res, 'Failed to generate description');
   }
   return res.json() as Promise<GenerateRepositoryDescriptionResponse>;
 }
@@ -640,7 +627,7 @@ export interface SessionPrLinkResponse {
 export async function fetchSessionPrLink(sessionId: string): Promise<SessionPrLinkResponse> {
   const res = await api.sessions[':sessionId']['pr-link'].$get({ param: { sessionId } });
   if (!res.ok) {
-    throw new Error(`Failed to fetch session PR link: ${res.statusText}`);
+    await handleApiError(res, 'Failed to fetch session PR link');
   }
   return res.json() as Promise<SessionPrLinkResponse>;
 }
@@ -657,8 +644,7 @@ export async function getRemoteBranchStatus(
     param: { id: repositoryId, branch },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to get remote branch status');
+    await handleApiError(res, 'Failed to get remote branch status');
   }
   return res.json() as Promise<RemoteBranchStatus>;
 }
@@ -690,8 +676,7 @@ export async function fetchRepositorySlackIntegration(
     return null;
   }
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to fetch Slack integration');
+    await handleApiError(res, 'Failed to fetch Slack integration');
   }
   return res.json() as Promise<RepositorySlackIntegrationResponse>;
 }
@@ -713,8 +698,7 @@ export async function updateRepositorySlackIntegration(
     json: data,
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to update Slack integration');
+    await handleApiError(res, 'Failed to update Slack integration');
   }
   return res.json() as Promise<RepositorySlackIntegrationResponse>;
 }
@@ -727,8 +711,7 @@ export async function testRepositorySlackIntegration(repositoryId: string): Prom
     param: { id: repositoryId },
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(error.error || 'Failed to send test notification');
+    await handleApiError(res, 'Failed to send test notification');
   }
 }
 
@@ -744,7 +727,7 @@ export interface NotificationStatus {
 export async function fetchNotificationStatus(): Promise<NotificationStatus> {
   const res = await api.settings.notifications.status.$get();
   if (!res.ok) {
-    throw new Error('Failed to fetch notification status');
+    await handleApiError(res, 'Failed to fetch notification status');
   }
   return res.json() as Promise<NotificationStatus>;
 }
@@ -755,7 +738,9 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
 
 export async function fetchSystemHealth(): Promise<{ webhookSecretConfigured: boolean; appUrl: string | null }> {
   const res = await fetch(`${API_BASE}/system/health`);
-  if (!res.ok) throw new Error('Failed to fetch system health');
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch system health');
+  }
   return res.json();
 }
 
@@ -780,8 +765,7 @@ export async function sendWorkerMessage(
     body: formData,
   });
   if (!res.ok) {
-    const errorData = await res.json().catch(() => null) as { message?: string; error?: string } | null;
-    throw new Error(errorData?.message ?? errorData?.error ?? `HTTP ${res.status}`);
+    await handleApiError(res, 'Failed to send worker message');
   }
   return res.json() as Promise<{ message: WorkerMessage }>;
 }

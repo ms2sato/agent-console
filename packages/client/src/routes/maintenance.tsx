@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, deleteInvalidSession } from '../lib/api';
+import { sessionKeys } from '../lib/query-keys';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { CheckIcon, WarningIcon, CloseIcon } from '../components/Icons';
@@ -17,15 +18,15 @@ function MaintenancePage() {
   const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['session-validation'],
+    queryKey: sessionKeys.validation(),
     queryFn: validateSessions,
   });
 
   const deleteMutation = useMutation({
     mutationFn: deleteInvalidSession,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['session-validation'] });
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.validation() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       setSessionToDelete(null);
     },
   });
@@ -37,8 +38,8 @@ function MaintenancePage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['session-validation'] });
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.validation() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       setShowDeleteAllConfirm(false);
     },
   });

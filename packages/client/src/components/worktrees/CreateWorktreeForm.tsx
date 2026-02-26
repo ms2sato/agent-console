@@ -14,6 +14,7 @@ import type {
   GitHubIssueSummary,
 } from '@agent-console/shared';
 import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus, updateRepository } from '../../lib/api';
+import { branchKeys } from '../../lib/query-keys';
 import {
   Dialog,
   DialogContent,
@@ -98,7 +99,7 @@ export function CreateWorktreeForm({
       setRefreshedDefaultBranch(data.defaultBranch);
       // Invalidate remote status cache when default branch changes
       queryClient.invalidateQueries({
-        queryKey: ['remote-status', repositoryId],
+        queryKey: branchKeys.remoteStatusRoot(repositoryId),
         exact: false,
       });
     },
@@ -121,7 +122,7 @@ export function CreateWorktreeForm({
 
   // Query for remote branch status (only when not using existing branch mode)
   const remoteStatusQuery = useQuery({
-    queryKey: ['remote-status', repositoryId, actualBaseBranch],
+    queryKey: branchKeys.remoteStatus(repositoryId, actualBaseBranch),
     queryFn: () => getRemoteBranchStatus(repositoryId, actualBaseBranch),
     enabled: branchNameMode !== 'existing' && !!actualBaseBranch,
     staleTime: 30 * 1000, // Consider stale after 30 seconds

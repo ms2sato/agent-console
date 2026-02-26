@@ -1,6 +1,6 @@
 import type { CreateWorktreeRequest } from '../schemas/repository.js';
 import type { Worker } from './worker.js';
-import type { Worktree, BranchNameFallback, HookCommandResult } from '../index.js';
+import type { Worktree, BranchNameFallback, HookCommandResult } from './repository.js';
 
 /**
  * Session information for worktree creation completion.

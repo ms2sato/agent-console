@@ -2,6 +2,7 @@ import type { Worker, AgentActivityState } from './worker.js';
 import type { AgentDefinition } from './agent.js';
 import type { WorkerMessage } from './worker-message.js';
 import type { InboundEventSummary } from './system-events.js';
+import type { Repository } from './repository.js';
 import type {
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
@@ -10,17 +11,6 @@ import type {
   WorktreeDeletionCompletedPayload,
   WorktreeDeletionFailedPayload,
 } from './worktree-deletion.js';
-
-// Forward declaration of Repository to avoid circular dependency
-// The full type is defined in @agent-console/shared/src/index.ts
-interface Repository {
-  id: string;
-  name: string;
-  path: string;
-  createdAt: string;
-  remoteUrl?: string;
-  setupCommand?: string | null;
-}
 
 // Re-export schema-derived types
 export type {

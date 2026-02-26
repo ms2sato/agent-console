@@ -7,7 +7,8 @@ import type {
   GitDiffWorker,
 } from '@agent-console/shared';
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
-import type { WSContext } from 'hono/ws';
+import type { WSContext, WSMessageReceive } from 'hono/ws';
+import type { UpgradeWebSocket } from 'hono/ws';
 import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
@@ -21,6 +22,25 @@ import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 
 const logger = createLogger('websocket');
+
+/**
+ * Extract string or ArrayBuffer data from a WebSocket message event.
+ * WSMessageReceive includes Blob and SharedArrayBuffer which don't occur
+ * with Bun's WebSocket adapter, but we handle them for type safety.
+ */
+export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return data;
+  // SharedArrayBuffer - copy to ArrayBuffer for compatibility
+  // This path is not expected with Bun's WebSocket adapter
+  if (data instanceof SharedArrayBuffer) {
+    const copy = new ArrayBuffer(data.byteLength);
+    new Uint8Array(copy).set(new Uint8Array(data));
+    return copy;
+  }
+  // Blob - shouldn't happen with Bun, but handle defensively
+  return '';
+}
 
 // Track connected app clients for broadcasting
 const appClients = new Set<WSContext>();
@@ -193,12 +213,12 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
   logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type UpgradeWebSocketFn = (handler: (c: any) => any) => any;
-
 export async function setupWebSocketRoutes(
   app: Hono,
-  upgradeWebSocket: UpgradeWebSocketFn
+  // Uses Hono's UpgradeWebSocket type directly from hono/ws.
+  // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upgradeWebSocket: UpgradeWebSocket<any>
 ) {
   // Register output truncation callback to avoid circular dependency
   // worker-output-file.ts needs to notify clients but can't import routes.ts directly
@@ -382,7 +402,7 @@ export async function setupWebSocketRoutes(
     '/ws/app',
     upgradeWebSocket(() => {
       return {
-        onOpen(_event: unknown, ws: WSContext) {
+        onOpen(_event: Event, ws: WSContext) {
           logger.info('App WebSocket connected, sending initial sync');
 
           // Add to clients immediately but mark as syncing to prevent race conditions
@@ -454,10 +474,10 @@ export async function setupWebSocketRoutes(
             logger.error({ err }, 'Failed to send initial sync');
           });
         },
-        onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
-          handleAppMessage(ws, event.data);
+        onMessage(event: MessageEvent<WSMessageReceive>, ws: WSContext) {
+          handleAppMessage(ws, extractMessageData(event.data));
         },
-        onClose(_event: unknown, ws: WSContext) {
+        onClose(_event: CloseEvent, ws: WSContext) {
           cleanupClient(ws);
           logger.info({ clientCount: appClients.size }, 'App WebSocket disconnected');
         },
@@ -603,7 +623,7 @@ export async function setupWebSocketRoutes(
       }
 
       return {
-        onOpen(_event: unknown, ws: WSContext) {
+        onOpen(_event: Event, ws: WSContext) {
           const connectionStartTime = performance.now();
           logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
 
@@ -673,10 +693,11 @@ export async function setupWebSocketRoutes(
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);
           });
         },
-        onMessage(event: { data: string | ArrayBuffer }, ws: WSContext) {
-          const data = typeof event.data === 'string'
-            ? event.data
-            : new TextDecoder().decode(event.data);
+        onMessage(event: MessageEvent<WSMessageReceive>, ws: WSContext) {
+          const rawData = extractMessageData(event.data);
+          const data = typeof rawData === 'string'
+            ? rawData
+            : new TextDecoder().decode(rawData);
 
           // Get session to check worker type
           const session = sessionManager.getSession(sessionId);
@@ -817,7 +838,7 @@ export async function setupWebSocketRoutes(
           // PTY-based worker message handling (input, resize, image)
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
-        onClose(_event: unknown, ws: WSContext) {
+        onClose(_event: CloseEvent, ws: WSContext) {
           // Get connection ID from metadata map as well as closure variable
           // This ensures cleanup works even if close happens during async setup
           const metadata = connectionMetadata.get(ws);

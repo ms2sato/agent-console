@@ -1,4 +1,4 @@
-import type { HookCommandResult } from '../index.js';
+import type { HookCommandResult } from './repository.js';
 
 /**
  * Status of a worktree deletion task (client-side only)

@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { unregisterAgent } from '../../lib/api';
+import { agentKeys } from '../../lib/query-keys';
 import { useAgents } from '../../components/AgentSelector';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
@@ -29,12 +30,12 @@ function AgentsPage() {
     mutationFn: unregisterAgent,
     onSuccess: (_response, deletedAgentId) => {
       // Optimistic cache update (don't rely solely on WebSocket in case of disconnection)
-      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
         if (!old) return old;
         return { agents: old.agents.filter(a => a.id !== deletedAgentId) };
       });
       // Invalidate individual agent cache
-      queryClient.invalidateQueries({ queryKey: ['agent', deletedAgentId] });
+      queryClient.invalidateQueries({ queryKey: agentKeys.detail(deletedAgentId) });
       setAgentToDelete(null);
     },
     onError: (error) => {

@@ -3,6 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { JOB_STATUS } from '@agent-console/shared';
 import { fetchJob, retryJob, cancelJob } from '../../../lib/api';
+import { jobKeys } from '../../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../../lib/format';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
 import { StatusBadge } from '../../../components/jobs';
@@ -23,7 +24,7 @@ function JobDetailPage() {
   const { errorDialogProps, showError } = useErrorDialog();
 
   const { data: job, isLoading, error } = useQuery({
-    queryKey: ['job', jobId],
+    queryKey: jobKeys.detail(jobId),
     queryFn: () => fetchJob(jobId),
     refetchInterval: 5000, // Auto-refresh every 5 seconds
   });
@@ -32,9 +33,9 @@ function JobDetailPage() {
     mutationFn: () => retryJob(jobId),
     onSuccess: async () => {
       setShowRetryConfirm(false);
-      await queryClient.invalidateQueries({ queryKey: ['job', jobId] });
-      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      await queryClient.invalidateQueries({ queryKey: ['jobs', 'stats'] });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.root() });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.stats() });
     },
     onError: (error) => {
       setShowRetryConfirm(false);
@@ -46,8 +47,8 @@ function JobDetailPage() {
     mutationFn: () => cancelJob(jobId),
     onSuccess: async () => {
       setShowCancelConfirm(false);
-      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      await queryClient.invalidateQueries({ queryKey: ['jobs', 'stats'] });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.root() });
+      await queryClient.invalidateQueries({ queryKey: jobKeys.stats() });
       navigate({ to: '/jobs' });
     },
     onError: (error) => {
