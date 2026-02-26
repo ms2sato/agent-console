@@ -66,6 +66,15 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef.current = [...sessionsRef.current, session];
   }, []);
 
+  // Replace-only: update existing session but do NOT append if not found.
+  // This prevents stale session:updated events from resurrecting deleted sessions.
+  const handleSessionUpdated = useCallback((session: Session) => {
+    setSessions(prev => prev.map(s => s.id === session.id ? session : s));
+    sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
+  }, []);
+
+  // Upsert: replace if exists, append if new (used for session:resumed which
+  // may re-introduce a previously hibernated session not yet in the list).
   const handleSessionUpsert = useCallback((session: Session) => {
     setSessions(prev => upsertSession(prev, session));
     sessionsRef.current = upsertSession(sessionsRef.current, session);
@@ -111,7 +120,7 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef,
     handleSessionsSync,
     handleSessionCreated,
-    handleSessionUpdated: handleSessionUpsert,
+    handleSessionUpdated,
     handleSessionDeleted,
     handleSessionPaused,
     handleSessionResumed: handleSessionUpsert,

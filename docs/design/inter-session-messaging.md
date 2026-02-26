@@ -64,8 +64,8 @@ A session can have multiple agent workers. Messages are delivered to a specific 
 ~/.agent-console/messages/
   └── {sessionId}/
       └── {workerId}/
-          ├── {timestamp}-{senderSessionId}.json
-          └── {timestamp}-{senderSessionId}.json
+          ├── {timestamp}-{senderSessionId}-{randomHex}.json
+          └── {timestamp}-{senderSessionId}-{randomHex}.json
 ```
 
 - `toWorkerId` is optional in the MCP tool. If omitted, the server resolves the target automatically (see [Worker resolution](#worker-resolution-when-toworkerid-is-omitted)).
@@ -76,7 +76,7 @@ A session can have multiple agent workers. Messages are delivered to a specific 
 
 Each message is an individual file. This avoids concurrent write corruption when multiple sessions send messages to the same recipient simultaneously.
 
-- File naming: `{timestamp}-{senderSessionId}.json`
+- File naming: `{timestamp}-{senderSessionId}-{randomHex}.json`
 - Atomic writes: write to temp file, then rename
 - Concurrent safety: different files, no collision
 - Ordering: timestamp prefix ensures chronological ordering within a directory
@@ -131,6 +131,7 @@ The calling agent includes content expectations in the delegation prompt if need
   toSessionId: string;       // Target session ID
   toWorkerId?: string;       // Target worker ID (optional)
   content: string;           // Message content (free-form)
+  fromSessionId?: string;    // Sender session ID (from AGENT_CONSOLE_SESSION_ID env var)
 }
 
 // Output (success)
@@ -168,7 +169,7 @@ When `send_session_message` is called:
 2. Resolve target worker (explicit or sole agent worker; error if ambiguous)
 3. Ensure directory exists: `~/.agent-console/messages/{sessionId}/{workerId}/`
 4. Write message to temp file in the same directory
-5. Atomic rename to final path: `{timestamp}-{senderSessionId}.json`
+5. Atomic rename to final path: `{timestamp}-{senderSessionId}-{randomHex}.json`
 6. Deliver PTY notification to the target worker (synchronous, within the same MCP tool handler)
 7. Optionally broadcast via app WebSocket for UI notification
 8. Return message ID and path
