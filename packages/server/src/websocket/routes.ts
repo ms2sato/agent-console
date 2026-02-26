@@ -28,7 +28,7 @@ const logger = createLogger('websocket');
  * WSMessageReceive includes Blob and SharedArrayBuffer which don't occur
  * with Bun's WebSocket adapter, but we handle them for type safety.
  */
-function extractMessageData(data: WSMessageReceive): string | ArrayBuffer {
+export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer {
   if (typeof data === 'string') return data;
   if (data instanceof ArrayBuffer) return data;
   // SharedArrayBuffer - copy to ArrayBuffer for compatibility

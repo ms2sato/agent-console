@@ -1,60 +1,26 @@
 import { describe, it, expect } from 'bun:test';
+import { extractMessageData } from '../routes.js';
 
 /**
- * Test for the extractMessageData function which is defined in routes.ts
+ * Test for the extractMessageData function which is defined in routes.ts.
  * This function handles type safety for WebSocket message data.
  */
 
 describe('extractMessageData function', () => {
   describe('string data', () => {
     it('should extract string data directly', () => {
-      const data = 'test message';
-      // Import the function by creating it inline based on the implementation
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
-      const result = extractMessageData(data);
+      const result = extractMessageData('test message');
       expect(result).toBe('test message');
       expect(typeof result).toBe('string');
     });
 
     it('should handle empty string', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const result = extractMessageData('');
       expect(result).toBe('');
       expect(typeof result).toBe('string');
     });
 
     it('should handle string with special characters', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const data = 'test\n\r\t message with "quotes" and \'apostrophes\'';
       const result = extractMessageData(data);
       expect(result).toBe(data);
@@ -63,17 +29,6 @@ describe('extractMessageData function', () => {
 
   describe('ArrayBuffer data', () => {
     it('should extract ArrayBuffer data directly', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const buffer = new ArrayBuffer(10);
       const view = new Uint8Array(buffer);
       for (let i = 0; i < 10; i++) {
@@ -87,17 +42,6 @@ describe('extractMessageData function', () => {
     });
 
     it('should handle empty ArrayBuffer', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const buffer = new ArrayBuffer(0);
       const result = extractMessageData(buffer);
       expect(result instanceof ArrayBuffer).toBe(true);
@@ -105,17 +49,6 @@ describe('extractMessageData function', () => {
     });
 
     it('should preserve ArrayBuffer content', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const buffer = new ArrayBuffer(5);
       const originalView = new Uint8Array(buffer);
       const testData = [255, 128, 64, 32, 16];
@@ -133,17 +66,6 @@ describe('extractMessageData function', () => {
 
   describe('type coercion and edge cases', () => {
     it('should handle Blob data by returning empty string', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       // Blob is not expected with Bun's WebSocket but test defensive handling
       const blob = new Blob(['test']);
       const result = extractMessageData(blob);
@@ -151,17 +73,6 @@ describe('extractMessageData function', () => {
     });
 
     it('should return string or ArrayBuffer, never Blob or SharedArrayBuffer', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const testCases: (string | ArrayBuffer | Blob)[] = [
         'string',
         new ArrayBuffer(10),
@@ -175,17 +86,6 @@ describe('extractMessageData function', () => {
     });
 
     it('should handle both string and object type checks correctly', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       // String check comes before instanceof checks
       const str = 'test';
       const strResult = extractMessageData(str);
@@ -201,17 +101,6 @@ describe('extractMessageData function', () => {
 
   describe('function contract', () => {
     it('should always return either string or ArrayBuffer', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const testInputs: (string | ArrayBuffer | Blob)[] = [
         '',
         'hello',
@@ -228,17 +117,6 @@ describe('extractMessageData function', () => {
     });
 
     it('should provide stable results for same input', () => {
-      function extractMessageData(data: string | ArrayBuffer | SharedArrayBuffer | Blob): string | ArrayBuffer {
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) return data;
-        if (data instanceof SharedArrayBuffer) {
-          const copy = new ArrayBuffer(data.byteLength);
-          new Uint8Array(copy).set(new Uint8Array(data));
-          return copy;
-        }
-        return '';
-      }
-
       const input = 'stable input';
       const result1 = extractMessageData(input);
       const result2 = extractMessageData(input);

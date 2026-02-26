@@ -17,6 +17,10 @@ export const repositoryKeys = {
   slackIntegration: (repositoryId: string) => ['repository-slack-integration', repositoryId] as const,
 } as const;
 
+// Note: detail keys use singular form ('agent', 'job') while list keys use plural ('agents', 'jobs').
+// This is intentional to preserve backward compatibility with existing cache keys from before
+// centralization. As a result, detail keys are not hierarchical prefixes of list keys, and
+// callers must handle invalidation explicitly (e.g., invalidating both root and detail separately).
 export const agentKeys = {
   /** All agents list */
   all: () => ['agents'] as const,
@@ -35,6 +39,9 @@ export const jobKeys = {
   detail: (jobId: string) => ['job', jobId] as const,
 } as const;
 
+// Note: session keys use mixed naming styles (plural 'sessions', kebab-case 'session-validation',
+// camelCase 'sessionPrLink') to preserve backward compatibility with existing cache keys from
+// before centralization. Do not normalize these without a migration strategy.
 export const sessionKeys = {
   /** Root key for invalidating all session queries (used by WS sync) */
   root: () => ['sessions'] as const,

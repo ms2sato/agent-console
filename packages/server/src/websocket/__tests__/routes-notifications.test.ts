@@ -35,6 +35,18 @@ import {
 } from '../../services/notifications/index.js';
 import { setupWebSocketRoutes } from '../routes.js';
 
+/**
+ * Create a no-op upgradeWebSocket stub for tests that only need setupWebSocketRoutes
+ * to register callbacks (not actually handle WebSocket connections).
+ *
+ * UpgradeWebSocket has overloaded call signatures with incompatible return types
+ * (MiddlewareHandler vs Promise<Response>), so a passthrough stub cannot satisfy
+ * the interface without casting through unknown. This helper centralizes that cast.
+ */
+function createUpgradeWebSocketStub(): Parameters<typeof setupWebSocketRoutes>[1] {
+  return ((handler: unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
+}
+
 describe('WebSocket routes notifications', () => {
   let testJobQueue: JobQueue | null = null;
 
@@ -81,8 +93,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should include repository info for worktree session worker exits', async () => {
     const app = new Hono();
-    const upgradeWebSocket = ((handler: (c: unknown) => unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
-    await setupWebSocketRoutes(app, upgradeWebSocket);
+    await setupWebSocketRoutes(app, createUpgradeWebSocketStub());
 
     const sessionManager = getSessionManager();
     const notificationManager = getNotificationManager();
@@ -114,8 +125,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should set repository info to null for quick session worker exits', async () => {
     const app = new Hono();
-    const upgradeWebSocket = ((handler: (c: unknown) => unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
-    await setupWebSocketRoutes(app, upgradeWebSocket);
+    await setupWebSocketRoutes(app, createUpgradeWebSocketStub());
 
     const sessionManager = getSessionManager();
     const notificationManager = getNotificationManager();

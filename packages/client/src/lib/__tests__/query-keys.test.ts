@@ -1,4 +1,4 @@
-import { describe, it, expect as bunExpect } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import {
   repositoryKeys,
   agentKeys,
@@ -9,10 +9,6 @@ import {
   systemKeys,
   notificationKeys,
 } from '../query-keys';
-
-// Workaround: Bun's expect is stricter than vitest's for toEqual type checking
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const expect = (value: unknown): any => bunExpect(value);
 
 describe('Query Keys', () => {
   describe('key uniqueness across domains', () => {

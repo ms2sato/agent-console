@@ -16,9 +16,10 @@ import {
   ServerUnavailableError,
 } from '../api';
 
-// Workaround: Bun's expect is stricter than vitest's for toEqual type checking
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const expect = (value: unknown): any => bunExpect(value);
+// Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
+// Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
+// expect to accept unknown values. This avoids `any` while allowing structural comparison.
+const expect = (value: unknown) => bunExpect(value);
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -612,7 +613,6 @@ describe('API Client', () => {
       await expect(generateRepositoryDescription('repo-1')).rejects.toThrow('No README file found in repository');
     });
   });
-});
 
   describe('handleApiError', () => {
     it('should extract error from response with both error and message fields', async () => {
@@ -687,3 +687,4 @@ describe('API Client', () => {
       await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Internal Server Error');
     });
   });
+});
