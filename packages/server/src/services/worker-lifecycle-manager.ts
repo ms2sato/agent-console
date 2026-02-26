@@ -246,7 +246,14 @@ export class WorkerLifecycleManager {
     }
 
     // Clean up inter-session message files for this worker
-    await interSessionMessageService.deleteWorkerMessages(sessionId, workerId);
+    try {
+      await interSessionMessageService.deleteWorkerMessages(sessionId, workerId);
+    } catch (err) {
+      logger.warn(
+        { sessionId, workerId, err },
+        'Failed to clean inter-session message files for worker',
+      );
+    }
 
     session.workers.delete(workerId);
     await this.deps.persistSession(session);

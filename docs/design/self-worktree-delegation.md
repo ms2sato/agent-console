@@ -219,6 +219,7 @@ Send a message to another session's worker via file-based messaging. Replaces th
   toSessionId: string,
   toWorkerId?: string,       // Optional; defaults to primary agent worker
   content: string,
+  fromSessionId?: string,    // Optional sender session ID (from AGENT_CONSOLE_SESSION_ID env var)
 }
 
 // Output

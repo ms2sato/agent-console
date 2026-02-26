@@ -82,7 +82,12 @@ export class InterSessionMessageService {
     const tmpPath = path.join(dir, `.tmp-${messageId}`);
 
     await fs.writeFile(tmpPath, content, 'utf-8');
-    await fs.rename(tmpPath, finalPath);
+    try {
+      await fs.rename(tmpPath, finalPath);
+    } catch (err) {
+      await fs.rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    }
 
     logger.debug(
       { toSessionId, toWorkerId, fromSessionId, messageId },

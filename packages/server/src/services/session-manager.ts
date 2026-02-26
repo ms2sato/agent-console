@@ -623,7 +623,11 @@ export class SessionManager {
       this.messageService.clearSession(id);
 
       // 2c. Clean up inter-session message files
-      await interSessionMessageService.deleteSessionMessages(id);
+      try {
+        await interSessionMessageService.deleteSessionMessages(id);
+      } catch (err) {
+        logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
+      }
 
       // 3. Remove from in-memory map
       this.sessions.delete(id);

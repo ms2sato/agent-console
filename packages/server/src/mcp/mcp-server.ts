@@ -286,6 +286,11 @@ mcpServer.tool(
         if (!worker) {
           return errorResult(`Worker ${toWorkerId} not found in session ${toSessionId}`);
         }
+        if (worker.type === 'git-diff') {
+          return errorResult(
+            `Worker ${toWorkerId} in session ${toSessionId} does not support inbound messages`,
+          );
+        }
         resolvedWorkerId = toWorkerId;
       } else {
         const agentWorkers = targetSession.workers.filter((w) => w.type === 'agent');

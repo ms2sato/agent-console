@@ -20,7 +20,7 @@ PTY stdin should be reserved for human-to-agent communication only. Agent-to-age
 
 ## Design Overview
 
-```
+```text
 Session A                         Server                         Session B (Worker W)
     │                               │                               │
     │ send_session_message()        │                               │
@@ -60,7 +60,7 @@ Any session can send a message to any other session. The system does not enforce
 
 A session can have multiple agent workers. Messages are delivered to a specific worker within the target session.
 
-```
+```text
 ~/.agent-console/messages/
   └── {sessionId}/
       └── {workerId}/
@@ -93,7 +93,7 @@ Sending is exposed as an MCP tool (`send_session_message`) rather than relying o
 
 When a message is sent, the server immediately sends a minimal notification to the targeted worker's PTY. The notification contains only metadata, not the message content.
 
-```
+```text
 [inbound:message] source=session from={senderSessionId} summary="Message from session {senderTitle}" path=/absolute/path/to/message.json intent=triage
 ```
 
@@ -101,7 +101,7 @@ This reuses the `[inbound:TYPE]` format established by the GitHub webhook integr
 
 | Field | Description |
 |-------|-------------|
-| `source` | Always `session` (distinguishes from `github` etc.) |
+| `source` | Always `session` (distinguishes from `GitHub` etc.) |
 | `from` | Sender's session ID |
 | `summary` | Human-readable summary (sender's session title or ID) |
 | `path` | Absolute path to the message file |
@@ -204,7 +204,7 @@ Message files are not automatically expired. Since messages are small and messag
 
 A single task split across multiple worktrees to avoid conflicts. Each sub-task runs in its own worktree, and the parent merges results locally.
 
-```
+```text
 Parent Agent (Session P, Worker W):
 
   1. delegate_to_worktree({ prompt: "Fix backend auth. When done,
@@ -231,7 +231,7 @@ Parent Agent (Session P, Worker W):
 
 A session with two agent workers (e.g., a coder and a reviewer). An external session sends a message specifically to the reviewer.
 
-```
+```text
 External Agent:
   1. get_session_status({ sessionId: "target" })
      → workers: [
@@ -247,7 +247,7 @@ External Agent:
 ```
 
 If the sender omits `toWorkerId` when multiple agent workers exist, the tool returns an error:
-```
+```text
 "Session target has multiple agent workers (w1, w2). Specify toWorkerId explicitly.
 Use get_session_status to discover available workers."
 ```

@@ -649,6 +649,28 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain(`Worker non-existent-worker not found in session ${session.id}`);
     });
 
+    it('should return error when explicit toWorkerId targets a git-diff worker', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Find the git-diff worker created by default
+      const gitDiffWorker = session.workers.find((w) => w.type === 'git-diff');
+      expect(gitDiffWorker).toBeDefined();
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: gitDiffWorker!.id,
+        content: 'hello',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('does not support inbound messages');
+    });
+
     it('should return error when session has no agent workers', async () => {
       // Create a session (which creates an agent worker and a git-diff worker by default)
       const session = await sessionManager.createSession({
