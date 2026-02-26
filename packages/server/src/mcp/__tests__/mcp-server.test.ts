@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vol } from 'memfs';
 import { Hono } from 'hono';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
@@ -615,93 +616,185 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
-  // send_message_to_session
+  // send_session_message
   // ===========================================================================
 
-  describe('send_message_to_session', () => {
-    it('should return error when session does not exist', async () => {
-      const response = await callTool(app, mcpSessionId, 'send_message_to_session', {
-        sessionId: 'non-existent',
-        workerId: 'worker-1',
-        message: 'hello',
+  describe('send_session_message', () => {
+    it('should return error when target session does not exist', async () => {
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: 'non-existent',
+        content: 'hello',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Failed to send message');
+      expect(data.error).toBe('Session non-existent not found');
     });
 
-    it('should return error when worker does not exist', async () => {
+    it('should return error when explicit worker does not exist in target session', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
 
-      const response = await callTool(app, mcpSessionId, 'send_message_to_session', {
-        sessionId: session.id,
-        workerId: 'non-existent-worker',
-        message: 'hello',
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: 'non-existent-worker',
+        content: 'hello',
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Failed to send message');
+      expect(data.error).toContain(`Worker non-existent-worker not found in session ${session.id}`);
     });
 
-    it('should successfully send message to a worker with active PTY', async () => {
+    it('should return error when session has no agent workers', async () => {
+      // Create a session (which creates an agent worker and a git-diff worker by default)
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
 
-      // Find the agent worker
+      // Delete the default agent worker so only the git-diff worker remains
       const agentWorker = session.workers.find((w) => w.type === 'agent');
       expect(agentWorker).toBeDefined();
+      await sessionManager.deleteWorker(session.id, agentWorker!.id);
 
-      const response = await callTool(app, mcpSessionId, 'send_message_to_session', {
-        sessionId: session.id,
-        workerId: agentWorker!.id,
-        message: 'Do the task',
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'hello',
       }, nextId++);
-      const data = parseToolResult(response) as { success: boolean };
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toBe(`Session ${session.id} has no agent workers`);
+    });
+
+    it('should return error when multiple agent workers exist without explicit toWorkerId', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Add a second agent worker
+      await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code-builtin',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'hello',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('has multiple agent workers');
+      expect(data.error).toContain('Specify toWorkerId explicitly');
+      expect(data.error).toContain('Use get_session_status to discover available workers');
+    });
+
+    it('should auto-resolve single agent worker when toWorkerId is omitted', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'task completed successfully',
+      }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
-      expect(data.success).toBe(true);
 
-      // Verify the PTY received the message
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(data.messageId).toBeDefined();
+      expect(data.path).toBeDefined();
+    });
+
+    it('should write message file content to disk', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const messageContent = JSON.stringify({ status: 'completed', summary: 'All tests pass' });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: messageContent,
+        fromSessionId: 'sender-session',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+
+      // Verify file exists and has correct content
+      const fileContent = vol.readFileSync(data.path, 'utf-8');
+      expect(fileContent).toBe(messageContent);
+    });
+
+    it('should send PTY notification with inbound:message format', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // The agent worker's PTY is the first instance created
       const mockPty = ptyFactory.instances[0];
       expect(mockPty).toBeDefined();
-      // The message content should appear in the written data
-      expect(mockPty.writtenData.some((d) => d.includes('Do the task'))).toBe(true);
-    });
 
-    it('should write the exact message content to the PTY', async () => {
-      const session = await sessionManager.createSession({
-        type: 'quick',
-        locationPath: '/test/path',
-        agentId: 'claude-code',
-      });
-
-      const agentWorker = session.workers.find((w) => w.type === 'agent');
-      expect(agentWorker).toBeDefined();
-
-      const specificMessage = 'Refactor the authentication module to use JWT tokens';
-
-      await callTool(app, mcpSessionId, 'send_message_to_session', {
-        sessionId: session.id,
-        workerId: agentWorker!.id,
-        message: specificMessage,
+      await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'check this out',
+        fromSessionId: 'sender-session-123',
       }, nextId++);
 
-      const mockPty = ptyFactory.instances[0];
-      // Verify that the specific message text was written to PTY
+      // Verify PTY received the inbound:message notification
       const allWritten = mockPty.writtenData.join('');
-      expect(allWritten).toContain(specificMessage);
+      expect(allWritten).toContain('[inbound:message]');
+      expect(allWritten).toContain('source=session');
+      expect(allWritten).toContain('from=sender-session-123');
+      expect(allWritten).toContain('intent=triage');
     });
 
-    it('should return error when sending empty message', async () => {
+    it('should include sender session title in notification summary', async () => {
+      // Create sender session with a title
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+        title: 'Backend Auth Task',
+      });
+
+      // Create target session
+      const targetSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/target-path',
+        agentId: 'claude-code',
+      });
+
+      await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: targetSession.id,
+        content: 'auth fix is done',
+        fromSessionId: senderSession.id,
+      }, nextId++);
+
+      // Check all PTY instances for the notification containing the sender's title
+      const allPtyWrites = ptyFactory.instances
+        .map((p) => p.writtenData.join(''))
+        .join('|||');
+      expect(allPtyWrites).toContain('Backend Auth Task');
+    });
+
+    it('should succeed with explicit toWorkerId targeting', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -711,16 +804,47 @@ describe('MCP Server Tools', () => {
       const agentWorker = session.workers.find((w) => w.type === 'agent');
       expect(agentWorker).toBeDefined();
 
-      const response = await callTool(app, mcpSessionId, 'send_message_to_session', {
-        sessionId: session.id,
-        workerId: agentWorker!.id,
-        message: '',
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: agentWorker!.id,
+        content: 'explicit target message',
+        fromSessionId: 'sender-x',
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      // Empty message should fail because sendMessage returns null for empty content
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Failed to send message');
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(data.messageId).toContain('sender-x');
+      expect(data.path).toBeDefined();
+
+      // Verify file content
+      const fileContent = vol.readFileSync(data.path, 'utf-8');
+      expect(fileContent).toBe('explicit target message');
+    });
+
+    it('should use "unknown" as fromSessionId when not provided', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'no sender info',
+        // fromSessionId is intentionally omitted
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      // The messageId should include "unknown" as the fromSessionId
+      expect(data.messageId).toContain('unknown');
+
+      // Verify PTY notification includes from=unknown
+      const mockPty = ptyFactory.instances[0];
+      const allWritten = mockPty.writtenData.join('');
+      expect(allWritten).toContain('from=unknown');
     });
   });
 

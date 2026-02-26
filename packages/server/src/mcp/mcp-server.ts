@@ -17,6 +17,8 @@ import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
+import { interSessionMessageService } from '../services/inter-session-message-service.js';
+import { formatFieldValue } from '../services/inbound/handlers.js';
 import { fetchRemote, getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
@@ -249,32 +251,93 @@ mcpServer.tool(
   },
 );
 
-// ---------- Tool: send_message_to_session ----------
+// ---------- Tool: send_session_message ----------
 
 mcpServer.tool(
-  'send_message_to_session',
-  'Send a follow-up message to a worker in a session. The worker must have an active PTY.',
+  'send_session_message',
+  'Send a message to a worker in another session via file. ' +
+    'The message is written as a file and the target worker receives a PTY notification. ' +
+    'If toWorkerId is omitted and the session has exactly one agent worker, it is auto-selected. ' +
+    'The calling agent can get its own session ID from the AGENT_CONSOLE_SESSION_ID environment variable.',
   {
-    sessionId: z.string().describe('The session ID'),
-    workerId: z.string().describe('The worker ID to send the message to'),
-    message: z.string().describe('The message content to send'),
+    toSessionId: z.string().describe('Target session ID'),
+    toWorkerId: z.string().optional().describe(
+      'Target worker ID. If omitted, auto-selects the sole agent worker in the target session.',
+    ),
+    content: z.string().describe('Message content (free-form)'),
+    fromSessionId: z.string().optional().describe(
+      'Sender session ID (from AGENT_CONSOLE_SESSION_ID env var). Used for notification metadata.',
+    ),
   },
-  async ({ sessionId, workerId, message }) => {
+  async ({ toSessionId, toWorkerId, content, fromSessionId }) => {
     try {
       const sessionManager = getSessionManager();
-      const result = sessionManager.sendMessage(sessionId, null, workerId, message);
 
-      if (!result) {
-        return errorResult(
-          'Failed to send message. The session, worker, or PTY may not be available.',
-        );
+      // 1. Validate target session
+      const targetSession = sessionManager.getSession(toSessionId);
+      if (!targetSession) {
+        return errorResult(`Session ${toSessionId} not found`);
       }
 
-      return textResult({ success: true });
+      // 2. Resolve target worker
+      let resolvedWorkerId: string;
+      if (toWorkerId) {
+        const worker = targetSession.workers.find((w) => w.id === toWorkerId);
+        if (!worker) {
+          return errorResult(`Worker ${toWorkerId} not found in session ${toSessionId}`);
+        }
+        resolvedWorkerId = toWorkerId;
+      } else {
+        const agentWorkers = targetSession.workers.filter((w) => w.type === 'agent');
+        if (agentWorkers.length === 0) {
+          return errorResult(`Session ${toSessionId} has no agent workers`);
+        }
+        if (agentWorkers.length > 1) {
+          const workerIds = agentWorkers.map((w) => w.id).join(', ');
+          return errorResult(
+            `Session ${toSessionId} has multiple agent workers (${workerIds}). ` +
+              `Specify toWorkerId explicitly. ` +
+              `Use get_session_status to discover available workers.`,
+          );
+        }
+        resolvedWorkerId = agentWorkers[0].id;
+      }
+
+      // 3. Write message file
+      const effectiveFromSessionId = fromSessionId ?? 'unknown';
+      const result = await interSessionMessageService.sendMessage({
+        toSessionId,
+        toWorkerId: resolvedWorkerId,
+        fromSessionId: effectiveFromSessionId,
+        content,
+      });
+
+      // 4. PTY notification (best-effort)
+      const senderTitle = fromSessionId
+        ? (sessionManager.getSession(fromSessionId)?.title ?? fromSessionId)
+        : 'unknown';
+
+      const notificationFields = {
+        source: 'session',
+        from: effectiveFromSessionId,
+        summary: `Message from session ${senderTitle}`,
+        path: result.path,
+        intent: 'triage',
+      };
+      const fields = Object.entries(notificationFields)
+        .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
+        .join(' ');
+      const notification = `\n[inbound:message] ${fields}\n`;
+      sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, notification);
+
+      return textResult({
+        messageId: result.messageId,
+        path: result.path,
+      });
     } catch (err) {
-      const errMessage = err instanceof Error ? err.message : 'Unknown error';
-      logger.error({ err, sessionId, workerId }, 'send_message_to_session failed');
-      return errorResult(errMessage);
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      logger.error({ err, toSessionId, toWorkerId }, 'send_session_message failed');
+      return errorResult(message);
     }
   },
 );

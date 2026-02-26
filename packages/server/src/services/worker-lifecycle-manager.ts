@@ -35,6 +35,7 @@ import type { WorkerManager } from './worker-manager.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { interSessionMessageService } from './inter-session-message-service.js';
 import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import {
@@ -243,6 +244,9 @@ export class WorkerLifecycleManager {
     } catch {
       // NotificationManager not initialized yet, skip
     }
+
+    // Clean up inter-session message files for this worker
+    await interSessionMessageService.deleteWorkerMessages(sessionId, workerId);
 
     session.workers.delete(workerId);
     await this.deps.persistSession(session);

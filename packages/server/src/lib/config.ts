@@ -36,6 +36,14 @@ export function getDbPath(): string {
 }
 
 /**
+ * Get the directory for inter-session message files.
+ * Structure: ~/.agent-console/messages/
+ */
+export function getMessagesDir(): string {
+  return path.join(getConfigDir(), 'messages');
+}
+
+/**
  * Get the current server's PID for session ownership tracking.
  */
 export function getServerPid(): number {
