@@ -99,13 +99,27 @@ export function createCICompletionChecker(): CICompletionChecker {
 
       let responseText: string;
       try {
-        const exitCode = await Promise.race([proc.exited, timeoutPromise]);
-        if (exitCode !== 0) {
-          const stderr = await new Response(proc.stderr).text();
-          logger.warn({ exitCode, stderr: stderr.trim(), repositoryName, headSha }, 'gh api returned non-zero exit code');
+        const result = await Promise.race([
+          (async () => {
+            const exitCode = await proc.exited;
+            if (exitCode !== 0) {
+              const stderr = await new Response(proc.stderr).text();
+              return { ok: false as const, exitCode, stderr };
+            }
+            const stdout = await new Response(proc.stdout).text();
+            return { ok: true as const, stdout };
+          })(),
+          timeoutPromise,
+        ]);
+
+        if (!result.ok) {
+          logger.warn(
+            { exitCode: result.exitCode, stderr: result.stderr.trim(), repositoryName, headSha },
+            'gh api returned non-zero exit code'
+          );
           return null;
         }
-        responseText = await new Response(proc.stdout).text();
+        responseText = result.stdout;
       } catch (error) {
         if (error instanceof Error && error.message.includes('timed out')) {
           try {
