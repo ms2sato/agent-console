@@ -28,7 +28,7 @@ interface ActiveSessionsSidebarProps {
   /** Paused sessions available for resume */
   pausedSessions?: Session[];
   /** Called when user clicks to resume a paused session */
-  onResumeSession?: (sessionId: string) => void;
+  onResumeSession?: (sessionId: string) => void | Promise<void>;
 }
 
 /**

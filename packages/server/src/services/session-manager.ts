@@ -752,7 +752,8 @@ export class SessionManager {
     // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
     // Using save() instead of update() to persist the full session state including worker PID changes
     const persistedSession = this.toPersistedSessionWithServerPid(session, null);
-    persistedSession.pausedAt = new Date().toISOString();
+    const pausedAt = new Date().toISOString();
+    persistedSession.pausedAt = pausedAt;
     await this.sessionRepository.save(persistedSession);
 
     // Remove from in-memory sessions Map (after successful persistence)
@@ -761,7 +762,7 @@ export class SessionManager {
     logger.info({ sessionId: id }, 'Session paused');
 
     // Call lifecycle callback
-    this.sessionLifecycleCallbacks?.onSessionPaused?.(id);
+    this.sessionLifecycleCallbacks?.onSessionPaused?.(id, pausedAt);
 
     return true;
   }

@@ -262,7 +262,7 @@ describe('useSessionState', () => {
       });
 
       act(() => {
-        result.current.handleSessionPaused('session-1');
+        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
       });
 
       expect(result.current.sessions[0].pausedAt).toBeDefined();
@@ -282,7 +282,7 @@ describe('useSessionState', () => {
       });
 
       act(() => {
-        result.current.handleSessionPaused('session-1');
+        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
       });
 
       expect(result.current.sessions[0].pausedAt).toBeDefined();

@@ -8,6 +8,7 @@ import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetAgentManager } from '../agent-manager.js';
 import { JobQueue } from '../../jobs/index.js';
+import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -2087,7 +2088,7 @@ describe('SessionManager', () => {
       await manager.pauseSession(session.id);
 
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
-      expect(onSessionPaused).toHaveBeenCalledWith(session.id);
+      expect(onSessionPaused).toHaveBeenCalledWith(session.id, expect.any(String));
     });
   });
 
@@ -2295,15 +2296,15 @@ describe('SessionManager', () => {
 
       // Create a new manager with a PTY provider that throws on spawn
       // This simulates PTY activation failure during resume
-      const failingPtyProvider = {
-        spawn: () => {
+      const failingPtyProvider: PtyProvider = {
+        spawn: (_command: string, _args: string[], _options: PtySpawnOptions) => {
           throw new Error('PTY spawn failed');
         },
       };
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const managerWithFailingPty = await module.SessionManager.create({
-        ptyProvider: failingPtyProvider as any,
+        ptyProvider: failingPtyProvider,
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
       });

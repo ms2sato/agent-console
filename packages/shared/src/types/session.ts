@@ -173,7 +173,7 @@ export type AppServerMessage =
   | { type: 'session-created'; session: Session }
   | { type: 'session-updated'; session: Session }
   | { type: 'session-deleted'; sessionId: string }
-  | { type: 'session-paused'; sessionId: string }
+  | { type: 'session-paused'; sessionId: string; pausedAt: string }
   | { type: 'session-resumed'; session: Session }
   | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState }
   | { type: 'worker-activated'; sessionId: string; workerId: string }

@@ -218,20 +218,23 @@ function DashboardPage() {
   // Handle session updated
   const handleSessionUpdated = useCallback((session: Session) => {
     console.log(`[Session] Updated: ${session.id}`);
-    setWsSessions(prev => {
-      const exists = prev.some(s => s.id === session.id);
-      if (exists) {
-        return prev.map(s => s.id === session.id ? session : s);
-      }
-      // Session not in list yet - add it if it's not paused
-      if (!session.pausedAt) {
+    if (session.pausedAt) {
+      // Session became paused - remove from active list
+      setWsSessions(prev => prev.filter(s => s.id !== session.id));
+      sessionsRef.current = sessionsRef.current.filter(s => s.id !== session.id);
+    } else {
+      // Active session update - upsert
+      setWsSessions(prev => {
+        const exists = prev.some(s => s.id === session.id);
+        if (exists) {
+          return prev.map(s => s.id === session.id ? session : s);
+        }
         return [...prev, session];
-      }
-      return prev;
-    });
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-      : (!session.pausedAt ? [...sessionsRef.current, session] : sessionsRef.current);
+      });
+      sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
+        ? sessionsRef.current.map(s => s.id === session.id ? session : s)
+        : [...sessionsRef.current, session];
+    }
   }, []);
 
   // Handle session deleted
@@ -270,14 +273,13 @@ function DashboardPage() {
   }, []);
 
   // Handle session paused (removed from memory but preserved in DB)
-  const handleSessionPaused = useCallback((sessionId: string) => {
+  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
     console.log(`[Session] Paused: ${sessionId}`);
     // Find the session to get its worktree path before removing
     const session = sessionsRef.current.find(s => s.id === sessionId);
     if (session && session.type === 'worktree') {
       // Track as paused session for "Resume" button, storing full session to preserve title
-      // Update activationState to 'hibernated' since it's now paused
-      const pausedSession: Session = { ...session, activationState: 'hibernated', pausedAt: new Date().toISOString() };
+      const pausedSession: Session = { ...session, pausedAt };
       setPausedSessions(prev => ({
         ...prev,
         [session.locationPath]: pausedSession,

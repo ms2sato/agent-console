@@ -19,7 +19,7 @@ interface UseSessionStateReturn {
   /** Handle session deleted */
   handleSessionDeleted: (sessionId: string) => void;
   /** Handle session paused (removed from memory but preserved in DB) */
-  handleSessionPaused: (sessionId: string) => void;
+  handleSessionPaused: (sessionId: string, pausedAt: string) => void;
   /** Handle paused session resumed */
   handleSessionResumed: (session: Session) => void;
   /** Handle worker activity state change */
@@ -80,8 +80,7 @@ export function useSessionState(): UseSessionStateReturn {
     });
   }, []);
 
-  const handleSessionPaused = useCallback((sessionId: string) => {
-    const pausedAt = new Date().toISOString();
+  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
     setSessions(prev => prev.map(s =>
       s.id === sessionId ? { ...s, pausedAt } : s
     ));

@@ -117,11 +117,12 @@ function RootLayout() {
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
-      await resumeSession(sessionId);
+      const resumed = await resumeSession(sessionId);
+      handleSessionResumed(resumed);
     } catch (error) {
       console.error('Failed to resume session:', error);
     }
-  }, []);
+  }, [handleSessionResumed]);
 
   // Update favicon based on worker activity states
   useEffect(() => {
