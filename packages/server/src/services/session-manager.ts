@@ -40,6 +40,7 @@ import { stopWatching } from './git-diff-service.js';
 import { getNotificationManager } from './notifications/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
+import { interSessionMessageService } from './inter-session-message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
@@ -596,6 +597,13 @@ export class SessionManager {
 
       // 2b. Clean up inter-worker message history
       this.messageService.clearSession(id);
+
+      // 2c. Clean up inter-session message files
+      try {
+        await interSessionMessageService.deleteSessionMessages(id);
+      } catch (err) {
+        logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
+      }
 
       // 3. Remove from in-memory map
       this.sessions.delete(id);

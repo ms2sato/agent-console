@@ -173,23 +173,47 @@ describe('useSessionState', () => {
       expect(result.current.sessions[1].title).toBe('Session 2');
     });
 
-    it('should add session if not yet in the list', () => {
+    it('should not add session if not yet in the list (replace-only)', () => {
       const { result } = renderHook(() => useSessionState());
 
       const session = createMockSession({ id: 'session-1' });
-      const newSession = createMockSession({ id: 'session-2', title: 'New' });
+      const unknownSession = createMockSession({ id: 'session-2', title: 'Unknown' });
 
       act(() => {
         result.current.handleSessionsSync([session], []);
       });
 
       act(() => {
-        result.current.handleSessionUpdated(newSession);
+        result.current.handleSessionUpdated(unknownSession);
       });
 
-      expect(result.current.sessions).toHaveLength(2);
-      expect(result.current.sessions[1].id).toBe('session-2');
-      expect(result.current.sessionsRef.current).toHaveLength(2);
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.sessions[0].id).toBe('session-1');
+      expect(result.current.sessionsRef.current).toHaveLength(1);
+    });
+
+    it('should not resurrect a deleted session', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const session = createMockSession({ id: 'session-1', title: 'Original' });
+
+      act(() => {
+        result.current.handleSessionsSync([session], []);
+      });
+
+      // Delete the session
+      act(() => {
+        result.current.handleSessionDeleted('session-1');
+      });
+      expect(result.current.sessions).toHaveLength(0);
+
+      // Stale update arrives after deletion - should NOT re-add the session
+      act(() => {
+        result.current.handleSessionUpdated({ ...session, title: 'Stale Update' });
+      });
+
+      expect(result.current.sessions).toHaveLength(0);
+      expect(result.current.sessionsRef.current).toHaveLength(0);
     });
   });
 

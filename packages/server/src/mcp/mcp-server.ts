@@ -17,6 +17,8 @@ import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
+import { interSessionMessageService } from '../services/inter-session-message-service.js';
+import { writePtyNotification } from '../lib/pty-notification.js';
 import { fetchRemote, getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
@@ -249,32 +251,102 @@ mcpServer.tool(
   },
 );
 
-// ---------- Tool: send_message_to_session ----------
+// ---------- Tool: send_session_message ----------
 
 mcpServer.tool(
-  'send_message_to_session',
-  'Send a follow-up message to a worker in a session. The worker must have an active PTY.',
+  'send_session_message',
+  'Send a message to a worker in another session via file. ' +
+    'The message is written as a file and the target worker receives a PTY notification. ' +
+    'If toWorkerId is omitted and the session has exactly one agent worker, it is auto-selected. ' +
+    'The calling agent can get its own session ID from the AGENT_CONSOLE_SESSION_ID environment variable.',
   {
-    sessionId: z.string().describe('The session ID'),
-    workerId: z.string().describe('The worker ID to send the message to'),
-    message: z.string().describe('The message content to send'),
+    toSessionId: z.string().describe('Target session ID'),
+    toWorkerId: z.string().optional().describe(
+      'Target worker ID. If omitted, auto-selects the sole agent worker in the target session.',
+    ),
+    content: z.string().describe('Message content (free-form)'),
+    fromSessionId: z.string().describe(
+      'The sender session ID. The calling agent can get this from the AGENT_CONSOLE_SESSION_ID environment variable.',
+    ),
   },
-  async ({ sessionId, workerId, message }) => {
+  async ({ toSessionId, toWorkerId, content, fromSessionId }) => {
     try {
       const sessionManager = getSessionManager();
-      const result = sessionManager.sendMessage(sessionId, null, workerId, message);
 
-      if (!result) {
-        return errorResult(
-          'Failed to send message. The session, worker, or PTY may not be available.',
+      // 1. Validate target session
+      const targetSession = sessionManager.getSession(toSessionId);
+      if (!targetSession) {
+        return errorResult(`Session ${toSessionId} not found`);
+      }
+
+      // 2. Resolve target worker
+      let resolvedWorkerId: string;
+      if (toWorkerId) {
+        const worker = targetSession.workers.find((w) => w.id === toWorkerId);
+        if (!worker) {
+          return errorResult(`Worker ${toWorkerId} not found in session ${toSessionId}`);
+        }
+        if (worker.type === 'git-diff') {
+          return errorResult(
+            `Worker ${toWorkerId} in session ${toSessionId} does not support inbound messages`,
+          );
+        }
+        resolvedWorkerId = toWorkerId;
+      } else {
+        const agentWorkers = targetSession.workers.filter((w) => w.type === 'agent');
+        if (agentWorkers.length === 0) {
+          return errorResult(`Session ${toSessionId} has no agent workers`);
+        }
+        if (agentWorkers.length > 1) {
+          const workerIds = agentWorkers.map((w) => w.id).join(', ');
+          return errorResult(
+            `Session ${toSessionId} has multiple agent workers (${workerIds}). ` +
+              `Specify toWorkerId explicitly. ` +
+              `Use get_session_status to discover available workers.`,
+          );
+        }
+        resolvedWorkerId = agentWorkers[0].id;
+      }
+
+      // 3. Write message file
+      const result = await interSessionMessageService.sendMessage({
+        toSessionId,
+        toWorkerId: resolvedWorkerId,
+        fromSessionId,
+        content,
+      });
+
+      // 4. PTY notification (best-effort -- message file is already written)
+      try {
+        const senderTitle =
+          sessionManager.getSession(fromSessionId)?.title ?? fromSessionId;
+
+        writePtyNotification({
+          tag: 'inbound:message',
+          fields: {
+            source: 'session',
+            from: fromSessionId,
+            summary: `Message from session ${senderTitle}`,
+            path: result.path,
+            intent: 'triage',
+          },
+          writeInput: (data) => sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data),
+        });
+      } catch (notifyErr) {
+        logger.warn(
+          { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+          'PTY notification failed (message file was written successfully)',
         );
       }
 
-      return textResult({ success: true });
+      return textResult({
+        messageId: result.messageId,
+        path: result.path,
+      });
     } catch (err) {
-      const errMessage = err instanceof Error ? err.message : 'Unknown error';
-      logger.error({ err, sessionId, workerId }, 'send_message_to_session failed');
-      return errorResult(errMessage);
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      logger.error({ err, toSessionId, toWorkerId }, 'send_session_message failed');
+      return errorResult(message);
     }
   },
 );

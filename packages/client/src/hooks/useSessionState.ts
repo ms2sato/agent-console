@@ -28,20 +28,22 @@ interface UseSessionStateReturn {
   setSessionsFromApi: (sessions: Session[]) => void;
 }
 
+/**
+ * Upsert a session in an array: replace if exists, append if new.
+ */
+function upsertSession(sessions: Session[], session: Session): Session[] {
+  const exists = sessions.some(s => s.id === session.id);
+  if (exists) {
+    return sessions.map(s => s.id === session.id ? session : s);
+  }
+  return [...sessions, session];
+}
+
 export function useSessionState(): UseSessionStateReturn {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [wsInitialized, setWsInitialized] = useState(false);
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
   const sessionsRef = useRef<Session[]>([]);
-
-  /** Upsert a session: replace if exists, append if new. Used by updated/resumed handlers. */
-  function upsertSession(list: Session[], session: Session): Session[] {
-    const exists = list.some(s => s.id === session.id);
-    if (exists) {
-      return list.map(s => s.id === session.id ? session : s);
-    }
-    return [...list, session];
-  }
 
   const handleSessionsSync = useCallback((newSessions: Session[], activityStates: WorkerActivityInfo[]) => {
     setSessions(newSessions);
@@ -64,9 +66,11 @@ export function useSessionState(): UseSessionStateReturn {
     sessionsRef.current = [...sessionsRef.current, session];
   }, []);
 
+  // Replace-only: update existing session but do NOT append if not found.
+  // This prevents stale session:updated events from resurrecting deleted sessions.
   const handleSessionUpdated = useCallback((session: Session) => {
-    setSessions(prev => upsertSession(prev, session));
-    sessionsRef.current = upsertSession(sessionsRef.current, session);
+    setSessions(prev => prev.map(s => s.id === session.id ? session : s));
+    sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {

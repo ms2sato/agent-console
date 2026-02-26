@@ -209,21 +209,23 @@ Check the status of a delegated session.
 }
 ```
 
-### 3. `send_message_to_session`
+### 3. `send_session_message`
 
-Send a follow-up message to a delegated session's worker.
+Send a message to another session's worker via file-based messaging. Replaces the previous PTY-injection approach. See [Inter-Session Messaging](./inter-session-messaging.md) for full design.
 
 ```typescript
 // Input
 {
-  sessionId: string,
-  workerId: string,
-  message: string,
+  toSessionId: string,
+  toWorkerId?: string,       // Optional; defaults to primary agent worker
+  content: string,
+  fromSessionId?: string,    // Optional sender session ID (from AGENT_CONSOLE_SESSION_ID env var)
 }
 
 // Output
 {
-  success: boolean,
+  messageId: string,
+  path: string,
 }
 ```
 
@@ -265,7 +267,7 @@ Implemented in `worker-manager.ts` and `session-manager.ts`. Agent worker PTY pr
 
 1. Add `/mcp` Streamable HTTP endpoint to the Hono server
 2. Implement MCP protocol using `@modelcontextprotocol/sdk` with Streamable HTTP transport
-3. Implement tools: `delegate_to_worktree`, `get_session_status`, `send_message_to_session`, `list_sessions`
+3. Implement tools: `delegate_to_worktree`, `get_session_status`, `send_session_message`, `list_sessions`
 4. Direct service layer access (no internal HTTP calls)
 
 ### Phase 3: Enhanced Monitoring (Future)
@@ -304,11 +306,11 @@ Implemented in `worker-manager.ts` and `session-manager.ts`. Agent worker PTY pr
    - Recommendation: Yes, with a configurable depth limit (default: 2). The env vars propagate naturally.
 
 4. **Completion notification**: How should the parent agent know the delegated work is done?
-   - Phase 2: Polling via `get_session_status`
-   - Phase 3: SSE-based subscription for real-time notification
+   - Resolved: File-based inter-session messaging. See [Inter-Session Messaging](./inter-session-messaging.md).
 
 ## Related Documents
 
+- [Inter-Session Messaging](./inter-session-messaging.md) - File-based messaging between sessions (replaces PTY injection)
 - [Custom Agent Design](./custom-agent-design.md) - Agent definition and management
 - [Session-Worker Design](./session-worker-design.md) - Session and worker architecture
 - [Inbound Integration](./integration-inbound.md) - External event routing (similar pattern)

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'os';
 import * as path from 'path';
-import { getConfigDir, getRepositoriesDir, getRepositoryDir, getServerPid } from '../config.js';
+import { getConfigDir, getRepositoriesDir, getRepositoryDir, getMessagesDir, getServerPid } from '../config.js';
 
 describe('config', () => {
   const originalEnv = process.env.AGENT_CONSOLE_HOME;
@@ -62,6 +62,21 @@ describe('config', () => {
       process.env.AGENT_CONSOLE_HOME = '/custom/path';
 
       expect(getRepositoriesDir()).toBe('/custom/path/repositories');
+    });
+  });
+
+  describe('getMessagesDir', () => {
+    it('should return messages subdirectory of config dir', () => {
+      delete process.env.AGENT_CONSOLE_HOME;
+
+      const expected = path.join(os.homedir(), '.agent-console', 'messages');
+      expect(getMessagesDir()).toBe(expected);
+    });
+
+    it('should respect AGENT_CONSOLE_HOME', () => {
+      process.env.AGENT_CONSOLE_HOME = '/custom/path';
+
+      expect(getMessagesDir()).toBe('/custom/path/messages');
     });
   });
 
