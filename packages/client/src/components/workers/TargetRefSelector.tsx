@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { GitDiffTarget } from '@agent-console/shared';
 import { fetchBranchCommits } from '../../lib/api';
+import { branchKeys } from '../../lib/query-keys';
 import { EditIcon } from '../Icons';
 
 interface TargetRefSelectorProps {
@@ -26,7 +27,7 @@ export function TargetRefSelector({
 
   // Fetch commits since base commit when editing starts
   const { data: commitsData } = useQuery({
-    queryKey: ['branchCommits', sessionId, currentBaseCommit],
+    queryKey: branchKeys.commits(sessionId, currentBaseCommit ?? ''),
     queryFn: () => fetchBranchCommits(sessionId, currentBaseCommit!),
     enabled: isEditing && !!currentBaseCommit,
     staleTime: 10000, // Cache for 10 seconds

@@ -1,8 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useGitDiffWorker } from '../useGitDiffWorker';
-import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
-import { _reset } from '../../lib/worker-websocket';
+import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
+import { _reset } from '../../../../lib/worker-websocket';
 import type { GitDiffData } from '@agent-console/shared';
 
 const mockDiffData: GitDiffData = {
@@ -330,45 +330,49 @@ describe('useGitDiffWorker', () => {
   it('should handle invalid JSON gracefully', async () => {
     const consoleSpy = mock(() => {});
     const originalError = console.error;
-    console.error = consoleSpy;
+    try {
+      console.error = consoleSpy;
 
-    const { result } = renderHook(() =>
-      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
-    );
+      const { result } = renderHook(() =>
+        useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+      );
 
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-      ws?.simulateMessage('not valid json');
-    });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage('not valid json');
+      });
 
-    expect(consoleSpy).toHaveBeenCalled();
-    expect(result.current.error).toBe('Failed to parse server message');
-    expect(result.current.loading).toBe(false);
-
-    console.error = originalError;
+      expect(consoleSpy).toHaveBeenCalled();
+      expect(result.current.error).toBe('Failed to parse server message');
+      expect(result.current.loading).toBe(false);
+    } finally {
+      console.error = originalError;
+    }
   });
 
   it('should handle invalid message type gracefully', async () => {
     const consoleSpy = mock(() => {});
     const originalError = console.error;
-    console.error = consoleSpy;
+    try {
+      console.error = consoleSpy;
 
-    const { result } = renderHook(() =>
-      useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
-    );
+      const { result } = renderHook(() =>
+        useGitDiffWorker({ sessionId: 'session1', workerId: 'worker1' })
+      );
 
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-      ws?.simulateMessage(JSON.stringify({ type: 'unknown-type', data: {} }));
-    });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(JSON.stringify({ type: 'unknown-type', data: {} }));
+      });
 
-    expect(consoleSpy).toHaveBeenCalled();
-    expect(result.current.error).toBe('Invalid server message');
-    expect(result.current.loading).toBe(false);
-
-    console.error = originalError;
+      expect(consoleSpy).toHaveBeenCalled();
+      expect(result.current.error).toBe('Invalid server message');
+      expect(result.current.loading).toBe(false);
+    } finally {
+      console.error = originalError;
+    }
   });
 
   it('should reconnect when sessionId or workerId changes', async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import type { GitDiffData, GitDiffTarget } from '@agent-console/shared';
-import * as workerWs from '../lib/worker-websocket.js';
+import * as workerWs from '../../../lib/worker-websocket.js';
 
 // Stable empty Map to avoid infinite re-renders with useSyncExternalStore
 const EMPTY_EXPANDED_LINES = new Map<string, { startLine: number; lines: string[] }[]>();
@@ -69,7 +69,7 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
     diffData: state.diffData ?? null,
     error: state.diffError ?? null,
     loading: state.diffLoading ?? false,
-    connected: state.connected,
+    connected: state.connected ?? false,
     refresh,
     setBaseCommit,
     setTargetCommit,

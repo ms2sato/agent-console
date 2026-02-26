@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchSessionBranches } from '../../lib/api';
+import { sessionKeys } from '../../lib/query-keys';
 import { EditIcon } from '../Icons';
 
 interface BaseCommitSelectorProps {
@@ -24,7 +25,7 @@ export function BaseCommitSelector({
 
   // Fetch branches when editing starts
   const { data: branchesData } = useQuery({
-    queryKey: ['sessionBranches', sessionId],
+    queryKey: sessionKeys.branches(sessionId),
     queryFn: () => fetchSessionBranches(sessionId),
     enabled: isEditing,
     staleTime: 30000, // Cache for 30 seconds

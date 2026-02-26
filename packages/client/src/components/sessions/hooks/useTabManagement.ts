@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
-import { createWorker, deleteWorker } from '../lib/api';
-import { getDefaultTabId, isWorkerIdReady } from '../components/sessions/sessionTabRouting';
+import { createWorker, deleteWorker } from '../../../lib/api';
+import { getDefaultTabId, isWorkerIdReady } from '../sessionTabRouting';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
 
 export interface Tab {

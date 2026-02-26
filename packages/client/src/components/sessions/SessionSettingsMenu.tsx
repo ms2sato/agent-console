@@ -14,6 +14,7 @@ import {
 } from '../Icons';
 import { Spinner } from '../ui/Spinner';
 import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
+import { sessionKeys } from '../../lib/query-keys';
 import { hasVSCode } from '../../lib/capabilities';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'view-initial-prompt';
@@ -38,7 +39,7 @@ export function SessionSettingsMenu({
 
   // Fetch PR link when menu opens
   const { data: prLinkData, isLoading: isPrLinkLoading } = useQuery({
-    queryKey: ['sessionPrLink', sessionId],
+    queryKey: sessionKeys.prLink(sessionId),
     queryFn: () => fetchSessionPrLink(sessionId),
     enabled: isMenuOpen,
     staleTime: 30000, // Cache for 30 seconds

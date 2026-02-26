@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UpdateAgentRequest, AgentDefinition } from '@agent-console/shared';
 import { updateAgent } from '../../lib/api';
+import { agentKeys } from '../../lib/query-keys';
 import { AgentForm, parseAskingPatterns, type AgentFormData } from './AgentForm';
 
 export interface EditAgentFormProps {
@@ -20,8 +21,8 @@ export function EditAgentForm({ agentId, initialData, onSuccess, onCancel }: Edi
     onSuccess: (response) => {
       // Optimistic cache update (don't rely solely on WebSocket in case of disconnection)
       const updatedAgent = response.agent;
-      queryClient.setQueryData(['agent', agentId], { agent: updatedAgent });
-      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(['agents'], (old) => {
+      queryClient.setQueryData(agentKeys.detail(agentId), { agent: updatedAgent });
+      queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
         if (!old) return { agents: [updatedAgent] };
         return { agents: old.agents.map((a) => (a.id === agentId ? updatedAgent : a)) };
       });

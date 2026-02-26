@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchRepositories } from '../lib/api';
+import { fetchRepositories } from '../../../lib/api';
+import { repositoryKeys } from '../../../lib/query-keys';
 
 /**
  * Hook for fetching repositories list with TanStack Query.
@@ -7,7 +8,7 @@ import { fetchRepositories } from '../lib/api';
  */
 export function useRepositories() {
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['repositories'],
+    queryKey: repositoryKeys.all(),
     queryFn: fetchRepositories,
   });
 

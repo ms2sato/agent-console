@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Repository } from '@agent-console/shared';
-import { useRepositories } from '../../hooks/use-repositories';
+import { useRepositories } from './hooks/use-repositories';
 import { Spinner } from '../ui/Spinner';
 import { EditRepositoryForm } from './EditRepositoryForm';
 

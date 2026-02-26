@@ -12,6 +12,7 @@ import {
   testRepositorySlackIntegration,
   fetchNotificationStatus,
 } from '../../lib/api';
+import { repositoryKeys, notificationKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
 
@@ -91,13 +92,13 @@ function SlackSettingsSection({ repositoryId }: SlackSettingsSectionProps) {
 
   // Fetch existing Slack integration settings
   const { data: existingIntegration, isLoading } = useQuery({
-    queryKey: ['repository-slack-integration', repositoryId],
+    queryKey: repositoryKeys.slackIntegration(repositoryId),
     queryFn: () => fetchRepositorySlackIntegration(repositoryId),
   });
 
   // Fetch notification status to check if APP_URL is configured
   const { data: notificationStatus } = useQuery({
-    queryKey: ['notification-status'],
+    queryKey: notificationKeys.status(),
     queryFn: fetchNotificationStatus,
   });
 
@@ -315,13 +316,13 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     mutationFn: (data: UpdateRepositoryRequest) => updateRepository(repository.id, data),
     onMutate: async (data) => {
       // Cancel any outgoing refetches to prevent overwriting optimistic update
-      await queryClient.cancelQueries({ queryKey: ['repositories'] });
+      await queryClient.cancelQueries({ queryKey: repositoryKeys.all() });
 
       // Snapshot the previous value for rollback
-      const previousRepositories = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+      const previousRepositories = queryClient.getQueryData<{ repositories: Repository[] }>(repositoryKeys.all());
 
       // Optimistically update the cache
-      queryClient.setQueryData<{ repositories: Repository[] } | undefined>(['repositories'], (old) => {
+      queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
         if (!old) return old;
         return {
           repositories: old.repositories.map((r) =>
@@ -339,7 +340,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     onError: (err, _data, context) => {
       // Rollback to previous value on error
       if (context?.previousRepositories) {
-        queryClient.setQueryData(['repositories'], context.previousRepositories);
+        queryClient.setQueryData(repositoryKeys.all(), context.previousRepositories);
       }
       setError(err instanceof Error ? err.message : 'Failed to update repository');
     },

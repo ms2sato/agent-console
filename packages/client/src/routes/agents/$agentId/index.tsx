@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { fetchAgent, unregisterAgent } from '../../../lib/api';
+import { agentKeys } from '../../../lib/query-keys';
 import { CapabilityIndicator } from '../../../components/agents';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
@@ -18,7 +19,7 @@ function AgentDetailPage() {
   const { errorDialogProps, showError } = useErrorDialog();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['agent', agentId],
+    queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
 

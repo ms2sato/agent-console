@@ -613,3 +613,77 @@ describe('API Client', () => {
     });
   });
 });
+
+  describe('handleApiError', () => {
+    it('should extract error from response with both error and message fields', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'Error field', message: 'Message field' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Error field');
+    });
+
+    it('should use message field when error field is empty string', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: '', message: 'Message fallback' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Message fallback');
+    });
+
+    it('should use message field when error field is not present', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ message: 'Only message' })),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Only message');
+    });
+
+    it('should combine fallback message with statusText when response has no error or message', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({})),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Bad Request');
+    });
+
+    it('should use fallback message when statusText is empty string', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: '',
+        json: mock(() => Promise.resolve({})),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session');
+    });
+
+    it('should handle non-object JSON response gracefully', async () => {
+      const { createSession } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: mock(() => Promise.resolve('string response')),
+      } as unknown as Response);
+
+      await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Internal Server Error');
+    });
+  });

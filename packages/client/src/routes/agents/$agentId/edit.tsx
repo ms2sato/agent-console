@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAgent } from '../../../lib/api';
+import { agentKeys } from '../../../lib/query-keys';
 import { EditAgentForm } from '../../../components/agents';
 import { Spinner } from '../../../components/ui/Spinner';
 
@@ -14,7 +15,7 @@ function AgentEditPage() {
   const navigate = useNavigate();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['agent', agentId],
+    queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
 

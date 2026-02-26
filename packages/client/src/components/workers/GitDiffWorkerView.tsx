@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { GitDiffTarget } from '@agent-console/shared';
-import { useGitDiffWorker } from '../../hooks/useGitDiffWorker';
-import { useDiffScrollPosition, getStoredVisibleFile } from '../../hooks/useDiffScrollPosition';
+import { useGitDiffWorker } from './hooks/useGitDiffWorker';
+import { useDiffScrollPosition, getStoredVisibleFile } from './hooks/useDiffScrollPosition';
 import { RefreshIcon } from '../Icons';
 import { DiffViewer } from './DiffViewer';
 import { DiffFileList } from './DiffFileList';

@@ -81,7 +81,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should include repository info for worktree session worker exits', async () => {
     const app = new Hono();
-    const upgradeWebSocket = (handler: (c: unknown) => unknown) => handler;
+    const upgradeWebSocket = ((handler: (c: unknown) => unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
     await setupWebSocketRoutes(app, upgradeWebSocket);
 
     const sessionManager = getSessionManager();
@@ -114,7 +114,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should set repository info to null for quick session worker exits', async () => {
     const app = new Hono();
-    const upgradeWebSocket = (handler: (c: unknown) => unknown) => handler;
+    const upgradeWebSocket = ((handler: (c: unknown) => unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
     await setupWebSocketRoutes(app, upgradeWebSocket);
 
     const sessionManager = getSessionManager();
