@@ -17,6 +17,7 @@ import type { SessionRepository } from './repositories/session-repository.js';
 import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
+import type { AgentManager } from './services/agent-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
@@ -29,6 +30,8 @@ import { SessionManager as SessionManagerClass } from './services/session-manage
 import { RepositoryManager as RepositoryManagerClass } from './services/repository-manager.js';
 import { NotificationManager as NotificationManagerClass } from './services/notifications/notification-manager.js';
 import { SlackHandler } from './services/notifications/slack-handler.js';
+import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
+import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { createLogger } from './lib/logger.js';
 
@@ -61,6 +64,9 @@ export interface AppContext {
 
   /** System capabilities (VS Code availability, etc.) */
   systemCapabilities: SystemCapabilitiesService;
+
+  /** Agent definition management (built-in + custom agents) */
+  agentManager: AgentManager;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -155,6 +161,10 @@ export async function createAppContext(
   const systemCapabilities = new SystemCapabilitiesServiceClass();
   await systemCapabilities.detect();
 
+  // 9. Create agent manager
+  const agentRepository = new SqliteAgentRepository(db);
+  const agentManager = await AgentManagerClass.create(agentRepository);
+
   logger.info('All services initialized');
 
   return {
@@ -165,6 +175,7 @@ export async function createAppContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    agentManager,
     inboundIntegration,
   };
 }
@@ -259,6 +270,10 @@ export async function createTestContext(
     await systemCapabilities.detect();
   }
 
+  // Create agent manager
+  const agentRepository = new SqliteAgentRepository(db);
+  const agentManager = await AgentManagerClass.create(agentRepository);
+
   return {
     db,
     jobQueue,
@@ -267,6 +282,7 @@ export async function createTestContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    agentManager,
     inboundIntegration,
   };
 }

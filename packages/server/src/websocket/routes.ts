@@ -213,8 +213,9 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
   logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function setupWebSocketRoutes(
-  app: Hono,
+  app: Hono<any>,
   // Uses Hono's UpgradeWebSocket type directly from hono/ws.
   // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

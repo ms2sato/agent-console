@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
+import type { AppBindings, AppContext } from '../app-context.js';
 
 // Mock open package BEFORE importing mock-fs-helper
 // The open package internally uses fs and needs to be mocked first
@@ -90,7 +91,11 @@ describe('System API - open-in-vscode', () => {
     const { system } = await import(`../routes/system.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-    const app = new Hono();
+    const app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', { systemCapabilities: mockCapabilities } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api/system', system);
     return app;

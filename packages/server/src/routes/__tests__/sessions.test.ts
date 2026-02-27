@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -17,7 +18,7 @@ const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory(20000);
 
 describe('Sessions API - Pause/Resume', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
 
   beforeEach(async () => {
@@ -60,7 +61,11 @@ describe('Sessions API - Pause/Resume', () => {
     setSessionManager(sessionManager);
 
     // Create Hono app with error handler
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', { sessionManager } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });
