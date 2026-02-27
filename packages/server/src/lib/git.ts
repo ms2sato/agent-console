@@ -546,7 +546,11 @@ export async function pullFastForward(cwd: string): Promise<number> {
 
   // Count commits between old and new HEAD
   const countStr = await git(['rev-list', '--count', `${headBefore}..${headAfter}`], cwd);
-  return parseInt(countStr, 10);
+  const commitsPulled = Number.parseInt(countStr, 10);
+  if (Number.isNaN(commitsPulled)) {
+    throw new GitError(`Invalid commit count from git rev-list: "${countStr}"`, -1, countStr);
+  }
+  return commitsPulled;
 }
 
 /**
