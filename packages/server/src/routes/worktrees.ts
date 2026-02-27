@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { $ } from 'bun';
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
+import { stat } from 'node:fs/promises';
 import type {
   BranchNameFallback,
   HookCommandResult,
 } from '@agent-console/shared';
-import { CreateWorktreeRequestSchema } from '@agent-console/shared';
+import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
 import { getSessionManager } from '../services/session-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
@@ -14,8 +15,9 @@ import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
-import { fetchRemote } from '../lib/git.js';
+import { fetchRemote, getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { broadcastToApp } from '../websocket/routes.js';
 
 const logger = createLogger('api:worktrees');
 
@@ -25,6 +27,14 @@ const deletionsInProgress = new Set<string>();
 /** Get the deletion guard set. Exported for testing only. */
 export function _getDeletionsInProgress(): Set<string> {
   return deletionsInProgress;
+}
+
+// Guard against concurrent pull of the same worktree
+const pullsInProgress = new Set<string>();
+
+/** Get the pull guard set. Exported for testing only. */
+export function _getPullsInProgress(): Set<string> {
+  return pullsInProgress;
 }
 
 /**
@@ -95,10 +105,6 @@ const worktrees = new Hono()
     // Execute worktree creation in background (fire-and-forget)
     // This promise is intentionally not awaited
     (async () => {
-      // Import broadcast function lazily to avoid circular dependencies
-      // This import is inside the async IIFE to avoid blocking the 202 response
-      const { broadcastToApp } = await import('../websocket/routes.js');
-
       try {
         let branch: string;
         let baseBranch: string | undefined;
@@ -247,6 +253,114 @@ const worktrees = new Hono()
     // Return accepted immediately (do not wait for worktree creation)
     return c.json({ accepted: true }, 202);
   })
+  // Pull a worktree (git pull --ff-only, async)
+  .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
+    const repoId = c.req.param('id');
+    const repositoryManager = getRepositoryManager();
+    const repo = repositoryManager.getRepository(repoId);
+
+    if (!repo) {
+      throw new NotFoundError('Repository');
+    }
+
+    const { worktreePath: rawWorktreePath, taskId } = c.req.valid('json');
+
+    // Canonicalize both paths to prevent path traversal and ensure consistent comparison.
+    // Both worktreePath and repo.path must be normalized so that string equality is reliable.
+    const worktreePath = resolvePath(rawWorktreePath);
+    const normalizedRepoPath = resolvePath(repo.path);
+    const isMain = worktreePath === normalizedRepoPath;
+
+    // For non-primary worktrees, enforce boundary check and ownership verification.
+    // Primary worktree (repo root) may reside outside the managed worktrees directory,
+    // so boundary check applies only to non-primary worktrees.
+    if (!isMain) {
+      const repositoriesDir = getRepositoriesDir();
+      if (!worktreePath.startsWith(repositoriesDir + pathSep)) {
+        throw new ValidationError('Worktree path is outside managed directory');
+      }
+
+      if (!await worktreeService.isWorktreeOf(repo.path, worktreePath, repoId)) {
+        throw new ValidationError('Invalid worktree path for this repository');
+      }
+    }
+
+    // Validate worktree directory exists before proceeding
+    try {
+      await stat(worktreePath);
+    } catch {
+      throw new ValidationError('Worktree directory does not exist');
+    }
+
+    // Reject pull if the worktree is currently being deleted
+    if (deletionsInProgress.has(worktreePath)) {
+      return c.json({ error: 'Worktree is being deleted' }, 409);
+    }
+
+    // Reject pull on detached HEAD (no upstream to pull from)
+    const currentBranch = await getCurrentBranch(worktreePath);
+    if (currentBranch === '(detached)' || currentBranch === '(unknown)') {
+      throw new ValidationError('Cannot pull in detached HEAD state');
+    }
+
+    // Guard against concurrent pull of the same worktree
+    if (pullsInProgress.has(worktreePath)) {
+      return c.json({ error: 'Pull already in progress' }, 409);
+    }
+
+    pullsInProgress.add(worktreePath);
+
+    // Execute pull in background (fire-and-forget)
+    (async () => {
+      try {
+        // Check working directory is clean
+        const clean = await isWorkingDirectoryClean(worktreePath);
+        if (!clean) {
+          broadcastToApp({
+            type: 'worktree-pull-failed',
+            taskId,
+            worktreePath,
+            error: 'Working directory has uncommitted changes. Please commit or stash your changes first.',
+          });
+          return;
+        }
+
+        // Get current branch for the success message
+        const branch = await getCurrentBranch(worktreePath);
+
+        // Execute git pull --ff-only
+        const commitsPulled = await pullFastForward(worktreePath);
+
+        broadcastToApp({
+          type: 'worktree-pull-completed',
+          taskId,
+          worktreePath,
+          branch,
+          commitsPulled,
+        });
+        logger.info({ taskId, repoId, worktreePath, branch, commitsPulled }, 'Worktree pull completed');
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error during pull';
+        logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree pull failed');
+
+        try {
+          broadcastToApp({
+            type: 'worktree-pull-failed',
+            taskId,
+            worktreePath,
+            error: errorMessage,
+          });
+        } catch {
+          // If broadcast fails, we've already logged the error above
+        }
+      } finally {
+        pullsInProgress.delete(worktreePath);
+      }
+    })();
+
+    // Return accepted immediately
+    return c.json({ accepted: true }, 202);
+  })
   // Delete a worktree
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
@@ -275,6 +389,11 @@ const worktrees = new Hono()
     const repositoriesDir = getRepositoriesDir();
     if (!worktreePath.startsWith(repositoriesDir + pathSep)) {
       throw new ValidationError('Worktree path is outside managed directory');
+    }
+
+    // Reject deletion while pull is in progress
+    if (pullsInProgress.has(worktreePath)) {
+      return c.json({ error: 'Pull is in progress for this worktree' }, 409);
     }
 
     // Guard against concurrent deletion of the same worktree
@@ -311,9 +430,6 @@ const worktrees = new Hono()
       // Execute deletion in background (fire-and-forget)
       (async () => {
         try {
-          // Import broadcast function lazily to avoid circular dependencies
-          const { broadcastToApp } = await import('../websocket/routes.js');
-
           // Execute cleanup command before deletion if configured
           const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
 
@@ -357,10 +473,8 @@ const worktrees = new Hono()
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
 
-          // Try to broadcast failure - import may have been the cause of the error
+          // Try to broadcast failure
           try {
-            const { broadcastToApp } = await import('../websocket/routes.js');
-
             // Capture git status for diagnostics
             let gitStatus: string | undefined;
             try {

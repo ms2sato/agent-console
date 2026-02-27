@@ -129,6 +129,24 @@ export const DeleteWorktreeRequestSchema = v.object({
 });
 
 /**
+ * Schema for pulling a worktree (git pull --ff-only)
+ */
+export const PullWorktreeRequestSchema = v.object({
+  /** The absolute path of the worktree to pull */
+  worktreePath: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Worktree path is required')
+  ),
+  /** Client-generated UUID for async request-response correlation */
+  taskId: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Task ID is required')
+  ),
+});
+
+/**
  * Schema for updating a repository
  */
 export const UpdateRepositoryRequestSchema = v.object({
@@ -161,6 +179,7 @@ export type CreateWorktreeCustomRequest = v.InferOutput<typeof CreateWorktreeCus
 export type CreateWorktreeExistingRequest = v.InferOutput<typeof CreateWorktreeExistingRequestSchema>;
 export type CreateWorktreeRequest = v.InferOutput<typeof CreateWorktreeRequestSchema>;
 export type DeleteWorktreeRequest = v.InferOutput<typeof DeleteWorktreeRequestSchema>;
+export type PullWorktreeRequest = v.InferOutput<typeof PullWorktreeRequestSchema>;
 export type UpdateRepositoryRequest = v.InferOutput<typeof UpdateRepositoryRequestSchema>;
 export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;
 export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;

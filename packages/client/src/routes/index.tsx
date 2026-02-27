@@ -12,6 +12,7 @@ import {
   resumeSession,
   createWorktreeAsync,
   deleteWorktreeAsync,
+  pullWorktreeAsync,
   openPath,
   openInVSCode,
   updateRepository,
@@ -41,7 +42,10 @@ import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../component
 import { QuickSessionForm } from '../components/sessions';
 import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
-import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, HookCommandResult } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
+
+// Timeout (ms) to auto-remove stale pull entries if WebSocket never responds
+const PULL_TIMEOUT_MS = 60_000;
 
 // Request notification permission on load
 function requestNotificationPermission() {
@@ -153,6 +157,31 @@ function DashboardPage() {
   const activeStartTimeRef = useRef<Record<string, number>>({});
   // Track last notification time per session (for cooldown)
   const lastNotificationTimeRef = useRef<Record<string, number>>({});
+  // Track active pull operations: worktreePath -> { taskId, timeoutId }
+  const [activePulls, setActivePulls] = useState<Map<string, { taskId: string; timeoutId: ReturnType<typeof setTimeout> }>>(new Map());
+  const activePullsRef = useRef(activePulls);
+  activePullsRef.current = activePulls;
+  const [pullSuccessMessage, setPullSuccessMessage] = useState<string | null>(null);
+  const { errorDialogProps: pullErrorDialogProps, showError: showPullError } = useErrorDialog();
+
+  // Remove a pull entry from activePulls, clearing its timeout
+  const removePull = useCallback((worktreePath: string) => {
+    setActivePulls(prev => {
+      const entry = prev.get(worktreePath);
+      if (entry) clearTimeout(entry.timeoutId);
+      const next = new Map(prev);
+      next.delete(worktreePath);
+      return next;
+    });
+  }, []);
+
+  // Cleanup all pull timeouts on unmount
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
+  useEffect(() => {
+    return () => {
+      activePullsRef.current.forEach(entry => clearTimeout(entry.timeoutId));
+    };
+  }, []);
 
   // Notification thresholds
   const MIN_WORKING_TIME_MS = 5000; // 5 seconds minimum working time
@@ -415,6 +444,51 @@ function DashboardPage() {
     });
   }, [queryClient]);
 
+  // Handle worktree pull completed
+  const handleWorktreePullCompleted = useCallback((payload: WorktreePullCompletedPayload) => {
+    console.log(`[Pull] Completed: ${payload.worktreePath} (${payload.commitsPulled} commits)`);
+    const active = activePulls.get(payload.worktreePath);
+    if (!active || active.taskId !== payload.taskId) return;
+    removePull(payload.worktreePath);
+    // Show success notification
+    const message = payload.commitsPulled === 0
+      ? 'Already up to date.'
+      : `Pulled ${payload.commitsPulled} commit${payload.commitsPulled === 1 ? '' : 's'} on ${payload.branch}.`;
+    setPullSuccessMessage(message);
+    // Refresh worktree data to reflect pulled changes
+    queryClient.invalidateQueries({ queryKey: worktreeKeys.root() });
+  }, [activePulls, queryClient, removePull]);
+
+  // Handle worktree pull failed
+  const handleWorktreePullFailed = useCallback((payload: WorktreePullFailedPayload) => {
+    console.log(`[Pull] Failed: ${payload.worktreePath} - ${payload.error}`);
+    const active = activePulls.get(payload.worktreePath);
+    if (!active || active.taskId !== payload.taskId) return;
+    removePull(payload.worktreePath);
+    showPullError('Pull Failed', payload.error);
+  }, [activePulls, removePull, showPullError]);
+
+  // Handle pull worktree request from WorktreeRow
+  const handlePullWorktree = useCallback(async (repositoryId: string, worktreePath: string) => {
+    const taskId = generateTaskId();
+    // Set a timeout to auto-remove the entry if WebSocket never responds
+    const timeoutId = setTimeout(() => {
+      console.warn(`[Pull] Timeout: ${worktreePath} (${PULL_TIMEOUT_MS}ms elapsed)`);
+      removePull(worktreePath);
+    }, PULL_TIMEOUT_MS);
+    setActivePulls(prev => {
+      const next = new Map(prev);
+      next.set(worktreePath, { taskId, timeoutId });
+      return next;
+    });
+    try {
+      await pullWorktreeAsync(repositoryId, worktreePath, taskId);
+    } catch (error) {
+      removePull(worktreePath);
+      showPullError('Pull Failed', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [removePull, showPullError]);
+
   // Handle real-time activity updates via WebSocket
   // Note: ActivityDetector handles debouncing and sticky state transitions server-side
   const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
@@ -520,6 +594,8 @@ function DashboardPage() {
     onRepositoryCreated: handleRepositoryCreated,
     onRepositoryDeleted: handleRepositoryDeleted,
     onRepositoryUpdated: handleRepositoryUpdated,
+    onWorktreePullCompleted: handleWorktreePullCompleted,
+    onWorktreePullFailed: handleWorktreePullFailed,
   });
   const sessionsSynced = useAppWsState(s => s.sessionsSynced);
 
@@ -681,6 +757,8 @@ function DashboardPage() {
               repository={repo}
               sessions={sessions.filter((s) => s.type === 'worktree' && s.repositoryId === repo.id)}
               pausedSessions={pausedSessions}
+              activePulls={activePulls}
+              onPullWorktree={handlePullWorktree}
               onUnregister={() => setRepoToUnregister(repo)}
               generatingDescription={generatingDescriptionForRepo === repo.id}
             />
@@ -705,6 +783,18 @@ function DashboardPage() {
           }
         }}
       />
+      <ErrorDialog {...pullErrorDialogProps} />
+      <AlertDialog open={pullSuccessMessage !== null} onOpenChange={(open) => { if (!open) setPullSuccessMessage(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pull Completed</AlertDialogTitle>
+            <AlertDialogDescription>{pullSuccessMessage}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setPullSuccessMessage(null)}>OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       </div>
     </>
   );
@@ -719,12 +809,16 @@ interface RepositoryCardProps {
   sessions: SessionWithActivity[];
   /** Map of worktree path to paused session object */
   pausedSessions: Record<string, Session>;
+  /** Map of worktree path to pull tracking info for active pull operations */
+  activePulls: Map<string, { taskId: string; timeoutId: ReturnType<typeof setTimeout> }>;
+  /** Callback to initiate a pull for a worktree */
+  onPullWorktree: (repositoryId: string, worktreePath: string) => void;
   onUnregister: () => void;
   /** Whether a description is currently being generated for this repository */
   generatingDescription?: boolean;
 }
 
-function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, generatingDescription }: RepositoryCardProps) {
+function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onPullWorktree, onUnregister, generatingDescription }: RepositoryCardProps) {
   const [showCreateWorktree, setShowCreateWorktree] = useState(false);
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
   const [setupCommandFailure, setSetupCommandFailure] = useState<HookCommandResult | null>(null);
@@ -858,6 +952,8 @@ function RepositoryCard({ repository, sessions, pausedSessions, onUnregister, ge
               session={sessions.find((s) => s.locationPath === worktree.path)}
               pausedSession={pausedSessions[worktree.path]}
               repositoryId={repository.id}
+              isPulling={activePulls.has(worktree.path)}
+              onPull={() => onPullWorktree(repository.id, worktree.path)}
             />
           ))}
         </div>
@@ -884,9 +980,13 @@ interface WorktreeRowProps {
   /** Full session object if this worktree has a paused session */
   pausedSession?: Session;
   repositoryId: string;
+  /** Whether a pull operation is in progress for this worktree */
+  isPulling: boolean;
+  /** Callback to initiate a pull */
+  onPull: () => void;
 }
 
-function WorktreeRow({ worktree, session, pausedSession, repositoryId }: WorktreeRowProps) {
+function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling, onPull }: WorktreeRowProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
@@ -1053,6 +1153,13 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId }: Worktre
             {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
           </button>
         )}
+        <button
+          onClick={onPull}
+          disabled={isPulling}
+          className="btn text-xs bg-slate-700 hover:bg-slate-600"
+        >
+          {isPulling ? 'Pulling...' : 'Pull'}
+        </button>
         {!worktree.isMain && (
           <button
             onClick={handleDeleteWorktree}

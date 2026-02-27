@@ -149,6 +149,8 @@ branch refs/heads/main
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
   mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
+  mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+  mockGit.pullFastForward.mockImplementation(() => Promise.resolve(0));
 }
 
 // Test JobQueue instance (created fresh for each test)
@@ -209,6 +211,8 @@ describe('API Routes Integration', () => {
     mockGit.fetchAllRemote.mockReset();
     mockGit.getCommitsBehind.mockReset();
     mockGit.getCommitsAhead.mockReset();
+    mockGit.isWorkingDirectoryClean.mockReset();
+    mockGit.pullFastForward.mockReset();
     mockOpen.mockClear();
 
     // Reset session metadata suggester mock
@@ -1873,6 +1877,405 @@ describe('API Routes Integration', () => {
         } finally {
           restoreBunSpawn();
         }
+      });
+    });
+
+    describe('POST /api/repositories/:id/worktrees/pull', () => {
+      it('should return 404 for non-existent repository', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/non-existent/worktrees/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ worktreePath: '/some/path', taskId: 'test-task' }),
+        });
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 400 when worktree path is missing', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: 'test-task' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when taskId is missing', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ worktreePath: '/some/path' }),
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it('should return 400 when worktree path is outside managed directory', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: '/other/path',
+            taskId: 'test-task',
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('outside managed directory');
+      });
+
+      it('should return 400 when worktree does not belong to the repository', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Path is within managed dir but not a worktree of this repo
+        const fakePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/nonexistent`;
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: fakePath,
+            taskId: 'test-task',
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Invalid worktree path');
+      });
+
+      it('should return 202 and broadcast success for primary worktree', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+        mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
+        mockGit.pullFastForward.mockImplementation(() => Promise.resolve(3));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-pull',
+          }),
+        });
+
+        expect(res.status).toBe(202);
+        const body = (await res.json()) as { accepted: boolean };
+        expect(body.accepted).toBe(true);
+
+        // Wait for background operation
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const completedCall = broadcastSpy.mock.calls.find(
+          (call: unknown[]) => {
+            const m = call[0] as { type: string; taskId?: string };
+            return m.type === 'worktree-pull-completed' && m.taskId === 'test-task-pull';
+          }
+        );
+        expect(completedCall).toBeDefined();
+        const msg = completedCall![0] as {
+          type: string;
+          taskId: string;
+          worktreePath: string;
+          branch: string;
+          commitsPulled: number;
+        };
+        expect(msg.worktreePath).toBe(repoPath);
+        expect(msg.branch).toBe('main');
+        expect(msg.commitsPulled).toBe(3);
+      });
+
+      it('should return 202 and broadcast success for non-primary worktree', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/wt-001-abcd`;
+
+        // Create worktree directory in memfs so stat() check passes
+        fs.mkdirSync(worktreePath, { recursive: true });
+
+        // Register worktree in DB so isWorktreeOf returns true
+        const db = getDatabase();
+        await db.insertInto('worktrees').values({
+          id: 'wt-test-pull',
+          repository_id: repo.id,
+          path: worktreePath,
+          index_number: 1,
+        }).execute();
+
+        mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+        mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('feature-1'));
+        mockGit.pullFastForward.mockImplementation(() => Promise.resolve(5));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath,
+            taskId: 'test-task-pull-wt',
+          }),
+        });
+
+        expect(res.status).toBe(202);
+
+        // Wait for background operation
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const completedCall = broadcastSpy.mock.calls.find(
+          (call: unknown[]) => {
+            const m = call[0] as { type: string; taskId?: string };
+            return m.type === 'worktree-pull-completed' && m.taskId === 'test-task-pull-wt';
+          }
+        );
+        expect(completedCall).toBeDefined();
+        const msg = completedCall![0] as {
+          type: string;
+          commitsPulled: number;
+          branch: string;
+        };
+        expect(msg.commitsPulled).toBe(5);
+        expect(msg.branch).toBe('feature-1');
+      });
+
+      it('should broadcast failure when working directory is dirty', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(false));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-dirty',
+          }),
+        });
+
+        expect(res.status).toBe(202);
+
+        // Wait for background operation
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const failedCall = broadcastSpy.mock.calls.find(
+          (call: unknown[]) => {
+            const m = call[0] as { type: string; taskId?: string };
+            return m.type === 'worktree-pull-failed' && m.taskId === 'test-task-dirty';
+          }
+        );
+        expect(failedCall).toBeDefined();
+        const msg = failedCall![0] as {
+          type: string;
+          taskId: string;
+          worktreePath: string;
+          error: string;
+        };
+        expect(msg.error).toContain('uncommitted changes');
+      });
+
+      it('should broadcast failure when pull fails (branches diverged)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+        mockGit.pullFastForward.mockImplementation(() =>
+          Promise.reject(new GitError('git pull failed: Not possible to fast-forward', 128, 'fatal: Not possible to fast-forward, aborting.'))
+        );
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-diverged',
+          }),
+        });
+
+        expect(res.status).toBe(202);
+
+        // Wait for background operation
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const failedCall = broadcastSpy.mock.calls.find(
+          (call: unknown[]) => {
+            const m = call[0] as { type: string; taskId?: string };
+            return m.type === 'worktree-pull-failed' && m.taskId === 'test-task-diverged';
+          }
+        );
+        expect(failedCall).toBeDefined();
+        const msg = failedCall![0] as {
+          type: string;
+          taskId: string;
+          error: string;
+        };
+        expect(msg.error).toContain('fast-forward');
+      });
+
+      it('should return 409 when pull is already in progress for the same worktree', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        // Pre-populate the pull guard
+        const { _getPullsInProgress } = await import('../routes/worktrees.js');
+        const pullsInProgress = _getPullsInProgress();
+        pullsInProgress.add(repoPath);
+
+        try {
+          const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              worktreePath: repoPath,
+              taskId: 'test-task-dup',
+            }),
+          });
+
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as { error: string };
+          expect(body.error).toBe('Pull already in progress');
+        } finally {
+          pullsInProgress.clear();
+        }
+      });
+
+      it('should clean up pullsInProgress guard after completion', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+        mockGit.pullFastForward.mockImplementation(() => Promise.resolve(0));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-cleanup',
+          }),
+        });
+        expect(res.status).toBe(202);
+
+        // Wait for background operation
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Verify guard was cleaned up
+        const { _getPullsInProgress } = await import('../routes/worktrees.js');
+        const pullsInProgress = _getPullsInProgress();
+        expect(pullsInProgress.has(repoPath)).toBe(false);
+      });
+
+      it('should return 400 when worktree directory does not exist', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // Use a path within managed directory that does not exist on disk
+        const nonExistentPath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/wt-nonexistent`;
+
+        // Register worktree in DB so ownership check passes
+        const db = getDatabase();
+        await db.insertInto('worktrees').values({
+          id: 'wt-nonexistent',
+          repository_id: repo.id,
+          path: nonExistentPath,
+          index_number: 99,
+        }).execute();
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: nonExistentPath,
+            taskId: 'test-task-nodir',
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('does not exist');
+      });
+
+      it('should return 409 when worktree is being deleted', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        // Pre-populate the deletion guard
+        const { _getDeletionsInProgress } = await import('../routes/worktrees.js');
+        const deletionsInProgress = _getDeletionsInProgress();
+        deletionsInProgress.add(repoPath);
+
+        try {
+          const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              worktreePath: repoPath,
+              taskId: 'test-task-deleting',
+            }),
+          });
+
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as { error: string };
+          expect(body.error).toBe('Worktree is being deleted');
+        } finally {
+          deletionsInProgress.clear();
+        }
+      });
+
+      it('should return 400 when HEAD is detached', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('(detached)'));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-detached',
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('detached HEAD');
+      });
+
+      it('should return 400 when branch is unknown', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+
+        mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('(unknown)'));
+
+        const res = await app.request(`/api/repositories/${repo.id}/worktrees/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worktreePath: repoPath,
+            taskId: 'test-task-unknown',
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('detached HEAD');
       });
     });
   });
