@@ -429,6 +429,123 @@ index abc1234..def5678 100644
     });
   });
 
+  describe('isWorkingDirectoryClean', () => {
+    it('should return true when working directory is clean', async () => {
+      setMockSpawnResult('');
+      const { isWorkingDirectoryClean } = await getGitModule();
+
+      const result = await isWorkingDirectoryClean('/repo');
+
+      expect(result).toBe(true);
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'status', '--porcelain']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('should return false when there are uncommitted changes', async () => {
+      setMockSpawnResult(' M src/file.ts\n?? new-file.txt\n');
+      const { isWorkingDirectoryClean } = await getGitModule();
+
+      const result = await isWorkingDirectoryClean('/repo');
+
+      expect(result).toBe(false);
+    });
+
+    it('should throw GitError on command failure', async () => {
+      setMockSpawnResult('', 128, 'fatal: not a git repository');
+      const { isWorkingDirectoryClean, GitError } = await getGitModule();
+
+      await expect(isWorkingDirectoryClean('/not-a-repo')).rejects.toBeInstanceOf(GitError);
+    });
+  });
+
+  describe('pullFastForward', () => {
+    /**
+     * Helper to create a sequential mock where each spawn call returns different results.
+     */
+    function setSequentialMockResults(results: Array<{ stdout: string; exitCode?: number; stderr?: string }>) {
+      let callIndex = 0;
+      (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+        spawnCalls.push({ args, options: options || {} });
+        const result = results[callIndex] || { stdout: '', exitCode: 0, stderr: '' };
+        callIndex++;
+        return {
+          exited: Promise.resolve(result.exitCode ?? 0),
+          stdout: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(result.stdout));
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(result.stderr ?? ''));
+              controller.close();
+            },
+          }),
+        };
+      }) as typeof Bun.spawn;
+    }
+
+    it('should return commit count when pull brings new commits', async () => {
+      setSequentialMockResults([
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (before)
+        { stdout: '' },                 // git pull --ff-only
+        { stdout: 'def5678\n' },       // git rev-parse HEAD (after)
+        { stdout: '3\n' },             // git rev-list --count
+      ]);
+      const { pullFastForward } = await getGitModule();
+
+      const result = await pullFastForward('/repo');
+
+      expect(result).toBe(3);
+      expect(spawnCalls[0].args).toEqual(['git', 'rev-parse', 'HEAD']);
+      expect(spawnCalls[1].args).toEqual(['git', 'pull', '--ff-only']);
+      expect(spawnCalls[2].args).toEqual(['git', 'rev-parse', 'HEAD']);
+      expect(spawnCalls[3].args).toEqual(['git', 'rev-list', '--count', 'abc1234..def5678']);
+    });
+
+    it('should return 0 when already up to date', async () => {
+      setSequentialMockResults([
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (before)
+        { stdout: '' },                 // git pull --ff-only (no changes)
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (after, same as before)
+      ]);
+      const { pullFastForward } = await getGitModule();
+
+      const result = await pullFastForward('/repo');
+
+      expect(result).toBe(0);
+      // Should not call rev-list --count since HEAD didn't change
+      expect(spawnCalls.length).toBe(3);
+    });
+
+    it('should throw GitError when branches have diverged', async () => {
+      setSequentialMockResults([
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (before)
+        { stdout: '', exitCode: 128, stderr: 'fatal: Not possible to fast-forward, aborting.' },
+      ]);
+      const { pullFastForward, GitError } = await getGitModule();
+
+      await expect(pullFastForward('/repo')).rejects.toBeInstanceOf(GitError);
+    });
+
+    it('should use the correct working directory', async () => {
+      setSequentialMockResults([
+        { stdout: 'aaa\n' },
+        { stdout: '' },
+        { stdout: 'aaa\n' },
+      ]);
+      const { pullFastForward } = await getGitModule();
+
+      await pullFastForward('/my/worktree/path');
+
+      for (const call of spawnCalls) {
+        expect(call.options.cwd).toBe('/my/worktree/path');
+      }
+    });
+  });
+
   describe('removeWorktree', () => {
     it('should call git worktree remove without --force by default', async () => {
       setMockSpawnResult('');

@@ -448,6 +448,47 @@ describe('useAppWsEvent', () => {
 
       expect(onWorkerRestarted).toHaveBeenCalledWith('session-1', 'worker-1');
     });
+
+    it('should call onWorktreePullCompleted for worktree-pull-completed message', () => {
+      const onWorktreePullCompleted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onWorktreePullCompleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const payload = {
+        type: 'worktree-pull-completed' as const,
+        taskId: 'task-1',
+        worktreePath: '/path/to/worktree',
+        branch: 'main',
+        commitsPulled: 3,
+      };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(JSON.stringify(payload));
+      });
+
+      expect(onWorktreePullCompleted).toHaveBeenCalledWith(payload);
+    });
+
+    it('should call onWorktreePullFailed for worktree-pull-failed message', () => {
+      const onWorktreePullFailed = mock(() => {});
+      renderHook(() => useAppWsEvent({ onWorktreePullFailed }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const payload = {
+        type: 'worktree-pull-failed' as const,
+        taskId: 'task-2',
+        worktreePath: '/path/to/worktree',
+        error: 'Merge conflict detected',
+      };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(JSON.stringify(payload));
+      });
+
+      expect(onWorktreePullFailed).toHaveBeenCalledWith(payload);
+    });
   });
 
   // Note: Reconnection logic is now handled by the singleton module (app-websocket.ts)

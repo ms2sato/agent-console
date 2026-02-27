@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorkerMessage, InboundEventSummary } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorktreePullCompletedPayload, WorktreePullFailedPayload, WorkerMessage, InboundEventSummary } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 
@@ -62,6 +62,10 @@ interface UseAppWsEventOptions {
   onWorktreeDeletionCompleted?: (payload: WorktreeDeletionCompletedPayload) => void;
   /** Called when async worktree deletion fails */
   onWorktreeDeletionFailed?: (payload: WorktreeDeletionFailedPayload) => void;
+  /** Called when async worktree pull completes successfully */
+  onWorktreePullCompleted?: (payload: WorktreePullCompletedPayload) => void;
+  /** Called when async worktree pull fails */
+  onWorktreePullFailed?: (payload: WorktreePullFailedPayload) => void;
   /** Called when a worker message is sent */
   onWorkerMessage?: (message: WorkerMessage) => void;
   /** Called when an inbound integration event is received */
@@ -182,6 +186,14 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'worktree-deletion-failed':
           console.log(`[WebSocket] worktree-deletion-failed: taskId=${msg.taskId}`);
           optionsRef.current.onWorktreeDeletionFailed?.(msg);
+          break;
+        case 'worktree-pull-completed':
+          console.log(`[WebSocket] worktree-pull-completed: taskId=${msg.taskId}`);
+          optionsRef.current.onWorktreePullCompleted?.(msg);
+          break;
+        case 'worktree-pull-failed':
+          console.log(`[WebSocket] worktree-pull-failed: taskId=${msg.taskId}`);
+          optionsRef.current.onWorktreePullFailed?.(msg);
           break;
         case 'worker-message':
           console.log(`[WebSocket] worker-message: ${msg.message.fromWorkerName} -> ${msg.message.toWorkerName}`);

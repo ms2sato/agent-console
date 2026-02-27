@@ -581,6 +581,31 @@ export async function cancelJob(jobId: string): Promise<void> {
 }
 
 // ===========================================================================
+// Worktree Pull
+// ===========================================================================
+
+/**
+ * Pull a worktree asynchronously (git pull --ff-only).
+ * Returns immediately with `{ accepted: true }`.
+ * Listen to WebSocket for `worktree-pull-completed` or `worktree-pull-failed` events.
+ */
+export async function pullWorktreeAsync(
+  repositoryId: string,
+  worktreePath: string,
+  taskId: string
+): Promise<{ accepted: true }> {
+  const res = await api.repositories[':id'].worktrees.pull.$post({
+    param: { id: repositoryId },
+    json: { worktreePath, taskId },
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(error.error || 'Failed to pull worktree');
+  }
+  return res.json();
+}
+
+// ===========================================================================
 // Repository Default Branch
 // ===========================================================================
 

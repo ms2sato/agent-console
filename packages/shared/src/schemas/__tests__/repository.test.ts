@@ -7,6 +7,7 @@ import {
   CreateWorktreeCustomRequestSchema,
   CreateWorktreeExistingRequestSchema,
   DeleteWorktreeRequestSchema,
+  PullWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
 } from '../repository';
 
@@ -540,6 +541,88 @@ describe('DeleteWorktreeRequestSchema', () => {
   it('should reject non-boolean force', () => {
     const result = v.safeParse(DeleteWorktreeRequestSchema, {
       force: 'yes',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('PullWorktreeRequestSchema', () => {
+  it('should validate valid request with worktreePath and taskId', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '/path/to/worktree',
+      taskId: 'task-uuid-123',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.worktreePath).toBe('/path/to/worktree');
+      expect(result.output.taskId).toBe('task-uuid-123');
+    }
+  });
+
+  it('should trim whitespace from worktreePath', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '  /path/to/worktree  ',
+      taskId: 'task-uuid-123',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.worktreePath).toBe('/path/to/worktree');
+    }
+  });
+
+  it('should trim whitespace from taskId', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '/path/to/worktree',
+      taskId: '  task-uuid-123  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.taskId).toBe('task-uuid-123');
+    }
+  });
+
+  it('should reject missing worktreePath', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      taskId: 'task-uuid-123',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject empty worktreePath', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '',
+      taskId: 'task-uuid-123',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject whitespace-only worktreePath', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '   ',
+      taskId: 'task-uuid-123',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject missing taskId', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '/path/to/worktree',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject empty taskId', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '/path/to/worktree',
+      taskId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject whitespace-only taskId', () => {
+    const result = v.safeParse(PullWorktreeRequestSchema, {
+      worktreePath: '/path/to/worktree',
+      taskId: '   ',
     });
     expect(result.success).toBe(false);
   });
