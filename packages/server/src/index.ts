@@ -147,7 +147,7 @@ app.route('', mcpApp);
 
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback
 // WebSocket routes are not caught by the catch-all SPA handler
-await setupWebSocketRoutes(app, upgradeWebSocket);
+await setupWebSocketRoutes(app, upgradeWebSocket, appContext);
 
 // Static file serving (production only)
 // NOTE: Must be registered AFTER WebSocket routes to avoid catching /ws/* paths

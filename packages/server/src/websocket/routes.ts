@@ -9,6 +9,7 @@ import type {
 import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
+import type { AppContext } from '../app-context.js';
 import { getSessionManager } from '../services/session-manager.js';
 import { getAgentManager } from '../services/agent-manager.js';
 import { getRepositoryManager } from '../services/repository-manager.js';
@@ -217,28 +218,27 @@ export async function setupWebSocketRoutes(
   // Uses Hono's UpgradeWebSocket type directly from hono/ws.
   // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  upgradeWebSocket: UpgradeWebSocket<any>
+  upgradeWebSocket: UpgradeWebSocket<any>,
+  appContext?: AppContext
 ) {
+  // Use injected AppContext when available, fall back to singletons for backward compatibility (tests)
+  const sessionManager = appContext?.sessionManager ?? getSessionManager();
+  const notificationManager = appContext?.notificationManager ?? getNotificationManager();
+  const agentManager = appContext?.agentManager ?? await getAgentManager();
+  const repositoryManager = appContext?.repositoryManager ?? getRepositoryManager();
+
   // Register output truncation callback to avoid circular dependency
   // worker-output-file.ts needs to notify clients but can't import routes.ts directly
   setOutputTruncatedCallback(notifyWorkerOutputTruncated);
-
-  // Get properly initialized SessionManager (with SQLite repository and JobQueue)
-  const sessionManager = getSessionManager();
 
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
 
   // Set up session exists callback for notification manager
   // This allows debounce callbacks to validate session existence without circular dependencies
-  try {
-    const notificationManager = getNotificationManager();
-    notificationManager.setSessionExistsCallback((sessionId) => {
-      return sessionManager.getSession(sessionId) !== undefined;
-    });
-  } catch {
-    // NotificationManager not initialized yet, skip
-  }
+  notificationManager.setSessionExistsCallback((sessionId) => {
+    return sessionManager.getSession(sessionId) !== undefined;
+  });
 
   // Set up global activity callback to broadcast to all app clients
   sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
@@ -250,36 +250,11 @@ export async function setupWebSocketRoutes(
     });
 
     // Send notification for activity state changes
-    try {
-      const notificationManager = getNotificationManager();
-      const session = sessionManager.getSession(sessionId);
-      if (session) {
-        const worker = session.workers.find(w => w.id === workerId);
-        if (worker) {
-          notificationManager.onActivityChange(
-            {
-              id: sessionId,
-              title: session.title,
-              worktreeId: session.type === 'worktree' ? session.worktreeId : null,
-              repositoryId: session.type === 'worktree' ? session.repositoryId : null,
-            },
-            { id: workerId },
-            state
-          );
-        }
-      }
-    } catch {
-      // NotificationManager not initialized yet, skip
-    }
-  });
-
-  // Set up global worker exit callback to send notifications
-  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode) => {
-    try {
-      const notificationManager = getNotificationManager();
-      const session = sessionManager.getSession(sessionId);
-      if (session) {
-        notificationManager.onWorkerExit(
+    const session = sessionManager.getSession(sessionId);
+    if (session) {
+      const worker = session.workers.find(w => w.id === workerId);
+      if (worker) {
+        notificationManager.onActivityChange(
           {
             id: sessionId,
             title: session.title,
@@ -287,11 +262,26 @@ export async function setupWebSocketRoutes(
             repositoryId: session.type === 'worktree' ? session.repositoryId : null,
           },
           { id: workerId },
-          exitCode
+          state
         );
       }
-    } catch {
-      // NotificationManager not initialized yet, skip
+    }
+  });
+
+  // Set up global worker exit callback to send notifications
+  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode) => {
+    const session = sessionManager.getSession(sessionId);
+    if (session) {
+      notificationManager.onWorkerExit(
+        {
+          id: sessionId,
+          title: session.title,
+          worktreeId: session.type === 'worktree' ? session.worktreeId : null,
+          repositoryId: session.type === 'worktree' ? session.repositoryId : null,
+        },
+        { id: workerId },
+        exitCode
+      );
     }
   });
 
@@ -344,7 +334,6 @@ export async function setupWebSocketRoutes(
   sessionManager.setupPtyExitCallback();
 
   // Set up agent lifecycle callbacks to broadcast to all app clients
-  const agentManager = await getAgentManager();
   agentManager.setLifecycleCallbacks({
     onAgentCreated: (agent) => {
       logger.debug({ agentId: agent.id }, 'Broadcasting agent-created');
@@ -361,7 +350,6 @@ export async function setupWebSocketRoutes(
   });
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
-  const repositoryManager = getRepositoryManager();
   repositoryManager.setLifecycleCallbacks({
     onRepositoryCreated: (repository) => {
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
@@ -382,14 +370,8 @@ export async function setupWebSocketRoutes(
     getAllSessions: () => sessionManager.getAllSessions(),
     getAllPausedSessions: () => sessionManager.getAllPausedSessions(),
     getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
-    getAllAgents: async () => {
-      const agentManager = await getAgentManager();
-      return agentManager.getAllAgents();
-    },
-    getAllRepositories: () => {
-      const repositoryManager = getRepositoryManager();
-      return repositoryManager.getAllRepositories();
-    },
+    getAllAgents: async () => agentManager.getAllAgents(),
+    getAllRepositories: () => repositoryManager.getAllRepositories(),
     logger,
   };
 
@@ -413,7 +395,7 @@ export async function setupWebSocketRoutes(
           // Send all sync operations
           Promise.all([
             sendSessionsSync(ws, appDeps),
-            getAgentManager().then((agentManager) => {
+            Promise.resolve().then(() => {
               const allAgents = agentManager.getAllAgents();
               const agentsSyncMsg: AppServerMessage = {
                 type: 'agents-sync',
@@ -422,10 +404,8 @@ export async function setupWebSocketRoutes(
               ws.send(JSON.stringify(agentsSyncMsg));
               logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
             }),
-            // getRepositoryManager is sync, wrap in Promise.resolve for consistency
             Promise.resolve().then(() => {
-              const repoManager = getRepositoryManager();
-              const allRepositories = repoManager.getAllRepositories();
+              const allRepositories = repositoryManager.getAllRepositories();
               const repositoriesSyncMsg: AppServerMessage = {
                 type: 'repositories-sync',
                 repositories: allRepositories,
