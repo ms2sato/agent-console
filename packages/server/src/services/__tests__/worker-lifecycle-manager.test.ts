@@ -12,7 +12,8 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { resetGitMocks, mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { resetAgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
+import { AgentManager, resetAgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-lifecycle-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
@@ -31,6 +32,7 @@ let testJobQueue: JobQueue | null = null;
 describe('WorkerLifecycleManager', () => {
   let workerManager: WorkerManager;
   let lifecycleManager: WorkerLifecycleManager;
+  let agentManager: AgentManager;
   let sessions: Map<string, InternalSession>;
   let mockPersistSession: ReturnType<typeof mock>;
   let mockPathExists: ReturnType<typeof mock>;
@@ -70,6 +72,8 @@ describe('WorkerLifecycleManager', () => {
   function createDeps(overrides: Partial<WorkerLifecycleDeps> = {}): WorkerLifecycleDeps {
     return {
       workerManager,
+      agentManager,
+      notificationManager: null,
       pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
       getSession: (id: string) => sessions.get(id),
       persistSession: mockPersistSession as unknown as (session: InternalSession) => Promise<void>,
@@ -116,6 +120,9 @@ describe('WorkerLifecycleManager', () => {
     resetGitMocks();
     resetAgentManager();
 
+    const db = getDatabase();
+    agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+
     sessions = new Map();
     mockPersistSession = mock(() => Promise.resolve());
     mockPathExists = mock(() => Promise.resolve(true));
@@ -130,7 +137,7 @@ describe('WorkerLifecycleManager', () => {
       onDiffBaseCommitChanged: mockOnDiffBaseCommitChanged as any,
     };
 
-    workerManager = new WorkerManager(ptyFactory.provider);
+    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
     lifecycleManager = new WorkerLifecycleManager(createDeps());
   });
 
@@ -1001,7 +1008,7 @@ describe('WorkerLifecycleManager', () => {
       const failingProvider = {
         spawn: () => { throw new Error('PTY spawn failed'); },
       };
-      const failingWorkerManager = new WorkerManager(failingProvider as any);
+      const failingWorkerManager = new WorkerManager(failingProvider as any, agentManager);
       const manager = new WorkerLifecycleManager(createDeps({
         workerManager: failingWorkerManager,
       }));

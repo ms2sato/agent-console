@@ -36,7 +36,8 @@ import type {
   Disposable,
 } from './worker-types.js';
 import { ActivityDetector } from './activity-detector.js';
-import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import type { AgentManager } from './agent-manager.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { expandTemplate } from '../lib/template.js';
 import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
@@ -145,12 +146,14 @@ export interface SessionInfoForNotification {
 
 export class WorkerManager {
   private ptyProvider: PtyProvider;
+  private agentManager: AgentManager;
   private globalActivityCallback?: GlobalActivityCallback;
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
 
-  constructor(ptyProvider: PtyProvider) {
+  constructor(ptyProvider: PtyProvider, agentManager: AgentManager) {
     this.ptyProvider = ptyProvider;
+    this.agentManager = agentManager;
   }
 
   /**
@@ -181,11 +184,11 @@ export class WorkerManager {
    * Initialize an agent worker WITHOUT starting the PTY.
    * The PTY will be activated later via activateAgentWorkerPty.
    */
-  async initializeAgentWorker(params: AgentWorkerInitParams): Promise<InternalAgentWorker> {
+  initializeAgentWorker(params: AgentWorkerInitParams): InternalAgentWorker {
     const { id, name, createdAt, agentId } = params;
 
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
-    const agentManager = await getAgentManager();
+    const agentManager = this.agentManager;
     const agent = agentManager.getAgent(resolvedAgentId) ?? agentManager.getDefaultAgent();
 
     const worker: InternalAgentWorker = {
@@ -259,10 +262,10 @@ export class WorkerManager {
    * Activate PTY for an agent worker.
    * Mutates the worker object to add pty and activityDetector.
    */
-  async activateAgentWorkerPty(
+  activateAgentWorkerPty(
     worker: InternalAgentWorker,
     params: AgentActivationParams
-  ): Promise<void> {
+  ): void {
     // Idempotent: If PTY already active, skip
     if (worker.pty !== null) {
       logger.debug(
@@ -274,7 +277,7 @@ export class WorkerManager {
 
     const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId } = params;
 
-    const agentManager = await getAgentManager();
+    const agentManager = this.agentManager;
     const agent = agentManager.getAgent(agentId) ?? agentManager.getDefaultAgent();
 
     const template = continueConversation && agent.continueTemplate

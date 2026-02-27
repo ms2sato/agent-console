@@ -6,7 +6,8 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { resetAgentManager } from '../agent-manager.js';
+import { AgentManager, resetAgentManager, setAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -21,6 +22,7 @@ let testJobQueue: JobQueue | null = null;
 const ptyFactory = createMockPtyFactory(10000);
 
 let importCounter = 0;
+let agentManager: AgentManager;
 
 describe('SessionManager', () => {
   beforeEach(async () => {
@@ -52,6 +54,11 @@ describe('SessionManager', () => {
 
     // Reset AgentManager singleton so it re-initializes with the new database
     resetAgentManager();
+
+    // Create AgentManager for dependency injection and singleton
+    const db = getDatabase();
+    agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    setAgentManager(agentManager);
   });
 
   afterEach(async () => {
@@ -75,6 +82,7 @@ describe('SessionManager', () => {
       ptyProvider: ptyFactory.provider,
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
+      agentManager,
     });
   }
 
@@ -1378,7 +1386,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn });
+      return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn, agentManager });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -1602,9 +1610,7 @@ describe('SessionManager', () => {
     it('should restart with a different agent when agentId is provided', async () => {
       const manager = await getSessionManager();
 
-      // Register a custom agent
-      const { getAgentManager } = await import('../agent-manager.js');
-      const agentManager = await getAgentManager();
+      // Register a custom agent using the injected agentManager
       const customAgent = await agentManager.registerAgent({
         name: 'Custom Agent',
         commandTemplate: 'custom-agent',
@@ -1629,9 +1635,7 @@ describe('SessionManager', () => {
     it('should update worker name when agent changes', async () => {
       const manager = await getSessionManager();
 
-      // Register a custom agent
-      const { getAgentManager } = await import('../agent-manager.js');
-      const agentManager = await getAgentManager();
+      // Register a custom agent using the injected agentManager
       const customAgent = await agentManager.registerAgent({
         name: 'Custom Agent',
         commandTemplate: 'custom-agent',
@@ -1686,9 +1690,7 @@ describe('SessionManager', () => {
     it('should broadcast session-updated after agent switch', async () => {
       const manager = await getSessionManager();
 
-      // Register a custom agent
-      const { getAgentManager } = await import('../agent-manager.js');
-      const agentManager = await getAgentManager();
+      // Register a custom agent using the injected agentManager
       const customAgent = await agentManager.registerAgent({
         name: 'Custom Agent',
         commandTemplate: 'custom-agent',
@@ -2476,6 +2478,7 @@ describe('SessionManager', () => {
         ptyProvider: ptyFactory.provider,
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
+        agentManager,
       });
 
       // Mark initialization as complete so subsequent pathExists calls return false
@@ -2518,6 +2521,7 @@ describe('SessionManager', () => {
         ptyProvider: failingPtyProvider,
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
+        agentManager,
       });
 
       // Resume should fail because PTY activation throws

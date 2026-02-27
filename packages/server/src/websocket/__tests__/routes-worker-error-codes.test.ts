@@ -27,7 +27,8 @@ import { JobQueue, resetJobQueue } from '../../jobs/index.js';
 import { createSessionRepository } from '../../repositories/index.js';
 import { initializeSessionManager, resetSessionManager, getSessionManager } from '../../services/session-manager.js';
 import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
-import { resetAgentManager } from '../../services/agent-manager.js';
+import { AgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import {
   initializeNotificationServices,
   shutdownNotificationServices,
@@ -98,7 +99,8 @@ describe('Worker WebSocket connection error codes', () => {
 
     testJobQueue = new JobQueue(getDatabase());
     const sessionRepository = await createSessionRepository();
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
     await initializeRepositoryManager({ jobQueue: testJobQueue });
     initializeNotificationServices();
 

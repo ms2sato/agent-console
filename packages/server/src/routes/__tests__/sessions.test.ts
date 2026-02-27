@@ -6,7 +6,9 @@ import type { AppBindings, AppContext } from '../../app-context.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { AgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
 import { resetSessionManager, SessionManager, setSessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
@@ -46,6 +48,11 @@ describe('Sessions API - Pause/Resume', () => {
     // Reset PTY factory
     ptyFactory.reset();
 
+    // Reset and create AgentManager for dependency injection
+    resetAgentManager();
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
@@ -55,6 +62,7 @@ describe('Sessions API - Pause/Resume', () => {
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
+      agentManager: agentMgr,
     });
 
     // Set the singleton
@@ -72,6 +80,7 @@ describe('Sessions API - Pause/Resume', () => {
 
   afterEach(async () => {
     resetSessionManager();
+    resetAgentManager();
     await resetJobQueue();
     await closeDatabase();
     cleanupMemfs();

@@ -107,7 +107,8 @@ function restoreBunSpawn() {
 import { resetRepositoryManager, initializeRepositoryManager, getRepositoryManager } from '../services/repository-manager.js';
 import { resetSessionManager, initializeSessionManager, getSessionManager } from '../services/session-manager.js';
 import { createSessionRepository } from '../repositories/index.js';
-import { resetAgentManager, getAgentManager } from '../services/agent-manager.js';
+import { AgentManager, resetAgentManager, getAgentManager } from '../services/agent-manager.js';
+import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 import { JobQueue, resetJobQueue } from '../jobs/index.js';
 import {
@@ -265,21 +266,25 @@ describe('API Routes Integration', () => {
 
     // Initialize managers with test JobQueue
     // This ensures cleanup operations have a valid jobQueue
+    let agentManager: Awaited<ReturnType<typeof AgentManager.create>> | undefined;
     if (testJobQueue) {
       const sessionRepository = await createSessionRepository();
-      await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+      resetAgentManager();
+      agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+      await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
       await initializeRepositoryManager({ jobQueue: testJobQueue });
     }
 
     const app = new Hono<AppBindings>();
     // Inject AppContext constructed from test singletons
+    // Use the same agentManager instance that was injected into SessionManager
     app.use('*', async (c, next) => {
       c.set('appContext', {
         jobQueue: testJobQueue!,
         sessionManager: getSessionManager(),
         repositoryManager: getRepositoryManager(),
         systemCapabilities: getSystemCapabilities(),
-        agentManager: await getAgentManager(),
+        agentManager: agentManager ?? await getAgentManager(),
       } as unknown as AppContext);
       await next();
     });
