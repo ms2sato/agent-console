@@ -9,7 +9,7 @@ import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
-import { createAppContext, shutdownAppContext, type AppContext } from './app-context.js';
+import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
 // Import singleton setters to populate existing singletons from AppContext
 import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
@@ -100,7 +100,7 @@ setSystemCapabilities(appContext.systemCapabilities);
 logger.info('Singletons populated from AppContext');
 
 // Create Hono app
-const app = new Hono();
+const app = new Hono<AppBindings>();
 
 // Global error handler
 app.onError(onApiError);
@@ -123,11 +123,9 @@ app.use('*', async (c, next) => {
   return httpLogger(c as any, next);
 });
 
-// Inject AppContext into Hono request context for routes that need it (e.g., webhooks).
-// Type assertion is needed because the root app uses BlankEnv, while sub-routes
-// that consume appContext declare AppBindings on their own Hono instances.
+// Inject AppContext into Hono request context for all routes.
 app.use('*', async (c, next) => {
-  (c as any).set('appContext', appContext!);
+  c.set('appContext', appContext!);
   await next();
 });
 

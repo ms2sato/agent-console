@@ -47,7 +47,6 @@ const appClients = new Set<WSContext>();
 
 // Clients still syncing initial state - broadcasts are queued until sync completes
 const syncingClients = new Set<WSContext>();
-const clientQueues = new Map<WSContext, AppServerMessage[]>();
 
 // Queue messages for clients that are still syncing initial state
 // Messages will be replayed after sync completes to prevent lost events
@@ -88,7 +87,6 @@ function cleanupClient(client: WSContext): void {
   appClients.delete(client);
   syncingClients.delete(client);
   syncingClientQueues.delete(client);
-  clientQueues.delete(client);
 }
 
 /**
@@ -213,8 +211,9 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
   logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function setupWebSocketRoutes(
-  app: Hono,
+  app: Hono<any>,
   // Uses Hono's UpgradeWebSocket type directly from hono/ws.
   // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -451,26 +450,11 @@ export async function setupWebSocketRoutes(
             syncingClientQueues.delete(ws);
             syncingClients.delete(ws);
 
-            // Flush queued messages that arrived during sync
-            const queue = clientQueues.get(ws);
-            if (queue && queue.length > 0) {
-              for (const queuedMsg of queue) {
-                try {
-                  ws.send(JSON.stringify(queuedMsg));
-                } catch (e) {
-                  logger.warn({ err: e }, 'Failed to send queued message to app client');
-                }
-              }
-              logger.debug({ queuedCount: queue.length }, 'Flushed queued messages after sync');
-            }
-            clientQueues.delete(ws);
-
             logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
             // On error, clean up syncing state (client will be fully removed on close/error)
             syncingClients.delete(ws);
             syncingClientQueues.delete(ws);
-            clientQueues.delete(ws);
             logger.error({ err }, 'Failed to send initial sync');
           });
         },

@@ -9,13 +9,10 @@ import {
   FetchGitHubIssueRequestSchema,
   RepositorySlackIntegrationInputSchema,
 } from '@agent-console/shared';
-import { getSessionManager } from '../services/session-manager.js';
-import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
-import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
+import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { generateRepositoryDescription } from '../services/repository-description-generator.js';
 import {
-  getNotificationManager,
   getRepositorySlackIntegration,
   upsertRepositorySlackIntegration,
   deleteRepositorySlackIntegration,
@@ -25,6 +22,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js'
 import { vValidator } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('api:repositories');
 
@@ -39,10 +37,10 @@ async function withRepositoryRemote(repository: Repository): Promise<Repository>
   };
 }
 
-const repositories = new Hono()
+const repositories = new Hono<AppBindings>()
   // Get all repositories
   .get('/', async (c) => {
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repos = repositoryManager.getAllRepositories();
     const repositoriesWithRemote = await Promise.all(repos.map(withRepositoryRemote));
     return c.json({ repositories: repositoriesWithRemote });
@@ -51,7 +49,7 @@ const repositories = new Hono()
   .post('/', vValidator(CreateRepositoryRequestSchema), async (c) => {
     const body = c.req.valid('json');
     const { path, description } = body;
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
 
     try {
       const repository = await repositoryManager.registerRepository(path, { description });
@@ -65,7 +63,7 @@ const repositories = new Hono()
   // Redirect to repository GitHub URL
   .get('/:id/github', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -90,7 +88,7 @@ const repositories = new Hono()
   // Get a single repository
   .get('/:id', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -103,7 +101,7 @@ const repositories = new Hono()
   // Unregister a repository
   .delete('/:id', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager, sessionManager } = c.get('appContext');
 
     // Check if repository exists
     const repo = repositoryManager.getRepository(repoId);
@@ -112,7 +110,6 @@ const repositories = new Hono()
     }
 
     // Check if any active sessions use this repository
-    const sessionManager = getSessionManager();
     const activeSessions = sessionManager.getSessionsUsingRepository(repoId);
     const activeSessionIds = new Set(activeSessions.map(s => s.id));
 
@@ -160,7 +157,7 @@ const repositories = new Hono()
   .patch('/:id', vValidator(UpdateRepositoryRequestSchema), async (c) => {
     const repoId = c.req.param('id');
     const body = c.req.valid('json');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
 
     const updated = await repositoryManager.updateRepository(repoId, body);
 
@@ -174,7 +171,7 @@ const repositories = new Hono()
   // Generate a repository description using AI
   .post('/:id/generate-description', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager, agentManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -182,7 +179,6 @@ const repositories = new Hono()
     }
 
     // Use the built-in Claude Code agent for description generation
-    const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(CLAUDE_CODE_AGENT_ID);
     if (!agent) {
       throw new ValidationError('Built-in agent not available');
@@ -214,7 +210,7 @@ const repositories = new Hono()
   // Fetch a GitHub issue for a repository
   .post('/:id/github-issue', vValidator(FetchGitHubIssueRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -237,7 +233,7 @@ const repositories = new Hono()
   // Get branches for a repository
   .get('/:id/branches', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -250,7 +246,7 @@ const repositories = new Hono()
   // Refresh default branch from remote for a repository
   .post('/:id/refresh-default-branch', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -273,7 +269,7 @@ const repositories = new Hono()
   .get('/:id/branches/:branch/remote-status', async (c) => {
     const repoId = c.req.param('id');
     const branch = c.req.param('branch');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -302,7 +298,7 @@ const repositories = new Hono()
   // Fetch all remote branches for a repository
   .post('/:id/fetch', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -343,7 +339,7 @@ const repositories = new Hono()
       const body = c.req.valid('json');
 
       // Verify repository exists
-      const repositoryManager = getRepositoryManager();
+      const { repositoryManager } = c.get('appContext');
       const repo = repositoryManager.getRepository(repositoryId);
       if (!repo) {
         throw new NotFoundError('Repository');
@@ -374,13 +370,12 @@ const repositories = new Hono()
     const repositoryId = c.req.param('id');
 
     // Verify repository exists
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager, notificationManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repositoryId);
     if (!repo) {
       throw new NotFoundError('Repository');
     }
 
-    const notificationManager = getNotificationManager();
     await notificationManager.sendTestNotification(
       repositoryId,
       '🔔 Test notification from Agent Console'

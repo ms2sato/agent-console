@@ -4,9 +4,10 @@ import { initializeDatabase, closeDatabase } from '../../database/connection.js'
 import { initializeJobQueue, resetJobQueue, type JobQueue } from '../../jobs/index.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
 
 describe('Jobs API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let testJobQueue: JobQueue;
 
   beforeEach(async () => {
@@ -17,7 +18,11 @@ describe('Jobs API', () => {
     testJobQueue = initializeJobQueue();
 
     // Create Hono app with error handler
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', { jobQueue: testJobQueue } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });

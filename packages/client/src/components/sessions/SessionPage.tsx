@@ -164,6 +164,13 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   }, [sessionId]);
 
+  // Handle session deleted (by another tab/client)
+  const handleSessionDeleted = useCallback((deletedSessionId: string) => {
+    if (deletedSessionId === sessionId) {
+      setState({ type: 'not_found' });
+    }
+  }, [sessionId]);
+
   useAppWsEvent({
     onWorkerActivity: handleWorkerActivity,
     onWorkerMessage: (message) => {
@@ -173,6 +180,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     },
     onSessionUpdated: handleSessionUpdated,
     onSessionPaused: handleSessionPaused,
+    onSessionDeleted: handleSessionDeleted,
   });
 
   // Update page title based on state

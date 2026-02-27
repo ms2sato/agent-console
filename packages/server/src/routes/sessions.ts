@@ -5,18 +5,18 @@ import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
 } from '@agent-console/shared';
-import { getSessionManager } from '../services/session-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
+import type { AppBindings } from '../app-context.js';
 
-const sessions = new Hono()
+const sessions = new Hono<AppBindings>()
   // Validate all sessions
   .get('/validate', async (c) => {
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const validationService = createSessionValidationService(sessionManager.getSessionRepository());
     const response = await validationService.validateAllSessions();
     return c.json(response);
@@ -24,7 +24,7 @@ const sessions = new Hono()
   // Delete an invalid session (removes from persistence without trying to stop workers)
   .delete('/:id/invalid', async (c) => {
     const sessionId = c.req.param('id');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const deleted = await sessionManager.forceDeleteSession(sessionId);
     if (!deleted) {
       throw new NotFoundError('Session');
@@ -34,7 +34,7 @@ const sessions = new Hono()
   // Get a single session
   .get('/:id', async (c) => {
     const sessionId = c.req.param('id');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
 
     // First check if session is active
     const session = sessionManager.getSession(sessionId);
@@ -66,7 +66,7 @@ const sessions = new Hono()
       throw new ValidationError(validation.error || 'Invalid path');
     }
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = await sessionManager.createSession(body);
 
     return c.json({ session }, 201);
@@ -75,7 +75,7 @@ const sessions = new Hono()
   // For worktree sessions with async deletion, use the worktree deletion endpoint instead.
   .delete('/:id', async (c) => {
     const sessionId = c.req.param('id');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
 
     const success = await sessionManager.deleteSession(sessionId);
 
@@ -89,7 +89,7 @@ const sessions = new Hono()
   // Kills PTY processes, removes from memory, preserves persistence
   .post('/:id/pause', async (c) => {
     const sessionId = c.req.param('id');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
 
     // Check if session exists in memory first
     const session = sessionManager.getSession(sessionId);
@@ -113,7 +113,7 @@ const sessions = new Hono()
   // Loads from DB, creates in-memory session, restores workers
   .post('/:id/resume', async (c) => {
     const sessionId = c.req.param('id');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
 
     const session = await sessionManager.resumeSession(sessionId);
     if (!session) {
@@ -133,7 +133,7 @@ const sessions = new Hono()
       updates.title = title.trim();
     }
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const result = await sessionManager.updateSessionMetadata(sessionId, updates);
 
     if (!result.success) {
@@ -151,7 +151,7 @@ const sessions = new Hono()
   // Get branches for a session's repository
   .get('/:sessionId/branches', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
@@ -168,7 +168,7 @@ const sessions = new Hono()
     const sessionId = c.req.param('sessionId');
     const { base: baseRef } = c.req.valid('query');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -181,7 +181,7 @@ const sessions = new Hono()
   // Get PR link for a session (worktree sessions only)
   .get('/:sessionId/pr-link', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {

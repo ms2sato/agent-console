@@ -2,7 +2,8 @@ import type { JobPayload, JobPayloadParseError, JobStatus as SharedJobStatus, Jo
 import { Hono } from 'hono';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
-import { getJobQueue, JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
+import { JOB_STATUSES, type JobRecord, type JobStatus } from '../jobs/index.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('api:jobs');
 
@@ -51,7 +52,7 @@ function toJobResponse(job: JobRecord): JobResponse {
   };
 }
 
-const jobs = new Hono()
+const jobs = new Hono<AppBindings>()
   // Get jobs with optional filtering and pagination
   .get('/', async (c) => {
     const statusParam = c.req.query('status');
@@ -79,7 +80,7 @@ const jobs = new Hono()
       throw new ValidationError('offset must be a non-negative number');
     }
 
-    const jobQueue = getJobQueue();
+    const { jobQueue } = c.get('appContext');
     const jobList = await jobQueue.getJobs({ status, type, limit, offset });
     const total = await jobQueue.countJobs({ status, type });
 
@@ -90,14 +91,14 @@ const jobs = new Hono()
   })
   // Get job statistics
   .get('/stats', async (c) => {
-    const jobQueue = getJobQueue();
+    const { jobQueue } = c.get('appContext');
     const stats = await jobQueue.getStats();
     return c.json(stats);
   })
   // Get a single job by ID
   .get('/:id', async (c) => {
     const jobId = c.req.param('id');
-    const jobQueue = getJobQueue();
+    const { jobQueue } = c.get('appContext');
     const job = await jobQueue.getJob(jobId);
 
     if (!job) {
@@ -109,7 +110,7 @@ const jobs = new Hono()
   // Retry a stalled job
   .post('/:id/retry', async (c) => {
     const jobId = c.req.param('id');
-    const jobQueue = getJobQueue();
+    const { jobQueue } = c.get('appContext');
 
     // Use atomic operation - retryJob only succeeds for stalled jobs
     const success = await jobQueue.retryJob(jobId);
@@ -128,7 +129,7 @@ const jobs = new Hono()
   // Cancel a pending or stalled job
   .delete('/:id', async (c) => {
     const jobId = c.req.param('id');
-    const jobQueue = getJobQueue();
+    const { jobQueue } = c.get('appContext');
 
     // Use atomic operation - cancelJob only succeeds for pending or stalled jobs
     const success = await jobQueue.cancelJob(jobId);

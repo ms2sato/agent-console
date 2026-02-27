@@ -303,7 +303,9 @@ const worktrees = new Hono()
       throw new ValidationError('Cannot pull in detached HEAD state');
     }
 
-    // Guard against concurrent pull of the same worktree
+    // Guard against concurrent pull of the same worktree.
+    // Placed after validation so invalid requests don't block the guard.
+    // No await between .has() and .add() ensures atomicity in single-threaded runtime.
     if (pullsInProgress.has(worktreePath)) {
       return c.json({ error: 'Pull already in progress' }, 409);
     }

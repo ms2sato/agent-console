@@ -3,14 +3,15 @@ import { Hono } from 'hono';
 import type { RepositorySlackIntegration } from '@agent-console/shared';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
+import { initializeRepositoryManager, resetRepositoryManager, getRepositoryManager } from '../../services/repository-manager.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 
 describe('Repository Slack Integration API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let repositoryRepository: SqliteRepositoryRepository;
   const testRepositoryId = 'test-repo-123';
   const testRepoPath = '/test/path/to/repo';
@@ -53,7 +54,13 @@ describe('Repository Slack Integration API', () => {
     });
 
     // Create Hono app with error handler
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', {
+        repositoryManager: getRepositoryManager(),
+      } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });

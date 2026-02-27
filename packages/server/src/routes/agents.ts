@@ -3,22 +3,21 @@ import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
 } from '@agent-console/shared';
-import { getSessionManager } from '../services/session-manager.js';
-import { getAgentManager } from '../services/agent-manager.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
+import type { AppBindings } from '../app-context.js';
 
-const agents = new Hono()
+const agents = new Hono<AppBindings>()
   // Get all agents
   .get('/', async (c) => {
-    const agentManager = await getAgentManager();
+    const { agentManager } = c.get('appContext');
     const agentList = agentManager.getAllAgents();
     return c.json({ agents: agentList });
   })
   // Get a single agent
   .get('/:id', async (c) => {
     const agentId = c.req.param('id');
-    const agentManager = await getAgentManager();
+    const { agentManager } = c.get('appContext');
     const agent = agentManager.getAgent(agentId);
 
     if (!agent) {
@@ -30,7 +29,7 @@ const agents = new Hono()
   // Register a new agent
   .post('/', vValidator(CreateAgentRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const agentManager = await getAgentManager();
+    const { agentManager } = c.get('appContext');
 
     const agent = await agentManager.registerAgent(body);
 
@@ -40,7 +39,7 @@ const agents = new Hono()
   .patch('/:id', vValidator(UpdateAgentRequestSchema), async (c) => {
     const agentId = c.req.param('id');
     const body = c.req.valid('json');
-    const agentManager = await getAgentManager();
+    const { agentManager } = c.get('appContext');
 
     const agent = await agentManager.updateAgent(agentId, body);
 
@@ -53,7 +52,7 @@ const agents = new Hono()
   // Delete an agent
   .delete('/:id', async (c) => {
     const agentId = c.req.param('id');
-    const agentManager = await getAgentManager();
+    const { agentManager, sessionManager } = c.get('appContext');
 
     // Check if agent exists
     const agent = agentManager.getAgent(agentId);
@@ -67,7 +66,6 @@ const agents = new Hono()
     }
 
     // Check if agent is in use by any active sessions
-    const sessionManager = getSessionManager();
     const activeSessions = sessionManager.getSessionsUsingAgent(agentId);
     const activeSessionIds = new Set(activeSessions.map(s => s.id));
 

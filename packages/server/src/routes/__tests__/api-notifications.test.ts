@@ -6,15 +6,17 @@ import {
   initializeNotificationServices,
   shutdownNotificationServices,
   upsertRepositorySlackIntegration,
+  getNotificationManager,
 } from '../../services/notifications/index.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
+import { initializeRepositoryManager, resetRepositoryManager, getRepositoryManager } from '../../services/repository-manager.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 
 describe('Notifications API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let repositoryRepository: SqliteRepositoryRepository;
   const testRepositoryId = 'test-repo-123';
   const testRepoPath = '/test/path/to/repo';
@@ -57,7 +59,14 @@ describe('Notifications API', () => {
     initializeNotificationServices();
 
     // Create app with API routes
-    app = new Hono();
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', {
+        repositoryManager: getRepositoryManager(),
+        notificationManager: getNotificationManager(),
+      } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
   });

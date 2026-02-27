@@ -27,9 +27,13 @@ import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
-import { resetAgentManager } from '../services/agent-manager.js';
-import { resetRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager } from '../services/session-manager.js';
+import { getAgentManager, resetAgentManager } from '../services/agent-manager.js';
+import { getRepositoryManager, resetRepositoryManager } from '../services/repository-manager.js';
+import { getSessionManager, resetSessionManager } from '../services/session-manager.js';
+import { getSystemCapabilities } from '../services/system-capabilities-service.js';
+import { getJobQueue } from '../jobs/index.js';
+import { getNotificationManager } from '../services/notifications/index.js';
+import type { AppBindings, AppContext } from '../app-context.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -115,15 +119,43 @@ export async function cleanupTestEnvironment(): Promise<void> {
 }
 
 /**
+ * Safely retrieves a singleton that may not be initialized.
+ * Returns undefined instead of throwing if the getter fails.
+ */
+function safeGet<T>(getter: () => T): T | undefined {
+  try {
+    return getter();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Creates a fresh Hono app instance with all routes configured.
  * Uses cache-busting import to ensure fresh service instances.
  */
-export async function createTestApp(): Promise<Hono> {
+export async function createTestApp(): Promise<Hono<AppBindings>> {
   const suffix = `?v=${++importCounter}`;
   const { api } = await import(`../routes/api.js${suffix}`);
   const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-  const app = new Hono();
+  // Build partial AppContext from available singletons.
+  // Tests only initialize the services they need, so we safely
+  // retrieve each one (undefined if not yet initialized).
+  const appContext = {
+    sessionManager: safeGet(getSessionManager),
+    repositoryManager: safeGet(getRepositoryManager),
+    systemCapabilities: safeGet(getSystemCapabilities),
+    notificationManager: safeGet(getNotificationManager),
+    jobQueue: safeGet(getJobQueue),
+    agentManager: await getAgentManager().catch(() => undefined),
+  } as unknown as AppContext;
+
+  const app = new Hono<AppBindings>();
+  app.use('*', async (c, next) => {
+    c.set('appContext', appContext);
+    await next();
+  });
   app.onError(onApiError);
   app.route('/api', api);
   return app;

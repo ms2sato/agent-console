@@ -5,13 +5,13 @@ import open from 'open';
 import { SystemOpenRequestSchema, SystemOpenVSCodeRequestSchema } from '@agent-console/shared';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
-import { getSystemCapabilities } from '../services/system-capabilities-service.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
+import type { AppBindings } from '../app-context.js';
 
 const logger = createLogger('system-routes');
 
-const system = new Hono()
+const system = new Hono<AppBindings>()
   .get('/health', (c) => {
     return c.json({
       webhookSecretConfigured: Boolean(serverConfig.GITHUB_WEBHOOK_SECRET),
@@ -51,7 +51,7 @@ const system = new Hono()
     const { path } = c.req.valid('json');
 
     // Check if VS Code is available
-    const systemCapabilities = getSystemCapabilities();
+    const { systemCapabilities } = c.get('appContext');
     const vscodeCommand = systemCapabilities.getVSCodeCommand();
 
     if (!vscodeCommand) {

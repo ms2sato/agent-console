@@ -104,17 +104,19 @@ function restoreBunSpawn() {
 // This avoids mock.module which applies globally and affects other test files.
 
 // Import singleton reset functions to ensure fresh state between tests
-import { resetRepositoryManager, initializeRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager, initializeSessionManager } from '../services/session-manager.js';
+import { resetRepositoryManager, initializeRepositoryManager, getRepositoryManager } from '../services/repository-manager.js';
+import { resetSessionManager, initializeSessionManager, getSessionManager } from '../services/session-manager.js';
 import { createSessionRepository } from '../repositories/index.js';
-import { resetAgentManager } from '../services/agent-manager.js';
+import { resetAgentManager, getAgentManager } from '../services/agent-manager.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 import { JobQueue, resetJobQueue } from '../jobs/index.js';
 import {
   SystemCapabilitiesService,
   setSystemCapabilities,
   resetSystemCapabilities,
+  getSystemCapabilities,
 } from '../services/system-capabilities-service.js';
+import type { AppBindings, AppContext } from '../app-context.js';
 
 // =============================================================================
 // Test Setup
@@ -269,7 +271,18 @@ describe('API Routes Integration', () => {
       await initializeRepositoryManager({ jobQueue: testJobQueue });
     }
 
-    const app = new Hono();
+    const app = new Hono<AppBindings>();
+    // Inject AppContext constructed from test singletons
+    app.use('*', async (c, next) => {
+      c.set('appContext', {
+        jobQueue: testJobQueue!,
+        sessionManager: getSessionManager(),
+        repositoryManager: getRepositoryManager(),
+        systemCapabilities: getSystemCapabilities(),
+        agentManager: await getAgentManager(),
+      } as unknown as AppContext);
+      await next();
+    });
     app.onError(onApiError);
     app.route('/api', api);
     return app;
@@ -1136,7 +1149,7 @@ describe('API Routes Integration', () => {
 
   describe('Worktrees API', () => {
     // Helper to register a test repo and return it
-    async function registerTestRepo(app: Hono): Promise<{ repo: Repository; repoPath: string }> {
+    async function registerTestRepo(app: Hono<AppBindings>): Promise<{ repo: Repository; repoPath: string }> {
       const repoPath = createUniqueRepoPath();
       setupTestGitRepo(repoPath);
 
@@ -1698,6 +1711,34 @@ describe('API Routes Integration', () => {
           expect(body.error).toBe('Deletion already in progress');
         } finally {
           deletionsInProgress.clear();
+        }
+      });
+
+      it('should return 409 when pull is in progress for the worktree', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // The worktree path must be within the managed repositories directory
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
+
+        // Pre-populate the pull guard to simulate an in-progress pull
+        const { _getPullsInProgress } = await import('../routes/worktrees.js');
+        const pullsInProgress = _getPullsInProgress();
+        pullsInProgress.add(worktreePath);
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as { error: string };
+          expect(body.error).toBe('Pull is in progress for this worktree');
+        } finally {
+          pullsInProgress.clear();
         }
       });
 

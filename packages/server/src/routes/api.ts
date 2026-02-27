@@ -8,16 +8,16 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
-import { getSystemCapabilities } from '../services/system-capabilities-service.js';
+import type { AppBindings } from '../app-context.js';
 
-const api = new Hono()
+const api = new Hono<AppBindings>()
   // API info
   .get('/', (c) => {
     return c.json({ message: 'Agent Console API' });
   })
   // Get server config
   .get('/config', (c) => {
-    const systemCapabilities = getSystemCapabilities();
+    const { systemCapabilities } = c.get('appContext');
     return c.json({
       homeDir: homedir(),
       capabilities: systemCapabilities.getCapabilities(),

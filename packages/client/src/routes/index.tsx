@@ -447,7 +447,7 @@ function DashboardPage() {
   // Handle worktree pull completed
   const handleWorktreePullCompleted = useCallback((payload: WorktreePullCompletedPayload) => {
     console.log(`[Pull] Completed: ${payload.worktreePath} (${payload.commitsPulled} commits)`);
-    const active = activePulls.get(payload.worktreePath);
+    const active = activePullsRef.current.get(payload.worktreePath);
     if (!active || active.taskId !== payload.taskId) return;
     removePull(payload.worktreePath);
     // Show success notification
@@ -457,16 +457,16 @@ function DashboardPage() {
     setPullSuccessMessage(message);
     // Refresh worktree data to reflect pulled changes
     queryClient.invalidateQueries({ queryKey: worktreeKeys.root() });
-  }, [activePulls, queryClient, removePull]);
+  }, [queryClient, removePull]);
 
   // Handle worktree pull failed
   const handleWorktreePullFailed = useCallback((payload: WorktreePullFailedPayload) => {
     console.log(`[Pull] Failed: ${payload.worktreePath} - ${payload.error}`);
-    const active = activePulls.get(payload.worktreePath);
+    const active = activePullsRef.current.get(payload.worktreePath);
     if (!active || active.taskId !== payload.taskId) return;
     removePull(payload.worktreePath);
     showPullError('Pull Failed', payload.error);
-  }, [activePulls, removePull, showPullError]);
+  }, [removePull, showPullError]);
 
   // Handle pull worktree request from WorktreeRow
   const handlePullWorktree = useCallback(async (repositoryId: string, worktreePath: string) => {
