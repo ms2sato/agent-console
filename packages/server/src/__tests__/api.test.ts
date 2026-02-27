@@ -1714,6 +1714,34 @@ describe('API Routes Integration', () => {
         }
       });
 
+      it('should return 409 when pull is in progress for the worktree', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+
+        // The worktree path must be within the managed repositories directory
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
+
+        // Pre-populate the pull guard to simulate an in-progress pull
+        const { _getPullsInProgress } = await import('../routes/worktrees.js');
+        const pullsInProgress = _getPullsInProgress();
+        pullsInProgress.add(worktreePath);
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as { error: string };
+          expect(body.error).toBe('Pull is in progress for this worktree');
+        } finally {
+          pullsInProgress.clear();
+        }
+      });
+
       // Helper to set up a deletable worktree for cleanup command tests
       async function setupWorktreeForDeletion(
         repo: Repository,
