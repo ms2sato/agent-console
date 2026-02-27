@@ -69,12 +69,10 @@ export function RestartSessionDialog({
       const newBranch = isBranchChanged ? trimmedBranch : undefined;
       await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
       onOpenChange(false);
-      if (newBranch && onBranchChange) {
-        onBranchChange(newBranch);
+      if (newBranch) {
+        onBranchChange?.(newBranch);
       }
-      if (onSessionRestart) {
-        onSessionRestart();
-      }
+      onSessionRestart?.();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Failed to restart session'
@@ -105,6 +103,7 @@ export function RestartSessionDialog({
               value={selectedAgentId}
               onChange={setSelectedAgentId}
               className="flex-1"
+              priorityAgentId={currentAgentId}
             />
           </div>
           {isWorktreeSession && (
@@ -122,13 +121,19 @@ export function RestartSessionDialog({
           {isBranchEmpty && (
             <p className="text-xs text-red-400">Branch name cannot be empty.</p>
           )}
-          {(isAgentChanged || isBranchChanged) && (
+          {isAgentChanged && isBranchChanged && (
             <p className="text-xs text-yellow-400">
-              {isAgentChanged && isBranchChanged
-                ? 'Agent and branch will be changed. The terminal will be restarted.'
-                : isAgentChanged
-                  ? 'Agent will be switched. The terminal will be restarted with the new agent.'
-                  : 'Branch will be renamed. The terminal will be restarted.'}
+              Agent and branch will be changed. The terminal will be restarted.
+            </p>
+          )}
+          {isAgentChanged && !isBranchChanged && (
+            <p className="text-xs text-yellow-400">
+              Agent will be switched. The terminal will be restarted with the new agent.
+            </p>
+          )}
+          {!isAgentChanged && isBranchChanged && (
+            <p className="text-xs text-yellow-400">
+              Branch will be renamed. The terminal will be restarted.
             </p>
           )}
         </div>

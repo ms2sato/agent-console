@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { fetchAgents } from '../lib/api';
@@ -8,6 +9,7 @@ interface AgentSelectorProps {
   onChange: (agentId: string | undefined) => void;
   className?: string;
   disabled?: boolean;
+  priorityAgentId?: string;
 }
 
 export function AgentSelector({
@@ -15,6 +17,7 @@ export function AgentSelector({
   onChange,
   className = '',
   disabled = false,
+  priorityAgentId,
 }: AgentSelectorProps) {
   const { data, isLoading } = useQuery({
     queryKey: agentKeys.all(),
@@ -23,8 +26,17 @@ export function AgentSelector({
 
   const agents = data?.agents ?? [];
 
-  // Default to first agent (Claude Code) if no value provided or value doesn't match any agent
-  const selectedValue = (value && agents.some(a => a.id === value)) ? value : (agents[0]?.id ?? '');
+  const sortedAgents = useMemo(() => {
+    if (!priorityAgentId) return agents;
+    return [...agents].sort((a, b) => {
+      if (a.id === priorityAgentId) return -1;
+      if (b.id === priorityAgentId) return 1;
+      return 0;
+    });
+  }, [agents, priorityAgentId]);
+
+  const valueExists = value != null && sortedAgents.some((a) => a.id === value);
+  const selectedValue = valueExists ? value : (sortedAgents[0]?.id ?? '');
 
   if (isLoading) {
     return (
@@ -41,7 +53,7 @@ export function AgentSelector({
       className={`input ${className}`}
       disabled={disabled}
     >
-      {agents.map((agent) => (
+      {sortedAgents.map((agent) => (
         <option key={agent.id} value={agent.id}>
           {agent.name}
           {agent.isBuiltIn ? ' (built-in)' : ''}

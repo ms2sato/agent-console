@@ -35,6 +35,13 @@ function createMockResponse(body: unknown) {
   } as unknown as Response;
 }
 
+function resolveUrl(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
+  return '';
+}
+
 // Wrapper component with QueryClientProvider
 function TestWrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({
@@ -355,11 +362,7 @@ describe('CreateWorktreeForm', () => {
       };
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/github-issue')) {
           return Promise.resolve(createMockResponse({ issue }));
         }
@@ -394,6 +397,38 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
+  describe('default agent sorting', () => {
+    it('should render the default agent first even when it is not first in the API response', async () => {
+      // Override agents response so custom-agent is first in the API response
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse({
+            agents: [
+              { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
+              { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false },
+            ],
+          }));
+        }
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
+
+      renderCreateWorktreeForm({ defaultAgentId: 'custom-agent' });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Custom Agent')).toBeTruthy();
+      });
+
+      const options = screen.getAllByRole('option');
+      expect(options[0].textContent).toBe('Custom Agent');
+      expect(options[1].textContent).toBe('Claude Code (built-in)');
+    });
+  });
+
   describe('default agent checkbox', () => {
     it('should not pre-check "Set as default" even when defaultAgentId is provided', async () => {
       renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
@@ -413,11 +448,7 @@ describe('CreateWorktreeForm', () => {
       const updateCalls: string[] = [];
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/repositories/') && !url.includes('/agents') && !url.includes('/remote-status') && !url.includes('/github-issue') && !url.includes('/branches/')) {
           updateCalls.push(url);
           return Promise.resolve(createMockResponse({}));
@@ -481,11 +512,7 @@ describe('CreateWorktreeForm', () => {
       });
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return remoteStatusPromise;
         }
@@ -508,11 +535,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should show warning message when base branch is behind remote', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 3, ahead: 0 }));
         }
@@ -529,11 +552,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should not show warning when base branch is up to date', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
         }
@@ -558,11 +577,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should show "Fetch & Create" button when behind', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 2, ahead: 0 }));
         }
@@ -579,11 +594,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should not show "Fetch & Create" button when up to date', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
         }
@@ -610,11 +621,7 @@ describe('CreateWorktreeForm', () => {
       const user = userEvent.setup();
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 1, ahead: 0 }));
         }
@@ -652,11 +659,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should show error message when remote status check fails', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve({
             ok: false,
@@ -680,11 +683,7 @@ describe('CreateWorktreeForm', () => {
       const remoteStatusCalls: string[] = [];
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           // Track which branch was requested
           remoteStatusCalls.push(url);
@@ -728,11 +727,7 @@ describe('CreateWorktreeForm', () => {
       const remoteStatusCalls: string[] = [];
 
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           remoteStatusCalls.push(url);
           return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
@@ -771,11 +766,7 @@ describe('CreateWorktreeForm', () => {
 
     it('should use singular form for 1 commit behind', async () => {
       mockFetch.mockImplementation((input) => {
-        const url = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
+        const url = resolveUrl(input);
         if (url.includes('/remote-status')) {
           return Promise.resolve(createMockResponse({ behind: 1, ahead: 0 }));
         }

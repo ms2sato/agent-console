@@ -151,6 +151,29 @@ describe('RestartSessionDialog', () => {
       expect(screen.getByText('How would you like to restart this session?')).toBeTruthy();
     });
 
+    it('should render the current agent first even when it is not first in the API response', async () => {
+      // Override agents response so claude-code is NOT first
+      mockFetch.mockImplementation((...args: unknown[]) => {
+        const urlStr = resolveUrl(args[0]);
+        if (urlStr.includes('/agents')) {
+          return Promise.resolve(createMockResponse({
+            agents: [
+              { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false },
+              { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
+            ],
+          }));
+        }
+        return Promise.resolve(routeFetchByUrl(urlStr));
+      });
+
+      renderDialog({ currentAgentId: 'claude-code' });
+      await waitForAgentsToLoad();
+
+      const options = screen.getAllByRole('option');
+      expect(options[0].textContent).toBe('Claude Code (built-in)');
+      expect(options[1].textContent).toBe('Custom Agent');
+    });
+
     it('should not render when closed', async () => {
       renderDialog({ open: false });
 
