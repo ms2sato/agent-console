@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
-import { resetAgentManager } from '../agent-manager.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { AgentManager, resetAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -23,11 +24,14 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     setupMemfs({ '/test/config/.keep': '' });
     process.env.AGENT_CONSOLE_HOME = '/test/config';
 
-    // Use in-memory database so getAgentManager() doesn't hit real filesystem
+    // Use in-memory database for test isolation
     await initializeDatabase(':memory:');
 
+    const db = getDatabase();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+
     ptyFactory.reset();
-    workerManager = new WorkerManager(ptyFactory.provider);
+    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
   });
 
   afterEach(async () => {

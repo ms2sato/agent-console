@@ -34,10 +34,11 @@ import type { InternalSession } from './internal-types.js';
 import type { WorkerManager } from './worker-manager.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
-import { getAgentManager, CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import type { AgentManager } from './agent-manager.js';
+import type { NotificationManager } from './notifications/notification-manager.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
 import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
-import { getNotificationManager } from './notifications/index.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
@@ -56,6 +57,8 @@ const logger = createLogger('worker-lifecycle-manager');
  */
 export interface WorkerLifecycleDeps {
   workerManager: WorkerManager;
+  agentManager: AgentManager;
+  notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
@@ -95,20 +98,20 @@ export class WorkerLifecycleManager {
     const workerId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
-    const workerName = request.name ?? await this.generateWorkerName(session, request.type, agentIdForName);
+    const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
     const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
     if (request.type === 'agent') {
-      const agentWorker = await this.deps.workerManager.initializeAgentWorker({
+      const agentWorker = this.deps.workerManager.initializeAgentWorker({
         id: workerId,
         name: workerName,
         createdAt,
         agentId: request.agentId,
       });
-      await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
+      this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -195,8 +198,8 @@ export class WorkerLifecycleManager {
 
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
-      const effectiveAgentId = await this.resolveEffectiveAgentId(worker.agentId, { sessionId, workerId });
-      await this.deps.workerManager.activateAgentWorkerPty(worker, {
+      const effectiveAgentId = this.resolveEffectiveAgentId(worker.agentId, { sessionId, workerId });
+      this.deps.workerManager.activateAgentWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -238,12 +241,7 @@ export class WorkerLifecycleManager {
     }
 
     // Clean up notification state (debounce timers, previous state)
-    try {
-      const notificationManager = getNotificationManager();
-      notificationManager.cleanupWorker(sessionId, workerId);
-    } catch {
-      // NotificationManager not initialized yet, skip
-    }
+    this.deps.notificationManager?.cleanupWorker(sessionId, workerId);
 
     // Clean up inter-session message files for this worker
     try {
@@ -280,7 +278,7 @@ export class WorkerLifecycleManager {
 
     // Validate that the agent exists if a new agentId was provided
     if (agentId) {
-      const agentManager = await getAgentManager();
+      const agentManager = this.deps.agentManager;
       const agent = agentManager.getAgent(agentId);
       if (!agent) {
         logger.warn({ workerId, sessionId, agentId }, 'Cannot restart worker: agent not found');
@@ -320,7 +318,7 @@ export class WorkerLifecycleManager {
 
     // Capture worker metadata before killing (needed for new worker creation)
     const workerName = isAgentChanged
-      ? await this.generateWorkerName(session, 'agent', workerAgentId)
+      ? this.generateWorkerName(session, 'agent', workerAgentId)
       : existingWorker.name;
     const workerCreatedAt = existingWorker.createdAt;
     const locationPath = session.locationPath;
@@ -334,13 +332,13 @@ export class WorkerLifecycleManager {
     // Create new worker with same ID, preserving original createdAt for tab order
     const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-    const newWorker = await this.deps.workerManager.initializeAgentWorker({
+    const newWorker = this.deps.workerManager.initializeAgentWorker({
       id: workerId,
       name: workerName,
       createdAt: workerCreatedAt,
       agentId: workerAgentId,
     });
-    await this.deps.workerManager.activateAgentWorkerPty(newWorker, {
+    this.deps.workerManager.activateAgentWorkerPty(newWorker, {
       sessionId,
       locationPath,
       repositoryEnvVars,
@@ -469,8 +467,8 @@ export class WorkerLifecycleManager {
       const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
 
       if (existingWorker.type === 'agent') {
-        const effectiveAgentId = await this.resolveEffectiveAgentId(existingWorker.agentId, { sessionId, workerId });
-        await this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
+        const effectiveAgentId = this.resolveEffectiveAgentId(existingWorker.agentId, { sessionId, workerId });
+        this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
           sessionId,
           locationPath: session.locationPath,
           repositoryEnvVars,
@@ -602,8 +600,8 @@ export class WorkerLifecycleManager {
   /**
    * Resolve effective agent ID, falling back to default if the original agent is no longer registered.
    */
-  private async resolveEffectiveAgentId(agentId: string, context: { sessionId: string; workerId: string }): Promise<string> {
-    const agentManager = await getAgentManager();
+  private resolveEffectiveAgentId(agentId: string, context: { sessionId: string; workerId: string }): string {
+    const agentManager = this.deps.agentManager;
     const agent = agentManager.getAgent(agentId);
     if (agent) return agentId;
 
@@ -611,9 +609,9 @@ export class WorkerLifecycleManager {
     return CLAUDE_CODE_AGENT_ID;
   }
 
-  private async generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): Promise<string> {
+  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): string {
     if (type === 'agent') {
-      const agentManager = await getAgentManager();
+      const agentManager = this.deps.agentManager;
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
       return agent?.name ?? 'AI';
     }

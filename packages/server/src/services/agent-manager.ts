@@ -250,6 +250,19 @@ export async function getAgentManager(): Promise<AgentManager> {
   return initializationPromise;
 }
 
+/**
+ * Set the AgentManager singleton from an existing instance.
+ * Used by AppContext to set the singleton without re-creating.
+ * @internal For AppContext initialization only.
+ */
+export function setAgentManager(instance: AgentManager): void {
+  if (agentManagerInstance) {
+    throw new Error('AgentManager already initialized');
+  }
+  agentManagerInstance = instance;
+  initializationPromise = null;
+}
+
 // For testing: reset the singleton
 export function resetAgentManager(): void {
   agentManagerInstance = null;

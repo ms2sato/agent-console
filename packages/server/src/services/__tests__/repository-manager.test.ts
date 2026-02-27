@@ -7,7 +7,9 @@ import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-proces
 import { JobQueue } from '../../jobs/index.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { resetSessionManager, initializeSessionManager } from '../session-manager.js';
+import { AgentManager, resetAgentManager } from '../agent-manager.js';
 import { createSessionRepository, SqliteRepositoryRepository } from '../../repositories/index.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
@@ -35,13 +37,15 @@ describe('RepositoryManager', () => {
 
     // Reset session manager singleton (needed for unregisterRepository check)
     resetSessionManager();
+    resetAgentManager();
 
     // Create a test JobQueue with the shared database connection
     testJobQueue = new JobQueue(getDatabase());
 
     // Initialize session manager singleton (needed for unregisterRepository check)
     const sessionRepository = await createSessionRepository();
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue });
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
 
     // Reset process mock
     resetProcessMock();
@@ -57,6 +61,7 @@ describe('RepositoryManager', () => {
   });
 
   afterEach(async () => {
+    resetAgentManager();
     // Clean up test JobQueue
     if (testJobQueue) {
       await testJobQueue.stop();

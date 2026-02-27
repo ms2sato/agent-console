@@ -27,6 +27,8 @@ import type { InternalSession } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
+import type { AgentManager } from './agent-manager.js';
+import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
@@ -37,7 +39,6 @@ import {
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
 import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
-import { getNotificationManager } from './notifications/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
@@ -99,6 +100,7 @@ export class SessionManager {
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
   private jobQueue: JobQueue | null = null;
+  private notificationManager: NotificationManager | null = null;
 
   /**
    * Options for creating a SessionManager instance.
@@ -114,11 +116,13 @@ export class SessionManager {
    * @param options.jobQueue - JobQueue instance for background cleanup tasks.
    *                           Must be provided for proper cleanup operations.
    */
-  static async create(options?: {
+  static async create(options: {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
     jobQueue?: JobQueue | null;
+    agentManager: AgentManager;
+    notificationManager?: NotificationManager | null;
   }): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
@@ -129,14 +133,18 @@ export class SessionManager {
    * Private constructor - use SessionManager.create() for async initialization.
    * The constructor is only public for backward compatibility during migration.
    */
-  constructor(options?: {
+  constructor(options: {
     ptyProvider?: PtyProvider;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
     jobQueue?: JobQueue | null;
+    agentManager: AgentManager;
+    notificationManager?: NotificationManager | null;
   }) {
     const ptyProvider = options?.ptyProvider ?? bunPtyProvider;
-    this.workerManager = new WorkerManager(ptyProvider);
+    const agentManager = options.agentManager;
+    this.notificationManager = options?.notificationManager ?? null;
+    this.workerManager = new WorkerManager(ptyProvider, agentManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -144,6 +152,8 @@ export class SessionManager {
 
     this.workerLifecycleManager = new WorkerLifecycleManager({
       workerManager: this.workerManager,
+      agentManager,
+      notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
       persistSession: (session) => this.persistSession(session),
@@ -588,12 +598,7 @@ export class SessionManager {
       await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
 
       // 2. Clean up notification state (throttle timers, debounce timers)
-      try {
-        const notificationManager = getNotificationManager();
-        notificationManager.cleanupSession(id);
-      } catch {
-        // NotificationManager not initialized yet, skip
-      }
+      this.notificationManager?.cleanupSession(id);
 
       // 2b. Clean up inter-worker message history
       this.messageService.clearSession(id);
@@ -747,12 +752,7 @@ export class SessionManager {
     }
 
     // Clean up notification state (throttle timers, debounce timers)
-    try {
-      const notificationManager = getNotificationManager();
-      notificationManager.cleanupSession(id);
-    } catch {
-      // NotificationManager not initialized yet, skip
-    }
+    this.notificationManager?.cleanupSession(id);
 
     // Clean up inter-worker message history
     this.messageService.clearSession(id);
@@ -1371,6 +1371,8 @@ let sessionManagerInstance: SessionManager | null = null;
 export async function initializeSessionManager(options: {
   sessionRepository: SessionRepository;
   jobQueue: JobQueue;
+  agentManager: AgentManager;
+  notificationManager?: NotificationManager | null;
 }): Promise<void> {
   if (sessionManagerInstance) {
     throw new Error('SessionManager already initialized');

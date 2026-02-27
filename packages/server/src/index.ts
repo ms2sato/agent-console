@@ -14,6 +14,7 @@ import { createAppContext, shutdownAppContext, type AppContext, type AppBindings
 import { setSessionManager } from './services/session-manager.js';
 import { setRepositoryManager } from './services/repository-manager.js';
 import { setNotificationManager } from './services/notifications/index.js';
+import { setAgentManager } from './services/agent-manager.js';
 import { setSystemCapabilities } from './services/system-capabilities-service.js';
 import * as path from 'path';
 
@@ -96,6 +97,7 @@ try {
 setSessionManager(appContext.sessionManager);
 setRepositoryManager(appContext.repositoryManager);
 setNotificationManager(appContext.notificationManager);
+setAgentManager(appContext.agentManager);
 setSystemCapabilities(appContext.systemCapabilities);
 logger.info('Singletons populated from AppContext');
 

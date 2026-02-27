@@ -19,6 +19,8 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { AgentManager, resetAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JobQueue } from '../../jobs/index.js';
 
 // Test config directory
@@ -31,6 +33,7 @@ let testJobQueue: JobQueue | null = null;
 const ptyFactory = createMockPtyFactory(10000);
 
 let importCounter = 0;
+let agentManager: AgentManager;
 
 describe('Worker History File Initialization', () => {
   beforeEach(async () => {
@@ -56,6 +59,11 @@ describe('Worker History File Initialization', () => {
 
     // Reset PTY factory
     ptyFactory.reset();
+
+    // Reset and create AgentManager for dependency injection
+    resetAgentManager();
+    const db = getDatabase();
+    agentManager = await AgentManager.create(new SqliteAgentRepository(db));
   });
 
   afterEach(async () => {
@@ -64,6 +72,7 @@ describe('Worker History File Initialization', () => {
       await testJobQueue.stop();
       testJobQueue = null;
     }
+    resetAgentManager();
     await closeDatabase();
     cleanupMemfs();
   });
@@ -79,6 +88,7 @@ describe('Worker History File Initialization', () => {
       ptyProvider: ptyFactory.provider,
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
+      agentManager,
     });
   }
 

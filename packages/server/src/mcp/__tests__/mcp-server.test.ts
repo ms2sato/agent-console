@@ -5,7 +5,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
 import {
   resetSessionManager,
@@ -17,7 +17,8 @@ import {
   setRepositoryManager,
   RepositoryManager,
 } from '../../services/repository-manager.js';
-import { getAgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { AgentManager, getAgentManager, resetAgentManager, setAgentManager } from '../../services/agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -176,12 +177,18 @@ describe('MCP Server Tools', () => {
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
+    // Create AgentManager for dependency injection and singleton
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    setAgentManager(agentMgr);
+
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
       ptyProvider: ptyFactory.provider,
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
+      agentManager: agentMgr,
     });
     setSessionManager(sessionManager);
 

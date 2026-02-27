@@ -4,7 +4,9 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
-import { initializeDatabase, closeDatabase } from '../../database/connection.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { AgentManager, resetAgentManager } from '../agent-manager.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -32,11 +34,15 @@ describe('SessionManager cleanup on initialization', () => {
     // Reset process mock tracking
     resetProcessMock();
 
+    // Reset AgentManager singleton
+    resetAgentManager();
+
     // Create fresh PTY factory
     ptyFactory = createMockPtyFactory();
   });
 
   afterEach(async () => {
+    resetAgentManager();
     await closeDatabase();
     cleanupMemfs();
     delete process.env.AGENT_CONSOLE_HOME;
@@ -63,7 +69,9 @@ describe('SessionManager cleanup on initialization', () => {
   // Helper to create a SessionManager instance using the factory pattern (async initialization)
   async function createSessionManager() {
     const SessionManager = await getSessionManager();
-    return SessionManager.create({ ptyProvider: ptyFactory.provider });
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    return SessionManager.create({ ptyProvider: ptyFactory.provider, agentManager: agentMgr });
   }
 
   it('should mark legacy sessions as paused and kill worker processes', async () => {

@@ -91,9 +91,12 @@ export interface CreateAppContextOptions {
  * 1. Database connection
  * 2. Job queue (depends on db)
  * 3. Repositories (depend on db)
- * 4. Managers (depend on repositories and job queue)
- * 5. Wire cross-dependencies between managers
- * 6. Notification services
+ * 4. Agent manager (depends on repository)
+ * 5. Notification services
+ * 6. Managers (depend on repositories, job queue, and services above)
+ * 7. Wire cross-dependencies between managers
+ * 8. Inbound integration
+ * 9. System capabilities
  *
  * @param options - Configuration options
  * @returns Initialized application context
@@ -118,10 +121,20 @@ export async function createAppContext(
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
 
-  // 4. Create managers
+  // 4. Create agent manager (needed by SessionManager)
+  const agentRepository = new SqliteAgentRepository(db);
+  const agentManager = await AgentManagerClass.create(agentRepository);
+
+  // 5. Create notification services (needed by SessionManager)
+  const slackHandler = new SlackHandler();
+  const notificationManager = new NotificationManagerClass(slackHandler);
+
+  // 6. Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
     sessionRepository,
     jobQueue,
+    agentManager,
+    notificationManager,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -129,7 +142,7 @@ export async function createAppContext(
     jobQueue,
   });
 
-  // 5. Wire cross-dependencies between managers
+  // 7. Wire cross-dependencies between managers
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
       sessionManager.getSessionsUsingRepository(repoId),
@@ -140,16 +153,12 @@ export async function createAppContext(
     isInitialized: () => true, // Always true once context is created
   });
 
-  // 6. Create notification services
-  const slackHandler = new SlackHandler();
-  const notificationManager = new NotificationManagerClass(slackHandler);
-
   // Wire notification callbacks
   notificationManager.setSessionExistsCallback((sessionId) =>
     sessionManager.getSession(sessionId) !== undefined
   );
 
-  // 7. Initialize inbound integration
+  // 8. Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
     jobQueue,
     sessionManager,
@@ -157,13 +166,9 @@ export async function createAppContext(
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
   });
 
-  // 8. Detect system capabilities
+  // 9. Detect system capabilities
   const systemCapabilities = new SystemCapabilitiesServiceClass();
   await systemCapabilities.detect();
-
-  // 9. Create agent manager
-  const agentRepository = new SqliteAgentRepository(db);
-  const agentManager = await AgentManagerClass.create(agentRepository);
 
   logger.info('All services initialized');
 
@@ -222,10 +227,21 @@ export async function createTestContext(
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
 
-  // Create managers
+  // Create agent manager (needed by SessionManager)
+  const agentRepository = new SqliteAgentRepository(db);
+  const agentManager = await AgentManagerClass.create(agentRepository);
+
+  // Use provided or create new notification manager (needed by SessionManager)
+  const notificationManager =
+    overrides?.notificationManager ??
+    new NotificationManagerClass(new SlackHandler());
+
+  // Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
     sessionRepository,
     jobQueue,
+    agentManager,
+    notificationManager,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -243,11 +259,6 @@ export async function createTestContext(
     getRepository: (repoId) => repositoryManager.getRepository(repoId),
     isInitialized: () => true,
   });
-
-  // Use provided or create new notification manager
-  const notificationManager =
-    overrides?.notificationManager ??
-    new NotificationManagerClass(new SlackHandler());
 
   notificationManager.setSessionExistsCallback((sessionId) =>
     sessionManager.getSession(sessionId) !== undefined
@@ -269,10 +280,6 @@ export async function createTestContext(
     systemCapabilities = new SystemCapabilitiesServiceClass();
     await systemCapabilities.detect();
   }
-
-  // Create agent manager
-  const agentRepository = new SqliteAgentRepository(db);
-  const agentManager = await AgentManagerClass.create(agentRepository);
 
   return {
     db,
