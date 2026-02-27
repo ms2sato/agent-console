@@ -44,6 +44,46 @@ describe('GitHubServiceParser', () => {
     expect(event?.metadata.repositoryName).toBe('owner/repo');
   });
 
+  it('extracts head_sha into metadata.commitSha for workflow_run events', async () => {
+    const payload = JSON.stringify({
+      action: 'completed',
+      workflow_run: {
+        conclusion: 'failure',
+        name: 'Tests',
+        html_url: 'https://example.com/run/2',
+        head_branch: 'feature',
+        head_sha: 'abc123def456',
+        updated_at: '2024-06-01T12:00:00Z',
+      },
+      repository: { full_name: 'owner/repo' },
+    });
+    const headers = new Headers({ 'x-github-event': 'workflow_run' });
+
+    const event = await parser.parse(payload, headers);
+    expect(event).not.toBeNull();
+    expect(event!.type).toBe('ci:failed');
+    expect(event!.metadata.commitSha).toBe('abc123def456');
+    expect(event!.metadata.branch).toBe('feature');
+  });
+
+  it('leaves metadata.commitSha undefined when head_sha is absent', async () => {
+    const payload = JSON.stringify({
+      action: 'completed',
+      workflow_run: {
+        conclusion: 'success',
+        name: 'Build',
+        html_url: 'https://example.com/run/3',
+        head_branch: 'main',
+      },
+      repository: { full_name: 'owner/repo' },
+    });
+    const headers = new Headers({ 'x-github-event': 'workflow_run' });
+
+    const event = await parser.parse(payload, headers);
+    expect(event).not.toBeNull();
+    expect(event!.metadata.commitSha).toBeUndefined();
+  });
+
   it('parses issue closed events', async () => {
     const payload = JSON.stringify({
       action: 'closed',

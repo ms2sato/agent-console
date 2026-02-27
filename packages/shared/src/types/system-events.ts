@@ -24,6 +24,8 @@ export interface SystemEventMetadata {
   branch?: string;
   /** URL to event details (for display) */
   url?: string;
+  /** Commit SHA (used for CI completion aggregation) */
+  commitSha?: string;
 }
 
 /**

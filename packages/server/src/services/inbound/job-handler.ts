@@ -8,6 +8,7 @@ import type { InboundEventJobPayload } from '../../jobs/index.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
 import type { ServiceParser } from './service-parser.js';
 import type { InboundEventHandler, EventTarget } from './handlers.js';
+import type { CICompletionChecker } from './ci-completion-checker.js';
 
 const logger = createLogger('inbound-event-job');
 
@@ -64,6 +65,8 @@ export interface InboundEventJobDependencies {
   resolveTargets: (event: SystemEvent) => Promise<EventTarget[]>;
   handlers: InboundEventHandler[];
   notificationRepository: InboundEventNotificationRepository;
+  /** When provided, ci:completed events are held until all workflows for the commit SHA have succeeded. */
+  ciCompletionChecker?: CICompletionChecker;
 }
 
 export interface InboundEventNotificationRepository {
@@ -116,11 +119,40 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
       return;
     }
 
-    const inboundEvent = asInboundEvent(event);
+    let inboundEvent = asInboundEvent(event);
     if (!inboundEvent) {
       // Not an inbound event type - complete successfully
       logger.debug({ eventType: event.type }, 'Ignoring non-inbound event');
       return;
+    }
+
+    // --- CI completion aggregation gate ---
+    if (inboundEvent.type === 'ci:completed' && deps.ciCompletionChecker) {
+      const { repositoryName, commitSha } = inboundEvent.metadata;
+      if (repositoryName && commitSha) {
+        const result = await deps.ciCompletionChecker(repositoryName, commitSha);
+        if (result !== null) {
+          if (!result.allCompleted) {
+            logger.info(
+              {
+                eventType: inboundEvent.type,
+                repositoryName,
+                commitSha,
+                successCount: result.successCount,
+                totalWorkflows: result.totalWorkflows,
+              },
+              'CI completion suppressed: not all workflows finished'
+            );
+            return; // Suppress — wait for remaining workflows
+          }
+          // All workflows completed successfully — update summary
+          inboundEvent = {
+            ...inboundEvent,
+            summary: `All CI workflows passed (${result.workflowNames.join(', ')})`,
+          };
+        }
+        // result === null: fail-open, proceed with original event
+      }
     }
 
     const handlers = deps.handlers.filter((handler) => handler.supportedEvents.includes(inboundEvent.type));
