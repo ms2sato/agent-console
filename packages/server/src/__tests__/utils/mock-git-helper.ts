@@ -69,6 +69,10 @@ export const mockGit = {
   getCommitsBehind: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
   getCommitsAhead: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
 
+  // Working directory operations
+  isWorkingDirectoryClean: mock(() => Promise.resolve(true)) as Mock<(cwd: string) => Promise<boolean>>,
+  pullFastForward: mock(() => Promise.resolve(0)) as Mock<(cwd: string) => Promise<number>>,
+
   // Diff operations
   getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string>>,
   getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string | null>>,
@@ -112,6 +116,8 @@ export function resetGitMocks(): void {
   mockGit.fetchAllRemote.mockReset();
   mockGit.getCommitsBehind.mockReset();
   mockGit.getCommitsAhead.mockReset();
+  mockGit.isWorkingDirectoryClean.mockReset();
+  mockGit.pullFastForward.mockReset();
   mockGit.getMergeBase.mockReset();
   mockGit.getMergeBaseSafe.mockReset();
   mockGit.getDiff.mockReset();
@@ -149,6 +155,8 @@ export function resetGitMocks(): void {
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
   mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
+  mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
+  mockGit.pullFastForward.mockImplementation(() => Promise.resolve(0));
   mockGit.getMergeBase.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getDiff.mockImplementation(() => Promise.resolve(''));

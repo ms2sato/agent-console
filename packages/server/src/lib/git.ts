@@ -515,6 +515,41 @@ export interface CommitInfo {
 // ============================================================
 
 /**
+ * Check if a working directory is clean (no uncommitted changes).
+ * Uses `git status --porcelain` which outputs nothing when clean.
+ */
+export async function isWorkingDirectoryClean(cwd: string): Promise<boolean> {
+  const output = await git(['status', '--porcelain'], cwd);
+  return output === '';
+}
+
+/**
+ * Pull with fast-forward only strategy.
+ * Returns the number of commits pulled (0 if already up to date).
+ *
+ * @throws GitError if pull fails (e.g., branches have diverged, no remote tracking branch)
+ */
+export async function pullFastForward(cwd: string): Promise<number> {
+  // Get the current HEAD before pulling
+  const headBefore = await git(['rev-parse', 'HEAD'], cwd);
+
+  // Execute git pull --ff-only
+  await git(['pull', '--ff-only'], cwd, NETWORK_GIT_TIMEOUT_MS);
+
+  // Get the HEAD after pulling
+  const headAfter = await git(['rev-parse', 'HEAD'], cwd);
+
+  // If HEAD didn't change, already up to date
+  if (headBefore === headAfter) {
+    return 0;
+  }
+
+  // Count commits between old and new HEAD
+  const countStr = await git(['rev-list', '--count', `${headBefore}..${headAfter}`], cwd);
+  return parseInt(countStr, 10);
+}
+
+/**
  * Fetch a specific branch from remote origin.
  */
 export async function fetchRemote(branch: string, cwd: string): Promise<void> {

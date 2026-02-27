@@ -401,6 +401,36 @@ describe('API Client', () => {
     });
   });
 
+  describe('pullWorktreeAsync', () => {
+    it('should pull worktree asynchronously and return accepted', async () => {
+      const { pullWorktreeAsync } = await import('../api');
+      const mockResponse = { accepted: true };
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await pullWorktreeAsync('repo-id', '/path/to/worktree', 'task-123');
+
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/worktrees/pull');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ worktreePath: '/path/to/worktree', taskId: 'task-123' });
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should throw error on failure', async () => {
+      const { pullWorktreeAsync } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'Not a fast-forward' })),
+      } as unknown as Response);
+
+      await expect(pullWorktreeAsync('repo-id', '/path', 'task-123')).rejects.toThrow(
+        'Not a fast-forward'
+      );
+    });
+  });
+
   describe('deleteWorktree', () => {
     // NOTE: deleteWorktree still uses manual fetch because the server uses a wildcard route
     it('should delete worktree successfully', async () => {

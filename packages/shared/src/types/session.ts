@@ -11,6 +11,10 @@ import type {
   WorktreeDeletionCompletedPayload,
   WorktreeDeletionFailedPayload,
 } from './worktree-deletion.js';
+import type {
+  WorktreePullCompletedPayload,
+  WorktreePullFailedPayload,
+} from './worktree-pull.js';
 
 // Re-export schema-derived types
 export type {
@@ -151,6 +155,8 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'session-resumed': 21,
   'inbound-event': 22,
   'worker-restarted': 23,
+  'worktree-pull-completed': 24,
+  'worktree-pull-failed': 25,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -179,6 +185,8 @@ export type AppServerMessage =
   | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload)
   | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
   | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload)
+  | ({ type: 'worktree-pull-completed' } & WorktreePullCompletedPayload)
+  | ({ type: 'worktree-pull-failed' } & WorktreePullFailedPayload)
   | { type: 'worker-message'; message: WorkerMessage }
   | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
   | { type: 'worker-restarted'; sessionId: string; workerId: string };
