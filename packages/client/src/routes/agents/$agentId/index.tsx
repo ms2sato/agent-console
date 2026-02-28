@@ -1,6 +1,11 @@
 import { useState } from 'react';
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import {
+  createFileRoute,
+  Link,
+  useNavigate,
+  type ErrorComponentProps,
+} from '@tanstack/react-router';
+import { useSuspenseQuery, useMutation } from '@tanstack/react-query';
 import { fetchAgent, unregisterAgent } from '../../../lib/api';
 import { agentKeys } from '../../../lib/query-keys';
 import { CapabilityIndicator } from '../../../components/agents';
@@ -10,7 +15,45 @@ import { Spinner } from '../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/agents/$agentId/')({
   component: AgentDetailPage,
+  pendingComponent: AgentDetailPending,
+  errorComponent: AgentDetailError,
 });
+
+function AgentDetailPending() {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-gray-500">
+        <Spinner size="sm" />
+        <span>Loading agent...</span>
+      </div>
+    </div>
+  );
+}
+
+function AgentDetailError({ error: _error, reset }: ErrorComponentProps) {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
+        <Link to="/" className="hover:text-white">Agent Console</Link>
+        <span>/</span>
+        <Link to="/agents" className="hover:text-white">Agents</Link>
+        <span>/</span>
+        <span className="text-white">Not Found</span>
+      </div>
+      <div className="card text-center py-10">
+        <p className="text-red-400 mb-4">Agent not found</p>
+        <div className="flex justify-center gap-2">
+          <button onClick={reset} className="btn btn-secondary">
+            Retry
+          </button>
+          <Link to="/agents" className="btn btn-primary">
+            Back to Agents
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AgentDetailPage() {
   const { agentId } = Route.useParams();
@@ -18,7 +61,7 @@ function AgentDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
-  const { data, isLoading, error } = useQuery({
+  const { data } = useSuspenseQuery({
     queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
@@ -36,43 +79,12 @@ function AgentDetailPage() {
   });
 
   const handleDelete = () => {
-    if (data?.agent.isBuiltIn) {
+    if (data.agent.isBuiltIn) {
       showError('Cannot Delete', 'Built-in agents cannot be deleted');
       return;
     }
     setShowDeleteConfirm(true);
   };
-
-  if (isLoading) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-gray-500">
-          <Spinner size="sm" />
-          <span>Loading agent...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !data) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          <Link to="/" className="hover:text-white">Agent Console</Link>
-          <span>/</span>
-          <Link to="/agents" className="hover:text-white">Agents</Link>
-          <span>/</span>
-          <span className="text-white">Not Found</span>
-        </div>
-        <div className="card text-center py-10">
-          <p className="text-red-400 mb-4">Agent not found</p>
-          <Link to="/agents" className="btn btn-primary">
-            Back to Agents
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   const agent = data.agent;
 

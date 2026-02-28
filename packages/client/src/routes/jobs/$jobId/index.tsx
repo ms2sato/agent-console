@@ -1,6 +1,11 @@
 import { useState } from 'react';
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  createFileRoute,
+  Link,
+  useNavigate,
+  type ErrorComponentProps,
+} from '@tanstack/react-router';
+import { useSuspenseQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { JOB_STATUS } from '@agent-console/shared';
 import { fetchJob, retryJob, cancelJob } from '../../../lib/api';
 import { jobKeys } from '../../../lib/query-keys';
@@ -12,8 +17,46 @@ import { Spinner } from '../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/jobs/$jobId/')({
   component: JobDetailPage,
+  pendingComponent: JobDetailPending,
+  errorComponent: JobDetailError,
   head: () => ({ meta: [{ title: 'Job Details' }] }),
 });
+
+function JobDetailPending() {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-gray-500">
+        <Spinner size="sm" />
+        <span>Loading job...</span>
+      </div>
+    </div>
+  );
+}
+
+function JobDetailError({ error: _error, reset }: ErrorComponentProps) {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
+        <Link to="/" className="hover:text-white">Agent Console</Link>
+        <span>/</span>
+        <Link to="/jobs" className="hover:text-white">Jobs</Link>
+        <span>/</span>
+        <span className="text-white">Not Found</span>
+      </div>
+      <div className="card text-center py-10">
+        <p className="text-red-400 mb-4">Job not found</p>
+        <div className="flex justify-center gap-2">
+          <button onClick={reset} className="btn btn-secondary">
+            Retry
+          </button>
+          <Link to="/jobs" className="btn btn-primary">
+            Back to Jobs
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function JobDetailPage() {
   const { jobId } = Route.useParams();
@@ -23,7 +66,7 @@ function JobDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
-  const { data: job, isLoading, error } = useQuery({
+  const { data: job } = useSuspenseQuery({
     queryKey: jobKeys.detail(jobId),
     queryFn: () => fetchJob(jobId),
     refetchInterval: 5000, // Auto-refresh every 5 seconds
@@ -56,37 +99,6 @@ function JobDetailPage() {
       showError('Failed to Cancel Job', error.message);
     },
   });
-
-  if (isLoading) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-gray-500">
-          <Spinner size="sm" />
-          <span>Loading job...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !job) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          <Link to="/" className="hover:text-white">Agent Console</Link>
-          <span>/</span>
-          <Link to="/jobs" className="hover:text-white">Jobs</Link>
-          <span>/</span>
-          <span className="text-white">Not Found</span>
-        </div>
-        <div className="card text-center py-10">
-          <p className="text-red-400 mb-4">Job not found</p>
-          <Link to="/jobs" className="btn btn-primary">
-            Back to Jobs
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   const canRetry = job.status === JOB_STATUS.STALLED;
   const canCancel = job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.STALLED;
