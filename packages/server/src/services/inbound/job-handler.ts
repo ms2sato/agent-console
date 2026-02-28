@@ -1,7 +1,5 @@
 import type {
-  InboundEventType,
   InboundSystemEvent,
-  SystemEvent,
 } from '@agent-console/shared';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundEventJobPayload } from '../../jobs/index.js';
@@ -42,28 +40,9 @@ export class HandlerExecutionError extends Error {
   }
 }
 
-const INBOUND_EVENT_TYPES: InboundEventType[] = [
-  'ci:completed',
-  'ci:failed',
-  'issue:closed',
-  'pr:merged',
-  'pr:review_comment',
-];
-
-/**
- * Type guard to check if an event is an inbound event.
- * Returns the event narrowed to InboundSystemEvent if the type matches.
- */
-function asInboundEvent(event: SystemEvent): InboundSystemEvent | null {
-  if (INBOUND_EVENT_TYPES.includes(event.type as InboundEventType)) {
-    return event as InboundSystemEvent;
-  }
-  return null;
-}
-
 export interface InboundEventJobDependencies {
   getServiceParser: (serviceId: string) => ServiceParser | null;
-  resolveTargets: (event: SystemEvent) => Promise<EventTarget[]>;
+  resolveTargets: (event: InboundSystemEvent) => Promise<EventTarget[]>;
   handlers: InboundEventHandler[];
   notificationRepository: InboundEventNotificationRepository;
   /** When provided, ci:completed events are held until all workflows for the commit SHA have succeeded. */
@@ -98,7 +77,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
 
     const headers = new Headers(job.headers);
 
-    let event: SystemEvent | null = null;
+    let event: InboundSystemEvent | null = null;
     try {
       event = await parser.parse(job.rawPayload, headers);
     } catch (error) {
@@ -120,23 +99,16 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
       return;
     }
 
-    let inboundEvent = asInboundEvent(event);
-    if (!inboundEvent) {
-      // Not an inbound event type - complete successfully
-      logger.debug({ eventType: event.type }, 'Ignoring non-inbound event');
-      return;
-    }
-
     // --- CI completion aggregation gate ---
-    if (inboundEvent.type === 'ci:completed' && deps.ciCompletionChecker) {
-      const { repositoryName, commitSha } = inboundEvent.metadata;
+    if (event.type === 'ci:completed' && deps.ciCompletionChecker) {
+      const { repositoryName, commitSha } = event.metadata;
       if (repositoryName && commitSha) {
         const result = await deps.ciCompletionChecker(repositoryName, commitSha);
         if (result !== null) {
           if (!result.allCompleted) {
             logger.info(
               {
-                eventType: inboundEvent.type,
+                eventType: event.type,
                 repositoryName,
                 commitSha,
                 successCount: result.successCount,
@@ -147,8 +119,8 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
             return; // Suppress — wait for remaining workflows
           }
           // All workflows completed successfully — update summary
-          inboundEvent = {
-            ...inboundEvent,
+          event = {
+            ...event,
             summary: `All CI workflows passed (${result.workflowNames.join(', ')})`,
           };
         }
@@ -156,7 +128,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
       }
     }
 
-    const handlers = deps.handlers.filter((handler) => handler.supportedEvents.includes(inboundEvent.type));
+    const handlers = deps.handlers.filter((handler) => handler.supportedEvents.includes(event.type));
     if (handlers.length === 0) {
       // No handlers - complete successfully
       logger.debug({ eventType: event.type }, 'No handlers registered for inbound event');
@@ -210,14 +182,14 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           session_id: target.sessionId,
           worker_id: workerId,
           handler_id: handler.handlerId,
-          event_type: inboundEvent.type,
-          event_summary: inboundEvent.summary,
+          event_type: event.type,
+          event_summary: event.summary,
           created_at: new Date().toISOString(),
         });
 
         let handled = false;
         try {
-          handled = await handler.handle(inboundEvent, target);
+          handled = await handler.handle(event, target);
         } catch (error) {
           // Handler execution failures are transient by default
           // (e.g., temporary network issues, WebSocket disconnection)
@@ -230,8 +202,8 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
               handlerId: handler.handlerId,
               sessionId: target.sessionId,
               workerId: workerId,
-              eventType: inboundEvent.type,
-              eventSummary: inboundEvent.summary,
+              eventType: event.type,
+              eventSummary: event.summary,
             },
             'Inbound event handler failed'
           );

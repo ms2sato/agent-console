@@ -5,6 +5,8 @@
  * key=value formatted messages into agent worker terminals.
  */
 
+import type { PtyNotificationIntent } from '@agent-console/shared';
+
 /**
  * Sanitize and quote a string value for use in a key=value PTY notification field.
  *
@@ -29,26 +31,49 @@ export function formatFieldValue(value: string): string {
   return normalized;
 }
 
-export interface WritePtyNotificationParams {
-  /** Tag for the notification, e.g. "inbound:ci:failed" or "inbound:message" */
-  tag: string;
-  /** Key-value fields to include in the notification */
-  fields: Record<string, string>;
+interface BasePtyNotificationParams {
   /** Function to write data to the PTY */
   writeInput: (data: string) => void;
 }
 
+export interface InboundEventPtyNotification extends BasePtyNotificationParams {
+  kind: 'inbound-event';
+  /** Tag for the notification, e.g. "inbound:ci:failed" */
+  tag: string;
+  /** Key-value fields to include in the notification */
+  fields: Record<string, string>;
+  /** Notification intent */
+  intent: PtyNotificationIntent;
+}
+
+export interface InternalMessagePtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-message';
+  /** Tag for the notification: "internal:message" */
+  tag: 'internal:message';
+  /** Key-value fields to include in the notification */
+  fields: Record<string, string>;
+  /** Notification intent */
+  intent: PtyNotificationIntent;
+}
+
+export type WritePtyNotificationParams =
+  | InboundEventPtyNotification
+  | InternalMessagePtyNotification;
+
 /**
  * Build and send a structured notification to a PTY process.
  *
- * Writes `\n[tag] key1=val1 key2=val2` immediately, then sends
+ * Writes `\n[tag] key1=val1 key2=val2 intent=...` immediately, then sends
  * a carriage return (`\r`) after a 150ms delay so TUI agents can
  * process the text input before receiving the Enter keystroke.
  *
  * @returns The notification string that was written (without the trailing `\r`)
  */
-export function writePtyNotification({ tag, fields, writeInput }: WritePtyNotificationParams): string {
-  const fieldString = Object.entries(fields)
+export function writePtyNotification(params: WritePtyNotificationParams): string {
+  const { tag, fields, writeInput, intent } = params;
+  const allFields = { ...fields, intent };
+
+  const fieldString = Object.entries(allFields)
     .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
     .join(' ');
 

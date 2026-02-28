@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { InboundEventType, SystemEvent } from '@agent-console/shared';
+import type { InboundEventType, InboundSystemEvent } from '@agent-console/shared';
 import * as v from 'valibot';
 import { createLogger } from '../../lib/logger.js';
 import { serverConfig } from '../../lib/server-config.js';
@@ -72,17 +72,48 @@ const ReviewCommentPayloadSchema = v.object({
   repository: RepositorySchema,
 });
 
+const PullRequestReviewPayloadSchema = v.object({
+  action: v.literal('submitted'),
+  review: v.object({
+    state: v.literal('changes_requested'),
+    user: v.nullish(v.object({
+      login: v.nullish(v.string()),
+    })),
+    html_url: v.nullish(v.string()),
+  }),
+  pull_request: v.object({
+    number: v.number(),
+    head: HeadRefSchema,
+  }),
+  repository: RepositorySchema,
+});
+
+const IssueCommentPayloadSchema = v.object({
+  action: v.literal('created'),
+  issue: v.object({
+    number: v.number(),
+    pull_request: v.object({}),
+    html_url: v.nullish(v.string()),
+  }),
+  comment: v.object({
+    body: v.string(),
+    html_url: v.nullish(v.string()),
+    created_at: v.nullish(v.string()),
+    user: v.nullish(v.object({
+      login: v.nullish(v.string()),
+    })),
+  }),
+  repository: RepositorySchema,
+});
+
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 export class GitHubServiceParser implements ServiceParser {
   readonly serviceId = 'github';
-  private webhookSecret: string;
 
-  constructor(webhookSecret: string = serverConfig.GITHUB_WEBHOOK_SECRET) {
-    this.webhookSecret = webhookSecret;
-  }
+  constructor(private webhookSecret: string = serverConfig.GITHUB_WEBHOOK_SECRET) {}
 
   async authenticate(payload: string, headers: Headers): Promise<boolean> {
     if (!this.webhookSecret) {
@@ -109,7 +140,7 @@ export class GitHubServiceParser implements ServiceParser {
     return timingSafeEqual(signatureBuffer, expectedBuffer);
   }
 
-  async parse(payload: string, headers: Headers): Promise<SystemEvent | null> {
+  async parse(payload: string, headers: Headers): Promise<InboundSystemEvent | null> {
     let body: unknown;
     try {
       body = JSON.parse(payload);
@@ -132,12 +163,16 @@ export class GitHubServiceParser implements ServiceParser {
         return this.parsePullRequest(body);
       case 'pull_request_review_comment':
         return this.parsePullRequestReviewComment(body);
+      case 'pull_request_review':
+        return this.parsePullRequestReview(body);
+      case 'issue_comment':
+        return this.parseIssueComment(body);
       default:
         return null;
     }
   }
 
-  private parseWorkflowRun(body: unknown): SystemEvent | null {
+  private parseWorkflowRun(body: unknown): InboundSystemEvent | null {
     const result = v.safeParse(WorkflowRunPayloadSchema, body);
     if (!result.success) {
       logger.debug({ issues: result.issues }, 'workflow_run payload did not match expected schema');
@@ -162,7 +197,7 @@ export class GitHubServiceParser implements ServiceParser {
     };
   }
 
-  private parseIssueClosed(body: unknown): SystemEvent | null {
+  private parseIssueClosed(body: unknown): InboundSystemEvent | null {
     const result = v.safeParse(IssueClosedPayloadSchema, body);
     if (!result.success) {
       logger.debug({ issues: result.issues }, 'issues payload did not match expected schema');
@@ -184,7 +219,7 @@ export class GitHubServiceParser implements ServiceParser {
     };
   }
 
-  private parsePullRequest(body: unknown): SystemEvent | null {
+  private parsePullRequest(body: unknown): InboundSystemEvent | null {
     const result = v.safeParse(PullRequestMergedPayloadSchema, body);
     if (!result.success) {
       logger.debug({ issues: result.issues }, 'pull_request payload did not match expected schema');
@@ -207,7 +242,7 @@ export class GitHubServiceParser implements ServiceParser {
     };
   }
 
-  private parsePullRequestReviewComment(body: unknown): SystemEvent | null {
+  private parsePullRequestReviewComment(body: unknown): InboundSystemEvent | null {
     const result = v.safeParse(ReviewCommentPayloadSchema, body);
     if (!result.success) {
       logger.debug({ issues: result.issues }, 'pull_request_review_comment payload did not match expected schema');
@@ -235,6 +270,53 @@ export class GitHubServiceParser implements ServiceParser {
       },
       payload: body,
       summary,
+    };
+  }
+
+  private parsePullRequestReview(body: unknown): InboundSystemEvent | null {
+    const result = v.safeParse(PullRequestReviewPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'pull_request_review payload did not match expected schema');
+      return null;
+    }
+
+    const { review, pull_request: pr, repository } = result.output;
+    const username = review.user?.login ?? 'unknown';
+
+    return {
+      type: 'pr:changes_requested',
+      source: 'github',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        repositoryName: repository.full_name,
+        branch: pr.head?.ref ?? undefined,
+        url: review.html_url ?? undefined,
+      },
+      payload: body,
+      summary: `Changes requested on PR #${pr.number} by ${truncate(username, 100)}`,
+    };
+  }
+
+  private parseIssueComment(body: unknown): InboundSystemEvent | null {
+    const result = v.safeParse(IssueCommentPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'issue_comment payload did not match expected schema');
+      return null;
+    }
+
+    const { issue, comment, repository } = result.output;
+    const username = comment.user?.login ?? 'unknown';
+
+    return {
+      type: 'pr:comment',
+      source: 'github',
+      timestamp: comment.created_at ?? new Date().toISOString(),
+      metadata: {
+        repositoryName: repository.full_name,
+        url: comment.html_url ?? undefined,
+      },
+      payload: body,
+      summary: `Comment on PR #${issue.number} by ${truncate(username, 100)}: ${truncate(comment.body, 200)}`,
     };
   }
 }

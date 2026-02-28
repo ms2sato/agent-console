@@ -1,4 +1,4 @@
-import type { Repository, Session, SystemEvent } from '@agent-console/shared';
+import type { Repository, Session, InboundSystemEvent } from '@agent-console/shared';
 import type { EventTarget } from './handlers.js';
 import { getOrgRepoFromPath as getOrgRepoFromPathDefault, GitError } from '../../lib/git.js';
 import { createLogger } from '../../lib/logger.js';
@@ -25,7 +25,7 @@ function isExpectedError(error: unknown): boolean {
 }
 
 export async function resolveTargets(
-  event: SystemEvent,
+  event: InboundSystemEvent,
   deps: TargetResolverDependencies
 ): Promise<EventTarget[]> {
   const repositoryName = event.metadata.repositoryName;

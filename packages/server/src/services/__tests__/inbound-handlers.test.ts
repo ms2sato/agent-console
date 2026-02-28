@@ -18,6 +18,35 @@ function createReviewCommentEvent(): InboundSystemEvent {
   };
 }
 
+function createChangesRequestedEvent(): InboundSystemEvent {
+  return {
+    type: 'pr:changes_requested',
+    source: 'github',
+    timestamp: '2024-01-15T00:00:00Z',
+    metadata: {
+      repositoryName: 'owner/repo',
+      branch: 'feature-branch',
+      url: 'https://github.com/owner/repo/pull/7#pullrequestreview-100',
+    },
+    payload: {},
+    summary: 'Changes requested on PR #7 by reviewer',
+  };
+}
+
+function createPrCommentEvent(): InboundSystemEvent {
+  return {
+    type: 'pr:comment',
+    source: 'github',
+    timestamp: '2024-02-01T10:00:00Z',
+    metadata: {
+      repositoryName: 'owner/repo',
+      url: 'https://github.com/owner/repo/pull/7#issuecomment-456',
+    },
+    payload: {},
+    summary: 'Comment on PR #7 by commenter: Looks good, but please update the docs',
+  };
+}
+
 function createMockSession(): Session {
   return {
     id: 'session-1',
@@ -36,31 +65,63 @@ function createMockSession(): Session {
   };
 }
 
+function createAgentHandlerWithCapture(): {
+  agentHandler: ReturnType<typeof createInboundHandlers>[number];
+  getCapturedMessage: () => string;
+} {
+  let capturedMessage = '';
+  const mockSessionManager = {
+    getSession: mock(() => createMockSession()),
+    writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
+      capturedMessage = data;
+      return true;
+    }),
+  } as unknown as SessionManager;
+
+  const handlers = createInboundHandlers({
+    sessionManager: mockSessionManager,
+    broadcastToApp: () => {},
+  });
+  return {
+    agentHandler: handlers.find((h) => h.handlerId === 'agent-worker')!,
+    getCapturedMessage: () => capturedMessage,
+  };
+}
+
 describe('AgentWorkerHandler', () => {
   it('handles pr:review_comment with intent=triage', async () => {
-    let capturedMessage = '';
-    const mockSessionManager = {
-      getSession: mock(() => createMockSession()),
-      writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
-        capturedMessage = data;
-        return true;
-      }),
-    } as unknown as SessionManager;
-
-    const handlers = createInboundHandlers({
-      sessionManager: mockSessionManager,
-      broadcastToApp: () => {},
-    });
-    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+    const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
 
     const result = await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
 
     expect(result).toBe(true);
-    expect(capturedMessage).toContain('intent=triage');
-    expect(capturedMessage).toContain('[inbound:pr:review_comment]');
-    expect(capturedMessage).toContain('type=pr:review_comment');
+    expect(getCapturedMessage()).toContain('intent=triage');
+    expect(getCapturedMessage()).toContain('[inbound:pr:review_comment]');
+    expect(getCapturedMessage()).toContain('type=pr:review_comment');
     // Notification text should not end with \n (Enter is sent separately)
-    expect(capturedMessage.endsWith('\n')).toBe(false);
+    expect(getCapturedMessage().endsWith('\n')).toBe(false);
+  });
+
+  it('handles pr:changes_requested with intent=triage', async () => {
+    const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
+
+    const result = await agentHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe(true);
+    expect(getCapturedMessage()).toContain('intent=triage');
+    expect(getCapturedMessage()).toContain('[inbound:pr:changes_requested]');
+    expect(getCapturedMessage()).toContain('type=pr:changes_requested');
+  });
+
+  it('handles pr:comment with intent=triage', async () => {
+    const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
+
+    const result = await agentHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe(true);
+    expect(getCapturedMessage()).toContain('intent=triage');
+    expect(getCapturedMessage()).toContain('[inbound:pr:comment]');
+    expect(getCapturedMessage()).toContain('type=pr:comment');
   });
 
   it('sends Enter keystroke separately after a 150ms delay', async () => {
@@ -100,29 +161,72 @@ describe('AgentWorkerHandler', () => {
   });
 });
 
+function createUIHandlerWithCapture(): {
+  uiHandler: ReturnType<typeof createInboundHandlers>[number];
+  broadcastToApp: ReturnType<typeof mock>;
+  getCapturedBroadcast: () => { type: string; sessionId: string; event: InboundEventSummary };
+} {
+  let capturedBroadcast: { type: string; sessionId: string; event: InboundEventSummary } | undefined;
+  const broadcastToApp = mock((message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => {
+    capturedBroadcast = message;
+  });
+
+  const handlers = createInboundHandlers({
+    sessionManager: {} as SessionManager,
+    broadcastToApp,
+  });
+  return {
+    uiHandler: handlers.find((h) => h.handlerId === 'ui-notification')!,
+    broadcastToApp,
+    getCapturedBroadcast: () => capturedBroadcast!,
+  };
+}
+
 describe('UINotificationHandler', () => {
   it('broadcasts pr:review_comment event', async () => {
-    let capturedBroadcast: { type: string; sessionId: string; event: InboundEventSummary } | undefined;
-    const broadcastToApp = mock((message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => {
-      capturedBroadcast = message;
-    });
-
-    const handlers = createInboundHandlers({
-      sessionManager: {} as SessionManager,
-      broadcastToApp,
-    });
-    const uiHandler = handlers.find((h) => h.handlerId === 'ui-notification')!;
+    const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
 
     const result = await uiHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
 
     expect(result).toBe(true);
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
-    expect(capturedBroadcast).toBeDefined();
-    expect(capturedBroadcast!.type).toBe('inbound-event');
-    expect(capturedBroadcast!.sessionId).toBe('session-1');
-    expect(capturedBroadcast!.event.type).toBe('pr:review_comment');
-    expect(capturedBroadcast!.event.source).toBe('github');
-    expect(capturedBroadcast!.event.summary).toContain('PR #7');
-    expect(capturedBroadcast!.event.metadata.repositoryName).toBe('owner/repo');
+    const broadcast = getCapturedBroadcast();
+    expect(broadcast.type).toBe('inbound-event');
+    expect(broadcast.sessionId).toBe('session-1');
+    expect(broadcast.event.type).toBe('pr:review_comment');
+    expect(broadcast.event.source).toBe('github');
+    expect(broadcast.event.summary).toContain('PR #7');
+    expect(broadcast.event.metadata.repositoryName).toBe('owner/repo');
+  });
+
+  it('broadcasts pr:changes_requested event', async () => {
+    const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
+
+    const result = await uiHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe(true);
+    expect(broadcastToApp).toHaveBeenCalledTimes(1);
+    const broadcast = getCapturedBroadcast();
+    expect(broadcast.type).toBe('inbound-event');
+    expect(broadcast.sessionId).toBe('session-1');
+    expect(broadcast.event.type).toBe('pr:changes_requested');
+    expect(broadcast.event.source).toBe('github');
+    expect(broadcast.event.summary).toContain('PR #7');
+  });
+
+  it('broadcasts pr:comment event', async () => {
+    const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
+
+    const result = await uiHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe(true);
+    expect(broadcastToApp).toHaveBeenCalledTimes(1);
+    const broadcast = getCapturedBroadcast();
+    expect(broadcast.type).toBe('inbound-event');
+    expect(broadcast.sessionId).toBe('session-1');
+    expect(broadcast.event.type).toBe('pr:comment');
+    expect(broadcast.event.source).toBe('github');
+    expect(broadcast.event.summary).toContain('PR #7');
+    expect(broadcast.event.metadata.repositoryName).toBe('owner/repo');
   });
 });

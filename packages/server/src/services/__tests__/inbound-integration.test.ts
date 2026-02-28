@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { createHmac } from 'node:crypto';
-import type { Repository, Session, SystemEvent } from '@agent-console/shared';
+import type { Repository, Session, InboundSystemEvent } from '@agent-console/shared';
 import { GitHubServiceParser } from '../inbound/github-service-parser.js';
 import { resolveTargets } from '../inbound/resolve-targets.js';
 
@@ -315,6 +315,201 @@ describe('GitHubServiceParser', () => {
       expect(event!.summary).not.toContain('A'.repeat(201));
     });
   });
+
+  describe('pull_request_review', () => {
+    const reviewHeaders = new Headers({ 'x-github-event': 'pull_request_review' });
+
+    function createReviewPayload(overrides: {
+      action?: string;
+      review?: Record<string, unknown>;
+      pull_request?: Record<string, unknown>;
+      repository?: Record<string, unknown>;
+    } = {}): string {
+      return JSON.stringify({
+        action: overrides.action ?? 'submitted',
+        review: {
+          state: 'changes_requested',
+          user: { login: 'reviewer' },
+          html_url: 'https://github.com/owner/repo/pull/7#pullrequestreview-100',
+          ...overrides.review,
+        },
+        pull_request: {
+          number: 7,
+          head: { ref: 'feature-branch' },
+          ...overrides.pull_request,
+        },
+        repository: {
+          full_name: 'owner/repo',
+          ...overrides.repository,
+        },
+      });
+    }
+
+    it('parses submitted changes_requested events', async () => {
+      const payload = createReviewPayload();
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.type).toBe('pr:changes_requested');
+      expect(event!.source).toBe('github');
+      expect(event!.metadata.repositoryName).toBe('owner/repo');
+      expect(event!.metadata.branch).toBe('feature-branch');
+      expect(event!.metadata.url).toBe('https://github.com/owner/repo/pull/7#pullrequestreview-100');
+      expect(event!.summary).toContain('#7');
+      expect(event!.summary).toContain('by reviewer');
+    });
+
+    it('ignores non-changes_requested review states', async () => {
+      const payload = createReviewPayload({ review: { state: 'approved' } });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).toBeNull();
+    });
+
+    it('ignores non-submitted actions', async () => {
+      const payload = createReviewPayload({ action: 'edited' });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).toBeNull();
+    });
+
+    it('parses without html_url', async () => {
+      const payload = createReviewPayload({
+        review: { state: 'changes_requested', html_url: undefined },
+      });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.metadata.url).toBeUndefined();
+    });
+
+    it('parses without review.user.login', async () => {
+      const payload = createReviewPayload({
+        review: { state: 'changes_requested', user: undefined },
+      });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.summary).toContain('by unknown');
+    });
+
+    it('parses without branch info', async () => {
+      const payload = createReviewPayload({
+        pull_request: { number: 5, head: undefined },
+      });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.metadata.branch).toBeUndefined();
+    });
+
+    it('truncates long userLogin in summary', async () => {
+      const longLogin = 'u'.repeat(150);
+      const payload = createReviewPayload({
+        review: { state: 'changes_requested', user: { login: longLogin } },
+      });
+
+      const event = await parser.parse(payload, reviewHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.summary).not.toContain(longLogin);
+      expect(event!.summary).toContain(longLogin.slice(0, 100) + '...');
+    });
+  });
+
+  describe('issue_comment', () => {
+    const issueCommentHeaders = new Headers({ 'x-github-event': 'issue_comment' });
+
+    function createIssueCommentPayload(overrides: {
+      action?: string;
+      issue?: Record<string, unknown>;
+      comment?: Record<string, unknown>;
+      repository?: Record<string, unknown>;
+    } = {}): string {
+      return JSON.stringify({
+        action: overrides.action ?? 'created',
+        issue: {
+          number: 7,
+          pull_request: {},
+          html_url: 'https://github.com/owner/repo/pull/7',
+          ...overrides.issue,
+        },
+        comment: {
+          body: 'Looks good, but please update the docs',
+          html_url: 'https://github.com/owner/repo/pull/7#issuecomment-456',
+          created_at: '2024-02-01T10:00:00Z',
+          user: { login: 'commenter' },
+          ...overrides.comment,
+        },
+        repository: {
+          full_name: 'owner/repo',
+          ...overrides.repository,
+        },
+      });
+    }
+
+    it('parses created PR comment events', async () => {
+      const payload = createIssueCommentPayload();
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.type).toBe('pr:comment');
+      expect(event!.source).toBe('github');
+      expect(event!.timestamp).toBe('2024-02-01T10:00:00Z');
+      expect(event!.metadata.repositoryName).toBe('owner/repo');
+      expect(event!.metadata.url).toBe('https://github.com/owner/repo/pull/7#issuecomment-456');
+      expect(event!.summary).toContain('#7');
+      expect(event!.summary).toContain('by commenter');
+      expect(event!.summary).toContain('Looks good, but please update the docs');
+      // issue_comment does NOT have branch metadata
+      expect(event!.metadata.branch).toBeUndefined();
+    });
+
+    it('returns null for plain issue comments (no pull_request field)', async () => {
+      const payload = createIssueCommentPayload({
+        issue: { number: 42, pull_request: undefined },
+      });
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).toBeNull();
+    });
+
+    it('ignores non-created actions', async () => {
+      const payload = createIssueCommentPayload({ action: 'edited' });
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).toBeNull();
+    });
+
+    it('truncates long comment body to 200 chars', async () => {
+      const longBody = 'B'.repeat(250);
+      const payload = createIssueCommentPayload({ comment: { body: longBody } });
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.summary).toContain('B'.repeat(200) + '...');
+      expect(event!.summary).not.toContain('B'.repeat(201));
+    });
+
+    it('parses without user.login', async () => {
+      const payload = createIssueCommentPayload({
+        comment: { body: 'Anonymous comment', user: undefined },
+      });
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.summary).toContain('by unknown');
+    });
+
+    it('parses without html_url', async () => {
+      const payload = createIssueCommentPayload({
+        comment: { body: 'A comment', html_url: undefined },
+      });
+
+      const event = await parser.parse(payload, issueCommentHeaders);
+      expect(event).not.toBeNull();
+      expect(event!.metadata.url).toBeUndefined();
+    });
+  });
 });
 
 describe('resolveTargets', () => {
@@ -339,7 +534,7 @@ describe('resolveTargets', () => {
       ['repo-1', { id: 'repo-1', name: 'repo', path: '/worktrees/repo', createdAt: '2024-01-01T00:00:00Z' }],
     ]);
 
-    const event: SystemEvent = {
+    const event: InboundSystemEvent = {
       type: 'ci:completed',
       source: 'github',
       timestamp: '2024-01-01T00:00:00Z',
@@ -381,7 +576,7 @@ describe('resolveTargets', () => {
       ['repo-1', { id: 'repo-1', name: 'repo', path: '/worktrees/repo', createdAt: '2024-01-01T00:00:00Z' }],
     ]);
 
-    const event: SystemEvent = {
+    const event: InboundSystemEvent = {
       type: 'ci:completed',
       source: 'github',
       timestamp: '2024-01-01T00:00:00Z',
