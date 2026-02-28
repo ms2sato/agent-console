@@ -24,8 +24,8 @@ export const CreateWorktreeSessionRequestSchema = v.object({
   continueConversation: v.optional(v.boolean()),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
-  parentSessionId: v.optional(v.pipe(v.string(), v.minLength(1))),
-  parentWorkerId: v.optional(v.pipe(v.string(), v.minLength(1))),
+  parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+  parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
 });
 
 /**
@@ -42,8 +42,8 @@ export const CreateQuickSessionRequestSchema = v.object({
   continueConversation: v.optional(v.boolean()),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
-  parentSessionId: v.optional(v.pipe(v.string(), v.minLength(1))),
-  parentWorkerId: v.optional(v.pipe(v.string(), v.minLength(1))),
+  parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+  parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
 });
 
 /**

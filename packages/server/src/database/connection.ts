@@ -16,6 +16,14 @@ import { addDatetime } from './schema-helpers.js';
 
 const logger = createLogger('database');
 
+/**
+ * Check if an error is a SQLite "duplicate column name" error.
+ * Used by migrations to make ALTER TABLE ADD COLUMN idempotent.
+ */
+function isDuplicateColumnError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('duplicate column name');
+}
+
 let db: Kysely<Database> | null = null;
 
 /**
@@ -658,15 +666,27 @@ async function migrateToV12(database: Kysely<Database>): Promise<void> {
 async function migrateToV13(database: Kysely<Database>): Promise<void> {
   logger.info('Running migration to v13: Adding parent_session_id and parent_worker_id to sessions');
 
-  await database.schema
-    .alterTable('sessions')
-    .addColumn('parent_session_id', 'text')
-    .execute();
+  // Use try-catch for idempotency: if a column already exists from a partial
+  // previous run, ignore the error and continue with the remaining columns.
+  try {
+    await database.schema
+      .alterTable('sessions')
+      .addColumn('parent_session_id', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column parent_session_id already exists, skipping');
+  }
 
-  await database.schema
-    .alterTable('sessions')
-    .addColumn('parent_worker_id', 'text')
-    .execute();
+  try {
+    await database.schema
+      .alterTable('sessions')
+      .addColumn('parent_worker_id', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column parent_worker_id already exists, skipping');
+  }
 
   await sql`PRAGMA user_version = 13`.execute(database);
 

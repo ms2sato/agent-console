@@ -204,6 +204,8 @@ Check the status of a delegated session.
   status: 'active' | 'inactive',
   title?: string,
   worktreeId?: string,
+  parentSessionId?: string,
+  parentWorkerId?: string,
   workers: Array<{
     id: string,
     type: 'agent' | 'terminal' | 'git-diff',
@@ -247,6 +249,8 @@ List active sessions (useful for discovering existing work).
     type: 'worktree' | 'quick',
     title?: string,
     worktreeId?: string,
+    parentSessionId?: string,
+    parentWorkerId?: string,
     status: 'active' | 'inactive',
     workers: Array<{
       id: string,
