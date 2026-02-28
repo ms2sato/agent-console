@@ -151,6 +151,10 @@ gh pr list -R ms2sato/agent-console
 gh pr view 123 -R ms2sato/agent-console
 ```
 
+## Design Documents as Specification
+
+Design documents (`docs/design/`) are specifications. Code is their implementation. When adding new features or changing behavior, update the design document FIRST as the spec, then implement code to match. When code changes affect the spec, update the design document as well. The spec and implementation must never silently diverge.
+
 ## Commit Standards
 
 Use conventional commit format: `type: description`

@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Do not blindly follow existing patterns.** Existing code is not automatically correct. Evaluate whether patterns in the codebase are appropriate before adopting them.
 
+**Enforce constraints through structure, not convention.** If a constraint can be expressed in the type system, do not enforce it through runtime checks, wrapper functions, documentation, or code review. `string` where a union type would work, `Record<string, string>` where a typed interface would work, a runtime guard that re-checks what the compiler could guarantee — all are type safety gaps. Convention can be bypassed; the compiler cannot. Always choose the path that makes invalid states unrepresentable.
+
+**Define types by what they represent, not where they're used.** When creating a type, ask: is this a system-wide concept or a package-internal implementation detail? A type's home is determined by the scope of the concept it models, not by which module first needs it.
+
 **Think before you act.** When facing a problem, first consider the correct approach rather than immediately implementing the easiest solution.
 
 **Speak up about issues.** When you notice something inappropriate or problematic outside the current task scope, mention it as a supplementary note. Do not silently ignore issues just because they are not directly related to the task at hand.
