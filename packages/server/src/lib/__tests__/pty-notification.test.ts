@@ -86,20 +86,20 @@ describe('writePtyNotification', () => {
     const result = writePtyNotification({
       kind: 'inbound-event',
       tag: 'inbound:ci:failed',
-      fields: { type: 'ci:failed', source: 'github', summary: 'Build failed' },
+      fields: { type: 'ci:failed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'Build failed' },
       intent: 'triage',
       writeInput,
     });
 
-    expect(result).toBe('\n[inbound:ci:failed] type=ci:failed source=github summary="Build failed" intent=triage');
+    expect(result).toBe('\n[inbound:ci:failed] type=ci:failed source=github repo=owner/repo branch=main url=https://example.com summary="Build failed" intent=triage');
     expect(written[0]).toBe(result);
   });
 
   it('returns the notification string without trailing carriage return', () => {
     const result = writePtyNotification({
       kind: 'inbound-event',
-      tag: 'test',
-      fields: { key: 'value' },
+      tag: 'inbound:ci:completed',
+      fields: { type: 'ci:completed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'CI passed' },
       intent: 'inform',
       writeInput: () => {},
     });
@@ -117,7 +117,7 @@ describe('writePtyNotification', () => {
       writePtyNotification({
         kind: 'internal-message',
         tag: 'internal:message',
-        fields: { source: 'session', from: 'sender-1' },
+        fields: { source: 'session', from: 'sender-1', summary: 'Test message', path: '/tmp/msg' },
         intent: 'triage',
         writeInput,
       });
@@ -141,17 +141,17 @@ describe('writePtyNotification', () => {
     const written: string[] = [];
 
     writePtyNotification({
-      kind: 'inbound-event',
-      tag: 'test',
-      fields: { msg: 'hello world', safe: 'simple' },
+      kind: 'internal-message',
+      tag: 'internal:message',
+      fields: { source: 'session', from: 'sender-1', summary: 'hello world', path: '/tmp/simple' },
       intent: 'inform',
       writeInput: (data) => { written.push(data); },
     });
 
     // 'hello world' has a space, so it should be quoted
-    expect(written[0]).toContain('msg="hello world"');
-    // 'simple' has no special chars, so it should be unquoted
-    expect(written[0]).toContain('safe=simple');
+    expect(written[0]).toContain('summary="hello world"');
+    // '/tmp/simple' has no special chars requiring quoting (slash and alphanumeric)
+    expect(written[0]).toContain('path=/tmp/simple');
   });
 
   it('includes intent field in notification output', () => {
@@ -160,7 +160,7 @@ describe('writePtyNotification', () => {
     writePtyNotification({
       kind: 'inbound-event',
       tag: 'inbound:ci:completed',
-      fields: { type: 'ci:completed', source: 'github' },
+      fields: { type: 'ci:completed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'CI passed' },
       intent: 'inform',
       writeInput: (data) => { written.push(data); },
     });

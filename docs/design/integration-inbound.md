@@ -122,7 +122,7 @@ Inbound integration handles external source events defined in [System Events](./
 
 ### Handler Interface
 
-Handlers receive `SystemEvent` (defined in [System Events](./system-events.md)) and process them for specific targets.
+Handlers receive `InboundSystemEvent` (defined in [System Events](./system-events.md)) and process them for specific targets.
 
 ```typescript
 interface InboundEventHandler {
@@ -136,7 +136,7 @@ interface InboundEventHandler {
    * Handle the event for a specific target.
    * Returns true if handled successfully.
    */
-  handle(event: SystemEvent, target: EventTarget): Promise<boolean>;
+  handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean>;
 }
 
 interface EventTarget {
@@ -159,7 +159,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
     if (!worker || worker.type !== 'agent') return false;
 
@@ -168,7 +168,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     return true;
   }
 
-  private formatMessage(event: SystemEvent): string {
+  private formatMessage(event: InboundSystemEvent): string {
     // Format: structured tag + key/value fields for reliable parsing.
     // Example: [inbound:ci-failed] source=github repo=owner/repo branch=main url=... summary="..." intent=triage
     const intent = this.resolveIntent(event.type);
@@ -208,7 +208,7 @@ class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
   readonly supportedEvents: InboundEventType[] = ['ci:completed', 'pr:merged'];
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const workers = this.sessionManager.getWorkersByType(target.sessionId, 'git-diff');
     if (workers.length === 0) return false;
 
@@ -232,7 +232,7 @@ class UINotificationHandler implements InboundEventHandler {
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     // Broadcast to all clients viewing this session
     this.appWebSocket.broadcast({
       type: 'inbound-event',
@@ -461,7 +461,7 @@ Sessions are matched to webhooks by comparing repository identifiers.
 
 1. **Runtime resolution** (current approach):
    ```typescript
-   async function resolveTargets(event: SystemEvent): Promise<EventTarget[]> {
+   async function resolveTargets(event: InboundSystemEvent): Promise<EventTarget[]> {
      const sessions = await sessionRepository.findAll();
      const targets: EventTarget[] = [];
 
@@ -501,7 +501,7 @@ Sessions are matched to webhooks by comparing repository identifiers.
 
 ### Service Parser Interface
 
-Service parsers authenticate webhooks and convert raw payloads to `SystemEvent`.
+Service parsers authenticate webhooks and convert raw payloads to `InboundSystemEvent`.
 
 ```typescript
 interface ServiceParser {
@@ -585,7 +585,7 @@ async parse(payload: string, headers: Headers): Promise<InboundSystemEvent | nul
   }
 }
 
-private parseWorkflowRun(body: unknown): SystemEvent {
+private parseWorkflowRun(body: unknown): InboundSystemEvent {
   const conclusion = body.workflow_run.conclusion;
   return {
     type: conclusion === 'success' ? 'ci:completed' : 'ci:failed',
@@ -601,7 +601,7 @@ private parseWorkflowRun(body: unknown): SystemEvent {
   };
 }
 
-private parseIssueClosed(body: unknown): SystemEvent {
+private parseIssueClosed(body: unknown): InboundSystemEvent {
   return {
     type: 'issue:closed',
     source: 'github',
@@ -615,7 +615,7 @@ private parseIssueClosed(body: unknown): SystemEvent {
   };
 }
 
-private parsePullRequest(body: unknown): SystemEvent | null {
+private parsePullRequest(body: unknown): InboundSystemEvent | null {
   const action = body.action;
 
   if (action === 'closed' && body.pull_request.merged) {
@@ -776,7 +776,7 @@ class SessionActionHandler implements InboundEventHandler {
   readonly handlerId = 'session-action';
   readonly supportedEvents: InboundEventType[] = ['issue:closed', 'pr:merged'];
 
-  async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     // Example: Show dialog suggesting to close session
     if (event.type === 'issue:closed' || event.type === 'pr:merged') {
       this.appWebSocket.broadcast({
