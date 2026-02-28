@@ -52,6 +52,10 @@ export interface SessionBase {
   title?: string;            // Human-readable title for the session
   /** ISO 8601 timestamp when this session was paused (undefined = not paused) */
   pausedAt?: string;
+  /** Parent session ID that delegated/created this session */
+  parentSessionId?: string;
+  /** Parent worker ID that delegated/created this session */
+  parentWorkerId?: string;
 }
 
 export interface WorktreeSession extends SessionBase {

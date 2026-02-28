@@ -64,6 +64,8 @@ export function toSessionRow(session: PersistedSession): NewSession {
     initial_prompt: session.initialPrompt ?? null,
     title: session.title ?? null,
     paused_at: session.pausedAt ?? null,
+    parent_session_id: session.parentSessionId ?? null,
+    parent_worker_id: session.parentWorkerId ?? null,
   };
 
   if (session.type === 'worktree') {
@@ -228,6 +230,8 @@ export function toPersistedSession(
       initialPrompt: session.initial_prompt ?? undefined,
       title: session.title ?? undefined,
       pausedAt: session.paused_at ?? undefined,
+      parentSessionId: session.parent_session_id ?? undefined,
+      parentWorkerId: session.parent_worker_id ?? undefined,
     } as PersistedWorktreeSession;
   } else if (session.type === 'quick') {
     return {
@@ -240,6 +244,8 @@ export function toPersistedSession(
       initialPrompt: session.initial_prompt ?? undefined,
       title: session.title ?? undefined,
       pausedAt: session.paused_at ?? undefined,
+      parentSessionId: session.parent_session_id ?? undefined,
+      parentWorkerId: session.parent_worker_id ?? undefined,
     } as PersistedQuickSession;
   } else {
     // This should never be reached due to the validation above,

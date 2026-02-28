@@ -96,6 +96,10 @@ export interface AgentActivationParams extends WorkerContext {
   initialPrompt?: string;
   /** Repository ID for worktree sessions. Omit for quick sessions. */
   repositoryId?: string;
+  /** Parent session ID for delegated sessions */
+  parentSessionId?: string;
+  /** Parent worker ID for delegated sessions */
+  parentWorkerId?: string;
 }
 
 /**
@@ -275,7 +279,7 @@ export class WorkerManager {
       return;
     }
 
-    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId } = params;
+    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, parentSessionId, parentWorkerId } = params;
 
     const agentManager = this.agentManager;
     const agent = agentManager.getAgent(agentId) ?? agentManager.getDefaultAgent();
@@ -299,6 +303,12 @@ export class WorkerManager {
     };
     if (repositoryId) {
       agentConsoleEnv.AGENT_CONSOLE_REPOSITORY_ID = repositoryId;
+    }
+    if (parentSessionId) {
+      agentConsoleEnv.AGENT_CONSOLE_PARENT_SESSION_ID = parentSessionId;
+    }
+    if (parentWorkerId) {
+      agentConsoleEnv.AGENT_CONSOLE_PARENT_WORKER_ID = parentWorkerId;
     }
 
     // Security: AgentConsole context vars (agentConsoleEnv) are spread LAST

@@ -220,6 +220,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 12) {
     await migrateToV12(database);
   }
+
+  if (currentVersion < 13) {
+    await migrateToV13(database);
+  }
 }
 
 /**
@@ -645,6 +649,28 @@ async function migrateToV12(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 12`.execute(database);
 
   logger.info('Migration to v12 completed');
+}
+
+/**
+ * Migration v13: Add parent_session_id and parent_worker_id columns to sessions table.
+ * Tracks which session/worker delegated the creation of this session.
+ */
+async function migrateToV13(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v13: Adding parent_session_id and parent_worker_id to sessions');
+
+  await database.schema
+    .alterTable('sessions')
+    .addColumn('parent_session_id', 'text')
+    .execute();
+
+  await database.schema
+    .alterTable('sessions')
+    .addColumn('parent_worker_id', 'text')
+    .execute();
+
+  await sql`PRAGMA user_version = 13`.execute(database);
+
+  logger.info('Migration to v13 completed');
 }
 
 /**

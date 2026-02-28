@@ -67,6 +67,10 @@ interface PersistedSessionBase {
   title?: string;
   /** ISO 8601 timestamp when session was paused (undefined = not paused) */
   pausedAt?: string;
+  /** Parent session ID that delegated this session */
+  parentSessionId?: string;
+  /** Parent worker ID that delegated this session */
+  parentWorkerId?: string;
 }
 
 export interface PersistedWorktreeSession extends PersistedSessionBase {

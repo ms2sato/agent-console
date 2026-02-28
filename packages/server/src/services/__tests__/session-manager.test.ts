@@ -120,6 +120,25 @@ describe('SessionManager', () => {
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
 
+    it('should create a worktree session with parentSessionId and parentWorkerId', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+        parentSessionId: 'parent-sess-123',
+        parentWorkerId: 'parent-wkr-456',
+      };
+
+      const session = await manager.createSession(request);
+
+      expect(session.parentSessionId).toBe('parent-sess-123');
+      expect(session.parentWorkerId).toBe('parent-wkr-456');
+    });
+
     it('should create a new quick session with correct properties', async () => {
       const manager = await getSessionManager();
 
@@ -326,6 +345,26 @@ describe('SessionManager', () => {
 
       const session = manager.getSession('non-existent');
       expect(session).toBeUndefined();
+    });
+
+    it('should preserve parent fields when retrieving session', async () => {
+      const manager = await getSessionManager();
+
+      const created = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+        parentSessionId: 'parent-sess-abc',
+        parentWorkerId: 'parent-wkr-xyz',
+      });
+
+      const retrieved = manager.getSession(created.id);
+
+      expect(retrieved).toBeDefined();
+      expect(retrieved?.parentSessionId).toBe('parent-sess-abc');
+      expect(retrieved?.parentWorkerId).toBe('parent-wkr-xyz');
     });
   });
 
@@ -2613,6 +2652,30 @@ describe('SessionManager', () => {
       const activeSession = allSessions.find((s) => s.id === session.id);
       expect(activeSession).toBeDefined();
       expect(activeSession?.pausedAt).toBeUndefined();
+    });
+
+    it('should preserve parent fields on paused sessions', async () => {
+      const manager = await getSessionManager();
+
+      // Create a worktree session with parent fields and pause it
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+        parentSessionId: 'parent-sess-paused',
+        parentWorkerId: 'parent-wkr-paused',
+      });
+
+      await manager.pauseSession(session.id);
+
+      // Get paused sessions and verify parent fields are preserved
+      const pausedSessions = await manager.getAllPausedSessions();
+
+      expect(pausedSessions.length).toBe(1);
+      expect(pausedSessions[0].parentSessionId).toBe('parent-sess-paused');
+      expect(pausedSessions[0].parentWorkerId).toBe('parent-wkr-paused');
     });
   });
 

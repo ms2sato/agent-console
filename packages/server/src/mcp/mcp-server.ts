@@ -42,6 +42,8 @@ interface SessionStatusResult {
   worktreeId?: string;
   repositoryId?: string;
   repositoryName?: string;
+  parentSessionId?: string;
+  parentWorkerId?: string;
   workers: Array<{
     id: string;
     type: 'agent' | 'terminal' | 'git-diff';
@@ -56,6 +58,8 @@ interface SessionListItem {
   worktreeId?: string;
   repositoryId?: string;
   repositoryName?: string;
+  parentSessionId?: string;
+  parentWorkerId?: string;
   status: 'active' | 'inactive';
   workers: Array<{
     id: string;
@@ -98,20 +102,20 @@ function errorResult(message: string) {
 
 /**
  * Build a prompt that includes callback instructions telling the delegated agent
- * to report results back to the caller via send_session_message.
+ * to report results back to the parent session via send_session_message.
  */
 function buildMessageCallbackPrompt(
   prompt: string,
-  callerSessionId: string,
-  callerWorkerId: string,
+  parentSessionId: string,
+  parentWorkerId: string,
 ): string {
   return `${prompt}
 ---
 [Message Callback Instructions]
 After completing this task (whether successful or not), you MUST report your results back to the requesting session.
 Use the \`send_session_message\` MCP tool with the following parameters:
-- toSessionId: "${callerSessionId}"
-- toWorkerId: "${callerWorkerId}"
+- toSessionId: "${parentSessionId}"
+- toWorkerId: "${parentWorkerId}"
 - fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable
 - content: A concise summary of what you accomplished, the outcome (success/failure), and any important details the caller needs to know.`;
 }
@@ -229,6 +233,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
             title: s.title,
             status: s.status,
             workers: mapWorkers(s),
+            parentSessionId: s.parentSessionId,
+            parentWorkerId: s.parentWorkerId,
           };
           if (s.type === 'worktree') {
             base.worktreeId = s.worktreeId;
@@ -268,6 +274,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           status: session.status,
           title: session.title,
           workers: mapWorkers(session),
+          parentSessionId: session.parentSessionId,
+          parentWorkerId: session.parentWorkerId,
         };
 
         if (session.type === 'worktree') {
@@ -392,7 +400,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Optionally pass callerSessionId and callerWorkerId to have the delegated agent report results back via send_session_message.',
+      'Optionally pass parentSessionId and parentWorkerId to have the delegated agent report results back via send_session_message.',
     {
       repositoryId: z.string().describe(
         'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable. ' +
@@ -423,22 +431,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .boolean()
         .optional()
         .describe('If true, branch from origin/<baseBranch> instead of local branch'),
-      callerSessionId: z
+      parentSessionId: z
         .string()
-        .min(1, 'callerSessionId must be non-empty')
+        .min(1, 'parentSessionId must be non-empty')
         .optional()
         .describe(
-          "The calling agent's session ID, from the AGENT_CONSOLE_SESSION_ID environment variable. " +
-            'When provided together with callerWorkerId, callback instructions are appended to the prompt ' +
+          "The parent session's ID, from the AGENT_CONSOLE_SESSION_ID environment variable. " +
+            'When provided together with parentWorkerId, callback instructions are appended to the prompt ' +
             'so the delegated agent reports results back via send_session_message.',
         ),
-      callerWorkerId: z
+      parentWorkerId: z
         .string()
-        .min(1, 'callerWorkerId must be non-empty')
+        .min(1, 'parentWorkerId must be non-empty')
         .optional()
         .describe(
-          "The calling agent's worker ID, from the AGENT_CONSOLE_WORKER_ID environment variable. " +
-            'Must be provided together with callerSessionId.',
+          "The parent session's worker ID, from the AGENT_CONSOLE_WORKER_ID environment variable. " +
+            'Must be provided together with parentSessionId.',
         ),
       skipMessageCallbackPrompt: z
         .boolean()
@@ -456,20 +464,20 @@ export function createMcpApp(deps: McpDependencies): Hono {
       agentId,
       title,
       useRemote,
-      callerSessionId,
-      callerWorkerId,
+      parentSessionId,
+      parentWorkerId,
       skipMessageCallbackPrompt,
     }) => {
       try {
-        // Validate caller IDs: both must be provided together
-        if (!!callerSessionId !== !!callerWorkerId) {
-          return errorResult('callerSessionId and callerWorkerId must be provided together');
+        // Validate parent IDs: both must be provided together
+        if (!!parentSessionId !== !!parentWorkerId) {
+          return errorResult('parentSessionId and parentWorkerId must be provided together');
         }
 
         // Build effective prompt with optional callback instructions
         const effectivePrompt =
-          callerSessionId && callerWorkerId && !skipMessageCallbackPrompt
-            ? buildMessageCallbackPrompt(prompt, callerSessionId, callerWorkerId)
+          parentSessionId && parentWorkerId && !skipMessageCallbackPrompt
+            ? buildMessageCallbackPrompt(prompt, parentSessionId, parentWorkerId)
             : prompt;
 
         // Validate repository
@@ -581,6 +589,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
             agentId: selectedAgentId,
             initialPrompt: effectivePrompt,
             title: effectiveTitle,
+            parentSessionId,
+            parentWorkerId,
           });
 
           // Re-check session still exists after async gap.

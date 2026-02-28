@@ -1420,7 +1420,7 @@ describe('MCP Server Tools', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Message callback prompt (callerSessionId / callerWorkerId)
+    // Message callback prompt (parentSessionId / parentWorkerId)
     // -----------------------------------------------------------------------
 
     /**
@@ -1438,15 +1438,15 @@ describe('MCP Server Tools', () => {
       return agentPrompt!;
     }
 
-    it('should append callback instructions to prompt when caller IDs are provided', async () => {
+    it('should append callback instructions to prompt when parent IDs are provided', async () => {
       await setupDelegateEnvironment('feat/callback-test');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement callback feature',
         branch: 'feat/callback-test',
-        callerSessionId: 'caller-session-123',
-        callerWorkerId: 'caller-worker-456',
+        parentSessionId: 'caller-session-123',
+        parentWorkerId: 'caller-worker-456',
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -1474,8 +1474,8 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Implement feature without callback',
         branch: 'feat/skip-callback',
-        callerSessionId: 'caller-session-123',
-        callerWorkerId: 'caller-worker-456',
+        parentSessionId: 'caller-session-123',
+        parentWorkerId: 'caller-worker-456',
         skipMessageCallbackPrompt: true,
       }, nextId++);
 
@@ -1490,39 +1490,39 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).not.toContain('toWorkerId');
     });
 
-    it('should return validation error when only callerSessionId is provided', async () => {
+    it('should return validation error when only parentSessionId is provided', async () => {
       await setupDelegateEnvironment('feat/partial-caller');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
-        prompt: 'Test partial caller IDs',
+        prompt: 'Test partial parent IDs',
         branch: 'feat/partial-caller',
-        callerSessionId: 'caller-session-123',
-        // callerWorkerId is intentionally omitted
+        parentSessionId: 'caller-session-123',
+        // parentWorkerId is intentionally omitted
       }, nextId++);
 
       expect(response.result?.isError).toBe(true);
       const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('callerSessionId and callerWorkerId must be provided together');
+      expect(data.error).toContain('parentSessionId and parentWorkerId must be provided together');
     });
 
-    it('should return validation error when only callerWorkerId is provided', async () => {
+    it('should return validation error when only parentWorkerId is provided', async () => {
       await setupDelegateEnvironment('feat/partial-worker');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
-        prompt: 'Test partial caller IDs',
+        prompt: 'Test partial parent IDs',
         branch: 'feat/partial-worker',
-        // callerSessionId is intentionally omitted
-        callerWorkerId: 'caller-worker-456',
+        // parentSessionId is intentionally omitted
+        parentWorkerId: 'caller-worker-456',
       }, nextId++);
 
       expect(response.result?.isError).toBe(true);
       const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('callerSessionId and callerWorkerId must be provided together');
+      expect(data.error).toContain('parentSessionId and parentWorkerId must be provided together');
     });
 
-    it('should NOT include callback instructions when caller IDs are not provided', async () => {
+    it('should NOT include callback instructions when parent IDs are not provided', async () => {
       await setupDelegateEnvironment('feat/no-caller');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
@@ -1540,6 +1540,138 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).not.toContain('[Message Callback Instructions]');
       expect(agentPrompt).not.toContain('toSessionId');
       expect(agentPrompt).not.toContain('toWorkerId');
+    });
+  });
+
+  // ===========================================================================
+  // Parent session metadata persistence through MCP
+  // ===========================================================================
+
+  describe('parent session metadata persistence', () => {
+    /**
+     * Reuse the delegate environment setup from the delegate_to_worktree block.
+     */
+    async function setupParentMetadataEnvironment(
+      worktreeBranch: string = 'feat/parent-meta-test',
+    ): Promise<void> {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      });
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+      mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
+      mockGit.getDefaultBranch.mockImplementation(async () => 'main');
+
+      let capturedWorktreePath = '';
+      mockGit.createWorktree.mockImplementation(async (...args: unknown[]) => {
+        capturedWorktreePath = args[0] as string;
+      });
+
+      mockGit.listWorktrees.mockImplementation(async () => {
+        if (capturedWorktreePath) {
+          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${capturedWorktreePath}\nHEAD def456\nbranch refs/heads/${worktreeBranch}\n`;
+        }
+        return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
+      });
+
+      const db = getDatabase();
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      await sqliteRepoRepo.save({
+        id: 'test-repo',
+        name: 'test',
+        path: TEST_REPO_PATH,
+        createdAt: new Date().toISOString(),
+      });
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
+        repository: sqliteRepoRepo,
+      });
+      await remountMcpApp();
+    }
+
+    it('should persist parentSessionId and parentWorkerId when delegate_to_worktree is called with them', async () => {
+      await setupParentMetadataEnvironment('feat/persist-parent');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test parent metadata persistence',
+        branch: 'feat/persist-parent',
+        parentSessionId: 'parent-sess-abc',
+        parentWorkerId: 'parent-wkr-xyz',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+
+      // Verify via get_session_status that parentSessionId/parentWorkerId are returned
+      const statusResponse = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: data.sessionId,
+      }, nextId++);
+      const statusData = parseToolResult(statusResponse) as {
+        parentSessionId?: string;
+        parentWorkerId?: string;
+      };
+
+      expect(statusData.parentSessionId).toBe('parent-sess-abc');
+      expect(statusData.parentWorkerId).toBe('parent-wkr-xyz');
+    });
+
+    it('should return parentSessionId and parentWorkerId in list_sessions response', async () => {
+      await setupParentMetadataEnvironment('feat/list-parent');
+
+      const delegateResponse = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test parent metadata in list_sessions',
+        branch: 'feat/list-parent',
+        parentSessionId: 'parent-sess-list',
+        parentWorkerId: 'parent-wkr-list',
+      }, nextId++);
+
+      expect(delegateResponse.result?.isError).toBeUndefined();
+
+      const delegateData = parseToolResult(delegateResponse) as { sessionId: string };
+
+      // Verify via list_sessions that parentSessionId/parentWorkerId appear
+      const listResponse = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const listData = parseToolResult(listResponse) as {
+        sessions: Array<{
+          id: string;
+          parentSessionId?: string;
+          parentWorkerId?: string;
+        }>;
+      };
+
+      const delegatedSession = listData.sessions.find((s) => s.id === delegateData.sessionId);
+      expect(delegatedSession).toBeDefined();
+      expect(delegatedSession!.parentSessionId).toBe('parent-sess-list');
+      expect(delegatedSession!.parentWorkerId).toBe('parent-wkr-list');
+    });
+
+    it('should not include parentSessionId/parentWorkerId when not provided', async () => {
+      await setupParentMetadataEnvironment('feat/no-parent-meta');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Delegate without parent metadata',
+        branch: 'feat/no-parent-meta',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+
+      const statusResponse = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: data.sessionId,
+      }, nextId++);
+      const statusData = parseToolResult(statusResponse) as {
+        parentSessionId?: string;
+        parentWorkerId?: string;
+      };
+
+      expect(statusData.parentSessionId).toBeUndefined();
+      expect(statusData.parentWorkerId).toBeUndefined();
     });
   });
 

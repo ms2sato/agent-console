@@ -78,6 +78,8 @@ export class SqliteSessionRepository implements SessionRepository {
             repository_id: sessionRow.repository_id,
             worktree_id: sessionRow.worktree_id,
             paused_at: sessionRow.paused_at,
+            parent_session_id: sessionRow.parent_session_id,
+            parent_worker_id: sessionRow.parent_worker_id,
           })
         )
         .execute();

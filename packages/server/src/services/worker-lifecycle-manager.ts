@@ -119,6 +119,8 @@ export class WorkerLifecycleManager {
         continueConversation,
         initialPrompt,
         repositoryId,
+        parentSessionId: session.parentSessionId,
+        parentWorkerId: session.parentWorkerId,
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
@@ -206,6 +208,8 @@ export class WorkerLifecycleManager {
         agentId: effectiveAgentId,
         continueConversation: true,
         repositoryId,
+        parentSessionId: session.parentSessionId,
+        parentWorkerId: session.parentWorkerId,
       });
     } else {
       this.deps.workerManager.activateTerminalWorkerPty(worker, {
@@ -345,6 +349,8 @@ export class WorkerLifecycleManager {
       agentId: workerAgentId,
       continueConversation,
       repositoryId,
+      parentSessionId: session.parentSessionId,
+      parentWorkerId: session.parentWorkerId,
     });
 
     // Re-check session still exists after async gap
@@ -475,6 +481,8 @@ export class WorkerLifecycleManager {
           agentId: effectiveAgentId,
           continueConversation: true,
           repositoryId,
+          parentSessionId: session.parentSessionId,
+          parentWorkerId: session.parentWorkerId,
         });
       } else {
         this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {
