@@ -45,10 +45,22 @@ interface WorkerErrorFallbackProps {
 }
 
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
-  const typeLabel = workerType === 'git-diff' ? 'Diff View' :
-                    workerType === 'agent' ? 'Agent' :
-                    workerType === 'terminal' ? 'Terminal' :
-                    (() => { const _exhaustive: never = workerType; return _exhaustive; })();
+  let typeLabel: string;
+  switch (workerType) {
+    case 'git-diff':
+      typeLabel = 'Diff View';
+      break;
+    case 'agent':
+      typeLabel = 'Agent';
+      break;
+    case 'terminal':
+      typeLabel = 'Terminal';
+      break;
+    default: {
+      const _exhaustive: never = workerType;
+      typeLabel = _exhaustive;
+    }
+  }
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">

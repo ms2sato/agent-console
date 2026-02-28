@@ -130,16 +130,15 @@ function TabBarHarness({ tabs, initialActiveTabId }: { tabs: Tab[]; initialActiv
           </button>
         ))}
       </div>
-      {tabs.filter(tab => tab.id === activeTabId).map(tab => (
+      {activeTabId && (
         <div
-          key={tab.id}
           role="tabpanel"
-          id={`worker-tabpanel-${tab.id}`}
-          aria-labelledby={`worker-tab-${tab.id}`}
+          id={`worker-tabpanel-${activeTabId}`}
+          aria-labelledby={`worker-tab-${activeTabId}`}
         >
-          {tab.name} content
+          {tabs.find(t => t.id === activeTabId)?.name} content
         </div>
-      ))}
+      )}
     </>
   );
 }
