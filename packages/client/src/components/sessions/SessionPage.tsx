@@ -404,7 +404,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
-  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
     if (tabs.length === 0) return;
 
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -434,7 +434,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
     const tabElement = document.getElementById(`worker-tab-${newTabId}`);
     tabElement?.focus();
-  }, [tabs, activeTabId, handleTabClick]);
+  };
 
   const tabButtons = tabs.map(tab => (
     <button
