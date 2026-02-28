@@ -47,6 +47,7 @@ const INBOUND_EVENT_TYPES: InboundEventType[] = [
   'ci:failed',
   'issue:closed',
   'pr:merged',
+  'pr:review_comment',
 ];
 
 /**

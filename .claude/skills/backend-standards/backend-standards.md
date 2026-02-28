@@ -258,6 +258,8 @@ describe('ServiceName', () => {
 - Use Valibot schemas
 - Never trust client-provided data
 
+External service payloads (webhook payloads, etc.) MUST be parsed using Valibot schemas. Do not manually extract fields with helper functions like `getString`/`getRecord`. Define a schema that declares the expected payload structure and use `safeParse` for type-safe validation.
+
 ### Process Spawning
 
 - Sanitize environment variables before spawning

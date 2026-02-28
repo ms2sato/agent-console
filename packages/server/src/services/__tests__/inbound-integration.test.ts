@@ -120,6 +120,44 @@ describe('GitHubServiceParser', () => {
     expect(event?.metadata.branch).toBe('feature-branch');
   });
 
+  it('returns null for non-completed workflow_run actions', async () => {
+    const payload = JSON.stringify({
+      action: 'in_progress',
+      workflow_run: { conclusion: null, name: 'CI', head_branch: 'main' },
+      repository: { full_name: 'owner/repo' },
+    });
+    const headers = new Headers({ 'x-github-event': 'workflow_run' });
+    const event = await parser.parse(payload, headers);
+    expect(event).toBeNull();
+  });
+
+  it('returns null for non-closed issue events', async () => {
+    const payload = JSON.stringify({
+      action: 'reopened',
+      issue: { number: 1, title: 'Some issue' },
+      repository: { full_name: 'owner/repo' },
+    });
+    const headers = new Headers({ 'x-github-event': 'issues' });
+    const event = await parser.parse(payload, headers);
+    expect(event).toBeNull();
+  });
+
+  it('returns null for closed but non-merged pull requests', async () => {
+    const payload = JSON.stringify({
+      action: 'closed',
+      pull_request: {
+        merged: false,
+        number: 10,
+        title: 'Abandoned PR',
+        head: { ref: 'feature' },
+      },
+      repository: { full_name: 'owner/repo' },
+    });
+    const headers = new Headers({ 'x-github-event': 'pull_request' });
+    const event = await parser.parse(payload, headers);
+    expect(event).toBeNull();
+  });
+
   describe('pull_request_review_comment', () => {
     const reviewCommentHeaders = new Headers({ 'x-github-event': 'pull_request_review_comment' });
 
@@ -142,7 +180,6 @@ describe('GitHubServiceParser', () => {
         },
         pull_request: {
           number: 7,
-          title: 'Add feature',
           head: { ref: 'feature-branch' },
           ...overrides.pull_request,
         },

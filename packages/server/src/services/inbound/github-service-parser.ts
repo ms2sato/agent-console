@@ -1,34 +1,76 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { InboundEventType, SystemEvent } from '@agent-console/shared';
+import * as v from 'valibot';
 import { createLogger } from '../../lib/logger.js';
 import { serverConfig } from '../../lib/server-config.js';
 import type { ServiceParser } from './service-parser.js';
 
 const logger = createLogger('github-service-parser');
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
+const RepositorySchema = v.object({
+  full_name: v.string(),
+});
 
-function getString(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === 'string' ? value : null;
-}
+const HeadRefSchema = v.nullish(v.object({
+  ref: v.nullish(v.string()),
+}));
 
-function getNumber(record: Record<string, unknown>, key: string): number | null {
-  const value = record[key];
-  return typeof value === 'number' ? value : null;
-}
+const WorkflowRunPayloadSchema = v.object({
+  action: v.literal('completed'),
+  workflow_run: v.object({
+    conclusion: v.string(),
+    name: v.string(),
+    html_url: v.nullish(v.string()),
+    head_branch: v.nullish(v.string()),
+    head_sha: v.nullish(v.string()),
+    updated_at: v.nullish(v.string()),
+  }),
+  repository: RepositorySchema,
+});
 
-function getBoolean(record: Record<string, unknown>, key: string): boolean | null {
-  const value = record[key];
-  return typeof value === 'boolean' ? value : null;
-}
+const IssueClosedPayloadSchema = v.object({
+  action: v.literal('closed'),
+  issue: v.object({
+    number: v.number(),
+    title: v.string(),
+    html_url: v.nullish(v.string()),
+    updated_at: v.nullish(v.string()),
+  }),
+  repository: RepositorySchema,
+});
 
-function getRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  const value = record[key];
-  return isRecord(value) ? value : null;
-}
+const PullRequestMergedPayloadSchema = v.object({
+  action: v.literal('closed'),
+  pull_request: v.object({
+    merged: v.literal(true),
+    number: v.number(),
+    title: v.string(),
+    html_url: v.nullish(v.string()),
+    head: HeadRefSchema,
+    merged_at: v.nullish(v.string()),
+  }),
+  repository: RepositorySchema,
+});
+
+const ReviewCommentPayloadSchema = v.object({
+  action: v.literal('created'),
+  comment: v.object({
+    body: v.string(),
+    path: v.nullish(v.string()),
+    line: v.nullish(v.number()),
+    original_line: v.nullish(v.number()),
+    html_url: v.nullish(v.string()),
+    created_at: v.nullish(v.string()),
+    user: v.nullish(v.object({
+      login: v.nullish(v.string()),
+    })),
+  }),
+  pull_request: v.object({
+    number: v.number(),
+    head: HeadRefSchema,
+  }),
+  repository: RepositorySchema,
+});
 
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
@@ -76,10 +118,6 @@ export class GitHubServiceParser implements ServiceParser {
       return null;
     }
 
-    if (!isRecord(body)) {
-      return null;
-    }
-
     const githubEvent = headers.get('x-github-event');
     if (!githubEvent) {
       return null;
@@ -87,140 +125,113 @@ export class GitHubServiceParser implements ServiceParser {
 
     switch (githubEvent) {
       case 'workflow_run':
-        if (getString(body, 'action') !== 'completed') return null;
         return this.parseWorkflowRun(body);
       case 'issues':
-        if (getString(body, 'action') !== 'closed') return null;
         return this.parseIssueClosed(body);
       case 'pull_request':
         return this.parsePullRequest(body);
       case 'pull_request_review_comment':
-        if (getString(body, 'action') !== 'created') return null;
         return this.parsePullRequestReviewComment(body);
       default:
         return null;
     }
   }
 
-  private parseWorkflowRun(body: Record<string, unknown>): SystemEvent | null {
-    const workflowRun = getRecord(body, 'workflow_run');
-    const repository = getRecord(body, 'repository');
-    if (!workflowRun || !repository) return null;
+  private parseWorkflowRun(body: unknown): SystemEvent | null {
+    const result = v.safeParse(WorkflowRunPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'workflow_run payload did not match expected schema');
+      return null;
+    }
 
-    const conclusion = getString(workflowRun, 'conclusion');
-    const name = getString(workflowRun, 'name');
-    const url = getString(workflowRun, 'html_url');
-    const branch = getString(workflowRun, 'head_branch');
-    const headSha = getString(workflowRun, 'head_sha');
-    const repositoryName = getString(repository, 'full_name');
-
-    if (!conclusion || !name || !repositoryName) return null;
-
-    const eventType: InboundEventType = conclusion === 'success' ? 'ci:completed' : 'ci:failed';
+    const { workflow_run: workflowRun, repository } = result.output;
+    const eventType: InboundEventType = workflowRun.conclusion === 'success' ? 'ci:completed' : 'ci:failed';
 
     return {
       type: eventType,
       source: 'github',
-      timestamp: getString(workflowRun, 'updated_at') ?? new Date().toISOString(),
+      timestamp: workflowRun.updated_at ?? new Date().toISOString(),
       metadata: {
-        repositoryName,
-        branch: branch ?? undefined,
-        url: url ?? undefined,
-        commitSha: headSha ?? undefined,
+        repositoryName: repository.full_name,
+        branch: workflowRun.head_branch ?? undefined,
+        url: workflowRun.html_url ?? undefined,
+        commitSha: workflowRun.head_sha ?? undefined,
       },
       payload: body,
-      summary: `${name} ${conclusion}`,
+      summary: `${workflowRun.name} ${workflowRun.conclusion}`,
     };
   }
 
-  private parseIssueClosed(body: Record<string, unknown>): SystemEvent | null {
-    const issue = getRecord(body, 'issue');
-    const repository = getRecord(body, 'repository');
-    if (!issue || !repository) return null;
+  private parseIssueClosed(body: unknown): SystemEvent | null {
+    const result = v.safeParse(IssueClosedPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'issues payload did not match expected schema');
+      return null;
+    }
 
-    const issueNumber = getNumber(issue, 'number');
-    const title = getString(issue, 'title');
-    const url = getString(issue, 'html_url');
-    const repositoryName = getString(repository, 'full_name');
-
-    if (!issueNumber || !title || !repositoryName) return null;
+    const { issue, repository } = result.output;
 
     return {
       type: 'issue:closed',
       source: 'github',
-      timestamp: getString(issue, 'updated_at') ?? new Date().toISOString(),
+      timestamp: issue.updated_at ?? new Date().toISOString(),
       metadata: {
-        repositoryName,
-        url: url ?? undefined,
+        repositoryName: repository.full_name,
+        url: issue.html_url ?? undefined,
       },
       payload: body,
-      summary: `Issue #${issueNumber} closed: ${title}`,
+      summary: `Issue #${issue.number} closed: ${issue.title}`,
     };
   }
 
-  private parsePullRequest(body: Record<string, unknown>): SystemEvent | null {
-    const action = getString(body, 'action');
-    const pullRequest = getRecord(body, 'pull_request');
-    const repository = getRecord(body, 'repository');
-    if (!pullRequest || !repository) return null;
-
-    const merged = getBoolean(pullRequest, 'merged');
-    if (action !== 'closed' || merged !== true) {
+  private parsePullRequest(body: unknown): SystemEvent | null {
+    const result = v.safeParse(PullRequestMergedPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'pull_request payload did not match expected schema');
       return null;
     }
 
-    const prNumber = getNumber(pullRequest, 'number');
-    const title = getString(pullRequest, 'title');
-    const url = getString(pullRequest, 'html_url');
-    const head = getRecord(pullRequest, 'head');
-    const branch = head ? getString(head, 'ref') : null;
-    const repositoryName = getString(repository, 'full_name');
-
-    if (!prNumber || !title || !repositoryName) return null;
+    const { pull_request: pr, repository } = result.output;
 
     return {
       type: 'pr:merged',
       source: 'github',
-      timestamp: getString(pullRequest, 'merged_at') ?? new Date().toISOString(),
+      timestamp: pr.merged_at ?? new Date().toISOString(),
       metadata: {
-        repositoryName,
-        branch: branch ?? undefined,
-        url: url ?? undefined,
+        repositoryName: repository.full_name,
+        branch: pr.head?.ref ?? undefined,
+        url: pr.html_url ?? undefined,
       },
       payload: body,
-      summary: `PR #${prNumber} merged: ${title}`,
+      summary: `PR #${pr.number} merged: ${pr.title}`,
     };
   }
 
-  private parsePullRequestReviewComment(body: Record<string, unknown>): SystemEvent | null {
-    const comment = getRecord(body, 'comment');
-    const pullRequest = getRecord(body, 'pull_request');
-    const repository = getRecord(body, 'repository');
-    if (!comment || !pullRequest || !repository) return null;
+  private parsePullRequestReviewComment(body: unknown): SystemEvent | null {
+    const result = v.safeParse(ReviewCommentPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'pull_request_review_comment payload did not match expected schema');
+      return null;
+    }
 
-    const commentBody = getString(comment, 'body');
-    const prNumber = getNumber(pullRequest, 'number');
-    const repositoryName = getString(repository, 'full_name');
-    if (!commentBody || !prNumber || !repositoryName) return null;
-
-    const path = getString(comment, 'path');
-    const line = getNumber(comment, 'line') ?? getNumber(comment, 'original_line');
-    const commentUrl = getString(comment, 'html_url');
-    const commentUser = getRecord(comment, 'user');
-    const userLogin = commentUser ? getString(commentUser, 'login') : null;
-    const head = getRecord(pullRequest, 'head');
-    const branch = head ? getString(head, 'ref') : null;
-
-    const summary = buildReviewCommentSummary(prNumber, commentBody, userLogin, path, line);
+    const { comment, pull_request: pr, repository } = result.output;
+    const line = comment.line ?? comment.original_line ?? null;
+    const summary = buildReviewCommentSummary(
+      pr.number,
+      comment.body,
+      comment.user?.login ?? null,
+      comment.path ?? null,
+      line,
+    );
 
     return {
       type: 'pr:review_comment',
       source: 'github',
-      timestamp: getString(comment, 'created_at') ?? new Date().toISOString(),
+      timestamp: comment.created_at ?? new Date().toISOString(),
       metadata: {
-        repositoryName,
-        branch: branch ?? undefined,
-        url: commentUrl ?? undefined,
+        repositoryName: repository.full_name,
+        branch: pr.head?.ref ?? undefined,
+        url: comment.html_url ?? undefined,
       },
       payload: body,
       summary,
@@ -235,8 +246,15 @@ function buildReviewCommentSummary(
   path: string | null,
   line: number | null
 ): string {
-  const byUser = userLogin ? ` by ${truncate(userLogin, 100)}` : '';
-  const location = path ? truncate(path, 200) + (line ? `:${line}` : '') : null;
-  const locationSuffix = location ? ` (${location})` : '';
-  return `Review comment on PR #${prNumber}${byUser}${locationSuffix}: ${truncate(commentBody, 200)}`;
+  let result = `Review comment on PR #${prNumber}`;
+
+  if (userLogin) {
+    result += ` by ${truncate(userLogin, 100)}`;
+  }
+  if (path) {
+    const location = line != null ? `${truncate(path, 200)}:${line}` : truncate(path, 200);
+    result += ` (${location})`;
+  }
+
+  return `${result}: ${truncate(commentBody, 200)}`;
 }
