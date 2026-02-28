@@ -5,7 +5,8 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
-import type { AppBindings, AppContext } from '../../app-context.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
@@ -55,9 +56,9 @@ describe('Repository Slack Integration API', () => {
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', {
+      c.set('appContext', asAppContext({
         repositoryManager,
-      } as unknown as AppContext);
+      }));
       await next();
     });
     app.onError(onApiError);

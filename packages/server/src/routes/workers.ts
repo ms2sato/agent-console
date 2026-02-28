@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdir } from 'fs/promises';
+import { mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
   CreateWorkerRequestSchema,
@@ -79,6 +79,13 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
     }
 
+    // Validate session exists BEFORE writing files to avoid orphan files on disk
+    const { sessionManager } = c.get('appContext');
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
     // Ensure upload directory is ready before writing files
     await uploadDirReady;
 
@@ -94,14 +101,10 @@ const workers = new Hono<AppBindings>()
       savedPaths.push(filePath);
     }
 
-    const { sessionManager } = c.get('appContext');
-    const session = sessionManager.getSession(sessionId);
-    if (!session) {
-      throw new NotFoundError('Session');
-    }
-
     const message = sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
     if (!message) {
+      // Clean up saved files since the message was not delivered
+      await Promise.allSettled(savedPaths.map((p) => unlink(p)));
       throw new ValidationError('Failed to send message (target worker not found or PTY inactive)');
     }
 

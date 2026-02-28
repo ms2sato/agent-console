@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
-import type { AppBindings, AppContext } from '../app-context.js';
+import type { AppBindings } from '../app-context.js';
+import { asAppContext } from './test-utils.js';
 
 // Mock open package BEFORE importing mock-fs-helper
 // The open package internally uses fs and needs to be mocked first
@@ -72,18 +73,14 @@ describe('System API - open-in-vscode', () => {
     // Set up mock system capabilities
     const mockCapabilities = new SystemCapabilitiesService();
     // Manually set capabilities to avoid running which command
-    (mockCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = {
-      vscode: vscodeAvailable,
-    };
-    (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = vscodeAvailable
-      ? vscodeCommand
-      : null;
+    Reflect.set(mockCapabilities, 'capabilities', { vscode: vscodeAvailable });
+    Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? vscodeCommand : null);
     const { system } = await import(`../routes/system.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
     const app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', { systemCapabilities: mockCapabilities } as unknown as AppContext);
+      c.set('appContext', asAppContext({ systemCapabilities: mockCapabilities }));
       await next();
     });
     app.onError(onApiError);

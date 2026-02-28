@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
-import type { AppBindings, AppContext } from '../../app-context.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -67,7 +68,7 @@ describe('Sessions API - Pause/Resume', () => {
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', { sessionManager } as unknown as AppContext);
+      c.set('appContext', asAppContext({ sessionManager }));
       await next();
     });
     app.onError(onApiError);

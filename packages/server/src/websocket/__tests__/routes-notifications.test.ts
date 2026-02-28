@@ -35,6 +35,7 @@ import { NotificationManager } from '../../services/notifications/notification-m
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 /**
  * Create a no-op upgradeWebSocket stub for tests that only need setupWebSocketRoutes
@@ -77,7 +78,7 @@ describe('WebSocket routes notifications', () => {
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
 
-    appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as unknown as AppContext;
+    appContext = asAppContext({ sessionManager, notificationManager, agentManager, repositoryManager });
   });
 
   afterEach(async () => {

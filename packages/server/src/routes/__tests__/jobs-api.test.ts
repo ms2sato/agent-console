@@ -5,7 +5,8 @@ import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
-import type { AppBindings, AppContext } from '../../app-context.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 describe('Jobs API', () => {
   let app: Hono<AppBindings>;
@@ -22,7 +23,7 @@ describe('Jobs API', () => {
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', { jobQueue: testJobQueue } as unknown as AppContext);
+      c.set('appContext', asAppContext({ jobQueue: testJobQueue }));
       await next();
     });
     app.onError(onApiError);

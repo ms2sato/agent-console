@@ -34,7 +34,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { setupWebSocketRoutes } from '../routes.js';
-import type { AppContext } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 /**
  * Capture the WebSocket handler factory for a given route path.
@@ -103,7 +103,7 @@ describe('Worker WebSocket connection error codes', () => {
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
 
-    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, repositoryManager });
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();

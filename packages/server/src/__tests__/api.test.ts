@@ -112,7 +112,8 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../database/conn
 import { JobQueue } from '../jobs/job-queue.js';
 import { registerJobHandlers } from '../jobs/handlers.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
-import type { AppBindings, AppContext } from '../app-context.js';
+import type { AppBindings } from '../app-context.js';
+import { asAppContext } from './test-utils.js';
 
 // =============================================================================
 // Test Setup
@@ -279,13 +280,13 @@ describe('API Routes Integration', () => {
     const app = new Hono<AppBindings>();
     // Inject AppContext constructed from locally created services
     app.use('*', async (c, next) => {
-      c.set('appContext', {
+      c.set('appContext', asAppContext({
         jobQueue: testJobQueue!,
         sessionManager: testSessionManager!,
         repositoryManager: testRepositoryManager!,
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
-      } as unknown as AppContext);
+      }));
       await next();
     });
     app.onError(onApiError);

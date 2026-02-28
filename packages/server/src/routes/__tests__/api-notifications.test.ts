@@ -7,7 +7,8 @@ import {
 } from '../../services/notifications/index.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
-import type { AppBindings, AppContext } from '../../app-context.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -58,10 +59,10 @@ describe('Notifications API', () => {
     // Create app with API routes
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', {
+      c.set('appContext', asAppContext({
         repositoryManager,
         notificationManager,
-      } as unknown as AppContext);
+      }));
       await next();
     });
     app.onError(onApiError);

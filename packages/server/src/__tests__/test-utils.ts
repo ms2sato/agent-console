@@ -136,3 +136,12 @@ export async function createTestApp(appContext?: Partial<AppContext>): Promise<H
 export function getTestConfigDir(): string {
   return TEST_CONFIG_DIR;
 }
+
+/**
+ * Create an AppContext from a partial object for testing.
+ * Tests often only need a subset of services; this avoids unsafe `as unknown as AppContext` casts
+ * while providing type-checking on the properties you do provide.
+ */
+export function asAppContext(partial: Partial<AppContext>): AppContext {
+  return partial as AppContext;
+}

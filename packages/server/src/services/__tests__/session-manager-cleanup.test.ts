@@ -88,7 +88,7 @@ describe('SessionManager cleanup on initialization', () => {
           createdAt: '2024-01-01T00:00:00.000Z',
         },
       ],
-      serverPid: undefined as unknown as number,
+      serverPid: undefined,
       createdAt: '2024-01-01T00:00:00.000Z',
     };
     persistSessions([legacySession]);
@@ -207,7 +207,7 @@ describe('SessionManager cleanup on initialization', () => {
             createdAt: '2024-01-01T00:00:00.000Z',
           },
         ],
-        serverPid: undefined as unknown as number,
+        serverPid: undefined,
         createdAt: '2024-01-01T00:00:00.000Z',
       },
       {
