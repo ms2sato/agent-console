@@ -84,19 +84,23 @@ describe('writePtyNotification', () => {
     const writeInput = mock((data: string) => { written.push(data); });
 
     const result = writePtyNotification({
+      kind: 'inbound-event',
       tag: 'inbound:ci:failed',
       fields: { type: 'ci:failed', source: 'github', summary: 'Build failed' },
+      intent: 'triage',
       writeInput,
     });
 
-    expect(result).toBe('\n[inbound:ci:failed] type=ci:failed source=github summary="Build failed"');
+    expect(result).toBe('\n[inbound:ci:failed] type=ci:failed source=github summary="Build failed" intent=triage');
     expect(written[0]).toBe(result);
   });
 
   it('returns the notification string without trailing carriage return', () => {
     const result = writePtyNotification({
+      kind: 'inbound-event',
       tag: 'test',
       fields: { key: 'value' },
+      intent: 'inform',
       writeInput: () => {},
     });
 
@@ -111,14 +115,16 @@ describe('writePtyNotification', () => {
       const writeInput = mock((data: string) => { written.push(data); });
 
       writePtyNotification({
-        tag: 'inbound:message',
+        kind: 'internal-message',
+        tag: 'internal:message',
         fields: { source: 'session', from: 'sender-1' },
+        intent: 'triage',
         writeInput,
       });
 
       // Before the timer fires, only the notification text should be written
       expect(written).toHaveLength(1);
-      expect(written[0]).toContain('[inbound:message]');
+      expect(written[0]).toContain('[internal:message]');
 
       // Advance past the 150ms delay
       jest.advanceTimersByTime(150);
@@ -135,8 +141,10 @@ describe('writePtyNotification', () => {
     const written: string[] = [];
 
     writePtyNotification({
+      kind: 'inbound-event',
       tag: 'test',
       fields: { msg: 'hello world', safe: 'simple' },
+      intent: 'inform',
       writeInput: (data) => { written.push(data); },
     });
 
@@ -144,5 +152,19 @@ describe('writePtyNotification', () => {
     expect(written[0]).toContain('msg="hello world"');
     // 'simple' has no special chars, so it should be unquoted
     expect(written[0]).toContain('safe=simple');
+  });
+
+  it('includes intent field in notification output', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'inbound-event',
+      tag: 'inbound:ci:completed',
+      fields: { type: 'ci:completed', source: 'github' },
+      intent: 'inform',
+      writeInput: (data) => { written.push(data); },
+    });
+
+    expect(written[0]).toContain('intent=inform');
   });
 });

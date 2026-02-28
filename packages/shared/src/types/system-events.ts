@@ -2,11 +2,13 @@ import type { OutboundTriggerEventType } from './notification.js';
 
 /** Event types received from external sources */
 export type InboundEventType =
-  | 'ci:completed'        // CI/CD pipeline succeeded
-  | 'ci:failed'           // CI/CD pipeline failed
-  | 'issue:closed'        // Issue was closed
-  | 'pr:merged'           // Pull request was merged
-  | 'pr:review_comment';  // PR review comment was posted
+  | 'ci:completed'          // CI/CD pipeline succeeded
+  | 'ci:failed'             // CI/CD pipeline failed
+  | 'issue:closed'          // Issue was closed
+  | 'pr:merged'             // Pull request was merged
+  | 'pr:review_comment'     // PR review comment was posted
+  | 'pr:changes_requested'  // PR changes requested
+  | 'pr:comment';           // PR general comment posted
 
 /** All system event types (inbound + outbound triggers) */
 export type SystemEventType = InboundEventType | OutboundTriggerEventType;
@@ -53,6 +55,9 @@ export interface SystemEvent {
 
 /** Inbound system event */
 export type InboundSystemEvent = SystemEvent & { type: InboundEventType };
+
+/** Intent classification for PTY notifications */
+export type PtyNotificationIntent = 'triage' | 'inform';
 
 /** Summary payload for WebSocket notifications */
 export interface InboundEventSummary {

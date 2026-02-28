@@ -2,11 +2,15 @@ import type {
   InboundEventType,
   InboundEventSummary,
   InboundSystemEvent,
+  PtyNotificationIntent,
 } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
 import { writePtyNotification } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
+
+/** Event types that AgentWorkerHandler actually handles */
+type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
 
 export interface EventTarget {
   sessionId: string;
@@ -44,12 +48,12 @@ const handlerLogger = createLogger('inbound-handlers');
 
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed', 'pr:review_comment'];
-  private sessionManager: SessionManager;
+  readonly supportedEvents: InboundEventType[] = [
+    'ci:completed', 'ci:failed', 'pr:merged',
+    'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  ];
 
-  constructor(sessionManager: SessionManager) {
-    this.sessionManager = sessionManager;
-  }
+  constructor(private sessionManager: SessionManager) {}
 
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
@@ -61,6 +65,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     const sessionId = target.sessionId;
     try {
       writePtyNotification({
+        kind: 'inbound-event',
         tag: `inbound:${event.type}`,
         fields: {
           type: event.type,
@@ -69,8 +74,9 @@ class AgentWorkerHandler implements InboundEventHandler {
           branch: event.metadata.branch ?? 'unknown',
           url: event.metadata.url ?? 'N/A',
           summary: event.summary,
-          intent: event.type === 'ci:failed' || event.type === 'pr:review_comment' ? 'triage' : 'inform',
         },
+        // Safe cast: handle() is only called for events matching supportedEvents
+        intent: this.resolveIntent(event.type as AgentWorkerEventType),
         writeInput: (data) => this.sessionManager.writeWorkerInput(sessionId, workerId, data),
       });
     } catch (err) {
@@ -83,16 +89,30 @@ class AgentWorkerHandler implements InboundEventHandler {
 
     return true;
   }
+
+  private resolveIntent(type: AgentWorkerEventType): PtyNotificationIntent {
+    switch (type) {
+      case 'ci:completed':
+      case 'pr:merged':
+        return 'inform';
+      case 'ci:failed':
+      case 'pr:review_comment':
+      case 'pr:changes_requested':
+      case 'pr:comment':
+        return 'triage';
+      default: {
+        const _exhaustive: never = type;
+        throw new Error(`Unhandled event type: ${_exhaustive}`);
+      }
+    }
+  }
 }
 
 class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
   readonly supportedEvents: InboundEventType[] = ['ci:completed', 'pr:merged'];
-  private sessionManager: SessionManager;
 
-  constructor(sessionManager: SessionManager) {
-    this.sessionManager = sessionManager;
-  }
+  constructor(private sessionManager: SessionManager) {}
 
   async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
@@ -108,12 +128,12 @@ class DiffWorkerHandler implements InboundEventHandler {
 
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
-  readonly supportedEvents: InboundEventType[] = ['ci:failed', 'issue:closed', 'pr:merged', 'pr:review_comment'];
-  private broadcastToApp: InboundHandlerDependencies['broadcastToApp'];
+  readonly supportedEvents: InboundEventType[] = [
+    'ci:failed', 'issue:closed', 'pr:merged',
+    'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  ];
 
-  constructor(broadcastToApp: InboundHandlerDependencies['broadcastToApp']) {
-    this.broadcastToApp = broadcastToApp;
-  }
+  constructor(private broadcastToApp: InboundHandlerDependencies['broadcastToApp']) {}
 
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     this.broadcastToApp({

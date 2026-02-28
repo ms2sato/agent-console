@@ -354,14 +354,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
             sessionManager.getSession(fromSessionId)?.title ?? fromSessionId;
 
           writePtyNotification({
-            tag: 'inbound:message',
+            kind: 'internal-message',
+            tag: 'internal:message',
             fields: {
               source: 'session',
               from: fromSessionId,
               summary: `Message from session ${senderTitle}`,
               path: result.path,
-              intent: 'triage',
             },
+            intent: 'triage',
             writeInput: (data) => sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data),
           });
         } catch (notifyErr) {
@@ -645,10 +646,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
   const mcpApp = new Hono();
   const transport = new StreamableHTTPTransport({ enableJsonResponse: true });
 
+  // Connect transport once eagerly. The Promise is shared across all requests
+  // so concurrent arrivals await the same connection rather than racing.
+  const connectingPromise: Promise<void> = mcpServer.connect(transport);
+
   mcpApp.all('/mcp', async (c) => {
-    if (!mcpServer.server.transport) {
-      await mcpServer.connect(transport);
-    }
+    await connectingPromise;
     // Cast required: @hono/mcp depends on its own Hono version (@jsr/hono__hono)
     // which has a slightly different Context type than the project's hono package.
     // The runtime Context objects are fully compatible; only the TypeScript types differ.

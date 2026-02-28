@@ -1,4 +1,4 @@
-import type { SystemEvent } from '@agent-console/shared';
+import type { InboundSystemEvent } from '@agent-console/shared';
 
 export interface ServiceParser {
   /** Service identifier (e.g., 'github', 'gitlab') */
@@ -8,8 +8,8 @@ export interface ServiceParser {
   authenticate(payload: string, headers: Headers): Promise<boolean>;
 
   /**
-   * Parse raw payload into SystemEvent.
+   * Parse raw payload into InboundSystemEvent.
    * Returns null if the event type is not supported.
    */
-  parse(payload: string, headers: Headers): Promise<SystemEvent | null>;
+  parse(payload: string, headers: Headers): Promise<InboundSystemEvent | null>;
 }

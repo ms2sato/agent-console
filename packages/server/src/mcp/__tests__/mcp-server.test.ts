@@ -773,7 +773,7 @@ describe('MCP Server Tools', () => {
       expect(fileContent).toBe(messageContent);
     });
 
-    it('should send PTY notification with inbound:message format', async () => {
+    it('should send PTY notification with internal:message format', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -792,7 +792,7 @@ describe('MCP Server Tools', () => {
 
       // Verify PTY received the inbound:message notification
       const allWritten = mockPty.writtenData.join('');
-      expect(allWritten).toContain('[inbound:message]');
+      expect(allWritten).toContain('[internal:message]');
       expect(allWritten).toContain('source=session');
       expect(allWritten).toContain('from=sender-session-123');
       expect(allWritten).toContain('intent=triage');
@@ -821,7 +821,7 @@ describe('MCP Server Tools', () => {
 
         // Before the timer fires, only the notification text should be written
         expect(mockPty.writtenData).toHaveLength(1);
-        expect(mockPty.writtenData[0]).toContain('[inbound:message]');
+        expect(mockPty.writtenData[0]).toContain('[internal:message]');
         expect(mockPty.writtenData[0]).not.toContain('\r');
         // The notification text should NOT end with \n (no trailing newline)
         expect(mockPty.writtenData[0].endsWith('\n')).toBe(false);

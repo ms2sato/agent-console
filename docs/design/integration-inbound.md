@@ -11,10 +11,13 @@ Inbound events are external events received from services like GitHub and GitLab
 ```typescript
 /** Event types received from external sources */
 type InboundEventType =
-  | 'ci:completed'   // CI/CD pipeline succeeded
-  | 'ci:failed'      // CI/CD pipeline failed
-  | 'issue:closed'   // Issue was closed
-  | 'pr:merged';     // Pull request was merged
+  | 'ci:completed'          // CI/CD pipeline succeeded
+  | 'ci:failed'             // CI/CD pipeline failed
+  | 'issue:closed'          // Issue was closed
+  | 'pr:merged'             // Pull request was merged
+  | 'pr:review_comment'     // PR review comment posted
+  | 'pr:changes_requested'  // PR changes requested
+  | 'pr:comment';           // PR general comment posted
 ```
 
 > **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
@@ -108,6 +111,9 @@ Inbound integration handles external source events defined in [System Events](./
 | `ci:failed` | AgentWorker (notify), UI (alert dialog) |
 | `issue:closed` | UI (session close dialog), Session (auto-archive) |
 | `pr:merged` | UI (success dialog), Session (auto-archive) |
+| `pr:review_comment` | AgentWorker (notify), UI (alert) |
+| `pr:changes_requested` | AgentWorker (notify), UI (alert) |
+| `pr:comment` | AgentWorker (notify), UI (alert) |
 
 ### Handler Interface
 
@@ -143,7 +149,10 @@ Writes formatted message to Agent Worker's PTY stdin.
 ```typescript
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
-  readonly supportedEvents: InboundEventType[] = ['ci:completed', 'ci:failed'];
+  readonly supportedEvents: InboundEventType[] = [
+    'ci:completed', 'ci:failed', 'pr:merged',
+    'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  ];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
@@ -157,11 +166,29 @@ class AgentWorkerHandler implements InboundEventHandler {
   private formatMessage(event: SystemEvent): string {
     // Format: structured tag + key/value fields for reliable parsing.
     // Example: [inbound:ci-failed] source=github repo=owner/repo branch=main url=... summary="..." intent=triage
-    const intent = event.type === 'ci:failed' ? 'triage' : 'inform';
+    const intent = this.resolveIntent(event.type);
     return `\n[inbound:${event.type}] ` +
       `source=${event.source} repo=${event.metadata.repositoryName ?? 'unknown'} ` +
       `branch=${event.metadata.branch ?? 'unknown'} url=${event.metadata.url ?? 'N/A'} ` +
       `summary="${event.summary}" intent=${intent}\n`;
+  }
+
+  /**
+   * Resolve the intent for a given event type.
+   * Exhaustive — every supported event type must be mapped.
+   */
+  private resolveIntent(type: InboundEventType): 'inform' | 'triage' {
+    switch (type) {
+      case 'ci:completed':
+      case 'pr:merged':
+        return 'inform';
+      case 'ci:failed':
+      case 'issue:closed':
+      case 'pr:review_comment':
+      case 'pr:changes_requested':
+      case 'pr:comment':
+        return 'triage';
+    }
   }
 }
 ```
@@ -194,7 +221,10 @@ Sends notification to connected clients via WebSocket.
 ```typescript
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
-  readonly supportedEvents: InboundEventType[] = ['ci:failed', 'issue:closed', 'pr:merged'];
+  readonly supportedEvents: InboundEventType[] = [
+    'ci:failed', 'issue:closed', 'pr:merged',
+    'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  ];
 
   async handle(event: SystemEvent, target: EventTarget): Promise<boolean> {
     // Broadcast to all clients viewing this session
@@ -479,7 +509,7 @@ interface ServiceParser {
    * Parse raw payload into SystemEvent.
    * Returns null if the event type is not supported.
    */
-  parse(payload: string, headers: Headers): Promise<SystemEvent | null>;
+  parse(payload: string, headers: Headers): Promise<InboundSystemEvent | null>;
 }
 ```
 
@@ -517,7 +547,7 @@ class GitHubServiceParser implements ServiceParser {
 > **Implementation Note**: The examples below use `unknown` type for brevity. In production, define TypeScript interfaces for GitHub webhook payloads (e.g., `GitHubWorkflowRunPayload`) and add type guards to validate payload structure before property access. Return `null` for malformed payloads.
 
 ```typescript
-async parse(payload: string, headers: Headers): Promise<SystemEvent | null> {
+async parse(payload: string, headers: Headers): Promise<InboundSystemEvent | null> {
   const body = JSON.parse(payload);
   const githubEvent = headers.get('x-github-event');
 
@@ -532,6 +562,17 @@ async parse(payload: string, headers: Headers): Promise<SystemEvent | null> {
 
     case 'pull_request':
       return this.parsePullRequest(body);
+
+    case 'pull_request_review_comment':
+      return this.parsePullRequestReviewComment(body);
+
+    case 'pull_request_review':
+      if (body.action !== 'submitted') return null;
+      return this.parsePullRequestReview(body);
+
+    case 'issue_comment':
+      if (body.action !== 'created') return null;
+      return this.parseIssueComment(body);
 
     default:
       return null; // Unsupported event
@@ -587,6 +628,58 @@ private parsePullRequest(body: unknown): SystemEvent | null {
   }
 
   return null; // Unsupported pull_request action
+}
+
+private parsePullRequestReviewComment(body: unknown): InboundSystemEvent {
+  return {
+    type: 'pr:review_comment',
+    source: 'github',
+    timestamp: new Date().toISOString(),
+    metadata: {
+      repositoryName: body.repository.full_name,
+      branch: body.pull_request.head.ref,
+      url: body.comment.html_url,
+    },
+    payload: body,
+    summary: `Review comment on PR #${body.pull_request.number}: ${body.comment.body.slice(0, 80)}`,
+  };
+}
+
+private parsePullRequestReview(body: unknown): InboundSystemEvent | null {
+  // Only handle 'changes_requested' reviews; other states (approved, commented) are ignored.
+  if (body.review.state !== 'changes_requested') return null;
+
+  return {
+    type: 'pr:changes_requested',
+    source: 'github',
+    timestamp: new Date().toISOString(),
+    metadata: {
+      repositoryName: body.repository.full_name,
+      branch: body.pull_request.head.ref,
+      url: body.review.html_url,
+    },
+    payload: body,
+    summary: `Changes requested on PR #${body.pull_request.number} by ${body.review.user.login}`,
+  };
+}
+
+private parseIssueComment(body: unknown): InboundSystemEvent | null {
+  // Only handle comments on pull requests, not on regular issues.
+  if (!body.issue.pull_request) return null;
+
+  return {
+    type: 'pr:comment',
+    source: 'github',
+    timestamp: new Date().toISOString(),
+    metadata: {
+      repositoryName: body.repository.full_name,
+      // NOTE: metadata.branch is undefined because GitHub's issue_comment event
+      // does not include branch info. Events route to all sessions matching the repository.
+      url: body.comment.html_url,
+    },
+    payload: body,
+    summary: `Comment on PR #${body.issue.number}: ${body.comment.body.slice(0, 80)}`,
+  };
 }
 ```
 
