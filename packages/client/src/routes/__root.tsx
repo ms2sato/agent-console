@@ -180,12 +180,12 @@ function RootLayout() {
               </>
             )}
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <nav aria-label="Main navigation" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <ValidationWarningIndicator />
             <JobsNavLink />
             <AgentsNavLink />
             <RepositoriesNavLink />
-          </div>
+          </nav>
         </header>
         <ConnectionBanner connected={connected} />
         <WebhookConfigBanner />

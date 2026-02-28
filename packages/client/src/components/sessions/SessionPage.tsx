@@ -404,9 +404,46 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
+  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (tabs.length === 0) return;
+
+    const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
+
+    let newIndex: number | null = null;
+
+    switch (e.key) {
+      case 'ArrowRight':
+        newIndex = (currentIndex + 1) % tabs.length;
+        break;
+      case 'ArrowLeft':
+        newIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        break;
+      case 'Home':
+        newIndex = 0;
+        break;
+      case 'End':
+        newIndex = tabs.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    const newTabId = tabs[newIndex].id;
+    handleTabClick(newTabId);
+
+    const tabElement = document.getElementById(`worker-tab-${newTabId}`);
+    tabElement?.focus();
+  }, [tabs, activeTabId, handleTabClick]);
+
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
+      role="tab"
+      id={`worker-tab-${tab.id}`}
+      aria-selected={tab.id === activeTabId}
+      aria-controls={`worker-tabpanel-${tab.id}`}
+      tabIndex={tab.id === activeTabId ? 0 : -1}
       onClick={() => handleTabClick(tab.id)}
       className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-600 hover:bg-slate-700 ${
         tab.id === activeTabId
@@ -419,19 +456,21 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       ) : (
         <span className={`inline-block w-2 h-2 rounded-full ${
           tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
-        }`} />
+        }`} aria-hidden="true" />
       )}
       {tab.name}
       {tab.workerType === 'terminal' && (
-        <span
+        <button
+          type="button"
+          aria-label="Close tab"
           onClick={(e) => {
             e.stopPropagation();
             closeTab(tab.id);
           }}
-          className="ml-1 text-gray-500 hover:text-white cursor-pointer"
+          className="ml-1 text-gray-500 hover:text-white cursor-pointer bg-transparent border-none p-0 text-sm leading-none"
         >
           x
-        </span>
+        </button>
       )}
     </button>
   ));
@@ -441,6 +480,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const activeTabContent = activeTab ? (
     <div
       key={activeTab.id}
+      role="tabpanel"
+      id={`worker-tabpanel-${activeTab.id}`}
+      aria-labelledby={`worker-tab-${activeTab.id}`}
+      tabIndex={0}
       className="absolute inset-0 flex flex-col"
     >
       <ErrorBoundary
@@ -477,11 +520,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
-        {tabButtons}
+        <div role="tablist" aria-label="Worker tabs" className="flex items-center" onKeyDown={handleTabKeyDown}>
+          {tabButtons}
+        </div>
         <button
           onClick={addTerminalTab}
           className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
           title="Add shell tab"
+          aria-label="Add shell tab"
         >
           +
         </button>
@@ -567,7 +613,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         )}
         <span className="flex items-center gap-2 text-gray-400 text-xs shrink-0">
           {statusText}
-          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} aria-hidden="true" />
         </span>
       </div>
       <ErrorDialog {...errorDialogProps} />
