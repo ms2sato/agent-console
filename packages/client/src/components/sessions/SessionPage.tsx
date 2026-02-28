@@ -226,6 +226,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     checkSession();
   }, [sessionId]);
 
+  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
+    const newIndex = getNextTabIndex(e.key, currentIndex, tabs.length);
+    if (newIndex === null) return;
+
+    e.preventDefault();
+    const newTabId = tabs[newIndex].id;
+    handleTabClick(newTabId);
+    document.getElementById(`worker-tab-${newTabId}`)?.focus();
+  }, [activeTabId, tabs, handleTabClick]);
+
   // Restart handler: works from both active and disconnected states.
   // Used by the disconnected state UI and by the worker error recovery overlay in Terminal.
   const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
@@ -404,17 +415,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
-
-  const handleTabKeyDown = (e: React.KeyboardEvent) => {
-    const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
-    const newIndex = getNextTabIndex(e.key, currentIndex, tabs.length);
-    if (newIndex === null) return;
-
-    e.preventDefault();
-    const newTabId = tabs[newIndex].id;
-    handleTabClick(newTabId);
-    document.getElementById(`worker-tab-${newTabId}`)?.focus();
-  };
 
   const tabButtons = tabs.map(tab => (
     <button

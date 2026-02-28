@@ -180,6 +180,7 @@ function RootLayout() {
               </>
             )}
           </div>
+          {/* Main navigation landmark - aria-label provided for screen reader navigation */}
           <nav aria-label="Main navigation" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <ValidationWarningIndicator />
             <JobsNavLink />

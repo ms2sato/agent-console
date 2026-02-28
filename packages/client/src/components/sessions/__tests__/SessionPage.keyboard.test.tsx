@@ -61,6 +61,15 @@ describe('getNextTabIndex', () => {
     });
   });
 
+  describe('negative currentIndex (activeTabId not in tabs)', () => {
+    it('ArrowRight from -1 goes to index 0', () => {
+      expect(getNextTabIndex('ArrowRight', -1, 3)).toBe(0); // (-1 + 1) % 3 = 0
+    });
+    it('ArrowLeft from -1 goes to index 1', () => {
+      expect(getNextTabIndex('ArrowLeft', -1, 3)).toBe(1); // (-1 - 1 + 3) % 3 = 1
+    });
+  });
+
   describe('edge cases', () => {
     it('returns null for empty tab list', () => {
       expect(getNextTabIndex('ArrowRight', 0, 0)).toBeNull();
@@ -84,6 +93,11 @@ interface Tab {
 /**
  * Minimal harness that uses the production `getNextTabIndex` function
  * to drive keyboard navigation - no logic duplication.
+ *
+ * NOTE: The harness uses setActiveTabId directly for click/keyboard handlers.
+ * This tests ARIA attribute behavior (tabIndex, aria-selected) but does NOT
+ * cover the router navigation path (handleTabClick -> navigateToWorker) used
+ * in production. That integration requires rendering the full SessionPage.
  */
 function TabBarHarness({ tabs, initialActiveTabId }: { tabs: Tab[]; initialActiveTabId: string }) {
   const [activeTabId, setActiveTabId] = useState(initialActiveTabId);
