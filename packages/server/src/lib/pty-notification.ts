@@ -5,7 +5,7 @@
  * key=value formatted messages into agent worker terminals.
  */
 
-import type { PtyNotificationIntent } from '@agent-console/shared';
+import type { InboundEventType, PtyNotificationIntent } from '@agent-console/shared';
 
 /**
  * Sanitize and quote a string value for use in a key=value PTY notification field.
@@ -38,21 +38,27 @@ interface BasePtyNotificationParams {
 
 export interface InboundEventPtyNotification extends BasePtyNotificationParams {
   kind: 'inbound-event';
-  /** Tag for the notification, e.g. "inbound:ci:failed" */
-  tag: string;
-  /** Key-value fields to include in the notification */
-  fields: Record<string, string>;
-  /** Notification intent */
+  tag: `inbound:${InboundEventType}`;
+  fields: {
+    type: InboundEventType;
+    source: string;
+    repo: string;
+    branch: string;
+    url: string;
+    summary: string;
+  };
   intent: PtyNotificationIntent;
 }
 
 export interface InternalMessagePtyNotification extends BasePtyNotificationParams {
   kind: 'internal-message';
-  /** Tag for the notification: "internal:message" */
   tag: 'internal:message';
-  /** Key-value fields to include in the notification */
-  fields: Record<string, string>;
-  /** Notification intent */
+  fields: {
+    source: string;
+    from: string;
+    summary: string;
+    path: string;
+  };
   intent: PtyNotificationIntent;
 }
 
@@ -71,7 +77,7 @@ export type WritePtyNotificationParams =
  */
 export function writePtyNotification(params: WritePtyNotificationParams): string {
   const { tag, fields, writeInput, intent } = params;
-  const allFields = { ...fields, intent };
+  const allFields: Record<string, string> = { ...fields, intent };
 
   const fieldString = Object.entries(allFields)
     .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
