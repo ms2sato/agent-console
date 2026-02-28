@@ -121,6 +121,7 @@ export function SessionSettingsMenu({
       <button
         onClick={() => setIsMenuOpen(!isMenuOpen)}
         className="text-gray-400 hover:text-white p-1.5 hover:bg-slate-700 rounded"
+        aria-label="Session settings"
         title="Session settings"
       >
         <SettingsIcon />

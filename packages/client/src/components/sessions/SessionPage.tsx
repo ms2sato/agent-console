@@ -13,6 +13,7 @@ import { useAppWsEvent } from '../../hooks/useAppWs';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
+import { getNextTabIndex } from './tabKeyboardNavigation';
 import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 
@@ -44,10 +45,22 @@ interface WorkerErrorFallbackProps {
 }
 
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
-  const typeLabel = workerType === 'git-diff' ? 'Diff View' :
-                    workerType === 'agent' ? 'Agent' :
-                    workerType === 'terminal' ? 'Terminal' :
-                    (() => { const _exhaustive: never = workerType; return _exhaustive; })();
+  let typeLabel: string;
+  switch (workerType) {
+    case 'git-diff':
+      typeLabel = 'Diff View';
+      break;
+    case 'agent':
+      typeLabel = 'Agent';
+      break;
+    case 'terminal':
+      typeLabel = 'Terminal';
+      break;
+    default: {
+      const _exhaustive: never = workerType;
+      typeLabel = _exhaustive;
+    }
+  }
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">
@@ -224,6 +237,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
     checkSession();
   }, [sessionId]);
+
+  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
+    const newIndex = getNextTabIndex(e.key, currentIndex, tabs.length);
+    if (newIndex === null) return;
+
+    e.preventDefault();
+    const newTabId = tabs[newIndex].id;
+    handleTabClick(newTabId);
+    document.getElementById(`worker-tab-${newTabId}`)?.focus();
+  }, [activeTabId, tabs, handleTabClick]);
 
   // Restart handler: works from both active and disconnected states.
   // Used by the disconnected state UI and by the worker error recovery overlay in Terminal.
@@ -407,6 +431,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
+      role="tab"
+      id={`worker-tab-${tab.id}`}
+      aria-selected={tab.id === activeTabId}
+      aria-controls={`worker-tabpanel-${tab.id}`}
+      tabIndex={tab.id === activeTabId ? 0 : -1}
       onClick={() => handleTabClick(tab.id)}
       className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-600 hover:bg-slate-700 ${
         tab.id === activeTabId
@@ -419,19 +448,21 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       ) : (
         <span className={`inline-block w-2 h-2 rounded-full ${
           tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
-        }`} />
+        }`} aria-hidden="true" />
       )}
       {tab.name}
       {tab.workerType === 'terminal' && (
-        <span
+        <button
+          type="button"
+          aria-label="Close tab"
           onClick={(e) => {
             e.stopPropagation();
             closeTab(tab.id);
           }}
-          className="ml-1 text-gray-500 hover:text-white cursor-pointer"
+          className="ml-1 text-gray-500 hover:text-white cursor-pointer bg-transparent border-none p-0 text-sm leading-none"
         >
           x
-        </span>
+        </button>
       )}
     </button>
   ));
@@ -441,6 +472,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const activeTabContent = activeTab ? (
     <div
       key={activeTab.id}
+      role="tabpanel"
+      id={`worker-tabpanel-${activeTab.id}`}
+      aria-labelledby={`worker-tab-${activeTab.id}`}
+      tabIndex={0}
       className="absolute inset-0 flex flex-col"
     >
       <ErrorBoundary
@@ -477,11 +512,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
-        {tabButtons}
+        <div role="tablist" aria-label="Worker tabs" className="flex items-center" onKeyDown={handleTabKeyDown}>
+          {tabButtons}
+        </div>
         <button
           onClick={addTerminalTab}
           className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
           title="Add shell tab"
+          aria-label="Add shell tab"
         >
           +
         </button>
@@ -567,7 +605,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         )}
         <span className="flex items-center gap-2 text-gray-400 text-xs shrink-0">
           {statusText}
-          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} aria-hidden="true" />
         </span>
       </div>
       <ErrorDialog {...errorDialogProps} />

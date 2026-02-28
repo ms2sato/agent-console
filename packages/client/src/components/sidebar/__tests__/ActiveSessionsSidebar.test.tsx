@@ -258,7 +258,7 @@ describe('ActiveSessionsSidebar', () => {
         <ActiveSessionsSidebar {...defaultProps()} collapsed={true} width={300} />
       );
 
-      const sidebar = screen.getByRole('complementary');
+      const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
       expect(sidebar.style.width).toBe(`${SIDEBAR_COLLAPSED_WIDTH}px`);
     });
 
@@ -268,7 +268,7 @@ describe('ActiveSessionsSidebar', () => {
         <ActiveSessionsSidebar {...defaultProps()} width={customWidth} />
       );
 
-      const sidebar = screen.getByRole('complementary');
+      const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
       expect(sidebar.style.width).toBe(`${customWidth}px`);
     });
   });
@@ -303,6 +303,70 @@ describe('ActiveSessionsSidebar', () => {
       );
 
       expect(screen.queryByTitle('Drag to resize')).toBeNull();
+    });
+  });
+
+  describe('ARIA attributes', () => {
+    it('should have aria-label="Collapse sidebar" on toggle button when expanded', async () => {
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+
+      const toggleButton = screen.getByRole('button', { name: 'Collapse sidebar' });
+      expect(toggleButton).toBeTruthy();
+    });
+
+    it('should have aria-label="Expand sidebar" on toggle button when collapsed', async () => {
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} collapsed={true} />
+      );
+
+      const toggleButton = screen.getByRole('button', { name: 'Expand sidebar' });
+      expect(toggleButton).toBeTruthy();
+    });
+
+    it('should have aria-expanded={false} on paused sessions accordion button initially', async () => {
+      const pausedSessions = [
+        createMockWorktreeSession({ pausedAt: new Date().toISOString(), repositoryName: 'paused-repo' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      expect(pausedButton.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('should have aria-expanded={true} on paused sessions accordion button after clicking', async () => {
+      const pausedSessions = [
+        createMockWorktreeSession({ pausedAt: new Date().toISOString(), repositoryName: 'paused-repo' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      expect(pausedButton.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('should have aria-controls on paused button matching id of paused list container', async () => {
+      const pausedSessions = [
+        createMockWorktreeSession({ pausedAt: new Date().toISOString(), repositoryName: 'paused-repo' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={pausedSessions} />
+      );
+
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      const controlsId = pausedButton.getAttribute('aria-controls');
+      expect(controlsId).toBe('paused-sessions-list');
+
+      // Verify the controlled element exists with that id
+      const controlledElement = document.getElementById(controlsId!);
+      expect(controlledElement).toBeTruthy();
     });
   });
 

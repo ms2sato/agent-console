@@ -459,6 +459,7 @@ export function ActiveSessionsSidebar({
   return (
     <aside
       ref={sidebarRef}
+      aria-label="Active sessions"
       className={`bg-slate-900 border-r border-slate-700 flex flex-col shrink-0 relative ${
         isResizing ? '' : 'transition-all duration-200'
       }`}
@@ -478,6 +479,7 @@ export function ActiveSessionsSidebar({
         <button
           onClick={onToggle}
           className="p-1 text-gray-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? (
@@ -489,7 +491,7 @@ export function ActiveSessionsSidebar({
       </div>
 
       {/* Session and task list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" aria-label="Sessions">
         {/* Worktree deletion tasks (displayed at the top) */}
         {worktreeDeletionTasks.map((task) => (
           <WorktreeDeletionTaskItem
@@ -547,6 +549,8 @@ export function ActiveSessionsSidebar({
               <>
                 <button
                   onClick={() => setPausedExpanded((prev) => !prev)}
+                  aria-expanded={pausedExpanded}
+                  aria-controls="paused-sessions-list"
                   className="w-full px-3 py-2 flex items-center justify-between text-gray-500 hover:text-gray-400 transition-colors"
                 >
                   <span className="text-xs font-medium uppercase tracking-wider">Paused</span>
@@ -559,17 +563,19 @@ export function ActiveSessionsSidebar({
                     />
                   </div>
                 </button>
-                {pausedExpanded &&
-                  [...pausedSessions]
-                    .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? '') || a.id.localeCompare(b.id))
-                    .map((session) => (
-                      <PausedSessionItem
-                        key={session.id}
-                        session={session}
-                        collapsed={collapsed}
-                        onClick={() => handlePausedSessionClick(session.id)}
-                      />
-                    ))}
+                <div id="paused-sessions-list">
+                  {pausedExpanded &&
+                    [...pausedSessions]
+                      .sort((a, b) => (b.pausedAt ?? '').localeCompare(a.pausedAt ?? '') || a.id.localeCompare(b.id))
+                      .map((session) => (
+                        <PausedSessionItem
+                          key={session.id}
+                          session={session}
+                          collapsed={collapsed}
+                          onClick={() => handlePausedSessionClick(session.id)}
+                        />
+                      ))}
+                </div>
               </>
             )}
           </>
@@ -579,6 +585,7 @@ export function ActiveSessionsSidebar({
       {/* Resize handle - only shown when expanded */}
       {!collapsed && (
         <div
+          aria-hidden="true"
           className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors"
           onMouseDown={handleResizeMouseDown}
           title="Drag to resize"
