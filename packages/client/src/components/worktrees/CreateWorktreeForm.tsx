@@ -246,6 +246,7 @@ export function CreateWorktreeForm({
                     updateDefaultAgentMutation.mutate(value);
                   }
                 }}
+                priorityAgentId={defaultAgentId ?? undefined}
               />
               <label className="text-sm text-gray-400 flex items-center gap-1.5 ml-2">
                 <input
