@@ -57,20 +57,23 @@ function AgentEditPage() {
     queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
+  const agent = data.agent;
 
   // Redirect if agent is built-in (can't edit)
   useEffect(() => {
-    if (data.agent.isBuiltIn) {
+    if (agent.isBuiltIn) {
       navigate({ to: '/agents/$agentId', params: { agentId } });
     }
-  }, [data.agent.isBuiltIn, agentId, navigate]);
-
-  const agent = data.agent;
+  }, [agent.isBuiltIn, agentId, navigate]);
 
   // Don't render edit form for built-in agents (will redirect)
   if (agent.isBuiltIn) {
     return null;
   }
+
+  const navigateToDetail = () => {
+    navigate({ to: '/agents/$agentId', params: { agentId } });
+  };
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -87,10 +90,8 @@ function AgentEditPage() {
         <span className="text-white">Edit</span>
       </div>
 
-      {/* Header */}
       <h1 className="text-2xl font-semibold mb-6">Edit Agent</h1>
 
-      {/* Edit Form */}
       <EditAgentForm
         agentId={agentId}
         initialData={{
@@ -101,12 +102,8 @@ function AgentEditPage() {
           headlessTemplate: agent.headlessTemplate || '',
           askingPatternsInput: agent.activityPatterns?.askingPatterns?.join('\n') || '',
         }}
-        onSuccess={() => {
-          navigate({ to: '/agents/$agentId', params: { agentId } });
-        }}
-        onCancel={() => {
-          navigate({ to: '/agents/$agentId', params: { agentId } });
-        }}
+        onSuccess={navigateToDetail}
+        onCancel={navigateToDetail}
       />
     </div>
   );

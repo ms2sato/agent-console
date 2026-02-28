@@ -11,9 +11,10 @@ import { fetchJob, retryJob, cancelJob } from '../../../lib/api';
 import { jobKeys } from '../../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../../lib/format';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
-import { StatusBadge } from '../../../components/jobs';
+import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
 import { Spinner } from '../../../components/ui/Spinner';
+import { StatusBadge } from '../../../components/jobs';
 
 export const Route = createFileRoute('/jobs/$jobId/')({
   component: JobDetailPage,
@@ -202,12 +203,10 @@ function JobDetailPage() {
         open={showRetryConfirm}
         onOpenChange={setShowRetryConfirm}
         title="Retry Job"
-        description={`Are you sure you want to retry this job? It will be queued for processing again.`}
+        description="Are you sure you want to retry this job? It will be queued for processing again."
         confirmLabel="Retry"
         variant="default"
-        onConfirm={() => {
-          retryMutation.mutate();
-        }}
+        onConfirm={() => retryMutation.mutate()}
         isLoading={retryMutation.isPending}
       />
 
@@ -216,46 +215,14 @@ function JobDetailPage() {
         open={showCancelConfirm}
         onOpenChange={setShowCancelConfirm}
         title="Cancel Job"
-        description={`Are you sure you want to cancel this job? This action cannot be undone.`}
+        description="Are you sure you want to cancel this job? This action cannot be undone."
         confirmLabel="Cancel Job"
         variant="danger"
-        onConfirm={() => {
-          cancelMutation.mutate();
-        }}
+        onConfirm={() => cancelMutation.mutate()}
         isLoading={cancelMutation.isPending}
       />
 
       <ErrorDialog {...errorDialogProps} />
-    </div>
-  );
-}
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3 pb-1 border-b border-slate-700">
-      {title}
-    </h3>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function DetailRow({ label, value, mono, muted }: DetailRowProps) {
-  return (
-    <div className="flex">
-      <span className="w-32 text-gray-400 shrink-0">{label}:</span>
-      <span
-        className={`${mono ? 'font-mono text-sm' : ''} ${
-          muted ? 'text-gray-600' : 'text-gray-200'
-        }`}
-      >
-        {value}
-      </span>
     </div>
   );
 }

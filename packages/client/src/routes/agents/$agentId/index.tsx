@@ -10,6 +10,7 @@ import { fetchAgent, unregisterAgent } from '../../../lib/api';
 import { agentKeys } from '../../../lib/query-keys';
 import { CapabilityIndicator } from '../../../components/agents';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
+import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
 import { Spinner } from '../../../components/ui/Spinner';
 
@@ -66,6 +67,7 @@ function AgentDetailPage() {
     queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
+  const agent = data.agent;
 
   const deleteMutation = useMutation({
     mutationFn: unregisterAgent,
@@ -80,14 +82,12 @@ function AgentDetailPage() {
   });
 
   const handleDelete = () => {
-    if (data.agent.isBuiltIn) {
+    if (agent.isBuiltIn) {
       showError('Cannot Delete', 'Built-in agents cannot be deleted');
       return;
     }
     setShowDeleteConfirm(true);
   };
-
-  const agent = data.agent;
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -209,43 +209,10 @@ function AgentDetailPage() {
         description={`Are you sure you want to delete "${agent.name}"?`}
         confirmLabel="Delete"
         variant="danger"
-        onConfirm={() => {
-          deleteMutation.mutate(agentId);
-        }}
+        onConfirm={() => deleteMutation.mutate(agentId)}
         isLoading={deleteMutation.isPending}
       />
       <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3 pb-1 border-b border-slate-700">
-      {title}
-    </h3>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function DetailRow({ label, value, mono, muted }: DetailRowProps) {
-  return (
-    <div className="flex">
-      <span className="w-32 text-gray-400 shrink-0">{label}:</span>
-      <span
-        className={`${mono ? 'font-mono text-sm' : ''} ${
-          muted ? 'text-gray-600' : 'text-gray-200'
-        }`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
