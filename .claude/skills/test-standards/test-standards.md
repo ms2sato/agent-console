@@ -245,6 +245,13 @@ describe('Client-Server Boundary', () => {
 });
 ```
 
+## Test Strategy: Unit vs Integration Responsibilities
+
+**Unit test exhaustiveness vs integration test connectivity — these are separate responsibilities.**
+- **Unit tests**: Each component must exhaustively cover all patterns defined in the spec. A parser must test all event types. A handler must test all supported event types.
+- **Integration tests**: Verify pipeline connectivity (e.g., parser → job handler → handler) with 1-2 representative events. Exhaustive coverage is the unit test's job — do not duplicate it in integration tests.
+- These responsibilities must not be confused.
+
 ## Pre-Implementation Checklist
 
 Before writing tests, verify:
