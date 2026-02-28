@@ -63,3 +63,19 @@
     border-color: transparent;
   }
 }
+
+/* Mobile touch targets */
+@media (max-width: 767px) {
+  .btn {
+    min-height: 2.75rem; /* 44px minimum touch target */
+  }
+}
+
+/* Utility to hide scrollbar while maintaining scroll functionality */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

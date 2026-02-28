@@ -512,7 +512,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
-        <div role="tablist" aria-label="Worker tabs" className="flex items-center" onKeyDown={handleTabKeyDown}>
+        <div role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
           {tabButtons}
         </div>
         <button
@@ -573,7 +573,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       )}
 
       {/* Status bar at bottom */}
-      <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex items-center gap-4 shrink-0">
+      <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex flex-wrap items-center gap-2 md:gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
         <span
           onClick={() => {

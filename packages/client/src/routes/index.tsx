@@ -674,8 +674,8 @@ function DashboardPage() {
   // Show loading state until first WebSocket sync
   if (!sessionsSynced) {
     return (
-      <div className="py-6 px-6">
-        <div className="flex items-center justify-between mb-5">
+      <div className="py-4 px-4 md:py-6 md:px-6">
+        <div className="flex flex-col gap-3 mb-5 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-semibold">Dashboard</h1>
         </div>
         <div className="flex items-center justify-center py-20">
@@ -687,8 +687,8 @@ function DashboardPage() {
 
   return (
     <>
-      <div className="py-6 px-6">
-        <div className="flex items-center justify-between mb-5">
+      <div className="py-4 px-4 md:py-6 md:px-6">
+        <div className="flex flex-col gap-3 mb-5 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-semibold">Dashboard</h1>
           <div className="flex gap-2">
             <button
@@ -876,7 +876,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
 
   return (
     <div className="card">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col gap-3 mb-4 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-medium">{repository.name}</h2>
@@ -1088,13 +1088,14 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling
       : 'bg-gray-600';     // No session
 
   return (
-    <div className="flex items-center gap-3 p-2 bg-slate-800 rounded">
-      {/* Index number - 0 for main, 1+ for worktrees */}
-      <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
-        {worktree.index !== undefined ? worktree.index : '0'}
-      </span>
-      <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
-      <div className="flex-1 min-w-0">
+    <div className="flex flex-col gap-2 p-2 bg-slate-800 rounded md:flex-row md:items-center md:gap-3">
+      {/* Info section: index, status dot, and content - always horizontal */}
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
+          {worktree.index !== undefined ? worktree.index : '0'}
+        </span>
+        <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
+        <div className="flex-1 min-w-0">
         <div className="text-sm font-medium flex items-center gap-2">
           {/* Show title from active session or paused session */}
           {(session?.title || pausedSession?.title) && (
@@ -1127,7 +1128,8 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling
         </div>
         <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
       </div>
-      <div className="flex gap-2 shrink-0">
+      </div>
+      <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
         {session ? (
           <Link
             to="/sessions/$sessionId"
@@ -1248,7 +1250,7 @@ function SessionCard({ session }: SessionCardProps) {
 
   return (
     <>
-      <div className="card flex items-center gap-4">
+      <div className="card flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
         <span className={`inline-block w-2.5 h-2.5 rounded-full ${statusColor} shrink-0`} />
         <div className="flex-1 min-w-0">
           {session.title && (

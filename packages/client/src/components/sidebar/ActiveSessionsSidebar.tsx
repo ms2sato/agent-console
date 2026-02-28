@@ -29,6 +29,8 @@ interface ActiveSessionsSidebarProps {
   pausedSessions?: Session[];
   /** Called when user clicks to resume a paused session */
   onResumeSession?: (sessionId: string) => void | Promise<void>;
+  /** Hide the drag-to-resize handle (used in mobile drawer mode) */
+  hideResizeHandle?: boolean;
 }
 
 /**
@@ -311,6 +313,7 @@ export function ActiveSessionsSidebar({
   onRemoveWorktreeDeletionTask,
   pausedSessions = [],
   onResumeSession,
+  hideResizeHandle,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -583,7 +586,7 @@ export function ActiveSessionsSidebar({
       </div>
 
       {/* Resize handle - only shown when expanded */}
-      {!collapsed && (
+      {!collapsed && !hideResizeHandle && (
         <div
           aria-hidden="true"
           className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors"

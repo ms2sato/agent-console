@@ -1,11 +1,14 @@
-import { useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
 import { createContext, useContext } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, resumeSession } from '../lib/api';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
-import { WarningIcon, ChevronRightIcon } from '../components/Icons';
+import { WarningIcon, ChevronRightIcon, MenuIcon, LayoutListIcon } from '../components/Icons';
+import { MobileSidebarDrawer } from '../components/sidebar/MobileSidebarDrawer';
+import { MobileNavMenu } from '../components/header/MobileNavMenu';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { WebhookConfigBanner } from '../components/ui/WebhookConfigBanner';
 import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
@@ -135,36 +138,38 @@ function RootLayout() {
     ? sessions.find(s => s.id === currentSessionId)
     : undefined;
 
+  // Mobile responsive state
+  const isMobile = useIsMobile();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Close mobile drawers on navigation
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  // Check if any session has 'asking' activity (for mobile badge indicator)
+  const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
+
   return (
     <WorktreeCreationTasksContext.Provider value={worktreeCreationTasks}>
       <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasks}>
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <header style={{
-          padding: '8px 16px',
-          borderBottom: '1px solid #334155',
-          backgroundColor: '#0f172a',
-          display: 'flex',
-          alignItems: 'center',
-          flexShrink: 0,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="h-dvh flex flex-col">
+        <header className="px-4 py-2 border-b border-slate-700 bg-[#0f172a] flex items-center shrink-0 relative">
+          <div className="flex items-center gap-1.5">
             <Link
               to="/"
-              style={{
-                color: '#fff',
-                textDecoration: 'none',
-                fontSize: '0.875rem',
-                fontWeight: 'bold',
-              }}
+              className="text-white no-underline text-sm font-bold"
             >
               Agent Console
             </Link>
             {isSessionPage && currentSession && (
-              <>
+              <span className="hidden md:contents">
                 {currentSession.type === 'worktree' && (
                   <>
                     <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                    <span style={{ color: '#94a3b8', fontSize: '0.8125rem' }}>
+                    <span className="text-slate-400 text-[0.8125rem]">
                       {currentSession.repositoryName}
                     </span>
                   </>
@@ -172,48 +177,91 @@ function RootLayout() {
                 {currentSession.title && (
                   <>
                     <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                    <span style={{ color: '#e2e8f0', fontSize: '0.8125rem' }}>
+                    <span className="text-slate-200 text-[0.8125rem]">
                       {currentSession.title}
                     </span>
                   </>
                 )}
-              </>
+              </span>
             )}
           </div>
-          {/* Main navigation landmark - aria-label provided for screen reader navigation */}
-          <nav aria-label="Main navigation" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+
+          {/* Desktop navigation - hidden on mobile */}
+          <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
             <ValidationWarningIndicator />
             <JobsNavLink />
             <AgentsNavLink />
             <RepositoriesNavLink />
           </nav>
+
+          {/* Mobile header controls - hidden on desktop */}
+          <div className="ml-auto flex items-center gap-1 md:hidden">
+            <button
+              onClick={() => setMobileSidebarOpen(true)}
+              className="relative p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
+              aria-label="Open sessions"
+            >
+              <LayoutListIcon className="w-5 h-5" />
+              {hasAnyAsking && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-yellow-400 rounded-full" aria-hidden="true" />
+              )}
+            </button>
+            <button
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+              className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
+              aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileNavOpen}
+            >
+              <MenuIcon className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Mobile navigation dropdown */}
+          <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
         </header>
         <ConnectionBanner connected={connected} />
         <WebhookConfigBanner />
-        <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
-          <ActiveSessionsSidebar
-            collapsed={collapsed}
-            onToggle={toggle}
-            sessions={activeSessions}
-            width={width}
-            onWidthChange={setWidth}
-            creationTasks={worktreeCreationTasks.tasks}
-            onRemoveCreationTask={worktreeCreationTasks.removeTask}
-            worktreeDeletionTasks={worktreeDeletionTasks.tasks}
-            onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
-            pausedSessions={pausedSessions}
-            onResumeSession={handleResumeFromSidebar}
-          />
-          <main style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: 0,
-            overflow: isSessionPage ? 'hidden' : 'auto',
-          }}>
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* Desktop sidebar - hidden on mobile */}
+          {!isMobile && (
+            <ActiveSessionsSidebar
+              collapsed={collapsed}
+              onToggle={toggle}
+              sessions={activeSessions}
+              width={width}
+              onWidthChange={setWidth}
+              creationTasks={worktreeCreationTasks.tasks}
+              onRemoveCreationTask={worktreeCreationTasks.removeTask}
+              worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+              onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+              pausedSessions={pausedSessions}
+              onResumeSession={handleResumeFromSidebar}
+            />
+          )}
+          <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
             <Outlet />
           </main>
         </div>
+
+        {/* Mobile sidebar drawer */}
+        {isMobile && (
+          <MobileSidebarDrawer open={mobileSidebarOpen} onClose={() => setMobileSidebarOpen(false)}>
+            <ActiveSessionsSidebar
+              collapsed={false}
+              onToggle={() => setMobileSidebarOpen(false)}
+              sessions={activeSessions}
+              width={288}
+              onWidthChange={() => {}}
+              creationTasks={worktreeCreationTasks.tasks}
+              onRemoveCreationTask={worktreeCreationTasks.removeTask}
+              worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+              onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+              pausedSessions={pausedSessions}
+              onResumeSession={handleResumeFromSidebar}
+              hideResizeHandle
+            />
+          </MobileSidebarDrawer>
+        )}
       </div>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>
@@ -227,14 +275,9 @@ function JobsNavLink() {
   return (
     <Link
       to="/jobs"
-      style={{
-        color: isActive ? '#fff' : '#94a3b8',
-        textDecoration: 'none',
-        fontSize: '0.875rem',
-        padding: '4px 8px',
-        borderRadius: '4px',
-        backgroundColor: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
-      }}
+      className={`text-sm py-1 px-2 rounded no-underline ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
     >
       Jobs
     </Link>
@@ -248,14 +291,9 @@ function AgentsNavLink() {
   return (
     <Link
       to="/agents"
-      style={{
-        color: isActive ? '#fff' : '#94a3b8',
-        textDecoration: 'none',
-        fontSize: '0.875rem',
-        padding: '4px 8px',
-        borderRadius: '4px',
-        backgroundColor: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
-      }}
+      className={`text-sm py-1 px-2 rounded no-underline ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
     >
       Agents
     </Link>
@@ -269,14 +307,9 @@ function RepositoriesNavLink() {
   return (
     <Link
       to="/settings/repositories"
-      style={{
-        color: isActive ? '#fff' : '#94a3b8',
-        textDecoration: 'none',
-        fontSize: '0.875rem',
-        padding: '4px 8px',
-        borderRadius: '4px',
-        backgroundColor: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
-      }}
+      className={`text-sm py-1 px-2 rounded no-underline ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
     >
       Repositories
     </Link>
@@ -287,7 +320,6 @@ function ValidationWarningIndicator() {
   const { data } = useQuery({
     queryKey: sessionKeys.validation(),
     queryFn: validateSessions,
-    // Only check once on initial load, don't refetch automatically
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
@@ -303,17 +335,7 @@ function ValidationWarningIndicator() {
   return (
     <Link
       to="/maintenance"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        padding: '4px 8px',
-        borderRadius: '4px',
-        backgroundColor: 'rgba(234, 179, 8, 0.2)',
-        color: '#eab308',
-        fontSize: '0.75rem',
-        textDecoration: 'none',
-      }}
+      className="flex items-center gap-1.5 py-1 px-2 rounded bg-yellow-500/20 text-yellow-500 text-xs no-underline"
       title={`${invalidCount} invalid session${invalidCount > 1 ? 's' : ''} found`}
     >
       <WarningIcon className="w-3.5 h-3.5" />
