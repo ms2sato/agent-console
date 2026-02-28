@@ -116,6 +116,9 @@ Events originating from external services (GitHub, GitLab, etc.). These are rece
 | `ci:failed` | CI/CD pipeline failed | Notify agent, show UI alert |
 | `issue:closed` | Issue was closed | Suggest session archive |
 | `pr:merged` | Pull request was merged | Suggest session archive |
+| `pr:review_comment` | PR review comment posted | Notify agent, show UI alert |
+| `pr:changes_requested` | PR changes requested | Notify agent, show UI alert |
+| `pr:comment` | PR general comment posted | Notify agent, show UI alert |
 
 ### Internal Source Events (Outbound)
 
