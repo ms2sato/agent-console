@@ -197,38 +197,4 @@ describe('SystemCapabilitiesService', () => {
     });
   });
 
-  describe('singleton functions', () => {
-    it('should throw when getSystemCapabilities is called before initialization', async () => {
-      const module = await import(`../system-capabilities-service.js?v=${++importCounter}`);
-      module.resetSystemCapabilities();
-
-      expect(() => module.getSystemCapabilities()).toThrow(
-        'SystemCapabilitiesService not initialized'
-      );
-    });
-
-    it('should return instance after setSystemCapabilities is called', async () => {
-      const module = await import(`../system-capabilities-service.js?v=${++importCounter}`);
-      module.resetSystemCapabilities();
-
-      const service = new module.SystemCapabilitiesService();
-      module.setSystemCapabilities(service);
-
-      expect(module.getSystemCapabilities()).toBe(service);
-    });
-
-    it('should throw when setSystemCapabilities is called twice', async () => {
-      const module = await import(`../system-capabilities-service.js?v=${++importCounter}`);
-      module.resetSystemCapabilities();
-
-      const service1 = new module.SystemCapabilitiesService();
-      const service2 = new module.SystemCapabilitiesService();
-
-      module.setSystemCapabilities(service1);
-
-      expect(() => module.setSystemCapabilities(service2)).toThrow(
-        'SystemCapabilitiesService already initialized'
-      );
-    });
-  });
 });

@@ -3,31 +3,28 @@ import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
 import {
-  initializeNotificationServices,
-  shutdownNotificationServices,
   upsertRepositorySlackIntegration,
-  getNotificationManager,
 } from '../../services/notifications/index.js';
-import type { AppBindings, AppContext } from '../../app-context.js';
+import { NotificationManager } from '../../services/notifications/notification-manager.js';
+import { SlackHandler } from '../../services/notifications/slack-handler.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { initializeRepositoryManager, resetRepositoryManager, getRepositoryManager } from '../../services/repository-manager.js';
+import { JobQueue } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
+import { RepositoryManager } from '../../services/repository-manager.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 
 describe('Notifications API', () => {
   let app: Hono<AppBindings>;
   let repositoryRepository: SqliteRepositoryRepository;
+  let testJobQueue: JobQueue;
   const testRepositoryId = 'test-repo-123';
   const testRepoPath = '/test/path/to/repo';
   const testWebhookUrl = 'https://hooks.slack.com/services/T00/B00/xxx';
 
   beforeEach(async () => {
-    // Reset singletons to ensure clean state
-    resetRepositoryManager();
-    await resetJobQueue();
-    shutdownNotificationServices();
-
     // Setup memfs with mock git repository structure
     const gitRepoFiles = createMockGitRepoFiles(testRepoPath);
     setupMemfs(gitRepoFiles);
@@ -35,8 +32,9 @@ describe('Notifications API', () => {
     // Initialize in-memory database
     await initializeDatabase(':memory:');
 
-    // Initialize the singleton job queue
-    const testJobQueue = initializeJobQueue();
+    // Create job queue with the in-memory database
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue);
 
     // Create repository repository backed by in-memory SQLite
     repositoryRepository = new SqliteRepositoryRepository(getDatabase());
@@ -49,22 +47,22 @@ describe('Notifications API', () => {
       createdAt: new Date().toISOString(),
     });
 
-    // Initialize repository manager singleton
-    await initializeRepositoryManager({
+    // Create repository manager (will load the pre-created repository)
+    const repositoryManager = await RepositoryManager.create({
       repository: repositoryRepository,
       jobQueue: testJobQueue,
     });
 
-    // Initialize notification services
-    initializeNotificationServices();
+    // Create notification manager
+    const notificationManager = new NotificationManager(new SlackHandler());
 
     // Create app with API routes
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', {
-        repositoryManager: getRepositoryManager(),
-        notificationManager: getNotificationManager(),
-      } as unknown as AppContext);
+      c.set('appContext', asAppContext({
+        repositoryManager,
+        notificationManager,
+      }));
       await next();
     });
     app.onError(onApiError);
@@ -72,10 +70,7 @@ describe('Notifications API', () => {
   });
 
   afterEach(async () => {
-    // Shutdown services
-    shutdownNotificationServices();
-    resetRepositoryManager();
-    await resetJobQueue();
+    await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
   });

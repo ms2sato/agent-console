@@ -66,7 +66,7 @@ export class RepositoryManager {
 
   /**
    * Set the job queue for background task processing.
-   * @internal For testing only. In production, pass jobQueue to initializeRepositoryManager().
+   * @internal For testing only. In production, pass jobQueue to RepositoryManager.create().
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
@@ -209,7 +209,7 @@ export class RepositoryManager {
    */
   private async cleanupRepositoryData(repoPath: string): Promise<void> {
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for repository cleanup. Ensure initializeRepositoryManager() was called with jobQueue.');
+      throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
     }
 
     const orgRepo = await getOrgRepoFromPath(repoPath);
@@ -236,61 +236,4 @@ export class RepositoryManager {
     }
     return undefined;
   }
-}
-
-// Singleton instance
-let repositoryManagerInstance: RepositoryManager | null = null;
-
-/**
- * Initialize the RepositoryManager singleton.
- * Must be called once at application startup before getRepositoryManager().
- * @param options.jobQueue - JobQueue for background cleanup tasks
- * @param options.repository - Optional custom repository implementation
- */
-export async function initializeRepositoryManager(options: {
-  jobQueue: JobQueue;
-  repository?: RepositoryRepository;
-}): Promise<void> {
-  if (repositoryManagerInstance) {
-    throw new Error('RepositoryManager already initialized');
-  }
-  repositoryManagerInstance = await RepositoryManager.create(options);
-}
-
-/**
- * Get the RepositoryManager singleton.
- * @throws Error if initializeRepositoryManager() has not been called
- */
-export function getRepositoryManager(): RepositoryManager {
-  if (!repositoryManagerInstance) {
-    throw new Error('RepositoryManager not initialized. Call initializeRepositoryManager() first.');
-  }
-  return repositoryManagerInstance;
-}
-
-/**
- * Check if RepositoryManager has been initialized.
- */
-export function isRepositoryManagerInitialized(): boolean {
-  return repositoryManagerInstance !== null;
-}
-
-/**
- * Reset the singleton for testing.
- * @internal For testing only.
- */
-export function resetRepositoryManager(): void {
-  repositoryManagerInstance = null;
-}
-
-/**
- * Set the RepositoryManager singleton from an existing instance.
- * Used by AppContext to set the singleton without re-creating.
- * @internal For AppContext initialization only.
- */
-export function setRepositoryManager(instance: RepositoryManager): void {
-  if (repositoryManagerInstance) {
-    throw new Error('RepositoryManager already initialized');
-  }
-  repositoryManagerInstance = instance;
 }

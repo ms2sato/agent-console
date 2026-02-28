@@ -6,7 +6,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { AgentManager, resetAgentManager, setAgentManager } from '../agent-manager.js';
+import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
@@ -52,13 +52,9 @@ describe('SessionManager', () => {
     // Reset git mocks to default implementations
     resetGitMocks();
 
-    // Reset AgentManager singleton so it re-initializes with the new database
-    resetAgentManager();
-
-    // Create AgentManager for dependency injection and singleton
+    // Create AgentManager for dependency injection
     const db = getDatabase();
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
-    setAgentManager(agentManager);
   });
 
   afterEach(async () => {

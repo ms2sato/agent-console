@@ -16,12 +16,8 @@ import {
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
 
-// Import system capabilities service helpers
-import {
-  SystemCapabilitiesService,
-  setSystemCapabilities,
-  resetSystemCapabilities,
-} from '@agent-console/server/src/services/system-capabilities-service';
+// Import system capabilities service class
+import { SystemCapabilitiesService } from '@agent-console/server/src/services/system-capabilities-service';
 
 // Import mock-fs-helper to add test paths
 import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
@@ -61,31 +57,25 @@ function setupSpawnMock() {
 }
 
 /**
- * Set up mock system capabilities with VS Code enabled.
+ * Create mock system capabilities with VS Code enabled/disabled.
  */
-function setupMockSystemCapabilities(vscodeAvailable: boolean = true) {
+function createMockSystemCapabilities(vscodeAvailable: boolean = true): SystemCapabilitiesService {
   const mockCapabilities = new SystemCapabilitiesService();
   // Manually set capabilities to avoid running 'which' command
-  (mockCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = {
-    vscode: vscodeAvailable,
-  };
-  (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = vscodeAvailable
-    ? 'code'
-    : null;
-  setSystemCapabilities(mockCapabilities);
+  Reflect.set(mockCapabilities, 'capabilities', { vscode: vscodeAvailable });
+  Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? 'code' : null);
+  return mockCapabilities;
 }
 
 describe('Client-Server Boundary: System API', () => {
   let app: Hono;
   let bridge: ReturnType<typeof createFetchBridge>;
+  let systemCapabilities: SystemCapabilitiesService;
 
   beforeEach(async () => {
     // Reset spawn tracking
     spawnCalls.length = 0;
     setupSpawnMock();
-
-    // Reset system capabilities singleton before setup
-    resetSystemCapabilities();
 
     // Set up test environment (memfs, database, etc.)
     await setupTestEnvironment();
@@ -99,12 +89,11 @@ describe('Client-Server Boundary: System API', () => {
     });
     process.env.AGENT_CONSOLE_HOME = '/test/config';
 
-    // Set up system capabilities BEFORE creating the app
-    // because api.ts calls getSystemCapabilities() at import time for /api/config
-    setupMockSystemCapabilities(true);
+    // Create system capabilities and pass to app via AppContext
+    systemCapabilities = createMockSystemCapabilities(true);
 
-    // Create test app with all routes
-    app = await createTestApp();
+    // Create test app with all routes, passing systemCapabilities via AppContext
+    app = await createTestApp({ systemCapabilities });
 
     // Create fetch bridge to capture and forward requests
     bridge = createFetchBridge(app);
@@ -112,7 +101,6 @@ describe('Client-Server Boundary: System API', () => {
 
   afterEach(async () => {
     bridge.restore();
-    resetSystemCapabilities();
     (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
     await cleanupTestEnvironment();
   });
@@ -135,12 +123,9 @@ describe('Client-Server Boundary: System API', () => {
     });
 
     it('should return error when VS Code is not available', async () => {
-      // Reset and set up without VS Code
-      resetSystemCapabilities();
-      setupMockSystemCapabilities(false);
-
-      // Recreate app with new capabilities
-      app = await createTestApp();
+      // Recreate app with VS Code disabled
+      const noVscodeCapabilities = createMockSystemCapabilities(false);
+      app = await createTestApp({ systemCapabilities: noVscodeCapabilities });
       bridge.restore();
       bridge = createFetchBridge(app);
 

@@ -19,6 +19,11 @@ import {
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
 
+// Import services needed for AppContext
+import { AgentManager } from '@agent-console/server/src/services/agent-manager';
+import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sqlite-agent-repository';
+import { getDatabase } from '@agent-console/server/src/database/connection';
+
 // Import client components and test utilities
 import { AddAgentForm, EditAgentForm } from '@agent-console/client/src/components/agents';
 import { renderWithQuery } from '@agent-console/client/src/test/renderWithQuery';
@@ -31,8 +36,10 @@ describe('Client-Server Boundary: EditAgentForm', () => {
   let bridge: ReturnType<typeof createFetchBridge>;
 
   beforeEach(async () => {
-    setupTestEnvironment();
-    app = await createTestApp();
+    await setupTestEnvironment();
+    const db = getDatabase();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    app = await createTestApp({ agentManager });
     bridge = createFetchBridge(app);
   });
 

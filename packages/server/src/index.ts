@@ -3,19 +3,13 @@ import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
-import { mcpApp } from './mcp/mcp-server.js';
+import { createMcpApp } from './mcp/mcp-server.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
-// Import singleton setters to populate existing singletons from AppContext
-import { setSessionManager } from './services/session-manager.js';
-import { setRepositoryManager } from './services/repository-manager.js';
-import { setNotificationManager } from './services/notifications/index.js';
-import { setAgentManager } from './services/agent-manager.js';
-import { setSystemCapabilities } from './services/system-capabilities-service.js';
 import * as path from 'path';
 
 const logger = createLogger('server');
@@ -92,15 +86,6 @@ try {
   process.exit(1);
 }
 
-// Populate existing singletons from AppContext for backward compatibility
-// This allows existing code using getSessionManager(), etc. to continue working
-setSessionManager(appContext.sessionManager);
-setRepositoryManager(appContext.repositoryManager);
-setNotificationManager(appContext.notificationManager);
-setAgentManager(appContext.agentManager);
-setSystemCapabilities(appContext.systemCapabilities);
-logger.info('Singletons populated from AppContext');
-
 // Create Hono app
 const app = new Hono<AppBindings>();
 
@@ -143,6 +128,11 @@ app.route('/api', api);
 app.route('/webhooks', webhooks);
 
 // Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
+const mcpApp = createMcpApp({
+  sessionManager: appContext.sessionManager,
+  repositoryManager: appContext.repositoryManager,
+  agentManager: appContext.agentManager,
+});
 app.route('', mcpApp);
 
 // Setup WebSocket routes AFTER service initialization but BEFORE SPA fallback

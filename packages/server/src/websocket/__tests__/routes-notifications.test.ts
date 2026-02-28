@@ -23,18 +23,19 @@ mock.module('../../lib/pty-provider.js', () => ({
 }));
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { JobQueue, resetJobQueue } from '../../jobs/index.js';
+import { JobQueue } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
 import { createSessionRepository } from '../../repositories/index.js';
-import { initializeSessionManager, resetSessionManager, getSessionManager } from '../../services/session-manager.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
-import { AgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
+import { SessionManager } from '../../services/session-manager.js';
+import { RepositoryManager } from '../../services/repository-manager.js';
+import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
-import {
-  initializeNotificationServices,
-  shutdownNotificationServices,
-  getNotificationManager,
-} from '../../services/notifications/index.js';
+import { NotificationManager } from '../../services/notifications/notification-manager.js';
+import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { setupWebSocketRoutes } from '../routes.js';
+import type { AppContext } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 /**
  * Create a no-op upgradeWebSocket stub for tests that only need setupWebSocketRoutes
@@ -50,14 +51,12 @@ function createUpgradeWebSocketStub(): Parameters<typeof setupWebSocketRoutes>[1
 
 describe('WebSocket routes notifications', () => {
   let testJobQueue: JobQueue | null = null;
+  let sessionManager: SessionManager;
+  let notificationManager: NotificationManager;
+  let appContext: AppContext;
 
   beforeEach(async () => {
     await closeDatabase();
-    await resetJobQueue();
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-    shutdownNotificationServices();
 
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
@@ -71,19 +70,18 @@ describe('WebSocket routes notifications', () => {
     await initializeDatabase(':memory:');
 
     testJobQueue = new JobQueue(getDatabase());
+    registerJobHandlers(testJobQueue);
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
-    await initializeRepositoryManager({ jobQueue: testJobQueue });
-    initializeNotificationServices();
+    notificationManager = new NotificationManager(new SlackHandler());
+    sessionManager = await SessionManager.create({ sessionRepository, jobQueue: testJobQueue, agentManager });
+    const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+
+    appContext = asAppContext({ sessionManager, notificationManager, agentManager, repositoryManager });
   });
 
   afterEach(async () => {
-    shutdownNotificationServices();
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-
     if (testJobQueue) {
       await testJobQueue.stop();
       testJobQueue = null;
@@ -95,10 +93,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should include repository info for worktree session worker exits', async () => {
     const app = new Hono();
-    await setupWebSocketRoutes(app, createUpgradeWebSocketStub());
-
-    const sessionManager = getSessionManager();
-    const notificationManager = getNotificationManager();
+    await setupWebSocketRoutes(app, createUpgradeWebSocketStub(), appContext);
     const onWorkerExitSpy = spyOn(notificationManager, 'onWorkerExit');
 
     const session = await sessionManager.createSession({
@@ -127,10 +122,7 @@ describe('WebSocket routes notifications', () => {
 
   it('should set repository info to null for quick session worker exits', async () => {
     const app = new Hono();
-    await setupWebSocketRoutes(app, createUpgradeWebSocketStub());
-
-    const sessionManager = getSessionManager();
-    const notificationManager = getNotificationManager();
+    await setupWebSocketRoutes(app, createUpgradeWebSocketStub(), appContext);
     const onWorkerExitSpy = spyOn(notificationManager, 'onWorkerExit');
 
     const session = await sessionManager.createSession({

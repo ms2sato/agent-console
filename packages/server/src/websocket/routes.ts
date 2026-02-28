@@ -10,10 +10,6 @@ import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
 import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
-import { getSessionManager } from '../services/session-manager.js';
-import { getAgentManager } from '../services/agent-manager.js';
-import { getRepositoryManager } from '../services/repository-manager.js';
-import { getNotificationManager } from '../services/notifications/index.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit } from './git-diff-handler.js';
 import { createLogger } from '../lib/logger.js';
@@ -219,13 +215,9 @@ export async function setupWebSocketRoutes(
   // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upgradeWebSocket: UpgradeWebSocket<any>,
-  appContext?: AppContext
+  appContext: AppContext
 ) {
-  // Use injected AppContext when available, fall back to singletons for backward compatibility (tests)
-  const sessionManager = appContext?.sessionManager ?? getSessionManager();
-  const notificationManager = appContext?.notificationManager ?? getNotificationManager();
-  const agentManager = appContext?.agentManager ?? await getAgentManager();
-  const repositoryManager = appContext?.repositoryManager ?? getRepositoryManager();
+  const { sessionManager, notificationManager, agentManager, repositoryManager } = appContext;
 
   // Register output truncation callback to avoid circular dependency
   // worker-output-file.ts needs to notify clients but can't import routes.ts directly

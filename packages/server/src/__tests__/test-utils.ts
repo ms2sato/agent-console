@@ -10,7 +10,7 @@
  *
  * beforeEach(async () => {
  *   await setupTestEnvironment();
- *   app = await createTestApp();
+ *   app = await createTestApp({ sessionManager, repositoryManager });
  * });
  *
  * afterEach(async () => {
@@ -27,12 +27,6 @@ import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
-import { getAgentManager, resetAgentManager } from '../services/agent-manager.js';
-import { getRepositoryManager, resetRepositoryManager } from '../services/repository-manager.js';
-import { getSessionManager, resetSessionManager } from '../services/session-manager.js';
-import { getSystemCapabilities } from '../services/system-capabilities-service.js';
-import { getJobQueue } from '../jobs/index.js';
-import { getNotificationManager } from '../services/notifications/index.js';
 import type { AppBindings, AppContext } from '../app-context.js';
 
 // =============================================================================
@@ -109,51 +103,26 @@ export async function setupTestEnvironment(): Promise<void> {
  * Must be called in afterEach with await.
  */
 export async function cleanupTestEnvironment(): Promise<void> {
-  // Reset singleton managers BEFORE closing database
-  // to ensure they don't hold references to destroyed DB connections
-  resetSessionManager();
-  resetRepositoryManager();
-  resetAgentManager();
   await closeDatabase();
   cleanupMemfs();
 }
 
 /**
- * Safely retrieves a singleton that may not be initialized.
- * Returns undefined instead of throwing if the getter fails.
- */
-function safeGet<T>(getter: () => T): T | undefined {
-  try {
-    return getter();
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Creates a fresh Hono app instance with all routes configured.
  * Uses cache-busting import to ensure fresh service instances.
+ *
+ * Callers pass a partial AppContext with the services their tests need.
  */
-export async function createTestApp(): Promise<Hono<AppBindings>> {
+export async function createTestApp(appContext?: Partial<AppContext>): Promise<Hono<AppBindings>> {
   const suffix = `?v=${++importCounter}`;
   const { api } = await import(`../routes/api.js${suffix}`);
   const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-  // Build partial AppContext from available singletons.
-  // Tests only initialize the services they need, so we safely
-  // retrieve each one (undefined if not yet initialized).
-  const appContext = {
-    sessionManager: safeGet(getSessionManager),
-    repositoryManager: safeGet(getRepositoryManager),
-    systemCapabilities: safeGet(getSystemCapabilities),
-    notificationManager: safeGet(getNotificationManager),
-    jobQueue: safeGet(getJobQueue),
-    agentManager: await getAgentManager().catch(() => undefined),
-  } as unknown as AppContext;
-
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
-    c.set('appContext', appContext);
+    if (appContext) {
+      c.set('appContext', appContext as AppContext);
+    }
     await next();
   });
   app.onError(onApiError);
@@ -166,4 +135,13 @@ export async function createTestApp(): Promise<Hono<AppBindings>> {
  */
 export function getTestConfigDir(): string {
   return TEST_CONFIG_DIR;
+}
+
+/**
+ * Create an AppContext from a partial object for testing.
+ * Tests often only need a subset of services; this avoids unsafe `as unknown as AppContext` casts
+ * while providing type-checking on the properties you do provide.
+ */
+export function asAppContext(partial: Partial<AppContext>): AppContext {
+  return partial as AppContext;
 }

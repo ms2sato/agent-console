@@ -103,21 +103,17 @@ function restoreBunSpawn() {
 // Note: We use the real database connection module with in-memory SQLite.
 // This avoids mock.module which applies globally and affects other test files.
 
-// Import singleton reset functions to ensure fresh state between tests
-import { resetRepositoryManager, initializeRepositoryManager, getRepositoryManager } from '../services/repository-manager.js';
-import { resetSessionManager, initializeSessionManager, getSessionManager } from '../services/session-manager.js';
+import { RepositoryManager } from '../services/repository-manager.js';
+import { SessionManager } from '../services/session-manager.js';
 import { createSessionRepository } from '../repositories/index.js';
-import { AgentManager, resetAgentManager, getAgentManager } from '../services/agent-manager.js';
+import { AgentManager } from '../services/agent-manager.js';
 import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
-import { JobQueue, resetJobQueue } from '../jobs/index.js';
-import {
-  SystemCapabilitiesService,
-  setSystemCapabilities,
-  resetSystemCapabilities,
-  getSystemCapabilities,
-} from '../services/system-capabilities-service.js';
-import type { AppBindings, AppContext } from '../app-context.js';
+import { JobQueue } from '../jobs/job-queue.js';
+import { registerJobHandlers } from '../jobs/handlers.js';
+import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
+import type { AppBindings } from '../app-context.js';
+import { asAppContext } from './test-utils.js';
 
 // =============================================================================
 // Test Setup
@@ -159,28 +155,28 @@ branch refs/heads/main
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
 
+// Test service instances (created fresh for each test)
+let testSessionManager: SessionManager | null = null;
+let testRepositoryManager: RepositoryManager | null = null;
+let testAgentManager: AgentManager | null = null;
+let testSystemCapabilities: SystemCapabilitiesService | null = null;
+
 describe('API Routes Integration', () => {
   beforeEach(async () => {
     // Close any existing database connection and initialize fresh in-memory database
     await closeDatabase();
-    await resetJobQueue();
     await initializeDatabase(':memory:');
-
-    // Reset service singletons to ensure fresh state for each test
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-    resetSystemCapabilities();
 
     // Set up mock system capabilities
     const mockCapabilities = new SystemCapabilitiesService();
     // Manually set capabilities to avoid running which command
     (mockCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = { vscode: true };
     (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = 'code';
-    setSystemCapabilities(mockCapabilities);
+    testSystemCapabilities = mockCapabilities;
 
     // Create a test JobQueue with the shared database connection
-    testJobQueue = new JobQueue(getDatabase());
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue);
 
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({
@@ -238,6 +234,10 @@ describe('API Routes Integration', () => {
       await testJobQueue.stop();
       testJobQueue = null;
     }
+    testSessionManager = null;
+    testRepositoryManager = null;
+    testAgentManager = null;
+    testSystemCapabilities = null;
     await closeDatabase();
     cleanupMemfs();
   });
@@ -264,28 +264,29 @@ describe('API Routes Integration', () => {
     const { api } = await import(`../routes/api.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 
-    // Initialize managers with test JobQueue
+    // Create managers with test JobQueue
     // This ensures cleanup operations have a valid jobQueue
-    let agentManager: Awaited<ReturnType<typeof AgentManager.create>> | undefined;
     if (testJobQueue) {
       const sessionRepository = await createSessionRepository();
-      resetAgentManager();
-      agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-      await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
-      await initializeRepositoryManager({ jobQueue: testJobQueue });
+      testAgentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+      testSessionManager = await SessionManager.create({
+        sessionRepository,
+        jobQueue: testJobQueue,
+        agentManager: testAgentManager,
+      });
+      testRepositoryManager = await RepositoryManager.create({ jobQueue: testJobQueue });
     }
 
     const app = new Hono<AppBindings>();
-    // Inject AppContext constructed from test singletons
-    // Use the same agentManager instance that was injected into SessionManager
+    // Inject AppContext constructed from locally created services
     app.use('*', async (c, next) => {
-      c.set('appContext', {
+      c.set('appContext', asAppContext({
         jobQueue: testJobQueue!,
-        sessionManager: getSessionManager(),
-        repositoryManager: getRepositoryManager(),
-        systemCapabilities: getSystemCapabilities(),
-        agentManager: agentManager ?? await getAgentManager(),
-      } as unknown as AppContext);
+        sessionManager: testSessionManager!,
+        repositoryManager: testRepositoryManager!,
+        systemCapabilities: testSystemCapabilities!,
+        agentManager: testAgentManager!,
+      }));
       await next();
     });
     app.onError(onApiError);

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdir } from 'fs/promises';
+import { mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
   CreateWorkerRequestSchema,
@@ -11,7 +11,7 @@ import {
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
 } from '@agent-console/shared';
-import { getSessionManager } from '../services/session-manager.js';
+import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
@@ -23,11 +23,11 @@ const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) =
   logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
 });
 
-const workers = new Hono()
+const workers = new Hono<AppBindings>()
   // Get workers for a session
   .get('/:sessionId/workers', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
@@ -79,6 +79,13 @@ const workers = new Hono()
       throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
     }
 
+    // Validate session exists BEFORE writing files to avoid orphan files on disk
+    const { sessionManager } = c.get('appContext');
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
     // Ensure upload directory is ready before writing files
     await uploadDirReady;
 
@@ -94,14 +101,10 @@ const workers = new Hono()
       savedPaths.push(filePath);
     }
 
-    const sessionManager = getSessionManager();
-    const session = sessionManager.getSession(sessionId);
-    if (!session) {
-      throw new NotFoundError('Session');
-    }
-
     const message = sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
     if (!message) {
+      // Clean up saved files since the message was not delivered
+      await Promise.allSettled(savedPaths.map((p) => unlink(p)));
       throw new ValidationError('Failed to send message (target worker not found or PTY inactive)');
     }
 
@@ -112,7 +115,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const body = c.req.valid('json');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -134,7 +137,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -154,7 +157,7 @@ const workers = new Hono()
     const body = c.req.valid('json');
     const { continueConversation = false, agentId, branch } = body;
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
 
     if (!worker) {
@@ -168,7 +171,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -198,7 +201,7 @@ const workers = new Hono()
       throw new ValidationError('path query parameter is required');
     }
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
