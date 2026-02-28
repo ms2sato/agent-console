@@ -63,10 +63,10 @@ describe('getNextTabIndex', () => {
 
   describe('negative currentIndex (activeTabId not in tabs)', () => {
     it('ArrowRight from -1 goes to index 0', () => {
-      expect(getNextTabIndex('ArrowRight', -1, 3)).toBe(0); // (-1 + 1) % 3 = 0
+      expect(getNextTabIndex('ArrowRight', -1, 3)).toBe(0);
     });
     it('ArrowLeft from -1 goes to index 1', () => {
-      expect(getNextTabIndex('ArrowLeft', -1, 3)).toBe(1); // (-1 - 1 + 3) % 3 = 1
+      expect(getNextTabIndex('ArrowLeft', -1, 3)).toBe(1);
     });
   });
 
@@ -114,20 +114,33 @@ function TabBarHarness({ tabs, initialActiveTabId }: { tabs: Tab[]; initialActiv
   };
 
   return (
-    <div role="tablist" aria-label="Worker tabs" onKeyDown={handleKeyDown}>
-      {tabs.map(tab => (
-        <button
+    <>
+      <div role="tablist" aria-label="Worker tabs" onKeyDown={handleKeyDown}>
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            role="tab"
+            id={`worker-tab-${tab.id}`}
+            aria-selected={tab.id === activeTabId}
+            aria-controls={`worker-tabpanel-${tab.id}`}
+            tabIndex={tab.id === activeTabId ? 0 : -1}
+            onClick={() => setActiveTabId(tab.id)}
+          >
+            {tab.name}
+          </button>
+        ))}
+      </div>
+      {tabs.filter(tab => tab.id === activeTabId).map(tab => (
+        <div
           key={tab.id}
-          role="tab"
-          id={`worker-tab-${tab.id}`}
-          aria-selected={tab.id === activeTabId}
-          tabIndex={tab.id === activeTabId ? 0 : -1}
-          onClick={() => setActiveTabId(tab.id)}
+          role="tabpanel"
+          id={`worker-tabpanel-${tab.id}`}
+          aria-labelledby={`worker-tab-${tab.id}`}
         >
-          {tab.name}
-        </button>
+          {tab.name} content
+        </div>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -330,6 +343,33 @@ describe('Tab keyboard navigation (integration)', () => {
       expect(getTab('Agent').getAttribute('tabindex')).toBe('-1');
       expect(getTab('Shell 1').getAttribute('tabindex')).toBe('0');
       expect(getTab('Shell 2').getAttribute('tabindex')).toBe('-1');
+    });
+  });
+
+  describe('tab-to-panel ARIA relationship', () => {
+    it('tab aria-controls matches tabpanel id', () => {
+      const tabs: Tab[] = [
+        { id: 'tab1', name: 'Agent' },
+        { id: 'tab2', name: 'Shell 1' },
+      ];
+      render(<TabBarHarness tabs={tabs} initialActiveTabId="tab1" />);
+
+      const tab1 = screen.getByRole('tab', { name: /Agent/ });
+      expect(tab1.getAttribute('aria-controls')).toBe('worker-tabpanel-tab1');
+
+      const panel1 = document.getElementById('worker-tabpanel-tab1');
+      expect(panel1).not.toBeNull();
+      expect(panel1?.getAttribute('role')).toBe('tabpanel');
+    });
+
+    it('tabpanel aria-labelledby matches tab id', () => {
+      const tabs: Tab[] = [
+        { id: 'tab1', name: 'Agent' },
+      ];
+      render(<TabBarHarness tabs={tabs} initialActiveTabId="tab1" />);
+
+      const panel = document.getElementById('worker-tabpanel-tab1');
+      expect(panel?.getAttribute('aria-labelledby')).toBe('worker-tab-tab1');
     });
   });
 });

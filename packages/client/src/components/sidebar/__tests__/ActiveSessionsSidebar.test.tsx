@@ -258,7 +258,7 @@ describe('ActiveSessionsSidebar', () => {
         <ActiveSessionsSidebar {...defaultProps()} collapsed={true} width={300} />
       );
 
-      const sidebar = screen.getByRole('complementary');
+      const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
       expect(sidebar.style.width).toBe(`${SIDEBAR_COLLAPSED_WIDTH}px`);
     });
 
@@ -268,7 +268,7 @@ describe('ActiveSessionsSidebar', () => {
         <ActiveSessionsSidebar {...defaultProps()} width={customWidth} />
       );
 
-      const sidebar = screen.getByRole('complementary');
+      const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
       expect(sidebar.style.width).toBe(`${customWidth}px`);
     });
   });
