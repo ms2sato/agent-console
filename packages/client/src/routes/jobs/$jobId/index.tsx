@@ -22,7 +22,7 @@ export const Route = createFileRoute('/jobs/$jobId/')({
   head: () => ({ meta: [{ title: 'Job Details' }] }),
 });
 
-function JobDetailPending() {
+export function JobDetailPending() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-gray-500">
@@ -33,7 +33,7 @@ function JobDetailPending() {
   );
 }
 
-function JobDetailError({ error: _error, reset }: ErrorComponentProps) {
+export function JobDetailError({ error, reset }: ErrorComponentProps) {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
@@ -41,10 +41,11 @@ function JobDetailError({ error: _error, reset }: ErrorComponentProps) {
         <span>/</span>
         <Link to="/jobs" className="hover:text-white">Jobs</Link>
         <span>/</span>
-        <span className="text-white">Not Found</span>
+        <span className="text-white">Error</span>
       </div>
       <div className="card text-center py-10">
-        <p className="text-red-400 mb-4">Job not found</p>
+        <p className="text-red-400 mb-2">Failed to load job</p>
+        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
         <div className="flex justify-center gap-2">
           <button onClick={reset} className="btn btn-secondary">
             Retry

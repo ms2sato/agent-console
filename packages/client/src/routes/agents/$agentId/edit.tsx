@@ -12,7 +12,7 @@ export const Route = createFileRoute('/agents/$agentId/edit')({
   errorComponent: AgentEditError,
 });
 
-function AgentEditPending() {
+export function AgentEditPending() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-gray-500">
@@ -23,7 +23,7 @@ function AgentEditPending() {
   );
 }
 
-function AgentEditError({ error: _error, reset }: ErrorComponentProps) {
+export function AgentEditError({ error, reset }: ErrorComponentProps) {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
@@ -31,10 +31,11 @@ function AgentEditError({ error: _error, reset }: ErrorComponentProps) {
         <span>/</span>
         <Link to="/agents" className="hover:text-white">Agents</Link>
         <span>/</span>
-        <span className="text-white">Not Found</span>
+        <span className="text-white">Error</span>
       </div>
       <div className="card text-center py-10">
-        <p className="text-red-400 mb-4">Agent not found</p>
+        <p className="text-red-400 mb-2">Failed to load agent</p>
+        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
         <div className="flex justify-center gap-2">
           <button onClick={reset} className="btn btn-secondary">
             Retry
