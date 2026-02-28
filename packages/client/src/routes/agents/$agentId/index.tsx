@@ -1,16 +1,61 @@
 import { useState } from 'react';
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import {
+  createFileRoute,
+  Link,
+  useNavigate,
+  type ErrorComponentProps,
+} from '@tanstack/react-router';
+import { useSuspenseQuery, useMutation } from '@tanstack/react-query';
 import { fetchAgent, unregisterAgent } from '../../../lib/api';
 import { agentKeys } from '../../../lib/query-keys';
 import { CapabilityIndicator } from '../../../components/agents';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
+import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
 import { Spinner } from '../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/agents/$agentId/')({
   component: AgentDetailPage,
+  pendingComponent: AgentDetailPending,
+  errorComponent: AgentDetailError,
 });
+
+export function AgentDetailPending() {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-gray-500">
+        <Spinner size="sm" />
+        <span>Loading agent...</span>
+      </div>
+    </div>
+  );
+}
+
+export function AgentDetailError({ error, reset }: ErrorComponentProps) {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
+        <Link to="/" className="hover:text-white">Agent Console</Link>
+        <span>/</span>
+        <Link to="/agents" className="hover:text-white">Agents</Link>
+        <span>/</span>
+        <span className="text-white">Error</span>
+      </div>
+      <div className="card text-center py-10">
+        <p className="text-red-400 mb-2">Failed to load agent</p>
+        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
+        <div className="flex justify-center gap-2">
+          <button onClick={reset} className="btn btn-secondary">
+            Retry
+          </button>
+          <Link to="/agents" className="btn btn-primary">
+            Back to Agents
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AgentDetailPage() {
   const { agentId } = Route.useParams();
@@ -18,10 +63,11 @@ function AgentDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
-  const { data, isLoading, error } = useQuery({
+  const { data } = useSuspenseQuery({
     queryKey: agentKeys.detail(agentId),
     queryFn: () => fetchAgent(agentId),
   });
+  const agent = data.agent;
 
   const deleteMutation = useMutation({
     mutationFn: unregisterAgent,
@@ -36,45 +82,12 @@ function AgentDetailPage() {
   });
 
   const handleDelete = () => {
-    if (data?.agent.isBuiltIn) {
+    if (agent.isBuiltIn) {
       showError('Cannot Delete', 'Built-in agents cannot be deleted');
       return;
     }
     setShowDeleteConfirm(true);
   };
-
-  if (isLoading) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-gray-500">
-          <Spinner size="sm" />
-          <span>Loading agent...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !data) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          <Link to="/" className="hover:text-white">Agent Console</Link>
-          <span>/</span>
-          <Link to="/agents" className="hover:text-white">Agents</Link>
-          <span>/</span>
-          <span className="text-white">Not Found</span>
-        </div>
-        <div className="card text-center py-10">
-          <p className="text-red-400 mb-4">Agent not found</p>
-          <Link to="/agents" className="btn btn-primary">
-            Back to Agents
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const agent = data.agent;
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -196,43 +209,10 @@ function AgentDetailPage() {
         description={`Are you sure you want to delete "${agent.name}"?`}
         confirmLabel="Delete"
         variant="danger"
-        onConfirm={() => {
-          deleteMutation.mutate(agentId);
-        }}
+        onConfirm={() => deleteMutation.mutate(agentId)}
         isLoading={deleteMutation.isPending}
       />
       <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3 pb-1 border-b border-slate-700">
-      {title}
-    </h3>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function DetailRow({ label, value, mono, muted }: DetailRowProps) {
-  return (
-    <div className="flex">
-      <span className="w-32 text-gray-400 shrink-0">{label}:</span>
-      <span
-        className={`${mono ? 'font-mono text-sm' : ''} ${
-          muted ? 'text-gray-600' : 'text-gray-200'
-        }`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-

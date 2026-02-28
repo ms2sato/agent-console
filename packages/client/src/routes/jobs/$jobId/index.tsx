@@ -1,19 +1,64 @@
 import { useState } from 'react';
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  createFileRoute,
+  Link,
+  useNavigate,
+  type ErrorComponentProps,
+} from '@tanstack/react-router';
+import { useSuspenseQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { JOB_STATUS } from '@agent-console/shared';
 import { fetchJob, retryJob, cancelJob } from '../../../lib/api';
 import { jobKeys } from '../../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../../lib/format';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
-import { StatusBadge } from '../../../components/jobs';
+import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
 import { Spinner } from '../../../components/ui/Spinner';
+import { StatusBadge } from '../../../components/jobs';
 
 export const Route = createFileRoute('/jobs/$jobId/')({
   component: JobDetailPage,
+  pendingComponent: JobDetailPending,
+  errorComponent: JobDetailError,
   head: () => ({ meta: [{ title: 'Job Details' }] }),
 });
+
+export function JobDetailPending() {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-gray-500">
+        <Spinner size="sm" />
+        <span>Loading job...</span>
+      </div>
+    </div>
+  );
+}
+
+export function JobDetailError({ error, reset }: ErrorComponentProps) {
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
+        <Link to="/" className="hover:text-white">Agent Console</Link>
+        <span>/</span>
+        <Link to="/jobs" className="hover:text-white">Jobs</Link>
+        <span>/</span>
+        <span className="text-white">Error</span>
+      </div>
+      <div className="card text-center py-10">
+        <p className="text-red-400 mb-2">Failed to load job</p>
+        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
+        <div className="flex justify-center gap-2">
+          <button onClick={reset} className="btn btn-secondary">
+            Retry
+          </button>
+          <Link to="/jobs" className="btn btn-primary">
+            Back to Jobs
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function JobDetailPage() {
   const { jobId } = Route.useParams();
@@ -23,7 +68,7 @@ function JobDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
-  const { data: job, isLoading, error } = useQuery({
+  const { data: job } = useSuspenseQuery({
     queryKey: jobKeys.detail(jobId),
     queryFn: () => fetchJob(jobId),
     refetchInterval: 5000, // Auto-refresh every 5 seconds
@@ -56,37 +101,6 @@ function JobDetailPage() {
       showError('Failed to Cancel Job', error.message);
     },
   });
-
-  if (isLoading) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-gray-500">
-          <Spinner size="sm" />
-          <span>Loading job...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !job) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          <Link to="/" className="hover:text-white">Agent Console</Link>
-          <span>/</span>
-          <Link to="/jobs" className="hover:text-white">Jobs</Link>
-          <span>/</span>
-          <span className="text-white">Not Found</span>
-        </div>
-        <div className="card text-center py-10">
-          <p className="text-red-400 mb-4">Job not found</p>
-          <Link to="/jobs" className="btn btn-primary">
-            Back to Jobs
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   const canRetry = job.status === JOB_STATUS.STALLED;
   const canCancel = job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.STALLED;
@@ -189,12 +203,10 @@ function JobDetailPage() {
         open={showRetryConfirm}
         onOpenChange={setShowRetryConfirm}
         title="Retry Job"
-        description={`Are you sure you want to retry this job? It will be queued for processing again.`}
+        description="Are you sure you want to retry this job? It will be queued for processing again."
         confirmLabel="Retry"
         variant="default"
-        onConfirm={() => {
-          retryMutation.mutate();
-        }}
+        onConfirm={() => retryMutation.mutate()}
         isLoading={retryMutation.isPending}
       />
 
@@ -203,46 +215,14 @@ function JobDetailPage() {
         open={showCancelConfirm}
         onOpenChange={setShowCancelConfirm}
         title="Cancel Job"
-        description={`Are you sure you want to cancel this job? This action cannot be undone.`}
+        description="Are you sure you want to cancel this job? This action cannot be undone."
         confirmLabel="Cancel Job"
         variant="danger"
-        onConfirm={() => {
-          cancelMutation.mutate();
-        }}
+        onConfirm={() => cancelMutation.mutate()}
         isLoading={cancelMutation.isPending}
       />
 
       <ErrorDialog {...errorDialogProps} />
-    </div>
-  );
-}
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3 pb-1 border-b border-slate-700">
-      {title}
-    </h3>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function DetailRow({ label, value, mono, muted }: DetailRowProps) {
-  return (
-    <div className="flex">
-      <span className="w-32 text-gray-400 shrink-0">{label}:</span>
-      <span
-        className={`${mono ? 'font-mono text-sm' : ''} ${
-          muted ? 'text-gray-600' : 'text-gray-200'
-        }`}
-      >
-        {value}
-      </span>
     </div>
   );
 }
