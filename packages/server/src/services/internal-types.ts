@@ -15,6 +15,10 @@ export interface InternalSessionBase {
   workers: Map<string, InternalWorker>;
   initialPrompt?: string;
   title?: string;
+  /** Parent session ID that delegated this session */
+  parentSessionId?: string;
+  /** Parent worker ID that delegated this session */
+  parentWorkerId?: string;
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

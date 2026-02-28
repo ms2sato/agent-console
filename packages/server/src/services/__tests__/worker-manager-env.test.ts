@@ -241,6 +241,80 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
   });
 
+  describe('parent session env vars for agent workers', () => {
+    it('should include AGENT_CONSOLE_PARENT_SESSION_ID when parentSessionId is provided', async () => {
+      const worker = createTestAgentWorker();
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        sessionId: 'session-123',
+        locationPath: '/test/path',
+        repositoryEnvVars: {},
+        agentId: 'claude-code',
+        continueConversation: false,
+        parentSessionId: 'parent-sess-abc',
+      });
+
+      const env = getLastSpawnEnv();
+      expect(env!.AGENT_CONSOLE_PARENT_SESSION_ID).toBe('parent-sess-abc');
+    });
+
+    it('should include AGENT_CONSOLE_PARENT_WORKER_ID when parentWorkerId is provided', async () => {
+      const worker = createTestAgentWorker();
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        sessionId: 'session-123',
+        locationPath: '/test/path',
+        repositoryEnvVars: {},
+        agentId: 'claude-code',
+        continueConversation: false,
+        parentWorkerId: 'parent-wkr-xyz',
+      });
+
+      const env = getLastSpawnEnv();
+      expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('parent-wkr-xyz');
+    });
+
+    it('should NOT include parent env vars when parentSessionId/parentWorkerId are not provided', async () => {
+      const worker = createTestAgentWorker();
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        sessionId: 'session-123',
+        locationPath: '/test/path',
+        repositoryEnvVars: {},
+        agentId: 'claude-code',
+        continueConversation: false,
+        // parentSessionId and parentWorkerId are intentionally omitted
+      });
+
+      const env = getLastSpawnEnv();
+      expect(env!.AGENT_CONSOLE_PARENT_SESSION_ID).toBeUndefined();
+      expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBeUndefined();
+    });
+
+    it('should not allow repository env vars to overwrite parent env vars', async () => {
+      const worker = createTestAgentWorker('secure-worker');
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        sessionId: 'secure-session',
+        locationPath: '/test/path',
+        repositoryEnvVars: {
+          // Attempt to spoof parent env vars via repository settings
+          AGENT_CONSOLE_PARENT_SESSION_ID: 'spoofed-parent-session',
+          AGENT_CONSOLE_PARENT_WORKER_ID: 'spoofed-parent-worker',
+        },
+        agentId: 'claude-code',
+        continueConversation: false,
+        parentSessionId: 'real-parent-session',
+        parentWorkerId: 'real-parent-worker',
+      });
+
+      const env = getLastSpawnEnv();
+      // AgentConsole env vars are applied after repositoryEnvVars, so they take precedence
+      expect(env!.AGENT_CONSOLE_PARENT_SESSION_ID).toBe('real-parent-session');
+      expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('real-parent-worker');
+    });
+  });
+
   describe('terminal worker PTY processes', () => {
     it('should NOT include any AGENT_CONSOLE env vars', () => {
       const worker = createTestTerminalWorker();

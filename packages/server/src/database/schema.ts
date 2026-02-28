@@ -42,6 +42,10 @@ export interface SessionsTable {
   worktree_id: string | null;
   /** ISO 8601 timestamp when session was paused (null = not paused) */
   paused_at: string | null;
+  /** Parent session ID that delegated this session (null for non-delegated sessions) */
+  parent_session_id: string | null;
+  /** Parent worker ID that delegated this session (null for non-delegated sessions) */
+  parent_worker_id: string | null;
 }
 
 /**

@@ -519,6 +519,8 @@ export class SessionManager {
       workers: new Map<string, InternalWorker>(),
       initialPrompt: request.initialPrompt,
       title: request.title,
+      parentSessionId: request.parentSessionId,
+      parentWorkerId: request.parentWorkerId,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -696,6 +698,8 @@ export class SessionManager {
       initialPrompt: p.initialPrompt,
       title: p.title,
       pausedAt: p.pausedAt,
+      parentSessionId: p.parentSessionId,
+      parentWorkerId: p.parentWorkerId,
     };
 
     if (p.type === 'worktree') {
@@ -833,6 +837,8 @@ export class SessionManager {
       workers,
       initialPrompt: persisted.initialPrompt,
       title: persisted.title,
+      parentSessionId: persisted.parentSessionId,
+      parentWorkerId: persisted.parentWorkerId,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'
@@ -866,6 +872,8 @@ export class SessionManager {
             agentId: worker.agentId,
             continueConversation: true,
             repositoryId,
+            parentSessionId: internalSession.parentSessionId,
+            parentWorkerId: internalSession.parentWorkerId,
           });
           activatedWorkers.push(worker);
         } else if (worker.type === 'terminal') {
@@ -1315,6 +1323,8 @@ export class SessionManager {
       workers,
       initialPrompt: session.initialPrompt,
       title: session.title,
+      parentSessionId: session.parentSessionId,
+      parentWorkerId: session.parentWorkerId,
     };
 
     return session.type === 'worktree'
@@ -1337,6 +1347,8 @@ export class SessionManager {
       workers,
       initialPrompt: session.initialPrompt,
       title: session.title,
+      parentSessionId: session.parentSessionId,
+      parentWorkerId: session.parentWorkerId,
     };
 
     if (session.type === 'worktree') {

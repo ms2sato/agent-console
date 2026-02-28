@@ -89,13 +89,16 @@ const agentConsoleEnv = {
   AGENT_CONSOLE_BASE_URL: `http://localhost:${serverPort}`,
   AGENT_CONSOLE_SESSION_ID: sessionId,
   AGENT_CONSOLE_WORKER_ID: workerId,
-  AGENT_CONSOLE_REPOSITORY_ID: repositoryId,  // For worktree sessions only
+  AGENT_CONSOLE_REPOSITORY_ID: repositoryId,          // For worktree sessions only
+  AGENT_CONSOLE_PARENT_SESSION_ID: parentSessionId,    // For delegated sessions only
+  AGENT_CONSOLE_PARENT_WORKER_ID: parentWorkerId,      // For delegated sessions only
 };
 ```
 
-These serve two purposes:
+These serve three purposes:
 1. **MCP tool context**: The MCP endpoint can use these to identify the calling agent (e.g., `repositoryId` for `delegate_to_worktree` so the agent doesn't need to specify it)
 2. **Agent self-awareness**: The agent can reference its own session context in prompts/logging
+3. **Parent session context**: Delegated agents know their parent session/worker for callback reporting via `send_session_message`
 
 ### Decision 4: User registers MCP server URL in Claude Code settings
 
@@ -201,6 +204,8 @@ Check the status of a delegated session.
   status: 'active' | 'inactive',
   title?: string,
   worktreeId?: string,
+  parentSessionId?: string,
+  parentWorkerId?: string,
   workers: Array<{
     id: string,
     type: 'agent' | 'terminal' | 'git-diff',
@@ -244,6 +249,8 @@ List active sessions (useful for discovering existing work).
     type: 'worktree' | 'quick',
     title?: string,
     worktreeId?: string,
+    parentSessionId?: string,
+    parentWorkerId?: string,
     status: 'active' | 'inactive',
     workers: Array<{
       id: string,

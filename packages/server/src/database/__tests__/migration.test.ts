@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(12);
+      expect(result.rows[0]?.user_version).toBe(13);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(12);
+      expect(result.rows[0]?.user_version).toBe(13);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1311,6 +1311,60 @@ describe('migration', () => {
 
       expect(rows).toHaveLength(1);
       expect(rows[0].paused_at).toBeNull();
+    });
+  });
+
+  describe('schema migration v13: parent_session_id and parent_worker_id columns', () => {
+    it('should add parent_session_id and parent_worker_id columns to sessions table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-delegated',
+          type: 'worktree',
+          location_path: '/test/delegated',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-1',
+          worktree_id: 'feature-branch',
+          parent_session_id: 'parent-sess-123',
+          parent_worker_id: 'parent-wkr-456',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].parent_session_id).toBe('parent-sess-123');
+      expect(rows[0].parent_worker_id).toBe('parent-wkr-456');
+    });
+
+    it('should allow null parent_session_id and parent_worker_id values', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-no-parent',
+          type: 'quick',
+          location_path: '/test/no-parent',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].parent_session_id).toBeNull();
+      expect(rows[0].parent_worker_id).toBeNull();
     });
   });
 

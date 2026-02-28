@@ -280,6 +280,8 @@ describe('mappers', () => {
         repository_id: null, // Missing required field
         worktree_id: 'branch',
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -299,6 +301,8 @@ describe('mappers', () => {
         repository_id: 'repo-1',
         worktree_id: null, // Missing required field
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -318,6 +322,8 @@ describe('mappers', () => {
         repository_id: null,
         worktree_id: null,
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -339,6 +345,8 @@ describe('mappers', () => {
         repository_id: 'repo-1',
         worktree_id: 'feature-branch',
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -361,6 +369,8 @@ describe('mappers', () => {
         repository_id: null,
         worktree_id: null,
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       const workers: PersistedAgentWorker[] = [
@@ -393,6 +403,8 @@ describe('mappers', () => {
         repository_id: null,
         worktree_id: null,
         paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -416,6 +428,8 @@ describe('mappers', () => {
         repository_id: null,
         worktree_id: null,
         paused_at: '2025-06-15T12:00:00.000Z',
+        parent_session_id: null,
+        parent_worker_id: null,
       };
 
       const session = toPersistedSession(dbSession, []);

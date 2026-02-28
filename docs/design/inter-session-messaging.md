@@ -54,7 +54,7 @@ Key separation: **notification** (PTY, signal only) and **content** (file, agent
 
 ### Decision 2: Session-level, not parent-child specific
 
-Any session can send a message to any other session. The system does not enforce or track parent-child relationships. Delegation hierarchy is expressed through message content, not infrastructure.
+Any session can send a message to any other session. The messaging system itself does not enforce parent-child relationships — any session can message any other. However, sessions created via `delegate_to_worktree` now persist their parent session/worker IDs in the database, enabling reliable callback routing that survives PTY restarts.
 
 ### Decision 3: Worker-level targeting
 
