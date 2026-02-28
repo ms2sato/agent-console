@@ -22,6 +22,11 @@ type InboundEventType =
 
 > **Note**: `SystemEventType` in [System Events](./system-events.md) is the union of `InboundEventType` and `OutboundTriggerEventType`.
 
+```typescript
+/** Inbound system event — a SystemEvent constrained to inbound event types */
+type InboundSystemEvent = SystemEvent & { type: InboundEventType };
+```
+
 ## Overview
 
 Inbound integration provides a **generalized event routing system** that receives external events (webhooks, etc.) and dispatches them to appropriate handlers based on event type and target.
@@ -175,7 +180,8 @@ class AgentWorkerHandler implements InboundEventHandler {
 
   /**
    * Resolve the intent for a given event type.
-   * Exhaustive — every supported event type must be mapped.
+   * Exhaustive over InboundEventType (not just supportedEvents) so the
+   * compiler forces a decision when new event types are added to the union.
    */
   private resolveIntent(type: InboundEventType): 'inform' | 'triage' {
     switch (type) {
@@ -506,7 +512,7 @@ interface ServiceParser {
   authenticate(payload: string, headers: Headers): Promise<boolean>;
 
   /**
-   * Parse raw payload into SystemEvent.
+   * Parse raw payload into InboundSystemEvent.
    * Returns null if the event type is not supported.
    */
   parse(payload: string, headers: Headers): Promise<InboundSystemEvent | null>;
