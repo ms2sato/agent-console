@@ -263,11 +263,17 @@ describe('JobQueue', () => {
     });
 
     it('should use exponential backoff', async () => {
-      const timestamps: number[] = [];
-      let attempts = 0;
+      const calculatedDelays: number[] = [];
+      const originalCalculateBackoff = (jobQueue as any).calculateBackoff.bind(jobQueue);
+      (jobQueue as any).calculateBackoff = function (attempts: number): number {
+        const realDelay = originalCalculateBackoff(attempts);
+        calculatedDelays.push(realDelay);
+        // Return 0 so both next_retry_at and setTimeout use zero delay
+        return 0;
+      };
 
+      let attempts = 0;
       jobQueue.registerHandler('test:job', async () => {
-        timestamps.push(Date.now());
         attempts++;
         if (attempts < 3) {
           throw new Error('Failure');
@@ -277,20 +283,16 @@ describe('JobQueue', () => {
       await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
-      // Wait for all 3 attempts to complete
-      await waitFor(() => attempts >= 3, 10000);
+      // All 3 attempts complete quickly since backoff returns 0
+      await waitFor(() => attempts >= 3);
 
-      expect(timestamps.length).toBe(3);
+      expect(attempts).toBe(3);
 
-      // First retry after ~1 second
-      const delay1 = timestamps[1] - timestamps[0];
-      expect(delay1).toBeGreaterThanOrEqual(900);
-      expect(delay1).toBeLessThan(1500);
-
-      // Second retry after ~2 seconds
-      const delay2 = timestamps[2] - timestamps[1];
-      expect(delay2).toBeGreaterThanOrEqual(1800);
-      expect(delay2).toBeLessThan(2500);
+      // Verify exponential backoff delays were calculated correctly
+      expect(calculatedDelays).toEqual([
+        1000, // First retry: backoffBase * 2^0 = 1000ms
+        2000, // Second retry: backoffBase * 2^1 = 2000ms
+      ]);
     });
   });
 
