@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 
 interface MobileSidebarDrawerProps {
   open: boolean;
@@ -36,6 +36,27 @@ export function MobileSidebarDrawer({ open, onClose, children }: MobileSidebarDr
     };
   }, [open]);
 
+  // Focus management: save/restore focus and move focus into drawer on open
+  const savedFocusRef = useRef<Element | null>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      savedFocusRef.current = document.activeElement;
+      // Move focus to first focusable element in the drawer
+      const firstFocusable = drawerRef.current?.querySelector<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      firstFocusable?.focus();
+    } else {
+      // Restore focus to the element that triggered the drawer
+      if (savedFocusRef.current instanceof HTMLElement) {
+        savedFocusRef.current.focus();
+      }
+      savedFocusRef.current = null;
+    }
+  }, [open]);
+
   return (
     <>
       {/* Backdrop */}
@@ -48,6 +69,7 @@ export function MobileSidebarDrawer({ open, onClose, children }: MobileSidebarDr
       />
       {/* Drawer panel */}
       <div
+        ref={drawerRef}
         role="dialog"
         aria-modal={open ? true : undefined}
         aria-label="Sessions drawer"

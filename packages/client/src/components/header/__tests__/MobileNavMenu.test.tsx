@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
-import { screen, cleanup } from '@testing-library/react';
+import { screen, fireEvent, cleanup } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MobileNavMenu } from '../MobileNavMenu';
 
@@ -43,6 +43,24 @@ describe('MobileNavMenu', () => {
       await renderWithRouter(<MobileNavMenu open={false} onClose={onClose} />);
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('should call onClose when backdrop is clicked', async () => {
+      const onClose = mock(() => {});
+      await renderWithRouter(<MobileNavMenu open={true} onClose={onClose} />);
+      // Backdrop is the fixed-inset div with aria-hidden="true"
+      const backdrop = document.querySelector('[aria-hidden="true"]');
+      expect(backdrop).toBeTruthy();
+      fireEvent.click(backdrop!);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('should call onClose when a navigation link is clicked', async () => {
+      const onClose = mock(() => {});
+      await renderWithRouter(<MobileNavMenu open={true} onClose={onClose} />);
+      const jobsLink = screen.getByText('Jobs');
+      fireEvent.click(jobsLink);
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 });

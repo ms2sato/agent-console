@@ -78,21 +78,23 @@ function showNotification(title: string, body: string, sessionId: string, tag: s
 function ActivityBadge({ state }: { state?: AgentActivityState }) {
   if (!state || state === 'unknown') return null;
 
-  const styles: Record<string, string> = {
+  const styles = {
     asking: 'bg-yellow-500/20 text-yellow-400',
     active: 'bg-blue-500/20 text-blue-400',
     idle: 'bg-gray-500/20 text-gray-400',
-  };
+    unknown: '',
+  } satisfies Record<AgentActivityState, string>;
 
-  const labels: Record<string, string> = {
+  const labels = {
     asking: 'Waiting',
     active: 'Working',
     idle: 'Idle',
-  };
+    unknown: '',
+  } satisfies Record<AgentActivityState, string>;
 
   return (
-    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state] ?? ''}`}>
-      {labels[state] ?? state}
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${styles[state]}`}>
+      {labels[state] || state}
     </span>
   );
 }

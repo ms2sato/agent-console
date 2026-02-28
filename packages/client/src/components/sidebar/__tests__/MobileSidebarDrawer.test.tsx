@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { MobileSidebarDrawer } from '../MobileSidebarDrawer';
 
@@ -119,6 +119,14 @@ describe('MobileSidebarDrawer', () => {
   });
 
   describe('Body scroll prevention', () => {
+    let originalOverflow: string;
+    beforeEach(() => {
+      originalOverflow = document.body.style.overflow;
+    });
+    afterEach(() => {
+      document.body.style.overflow = originalOverflow;
+    });
+
     it('should set body overflow to hidden when open', () => {
       render(
         <MobileSidebarDrawer open={true} onClose={() => {}}>

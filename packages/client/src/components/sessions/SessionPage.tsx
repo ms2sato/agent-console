@@ -222,6 +222,9 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
         if (session.status === 'active') {
           setState({ type: 'active', session });
+        } else if (session.pausedAt) {
+          // Session is paused (intentionally), not disconnected
+          setState({ type: 'paused', session });
         } else {
           setState({ type: 'disconnected', session });
         }
