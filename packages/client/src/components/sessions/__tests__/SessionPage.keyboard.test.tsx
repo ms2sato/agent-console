@@ -1,20 +1,80 @@
 /**
- * Tests for tab keyboard navigation in SessionPage.
+ * Tests for tab keyboard navigation.
  *
- * SessionPage cannot be rendered in unit tests due to complex dependencies
- * (xterm.js, WebSocket, TanStack Router). Instead, we test the keyboard
- * navigation behavior using a lightweight test harness component that
- * replicates the tablist DOM structure and keyboard handler logic from
- * SessionPage.tsx.
+ * Core index-calculation logic is tested directly against the production
+ * `getNextTabIndex` utility (pure function tests, no React needed).
+ *
+ * ARIA attribute behavior (tabIndex, aria-selected, roving focus) is tested
+ * via a lightweight harness that imports `getNextTabIndex` from production
+ * code, ensuring no logic duplication between tests and production.
  */
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
+import { getNextTabIndex } from '../tabKeyboardNavigation';
 
 afterEach(() => {
   cleanup();
 });
+
+// ---------------------------------------------------------------------------
+// Pure function tests for getNextTabIndex
+// ---------------------------------------------------------------------------
+
+describe('getNextTabIndex', () => {
+  describe('ArrowRight', () => {
+    it('moves to next tab', () => {
+      expect(getNextTabIndex('ArrowRight', 0, 3)).toBe(1);
+    });
+    it('wraps from last to first', () => {
+      expect(getNextTabIndex('ArrowRight', 2, 3)).toBe(0);
+    });
+  });
+
+  describe('ArrowLeft', () => {
+    it('moves to previous tab', () => {
+      expect(getNextTabIndex('ArrowLeft', 2, 3)).toBe(1);
+    });
+    it('wraps from first to last', () => {
+      expect(getNextTabIndex('ArrowLeft', 0, 3)).toBe(2);
+    });
+  });
+
+  describe('Home', () => {
+    it('returns 0', () => {
+      expect(getNextTabIndex('Home', 2, 3)).toBe(0);
+    });
+  });
+
+  describe('End', () => {
+    it('returns last index', () => {
+      expect(getNextTabIndex('End', 0, 3)).toBe(2);
+    });
+  });
+
+  describe('non-navigation keys', () => {
+    it('returns null for unrelated keys', () => {
+      expect(getNextTabIndex('Enter', 0, 3)).toBeNull();
+      expect(getNextTabIndex('Tab', 0, 3)).toBeNull();
+      expect(getNextTabIndex('Escape', 0, 3)).toBeNull();
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns null for empty tab list', () => {
+      expect(getNextTabIndex('ArrowRight', 0, 0)).toBeNull();
+    });
+    it('handles single tab wrap', () => {
+      expect(getNextTabIndex('ArrowRight', 0, 1)).toBe(0);
+      expect(getNextTabIndex('ArrowLeft', 0, 1)).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests for ARIA attributes and roving tabindex
+// ---------------------------------------------------------------------------
 
 interface Tab {
   id: string;
@@ -22,49 +82,25 @@ interface Tab {
 }
 
 /**
- * Reproduces the exact keyboard handler logic from SessionPage.tsx.
- * This mirrors handleTabKeyDown in SessionPage.
+ * Minimal harness that uses the production `getNextTabIndex` function
+ * to drive keyboard navigation - no logic duplication.
  */
 function TabBarHarness({ tabs, initialActiveTabId }: { tabs: Tab[]; initialActiveTabId: string }) {
   const [activeTabId, setActiveTabId] = useState(initialActiveTabId);
-  const onTabClick = mock((tabId: string) => {
-    setActiveTabId(tabId);
-  });
 
-  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (tabs.length === 0) return;
-
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
-
-    let newIndex: number | null = null;
-
-    switch (e.key) {
-      case 'ArrowRight':
-        newIndex = (currentIndex + 1) % tabs.length;
-        break;
-      case 'ArrowLeft':
-        newIndex = (currentIndex - 1 + tabs.length) % tabs.length;
-        break;
-      case 'Home':
-        newIndex = 0;
-        break;
-      case 'End':
-        newIndex = tabs.length - 1;
-        break;
-      default:
-        return;
-    }
+    const newIndex = getNextTabIndex(e.key, currentIndex, tabs.length);
+    if (newIndex === null) return;
 
     e.preventDefault();
     const newTabId = tabs[newIndex].id;
-    onTabClick(newTabId);
-
-    const tabElement = document.getElementById(`worker-tab-${newTabId}`);
-    tabElement?.focus();
-  }, [tabs, activeTabId, onTabClick]);
+    setActiveTabId(newTabId);
+    document.getElementById(`worker-tab-${newTabId}`)?.focus();
+  };
 
   return (
-    <div role="tablist" aria-label="Worker tabs" onKeyDown={handleTabKeyDown}>
+    <div role="tablist" aria-label="Worker tabs" onKeyDown={handleKeyDown}>
       {tabs.map(tab => (
         <button
           key={tab.id}
@@ -72,7 +108,7 @@ function TabBarHarness({ tabs, initialActiveTabId }: { tabs: Tab[]; initialActiv
           id={`worker-tab-${tab.id}`}
           aria-selected={tab.id === activeTabId}
           tabIndex={tab.id === activeTabId ? 0 : -1}
-          onClick={() => onTabClick(tab.id)}
+          onClick={() => setActiveTabId(tab.id)}
         >
           {tab.name}
         </button>
@@ -96,18 +132,17 @@ function getTab(name: string) {
 }
 
 function getSelectedTabName(): string {
-  const tabs = screen.getAllByRole('tab');
-  const selected = tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
+  const allTabs = screen.getAllByRole('tab');
+  const selected = allTabs.find(tab => tab.getAttribute('aria-selected') === 'true');
   return selected?.textContent ?? '';
 }
 
-describe('Tab keyboard navigation', () => {
+describe('Tab keyboard navigation (integration)', () => {
   describe('ArrowRight', () => {
     it('should move to the next tab', async () => {
       const user = userEvent.setup();
       renderTabBar();
 
-      // Focus on the first tab (Agent) and press ArrowRight
       getTab('Agent').focus();
       await user.keyboard('{ArrowRight}');
 
@@ -119,7 +154,6 @@ describe('Tab keyboard navigation', () => {
       const user = userEvent.setup();
       renderTabBar(threeTabs, 'terminal-2');
 
-      // Focus on the last tab (Shell 2) and press ArrowRight
       getTab('Shell 2').focus();
       await user.keyboard('{ArrowRight}');
 
@@ -133,7 +167,6 @@ describe('Tab keyboard navigation', () => {
       const user = userEvent.setup();
       renderTabBar(threeTabs, 'terminal-1');
 
-      // Focus on Shell 1 and press ArrowLeft
       getTab('Shell 1').focus();
       await user.keyboard('{ArrowLeft}');
 
@@ -145,7 +178,6 @@ describe('Tab keyboard navigation', () => {
       const user = userEvent.setup();
       renderTabBar();
 
-      // Focus on Agent (first) and press ArrowLeft
       getTab('Agent').focus();
       await user.keyboard('{ArrowLeft}');
 
@@ -159,7 +191,6 @@ describe('Tab keyboard navigation', () => {
       const user = userEvent.setup();
       renderTabBar(threeTabs, 'terminal-2');
 
-      // Focus on Shell 2 (last) and press Home
       getTab('Shell 2').focus();
       await user.keyboard('{Home}');
 
@@ -184,7 +215,6 @@ describe('Tab keyboard navigation', () => {
       const user = userEvent.setup();
       renderTabBar();
 
-      // Focus on Agent (first) and press End
       getTab('Agent').focus();
       await user.keyboard('{End}');
 

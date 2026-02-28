@@ -13,6 +13,7 @@ import { useAppWsEvent } from '../../hooks/useAppWs';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
+import { getNextTabIndex } from './tabKeyboardNavigation';
 import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 
@@ -405,35 +406,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
   const handleTabKeyDown = (e: React.KeyboardEvent) => {
-    if (tabs.length === 0) return;
-
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
-
-    let newIndex: number | null = null;
-
-    switch (e.key) {
-      case 'ArrowRight':
-        newIndex = (currentIndex + 1) % tabs.length;
-        break;
-      case 'ArrowLeft':
-        newIndex = (currentIndex - 1 + tabs.length) % tabs.length;
-        break;
-      case 'Home':
-        newIndex = 0;
-        break;
-      case 'End':
-        newIndex = tabs.length - 1;
-        break;
-      default:
-        return;
-    }
+    const newIndex = getNextTabIndex(e.key, currentIndex, tabs.length);
+    if (newIndex === null) return;
 
     e.preventDefault();
     const newTabId = tabs[newIndex].id;
     handleTabClick(newTabId);
-
-    const tabElement = document.getElementById(`worker-tab-${newTabId}`);
-    tabElement?.focus();
+    document.getElementById(`worker-tab-${newTabId}`)?.focus();
   };
 
   const tabButtons = tabs.map(tab => (
