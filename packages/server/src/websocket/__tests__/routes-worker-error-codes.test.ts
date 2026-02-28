@@ -23,17 +23,18 @@ mock.module('../../lib/pty-provider.js', () => ({
 }));
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { JobQueue, resetJobQueue } from '../../jobs/index.js';
+import { JobQueue } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
 import { createSessionRepository } from '../../repositories/index.js';
-import { initializeSessionManager, resetSessionManager, getSessionManager } from '../../services/session-manager.js';
-import { initializeRepositoryManager, resetRepositoryManager } from '../../services/repository-manager.js';
-import { AgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
+import { SessionManager } from '../../services/session-manager.js';
+import { RepositoryManager } from '../../services/repository-manager.js';
+import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
-import {
-  initializeNotificationServices,
-  shutdownNotificationServices,
-} from '../../services/notifications/index.js';
+import { NotificationManager } from '../../services/notifications/notification-manager.js';
+import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { setupWebSocketRoutes } from '../routes.js';
+import type { AppContext } from '../../app-context.js';
 
 /**
  * Capture the WebSocket handler factory for a given route path.
@@ -75,15 +76,11 @@ function createMockWs(): WSContext & {
 
 describe('Worker WebSocket connection error codes', () => {
   let testJobQueue: JobQueue | null = null;
+  let sessionManager: SessionManager;
   let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
 
   beforeEach(async () => {
     await closeDatabase();
-    await resetJobQueue();
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-    shutdownNotificationServices();
 
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
@@ -98,11 +95,15 @@ describe('Worker WebSocket connection error codes', () => {
     await initializeDatabase(':memory:');
 
     testJobQueue = new JobQueue(getDatabase());
+    registerJobHandlers(testJobQueue);
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    await initializeSessionManager({ sessionRepository, jobQueue: testJobQueue, agentManager });
-    await initializeRepositoryManager({ jobQueue: testJobQueue });
-    initializeNotificationServices();
+    const notificationManager = new NotificationManager(new SlackHandler());
+    sessionManager = await SessionManager.create({ sessionRepository, jobQueue: testJobQueue, agentManager });
+    const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as unknown as AppContext;
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();
@@ -111,15 +112,10 @@ describe('Worker WebSocket connection error codes', () => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1]);
+    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
   });
 
   afterEach(async () => {
-    shutdownNotificationServices();
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-
     if (testJobQueue) {
       await testJobQueue.stop();
       testJobQueue = null;
@@ -170,7 +166,6 @@ describe('Worker WebSocket connection error codes', () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 
     // Create a real session
-    const sessionManager = getSessionManager();
     const session = await sessionManager.createSession({
       type: 'quick',
       locationPath: '/test/path',

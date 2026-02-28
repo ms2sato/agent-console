@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { AgentManager, resetAgentManager } from '../agent-manager.js';
+import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
@@ -35,7 +35,6 @@ describe('WorkerManager - AgentConsole env var injection', () => {
   });
 
   afterEach(async () => {
-    resetAgentManager();
     await closeDatabase();
     cleanupMemfs();
   });

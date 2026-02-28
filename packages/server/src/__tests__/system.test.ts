@@ -11,11 +11,7 @@ mock.module('open', () => ({
 
 // Import mock-fs-helper to set up memfs mocks
 import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
-import {
-  SystemCapabilitiesService,
-  setSystemCapabilities,
-  resetSystemCapabilities,
-} from '../services/system-capabilities-service.js';
+import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 
 // Track Bun.spawn calls for VS Code
 const spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
@@ -57,9 +53,6 @@ describe('System API - open-in-vscode', () => {
     spawnCalls.length = 0;
     setupSpawnMock();
 
-    // Reset system capabilities singleton
-    resetSystemCapabilities();
-
     // Setup basic memfs
     setupMemfs({
       '/test/existing-dir/.keep': '',
@@ -69,7 +62,6 @@ describe('System API - open-in-vscode', () => {
 
   afterEach(() => {
     cleanupMemfs();
-    resetSystemCapabilities();
     (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
   });
 
@@ -86,8 +78,6 @@ describe('System API - open-in-vscode', () => {
     (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = vscodeAvailable
       ? vscodeCommand
       : null;
-    setSystemCapabilities(mockCapabilities);
-
     const { system } = await import(`../routes/system.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
 

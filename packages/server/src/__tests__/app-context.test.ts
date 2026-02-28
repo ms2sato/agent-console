@@ -11,8 +11,7 @@ describe('AppContext', () => {
 
   afterEach(async () => {
     if (appContext) {
-      // Reset singletons to allow next test to reinitialize
-      await shutdownAppContext(appContext, { resetSingletons: true });
+      await shutdownAppContext(appContext);
       appContext = null;
     }
   });
@@ -78,18 +77,17 @@ describe('AppContext', () => {
       appContext = await createTestContext();
 
       // Shutdown should complete without errors
-      // Reset singletons to allow creating a new context
-      await shutdownAppContext(appContext, { resetSingletons: true });
+      await shutdownAppContext(appContext);
       appContext = null;
 
       // Database should be closed (creating new one should work)
       const newContext = await createTestContext();
       expect(newContext.db).toBeDefined();
       // Clean up the new context
-      await shutdownAppContext(newContext, { resetSingletons: true });
+      await shutdownAppContext(newContext);
     });
 
-    it('should reset global database when resetSingletons is true', async () => {
+    it('should reset global database when using createAppContext', async () => {
       // This test verifies that the global db variable is reset after shutdown,
       // which is important for dev server restart and test re-execution.
       // Uses in-memory database to avoid file system side effects.
@@ -102,8 +100,8 @@ describe('AppContext', () => {
         .execute();
       expect(Array.isArray(result1)).toBe(true);
 
-      // Shutdown with resetSingletons: true should reset global db
-      await shutdownAppContext(context1, { resetSingletons: true });
+      // Shutdown should reset global db since context uses it
+      await shutdownAppContext(context1);
 
       // Create a second context - this should work because global db was reset
       // If global db was not reset, initializeDatabase would return the destroyed db
@@ -117,7 +115,7 @@ describe('AppContext', () => {
       expect(Array.isArray(result2)).toBe(true);
 
       // Clean up
-      await shutdownAppContext(context2, { resetSingletons: true });
+      await shutdownAppContext(context2);
     });
   });
 

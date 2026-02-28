@@ -7,10 +7,11 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { AgentManager, resetAgentManager } from '../../services/agent-manager.js';
+import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
-import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
-import { resetSessionManager, SessionManager, setSessionManager } from '../../services/session-manager.js';
+import { JobQueue } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
+import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 
 // Test config directory
@@ -22,11 +23,9 @@ const ptyFactory = createMockPtyFactory(20000);
 describe('Sessions API - Pause/Resume', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
 
   beforeEach(async () => {
-    // Reset singletons
-    resetSessionManager();
-    await resetJobQueue();
     await closeDatabase();
 
     // Setup memfs with config directory structure
@@ -38,8 +37,9 @@ describe('Sessions API - Pause/Resume', () => {
     // Initialize in-memory database
     await initializeDatabase(':memory:');
 
-    // Initialize the singleton job queue
-    const testJobQueue = initializeJobQueue();
+    // Create job queue with the in-memory database
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue);
 
     // Reset process mock and mark current process as alive
     resetProcessMock();
@@ -48,8 +48,7 @@ describe('Sessions API - Pause/Resume', () => {
     // Reset PTY factory
     ptyFactory.reset();
 
-    // Reset and create AgentManager for dependency injection
-    resetAgentManager();
+    // Create AgentManager for dependency injection
     const db = getDatabase();
     const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
 
@@ -65,9 +64,6 @@ describe('Sessions API - Pause/Resume', () => {
       agentManager: agentMgr,
     });
 
-    // Set the singleton
-    setSessionManager(sessionManager);
-
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
@@ -79,9 +75,7 @@ describe('Sessions API - Pause/Resume', () => {
   });
 
   afterEach(async () => {
-    resetSessionManager();
-    resetAgentManager();
-    await resetJobQueue();
+    await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
     resetProcessMock();

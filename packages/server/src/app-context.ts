@@ -295,28 +295,14 @@ export async function createTestContext(
 }
 
 /**
- * Options for shutting down the application context.
- */
-export interface ShutdownAppContextOptions {
-  /**
-   * If true, reset singleton instances (SessionManager, RepositoryManager, etc.).
-   * This is typically needed for tests to allow reinitializing singletons.
-   * Default: false (production behavior - singletons are not reset)
-   */
-  resetSingletons?: boolean;
-}
-
-/**
  * Shutdown and clean up all services in the application context.
  *
  * Should be called during server shutdown or after tests.
  *
  * @param context - The application context to shut down
- * @param options - Optional shutdown configuration
  */
 export async function shutdownAppContext(
   context: AppContext,
-  options?: ShutdownAppContextOptions
 ): Promise<void> {
   // Stop job queue
   await context.jobQueue.stop();
@@ -335,24 +321,6 @@ export async function shutdownAppContext(
   } else {
     // Test DB (separate instance): destroy directly
     await context.db.destroy();
-
-    // If resetSingletons is requested, also close the global db
-    if (options?.resetSingletons) {
-      await closeDatabase();
-    }
-  }
-
-  // Reset singletons if requested (typically for tests or dev server restart)
-  if (options?.resetSingletons) {
-    const { resetSessionManager } = await import('./services/session-manager.js');
-    const { resetRepositoryManager } = await import('./services/repository-manager.js');
-    const { shutdownNotificationServices } = await import('./services/notifications/index.js');
-    const { resetSystemCapabilities } = await import('./services/system-capabilities-service.js');
-
-    resetSessionManager();
-    resetRepositoryManager();
-    shutdownNotificationServices();
-    resetSystemCapabilities();
   }
 
   logger.info('Application context shut down');

@@ -11,7 +11,7 @@ import {
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
 } from '@agent-console/shared';
-import { getSessionManager } from '../services/session-manager.js';
+import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
@@ -23,11 +23,11 @@ const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) =
   logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
 });
 
-const workers = new Hono()
+const workers = new Hono<AppBindings>()
   // Get workers for a session
   .get('/:sessionId/workers', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
@@ -94,7 +94,7 @@ const workers = new Hono()
       savedPaths.push(filePath);
     }
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -112,7 +112,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const body = c.req.valid('json');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -134,7 +134,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -154,7 +154,7 @@ const workers = new Hono()
     const body = c.req.valid('json');
     const { continueConversation = false, agentId, branch } = body;
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
 
     if (!worker) {
@@ -168,7 +168,7 @@ const workers = new Hono()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -198,7 +198,7 @@ const workers = new Hono()
       throw new ValidationError('path query parameter is required');
     }
 
-    const sessionManager = getSessionManager();
+    const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');

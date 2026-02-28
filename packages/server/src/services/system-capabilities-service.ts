@@ -99,37 +99,3 @@ export class SystemCapabilitiesService {
     }
   }
 }
-
-// Singleton pattern for backward compatibility with existing code
-let systemCapabilitiesInstance: SystemCapabilitiesService | null = null;
-
-/**
- * Get the SystemCapabilitiesService singleton.
- * @throws Error if not initialized
- */
-export function getSystemCapabilities(): SystemCapabilitiesService {
-  if (!systemCapabilitiesInstance) {
-    throw new Error('SystemCapabilitiesService not initialized');
-  }
-  return systemCapabilitiesInstance;
-}
-
-/**
- * Set the SystemCapabilitiesService singleton.
- * Used by AppContext to set the singleton.
- * @internal For AppContext initialization only.
- */
-export function setSystemCapabilities(instance: SystemCapabilitiesService): void {
-  if (systemCapabilitiesInstance) {
-    throw new Error('SystemCapabilitiesService already initialized');
-  }
-  systemCapabilitiesInstance = instance;
-}
-
-/**
- * Reset the singleton for testing.
- * @internal For testing only.
- */
-export function resetSystemCapabilities(): void {
-  systemCapabilitiesInstance = null;
-}

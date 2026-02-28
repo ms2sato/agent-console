@@ -6,26 +6,22 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { initializeJobQueue, resetJobQueue } from '../../jobs/index.js';
+import { JobQueue } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
 import {
-  resetSessionManager,
   SessionManager,
-  setSessionManager,
 } from '../../services/session-manager.js';
 import {
-  resetRepositoryManager,
-  setRepositoryManager,
   RepositoryManager,
 } from '../../services/repository-manager.js';
-import { AgentManager, getAgentManager, resetAgentManager, setAgentManager } from '../../services/agent-manager.js';
+import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
-import { mcpApp } from '../mcp-server.js';
+import { createMcpApp } from '../mcp-server.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
-// Must be set up before mcpApp is imported (already satisfied above due to hoisting).
 const mockSuggestSessionMetadata = mock(async () => ({
   branch: 'feat/auto-generated-branch',
   title: 'Auto-Generated Title',
@@ -133,16 +129,26 @@ function parseToolResult(response: Awaited<ReturnType<typeof callTool>>): unknow
 describe('MCP Server Tools', () => {
   let app: Hono;
   let sessionManager: SessionManager;
+  let agentManager: AgentManager;
+  let repositoryManager: RepositoryManager;
+  let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
   let nextId: number;
 
+  /**
+   * Re-create the MCP app and initialize a new MCP session.
+   * Call this after replacing the repositoryManager to ensure
+   * the MCP tools see the updated dependencies.
+   */
+  async function remountMcpApp(): Promise<void> {
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager });
+    app = new Hono();
+    app.route('', mcpApp);
+    mcpSessionId = await initializeMcp(app);
+  }
+
   beforeEach(async () => {
-    // Reset singletons
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-    await resetJobQueue();
     await closeDatabase();
 
     // Setup memfs with config directory structure
@@ -154,8 +160,9 @@ describe('MCP Server Tools', () => {
     // Initialize in-memory database
     await initializeDatabase(':memory:');
 
-    // Initialize the singleton job queue
-    const testJobQueue = initializeJobQueue();
+    // Create job queue with the in-memory database
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue);
 
     // Reset process mock and mark current process as alive
     resetProcessMock();
@@ -177,10 +184,9 @@ describe('MCP Server Tools', () => {
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
-    // Create AgentManager for dependency injection and singleton
+    // Create AgentManager for dependency injection
     const db = getDatabase();
-    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
-    setAgentManager(agentMgr);
+    agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
@@ -188,24 +194,19 @@ describe('MCP Server Tools', () => {
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
-      agentManager: agentMgr,
+      agentManager,
     });
-    setSessionManager(sessionManager);
 
-    // Create Hono app and mount MCP routes
-    app = new Hono();
-    app.route('', mcpApp);
+    // Create RepositoryManager (initially empty)
+    repositoryManager = await RepositoryManager.create({ jobQueue: testJobQueue });
 
-    // Initialize MCP session
-    mcpSessionId = await initializeMcp(app);
+    // Create MCP app with injected dependencies and initialize MCP session
+    await remountMcpApp();
     nextId = 10;
   });
 
   afterEach(async () => {
-    resetSessionManager();
-    resetRepositoryManager();
-    resetAgentManager();
-    await resetJobQueue();
+    await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
     resetProcessMock();
@@ -243,7 +244,6 @@ describe('MCP Server Tools', () => {
     });
 
     it('should include custom agents after registration', async () => {
-      const agentManager = await getAgentManager();
       await agentManager.registerAgent({
         name: 'Custom Agent',
         commandTemplate: 'custom-agent {{prompt}}',
@@ -309,13 +309,12 @@ describe('MCP Server Tools', () => {
   // ===========================================================================
 
   describe('list_repositories', () => {
-    async function setupRepositoryManager(repos: Array<{
+    async function setupRepoManager(repos: Array<{
       id: string;
       name: string;
       path: string;
       description?: string | null;
     }> = []): Promise<void> {
-      const { getDatabase } = await import('../../database/connection.js');
       const db = getDatabase();
       const sqliteRepoRepo = new SqliteRepositoryRepository(db);
       for (const repo of repos) {
@@ -324,16 +323,15 @@ describe('MCP Server Tools', () => {
           createdAt: new Date().toISOString(),
         });
       }
-      const { getJobQueue } = await import('../../jobs/index.js');
-      const repoMgr = await RepositoryManager.create({
-        jobQueue: getJobQueue(),
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
         repository: sqliteRepoRepo,
       });
-      setRepositoryManager(repoMgr);
+      await remountMcpApp();
     }
 
     it('should return empty repositories array when no repositories registered', async () => {
-      await setupRepositoryManager();
+      await setupRepoManager();
       const response = await callTool(app, mcpSessionId, 'list_repositories', {}, nextId++);
       const data = parseToolResult(response) as { repositories: unknown[] };
       expect(response.result?.isError).toBeUndefined();
@@ -351,7 +349,7 @@ describe('MCP Server Tools', () => {
       // Mock getRemoteUrl to return a known URL
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
 
-      await setupRepositoryManager([{
+      await setupRepoManager([{
         id: 'repo-1',
         name: 'my-repo',
         path: TEST_REPO_PATH,
@@ -379,7 +377,7 @@ describe('MCP Server Tools', () => {
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
 
-      await setupRepositoryManager([{
+      await setupRepoManager([{
         id: 'repo-1',
         name: 'my-repo',
         path: TEST_REPO_PATH,
@@ -949,14 +947,14 @@ describe('MCP Server Tools', () => {
     /**
      * Helper to initialize a RepositoryManager with optional pre-seeded repositories.
      * Repositories must have their paths present in memfs to be loaded.
+     * Updates the outer `repositoryManager` and re-mounts the MCP app.
      */
-    async function setupRepositoryManager(repos: Array<{
+    async function setupDelegateRepoManager(repos: Array<{
       id: string;
       name: string;
       path: string;
       defaultAgentId?: string | null;
     }> = []): Promise<void> {
-      const { getDatabase } = await import('../../database/connection.js');
       const db = getDatabase();
       const sqliteRepoRepo = new SqliteRepositoryRepository(db);
       for (const repo of repos) {
@@ -965,12 +963,11 @@ describe('MCP Server Tools', () => {
           createdAt: new Date().toISOString(),
         });
       }
-      const { getJobQueue } = await import('../../jobs/index.js');
-      const repoMgr = await RepositoryManager.create({
-        jobQueue: getJobQueue(),
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
         repository: sqliteRepoRepo,
       });
-      setRepositoryManager(repoMgr);
+      await remountMcpApp();
     }
 
     /**
@@ -1025,7 +1022,7 @@ describe('MCP Server Tools', () => {
       });
 
       // Setup RepositoryManager with the test repository
-      await setupRepositoryManager([{
+      await setupDelegateRepoManager([{
         id: 'test-repo',
         name: 'test',
         path: TEST_REPO_PATH,
@@ -1049,7 +1046,7 @@ describe('MCP Server Tools', () => {
 
     it('should return error when repository not found', async () => {
       // Initialize RepositoryManager with no repositories
-      await setupRepositoryManager();
+      await setupDelegateRepoManager();
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'non-existent-repo',
@@ -1069,7 +1066,7 @@ describe('MCP Server Tools', () => {
       });
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-      await setupRepositoryManager([{
+      await setupDelegateRepoManager([{
         id: 'test-repo',
         name: 'test',
         path: '/test/repo',
@@ -1239,7 +1236,7 @@ describe('MCP Server Tools', () => {
         throw new GitError('fatal: branch already exists', 128, 'fatal: branch already exists');
       });
 
-      await setupRepositoryManager([{
+      await setupDelegateRepoManager([{
         id: 'test-repo',
         name: 'test',
         path: TEST_REPO_PATH,
@@ -1277,7 +1274,7 @@ describe('MCP Server Tools', () => {
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
 
-      await setupRepositoryManager([{
+      await setupDelegateRepoManager([{
         id: 'test-repo',
         name: 'test',
         path: TEST_REPO_PATH,
@@ -1333,7 +1330,6 @@ describe('MCP Server Tools', () => {
     // -----------------------------------------------------------------------
 
     it('should use repository defaultAgentId when agentId is not provided', async () => {
-      const agentManager = await getAgentManager();
       const registered = await agentManager.registerAgent({
         name: 'Repo Default Agent',
         commandTemplate: 'repo-default-agent {{prompt}}',
@@ -1371,7 +1367,6 @@ describe('MCP Server Tools', () => {
     });
 
     it('should use explicit agentId even when repository has defaultAgentId', async () => {
-      const agentManager = await getAgentManager();
       const repoDefault = await agentManager.registerAgent({
         name: 'Repo Default Agent',
         commandTemplate: 'repo-default-agent {{prompt}}',
@@ -1399,7 +1394,6 @@ describe('MCP Server Tools', () => {
 
     it('should return error when repository defaultAgentId references a deleted agent', async () => {
       // Register an agent, then set it as the repository default
-      const agentManager = await getAgentManager();
       const tempAgent = await agentManager.registerAgent({
         name: 'Soon Deleted Agent',
         commandTemplate: 'soon-deleted {{prompt}}',
@@ -1580,7 +1574,6 @@ describe('MCP Server Tools', () => {
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
 
-      const { getDatabase } = await import('../../database/connection.js');
       const db = getDatabase();
       const sqliteRepoRepo = new SqliteRepositoryRepository(db);
       await sqliteRepoRepo.save({
@@ -1589,12 +1582,11 @@ describe('MCP Server Tools', () => {
         path: TEST_REPO_PATH,
         createdAt: new Date().toISOString(),
       });
-      const { getJobQueue } = await import('../../jobs/index.js');
-      const repoMgr = await RepositoryManager.create({
-        jobQueue: getJobQueue(),
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
         repository: sqliteRepoRepo,
       });
-      setRepositoryManager(repoMgr);
+      await remountMcpApp();
     }
 
     it('should spawn agent worker PTY with AGENT_CONSOLE env vars', async () => {

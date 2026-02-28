@@ -138,7 +138,7 @@ export class SessionValidationService {
 }
 
 // Factory function to create validation service with the proper repository
-// Use this with getSessionManager() to get the correct repository
+// Use this with the sessionRepository from AppContext
 export function createSessionValidationService(sessionRepository: SessionRepository): SessionValidationService {
   return new SessionValidationService(sessionRepository);
 }

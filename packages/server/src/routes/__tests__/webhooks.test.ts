@@ -19,7 +19,7 @@ describe('Webhooks route', () => {
   });
 
   afterEach(async () => {
-    await shutdownAppContext(testContext, { resetSingletons: true });
+    await shutdownAppContext(testContext);
   });
 
   describe('POST /webhooks/github body limit', () => {

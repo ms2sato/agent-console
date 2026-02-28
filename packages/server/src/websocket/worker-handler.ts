@@ -99,7 +99,7 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
 
 /**
  * Create a worker message handler with the given dependencies.
- * sessionManager is required - use getSessionManager() to obtain it.
+ * sessionManager is required - passed via dependency injection from AppContext.
  */
 export function createWorkerMessageHandler(
   deps: Pick<WorkerHandlerDependencies, 'sessionManager'> & Partial<Omit<WorkerHandlerDependencies, 'sessionManager'>>

@@ -7,11 +7,10 @@ import type {
   HookCommandResult,
 } from '@agent-console/shared';
 import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-console/shared';
+import type { AppBindings } from '../app-context.js';
 import { getRepositoriesDir } from '../lib/config.js';
-import { getSessionManager } from '../services/session-manager.js';
-import { getRepositoryManager } from '../services/repository-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
-import { getAgentManager, CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
+import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
@@ -67,11 +66,11 @@ async function executeCleanupCommandIfConfigured(
   );
 }
 
-const worktrees = new Hono()
+const worktrees = new Hono<AppBindings>()
   // Get worktrees for a repository
   .get('/:id/worktrees', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -84,7 +83,7 @@ const worktrees = new Hono()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager, sessionManager, agentManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -96,7 +95,6 @@ const worktrees = new Hono()
 
     // Validate agent exists before returning accepted (fail fast for invalid config)
     const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
-    const agentManager = await getAgentManager();
     const agent = agentManager.getAgent(selectedAgentId);
     if (!agent) {
       throw new ValidationError(`Agent not found: ${selectedAgentId}`);
@@ -205,7 +203,6 @@ const worktrees = new Hono()
         // Optionally start a session
         let session = null;
         if (autoStartSession && worktree) {
-          const sessionManager = getSessionManager();
           session = await sessionManager.createSession({
             type: 'worktree',
             repositoryId: repoId,
@@ -256,7 +253,7 @@ const worktrees = new Hono()
   // Pull a worktree (git pull --ff-only, async)
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -367,7 +364,7 @@ const worktrees = new Hono()
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
-    const repositoryManager = getRepositoryManager();
+    const { repositoryManager, sessionManager } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -424,7 +421,6 @@ const worktrees = new Hono()
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {
       // Find the associated session before returning accepted
-      const sessionManager = getSessionManager();
       const allSessions = sessionManager.getAllSessions();
       const targetSession = allSessions.find(session => session.locationPath === worktreePath);
       const sessionId = targetSession?.id;
@@ -519,7 +515,6 @@ const worktrees = new Hono()
       }
 
       // Worktree deletion succeeded - now clean up any associated sessions
-      const sessionManager = getSessionManager();
       const sessions = sessionManager.getAllSessions();
       for (const session of sessions) {
         if (session.locationPath === worktreePath) {

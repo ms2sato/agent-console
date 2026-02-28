@@ -166,7 +166,7 @@ export class SessionManager {
 
   /**
    * Set the job queue for background task processing.
-   * @internal For testing only. In production, pass jobQueue to create() or getSessionManager().
+   * @internal For testing only. In production, pass jobQueue to SessionManager.create().
    */
   setJobQueue(jobQueue: JobQueue): void {
     this.jobQueue = jobQueue;
@@ -588,7 +588,7 @@ export class SessionManager {
 
     // Verify jobQueue is available before proceeding
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for session cleanup. Ensure initializeSessionManager() was called with jobQueue.');
+      throw new Error('JobQueue not available for session cleanup. Ensure SessionManager.create() was called with jobQueue.');
     }
 
     // Perform all deletion operations atomically
@@ -1357,63 +1357,4 @@ export class SessionManager {
 
     return { ...base, type: 'quick' } as QuickSession;
   }
-}
-
-// Singleton instance
-let sessionManagerInstance: SessionManager | null = null;
-
-/**
- * Initialize the SessionManager singleton.
- * Must be called once at application startup before getSessionManager().
- * @param options.sessionRepository - Repository for session persistence
- * @param options.jobQueue - JobQueue for background cleanup tasks
- */
-export async function initializeSessionManager(options: {
-  sessionRepository: SessionRepository;
-  jobQueue: JobQueue;
-  agentManager: AgentManager;
-  notificationManager?: NotificationManager | null;
-}): Promise<void> {
-  if (sessionManagerInstance) {
-    throw new Error('SessionManager already initialized');
-  }
-  sessionManagerInstance = await SessionManager.create(options);
-}
-
-/**
- * Get the SessionManager singleton.
- * @throws Error if initializeSessionManager() has not been called
- */
-export function getSessionManager(): SessionManager {
-  if (!sessionManagerInstance) {
-    throw new Error('SessionManager not initialized. Call initializeSessionManager() first.');
-  }
-  return sessionManagerInstance;
-}
-
-/**
- * Check if SessionManager has been initialized.
- */
-export function isSessionManagerInitialized(): boolean {
-  return sessionManagerInstance !== null;
-}
-
-/**
- * Reset the singleton for testing.
- * @internal For testing only.
- */
-export function resetSessionManager(): void {
-  sessionManagerInstance = null;
-}
-
-/**
- * Set the SessionManager singleton from an existing instance.
- * Used by AppContext to set the singleton without re-creating.
- * @internal For AppContext initialization only.
- */
-export function setSessionManager(instance: SessionManager): void {
-  if (sessionManagerInstance) {
-    throw new Error('SessionManager already initialized');
-  }
-  sessionManagerInstance = instance;
 }

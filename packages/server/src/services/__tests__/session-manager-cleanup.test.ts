@@ -5,7 +5,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { AgentManager, resetAgentManager } from '../agent-manager.js';
+import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 
 // Test config directory
@@ -34,15 +34,11 @@ describe('SessionManager cleanup on initialization', () => {
     // Reset process mock tracking
     resetProcessMock();
 
-    // Reset AgentManager singleton
-    resetAgentManager();
-
     // Create fresh PTY factory
     ptyFactory = createMockPtyFactory();
   });
 
   afterEach(async () => {
-    resetAgentManager();
     await closeDatabase();
     cleanupMemfs();
     delete process.env.AGENT_CONSOLE_HOME;
