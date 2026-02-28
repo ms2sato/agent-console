@@ -1,18 +1,9 @@
 /**
- * Tests for WorktreeRow mobile layout structure.
+ * WorktreeRow mobile layout structure documentation.
  *
- * WorktreeRow is a non-exported component inside routes/index.tsx.
- * It uses multiple hooks (useQueryClient, useNavigate, useMutation, useWorktreeDeletionTasksContext)
- * and context providers that make isolated unit testing impractical without extensive mocking.
- *
- * The key structural change for mobile responsiveness:
- *   - Desktop: single horizontal flex row (md:flex-row md:items-center)
- *   - Mobile: flex-col with a nested info row + separate action button row
- *
- * Since this is primarily a CSS layout change (Tailwind responsive classes), the correctness
- * is better verified through visual inspection or e2e tests rather than unit tests.
- *
- * These tests document the expected structure for future reference.
+ * WorktreeRow is non-exported and depends on many context providers, making
+ * unit testing impractical. These skipped tests document the expected layout
+ * structure for mobile (flex-col) vs desktop (flex-row) breakpoints.
  */
 import { describe, it } from 'bun:test';
 

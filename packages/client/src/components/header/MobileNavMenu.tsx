@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect } from 'react';
 import { Link, useLocation } from '@tanstack/react-router';
 
 interface MobileNavMenuProps {
@@ -6,26 +6,19 @@ interface MobileNavMenuProps {
   onClose: () => void;
 }
 
-/**
- * Mobile navigation dropdown menu.
- * Shows main navigation links (Jobs, Agents, Repositories) in a dropdown.
- */
+/** Mobile navigation dropdown for Jobs, Agents, and Repositories links. */
 export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
   const location = useLocation();
 
-  // Close on Escape key
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    },
-    [onClose]
-  );
-
   useEffect(() => {
     if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, handleKeyDown]);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -34,9 +27,7 @@ export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
 
   return (
     <>
-      {/* Invisible backdrop to close menu on outside click */}
       <div className="fixed inset-0 z-30" aria-hidden="true" onClick={onClose} />
-      {/* Dropdown menu */}
       <nav
         aria-label="Main navigation"
         className="absolute right-2 top-full z-40 mt-1 w-48 bg-slate-800 border border-slate-700 rounded-lg shadow-lg py-1"

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 interface MobileSidebarDrawerProps {
   open: boolean;
@@ -8,25 +8,22 @@ interface MobileSidebarDrawerProps {
 
 /**
  * Mobile overlay drawer for the sessions sidebar.
- * Provides a slide-in panel from the left with backdrop.
  * Always rendered (for CSS transitions); visibility controlled via translate.
  */
 export function MobileSidebarDrawer({ open, onClose, children }: MobileSidebarDrawerProps) {
-  // Close on Escape key
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    },
-    [onClose]
-  );
+  const savedFocusRef = useRef<Element | null>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, handleKeyDown]);
+  }, [open, onClose]);
 
-  // Prevent body scroll when drawer is open
   useEffect(() => {
     if (!open) return;
     const original = document.body.style.overflow;
@@ -36,30 +33,21 @@ export function MobileSidebarDrawer({ open, onClose, children }: MobileSidebarDr
     };
   }, [open]);
 
-  // Focus management: save/restore focus and move focus into drawer on open
-  const savedFocusRef = useRef<Element | null>(null);
-  const drawerRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     if (open) {
       savedFocusRef.current = document.activeElement;
-      // Move focus to first focusable element in the drawer
       const firstFocusable = drawerRef.current?.querySelector<HTMLElement>(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
       );
       firstFocusable?.focus();
-    } else {
-      // Restore focus to the element that triggered the drawer
-      if (savedFocusRef.current instanceof HTMLElement) {
-        savedFocusRef.current.focus();
-      }
+    } else if (savedFocusRef.current instanceof HTMLElement) {
+      savedFocusRef.current.focus();
       savedFocusRef.current = null;
     }
   }, [open]);
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className={`fixed inset-0 z-40 bg-black/50 transition-opacity duration-300 ${
           open ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -67,7 +55,6 @@ export function MobileSidebarDrawer({ open, onClose, children }: MobileSidebarDr
         aria-hidden="true"
         onClick={onClose}
       />
-      {/* Drawer panel */}
       <div
         ref={drawerRef}
         role="dialog"

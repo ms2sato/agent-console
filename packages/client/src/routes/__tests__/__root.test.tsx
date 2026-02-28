@@ -1,16 +1,10 @@
 /**
  * Tests for RootLayout mobile-specific behavior.
- *
- * The RootLayout component has many dependencies (WebSocket, TanStack Query/Router,
- * session state, etc.). We use mock.module to replace the hooks that require live
- * server state, then verify the mobile UI controls render and function correctly.
- *
- * Individual mobile components (MobileNavMenu, MobileSidebarDrawer, useIsMobile)
- * have their own dedicated test suites for detailed behavior coverage.
+ * Uses mock.module to replace hooks that require live server state.
  */
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 
-// Mock hooks that depend on server state - must be before component imports
+// Mock hooks that depend on server state (must precede component imports)
 mock.module('../../hooks/useAppWs', () => ({
   useAppWsState: (selector: (s: { connected: boolean }) => unknown) =>
     selector({ connected: true }),
@@ -76,7 +70,6 @@ mock.module('../../lib/favicon-manager', () => ({
   hasAnyAskingWorker: () => false,
 }));
 
-// Mock useIsMobile to return true (mobile mode)
 mock.module('../../hooks/useIsMobile', () => ({
   useIsMobile: () => true,
 }));
@@ -85,10 +78,7 @@ import { screen, fireEvent, cleanup, act, render } from '@testing-library/react'
 import { createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-// We cannot import RootLayout directly (it's not exported, only `Route` is).
-// Instead, we build a router that uses the actual route from __root.
-// However, since Route is created via createRootRoute and depends on its component,
-// we need to import the route module which already has mock.module applied.
+// Route import must come after mock.module calls
 import { Route as RootRoute } from '../__root';
 
 async function renderRootLayout(initialPath = '/') {
@@ -109,7 +99,6 @@ async function renderRootLayout(initialPath = '/') {
     initialEntries: [initialPath],
   });
 
-  // Build a minimal route tree with the real root route
   const routeTree = RootRoute.addChildren([]);
 
   const router = createRouter({
@@ -153,21 +142,16 @@ describe('RootLayout mobile behavior', () => {
   it('should open nav menu when hamburger button is clicked', async () => {
     await renderRootLayout();
 
-    // Desktop nav always renders links with hidden md:flex, so "Jobs" text is always in DOM.
-    // The mobile MobileNavMenu renders additional nav links only when open.
-    // Before clicking, there should be exactly one navigation element (the desktop nav).
+    // Before clicking, only the desktop nav exists
     const navsBefore = screen.getAllByRole('navigation');
     expect(navsBefore).toHaveLength(1);
 
-    // Click the hamburger menu button
-    const menuButton = screen.getByLabelText('Open menu');
-    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByLabelText('Open menu'));
 
-    // After clicking, MobileNavMenu adds a second nav element with its own links
+    // MobileNavMenu adds a second nav element
     const navsAfter = screen.getAllByRole('navigation');
     expect(navsAfter).toHaveLength(2);
 
-    // The mobile nav should contain Jobs, Agents, and Repositories links
     const mobileNav = navsAfter.find(nav => nav !== navsBefore[0])!;
     expect(mobileNav).toBeTruthy();
     expect(mobileNav.textContent).toContain('Jobs');
@@ -183,7 +167,6 @@ describe('RootLayout mobile behavior', () => {
 
     fireEvent.click(menuButton);
 
-    // After opening, the label changes
     const closeButton = screen.getByLabelText('Close menu');
     expect(closeButton).toBeTruthy();
     expect(closeButton.getAttribute('aria-expanded')).toBe('true');
@@ -192,11 +175,8 @@ describe('RootLayout mobile behavior', () => {
   it('should open sidebar drawer when sessions button is clicked', async () => {
     await renderRootLayout();
 
-    // Click the sessions button
-    const sessionsButton = screen.getByLabelText('Open sessions');
-    fireEvent.click(sessionsButton);
+    fireEvent.click(screen.getByLabelText('Open sessions'));
 
-    // The MobileSidebarDrawer should now be open with dialog role
     const dialog = screen.getByRole('dialog');
     expect(dialog).toBeTruthy();
     expect(dialog.getAttribute('aria-modal')).toBe('true');
@@ -206,14 +186,8 @@ describe('RootLayout mobile behavior', () => {
   it('should not render desktop sidebar on mobile', async () => {
     await renderRootLayout();
 
-    // On mobile, the desktop sidebar is not rendered (conditional rendering with isMobile).
-    // The sidebar content only appears inside the MobileSidebarDrawer when opened.
-    // The desktop sidebar uses role="complementary" with aria-label="Active sessions",
-    // but it should NOT be present when isMobile is true and the drawer is closed.
-    //
-    // Note: ActiveSessionsSidebar is rendered inside MobileSidebarDrawer (always in DOM
-    // for CSS transitions), so the role may still exist. The key mobile behavior is
-    // verified by the presence of the "Open sessions" button (mobile-only control).
+    // On mobile, the desktop sidebar is replaced by MobileSidebarDrawer.
+    // Verify the mobile-only sessions button is present.
     expect(screen.getByLabelText('Open sessions')).toBeTruthy();
   });
 });

@@ -138,18 +138,16 @@ function RootLayout() {
     ? sessions.find(s => s.id === currentSessionId)
     : undefined;
 
-  // Mobile responsive state
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Close mobile drawers on navigation
+  // Close mobile drawers on route change
   useEffect(() => {
     setMobileSidebarOpen(false);
     setMobileNavOpen(false);
   }, [location.pathname]);
 
-  // Check if any session has 'asking' activity (for mobile badge indicator)
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
 
   return (
@@ -186,7 +184,6 @@ function RootLayout() {
             )}
           </div>
 
-          {/* Desktop navigation - hidden on mobile */}
           <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
             <ValidationWarningIndicator />
             <JobsNavLink />
@@ -194,7 +191,6 @@ function RootLayout() {
             <RepositoriesNavLink />
           </nav>
 
-          {/* Mobile header controls - hidden on desktop */}
           <div className="ml-auto flex items-center gap-1 md:hidden">
             <button
               onClick={() => setMobileSidebarOpen(true)}
@@ -216,13 +212,11 @@ function RootLayout() {
             </button>
           </div>
 
-          {/* Mobile navigation dropdown */}
           <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
         </header>
         <ConnectionBanner connected={connected} />
         <WebhookConfigBanner />
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          {/* Desktop sidebar - hidden on mobile */}
           {!isMobile && (
             <ActiveSessionsSidebar
               collapsed={collapsed}
@@ -243,7 +237,6 @@ function RootLayout() {
           </main>
         </div>
 
-        {/* Mobile sidebar drawer */}
         {isMobile && (
           <MobileSidebarDrawer open={mobileSidebarOpen} onClose={() => setMobileSidebarOpen(false)}>
             <ActiveSessionsSidebar
