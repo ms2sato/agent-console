@@ -304,6 +304,20 @@ describe('ActiveSessionsSidebar', () => {
 
       expect(screen.queryByTitle('Drag to resize')).toBeNull();
     });
+
+    it('should show resize handle when expanded and hideResizeHandle is not set', async () => {
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} />
+      );
+      expect(screen.getByTitle('Drag to resize')).toBeTruthy();
+    });
+
+    it('should hide resize handle when hideResizeHandle is true', async () => {
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} hideResizeHandle />
+      );
+      expect(screen.queryByTitle('Drag to resize')).toBeNull();
+    });
   });
 
   describe('ARIA attributes', () => {
