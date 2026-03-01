@@ -441,7 +441,7 @@ export class WorkerManager {
       logger.info({ workerId: worker.id, pid: pty.pid, exitCode, signal: signalStr }, 'Worker exited');
 
       // Mark worker as deactivated (PTY no longer running)
-      worker.pty = null;
+      this.detachPty(worker);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.dispose();
@@ -453,10 +453,8 @@ export class WorkerManager {
         callbacks.onExit(exitCode, signalStr);
       }
 
-      // Send notification for worker exit
-      this.notifyWorkerExit(sessionId, worker, exitCode);
-
-      // Notify SessionManager that PTY exited so it can update session activation state
+      // Notify listeners about worker exit
+      this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode);
       this.globalPtyExitCallback?.(sessionId, worker.id);
     });
     if (onExitDisposable) {
@@ -465,14 +463,6 @@ export class WorkerManager {
 
     // Store disposables on worker for cleanup
     worker.disposables = disposables;
-  }
-
-  /**
-   * Notify about worker exit. Called by setupWorkerEventHandlers.
-   * Uses global callback to delegate notification to SessionManager which has full session context.
-   */
-  private notifyWorkerExit(sessionId: string, worker: InternalPtyWorker, exitCode: number): void {
-    this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode);
   }
 
   // ========== Worker I/O ==========
@@ -598,12 +588,18 @@ export class WorkerManager {
     const base = { id: worker.id, name: worker.name, createdAt: worker.createdAt };
 
     switch (worker.type) {
-      case 'agent':
-        return { ...base, type: 'agent', agentId: worker.agentId, activated: worker.pty !== null } as AgentWorker;
-      case 'terminal':
-        return { ...base, type: 'terminal', activated: worker.pty !== null } as TerminalWorker;
-      case 'git-diff':
-        return { ...base, type: 'git-diff', baseCommit: worker.baseCommit } as GitDiffWorker;
+      case 'agent': {
+        const agentWorker: AgentWorker = { ...base, type: 'agent', agentId: worker.agentId, activated: worker.pty !== null };
+        return agentWorker;
+      }
+      case 'terminal': {
+        const terminalWorker: TerminalWorker = { ...base, type: 'terminal', activated: worker.pty !== null };
+        return terminalWorker;
+      }
+      case 'git-diff': {
+        const gitDiffWorker: GitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
+        return gitDiffWorker;
+      }
     }
   }
 
@@ -614,12 +610,18 @@ export class WorkerManager {
     const base = { id: worker.id, name: worker.name, createdAt: worker.createdAt };
 
     switch (worker.type) {
-      case 'agent':
-        return { ...base, type: 'agent', agentId: worker.agentId, pid: worker.pty?.pid ?? null } as PersistedAgentWorker;
-      case 'terminal':
-        return { ...base, type: 'terminal', pid: worker.pty?.pid ?? null } as PersistedTerminalWorker;
-      case 'git-diff':
-        return { ...base, type: 'git-diff', baseCommit: worker.baseCommit } as PersistedGitDiffWorker;
+      case 'agent': {
+        const persistedAgent: PersistedAgentWorker = { ...base, type: 'agent', agentId: worker.agentId, pid: worker.pty?.pid ?? null };
+        return persistedAgent;
+      }
+      case 'terminal': {
+        const persistedTerminal: PersistedTerminalWorker = { ...base, type: 'terminal', pid: worker.pty?.pid ?? null };
+        return persistedTerminal;
+      }
+      case 'git-diff': {
+        const persistedGitDiff: PersistedGitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
+        return persistedGitDiff;
+      }
     }
   }
 
@@ -638,6 +640,14 @@ export class WorkerManager {
   }
 
   /**
+   * Detach a PTY worker's PTY reference (set to null).
+   * Used after killing the PTY to ensure persisted worker PIDs are saved as null.
+   */
+  detachPty(worker: InternalPtyWorker): void {
+    worker.pty = null;
+  }
+
+  /**
    * Kill a worker's PTY process and clean up resources.
    * Disposes PTY event handlers before killing to prevent memory leaks.
    */
@@ -652,7 +662,10 @@ export class WorkerManager {
       }
 
       // Kill PTY process
-      if (worker.pty) worker.pty.kill();
+      if (worker.pty) {
+        worker.pty.kill();
+        this.detachPty(worker);
+      }
 
       // Dispose activity detector for agent workers
       if (worker.type === 'agent' && worker.activityDetector) {

@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useSessionState } from '../useSessionState';
-import type { Session, WorkerActivityInfo } from '@agent-console/shared';
+import type { Session, WorkerActivityInfo, Worker } from '@agent-console/shared';
+
+// Helper to create a mock worker
+function createMockWorker(id: string): Worker {
+  return {
+    id,
+    name: `Worker ${id}`,
+    type: 'terminal',
+    activated: true,
+    createdAt: new Date().toISOString(),
+  };
+}
 
 // Helper to create mock session
 function createMockSession(overrides: Partial<Session> = {}): Session {
@@ -215,6 +226,93 @@ describe('useSessionState', () => {
       expect(result.current.sessions).toHaveLength(0);
       expect(result.current.sessionsRef.current).toHaveLength(0);
     });
+
+    it('should prune workerActivityStates for removed workers', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const worker1 = createMockWorker('worker-1');
+      const worker2 = createMockWorker('worker-2');
+      const session = createMockSession({
+        id: 'session-1',
+        workers: [worker1, worker2],
+      });
+
+      act(() => {
+        result.current.handleSessionsSync([session], [
+          { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+          { sessionId: 'session-1', workerId: 'worker-2', activityState: 'idle' },
+        ]);
+      });
+
+      expect(result.current.workerActivityStates['session-1']).toEqual({
+        'worker-1': 'active',
+        'worker-2': 'idle',
+      });
+
+      // Worker-2 is removed from session
+      const updatedSession = { ...session, workers: [worker1] };
+
+      act(() => {
+        result.current.handleSessionUpdated(updatedSession);
+      });
+
+      expect(result.current.workerActivityStates['session-1']).toEqual({
+        'worker-1': 'active',
+      });
+      expect(result.current.workerActivityStates['session-1']['worker-2']).toBeUndefined();
+    });
+
+    it('should remove session entry from workerActivityStates when all workers are removed', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const worker1 = createMockWorker('worker-1');
+      const session = createMockSession({
+        id: 'session-1',
+        workers: [worker1],
+      });
+
+      act(() => {
+        result.current.handleSessionsSync([session], [
+          { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+        ]);
+      });
+
+      // All workers removed
+      const updatedSession = { ...session, workers: [] };
+
+      act(() => {
+        result.current.handleSessionUpdated(updatedSession);
+      });
+
+      expect(result.current.workerActivityStates['session-1']).toBeUndefined();
+    });
+
+    it('should not modify workerActivityStates when workers have not changed', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const worker1 = createMockWorker('worker-1');
+      const session = createMockSession({
+        id: 'session-1',
+        workers: [worker1],
+        title: 'Original',
+      });
+
+      act(() => {
+        result.current.handleSessionsSync([session], [
+          { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+        ]);
+      });
+
+      const statesBefore = result.current.workerActivityStates;
+
+      // Update title only, same workers
+      act(() => {
+        result.current.handleSessionUpdated({ ...session, title: 'Updated' });
+      });
+
+      // Same reference since no pruning was needed
+      expect(result.current.workerActivityStates).toBe(statesBefore);
+    });
   });
 
   describe('handleSessionDeleted', () => {
@@ -276,7 +374,7 @@ describe('useSessionState', () => {
   });
 
   describe('handleSessionPaused', () => {
-    it('should set pausedAt without changing activationState', () => {
+    it('should set pausedAt and transition activationState to hibernated', () => {
       const { result } = renderHook(() => useSessionState());
 
       const session = createMockSession({ id: 'session-1', activationState: 'running' });
@@ -289,10 +387,10 @@ describe('useSessionState', () => {
         result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
       });
 
-      expect(result.current.sessions[0].pausedAt).toBeDefined();
-      expect(result.current.sessions[0].activationState).toBe('running');
-      expect(result.current.sessionsRef.current[0].pausedAt).toBeDefined();
-      expect(result.current.sessionsRef.current[0].activationState).toBe('running');
+      expect(result.current.sessions[0].pausedAt).toBe('2025-01-01T00:00:00.000Z');
+      expect(result.current.sessions[0].activationState).toBe('hibernated');
+      expect(result.current.sessionsRef.current[0].pausedAt).toBe('2025-01-01T00:00:00.000Z');
+      expect(result.current.sessionsRef.current[0].activationState).toBe('hibernated');
     });
 
     it('should not affect other sessions', () => {
@@ -312,6 +410,33 @@ describe('useSessionState', () => {
       expect(result.current.sessions[0].pausedAt).toBeDefined();
       expect(result.current.sessions[1].pausedAt).toBeUndefined();
       expect(result.current.sessions[1].activationState).toBe('running');
+    });
+
+    it('should clean up workerActivityStates for paused session', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const worker1 = createMockWorker('worker-1');
+      const session1 = createMockSession({ id: 'session-1', workers: [worker1] });
+      const session2 = createMockSession({ id: 'session-2', workers: [createMockWorker('worker-2')] });
+
+      act(() => {
+        result.current.handleSessionsSync([session1, session2], [
+          { sessionId: 'session-1', workerId: 'worker-1', activityState: 'asking' },
+          { sessionId: 'session-2', workerId: 'worker-2', activityState: 'active' },
+        ]);
+      });
+
+      expect(result.current.workerActivityStates['session-1']).toBeDefined();
+      expect(result.current.workerActivityStates['session-2']).toBeDefined();
+
+      act(() => {
+        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
+      });
+
+      // Activity states for paused session should be cleaned up
+      expect(result.current.workerActivityStates['session-1']).toBeUndefined();
+      // Activity states for other sessions should be preserved
+      expect(result.current.workerActivityStates['session-2']).toEqual({ 'worker-2': 'active' });
     });
   });
 
@@ -410,38 +535,6 @@ describe('useSessionState', () => {
         'session-1': { 'worker-1': 'active' },
         'session-2': { 'worker-2': 'asking' },
       });
-    });
-  });
-
-  describe('setSessionsFromApi', () => {
-    it('should update sessionsRef when not initialized', () => {
-      const { result } = renderHook(() => useSessionState());
-
-      const apiSessions = [createMockSession({ id: 'session-1' })];
-
-      act(() => {
-        result.current.setSessionsFromApi(apiSessions);
-      });
-
-      expect(result.current.sessionsRef.current).toEqual(apiSessions);
-    });
-
-    it('should not update sessionsRef when already initialized via WebSocket', () => {
-      const { result } = renderHook(() => useSessionState());
-
-      const wsSessions = [createMockSession({ id: 'ws-session' })];
-      const apiSessions = [createMockSession({ id: 'api-session' })];
-
-      act(() => {
-        result.current.handleSessionsSync(wsSessions, []);
-      });
-
-      act(() => {
-        result.current.setSessionsFromApi(apiSessions);
-      });
-
-      // Should still be WS sessions, not API sessions
-      expect(result.current.sessionsRef.current).toEqual(wsSessions);
     });
   });
 

@@ -6,6 +6,7 @@ describe('Worker Handler', () => {
   let mockWs: WSContext;
   let mockSessionManager: WorkerHandlerDependencies['sessionManager'];
   let mockMkdir: ReturnType<typeof mock>;
+  let mockUnlink: ReturnType<typeof mock>;
   let handleWorkerMessage: ReturnType<typeof createWorkerMessageHandler>;
 
   beforeEach(() => {
@@ -27,11 +28,16 @@ describe('Worker Handler', () => {
       Promise.resolve(undefined as string | undefined),
     );
 
+    mockUnlink = mock((_path: string) => Promise.resolve());
+
     // Create handler with mocked dependencies
+    // Use short cleanup delay for tests so we can verify the behavior
     handleWorkerMessage = createWorkerMessageHandler({
       sessionManager: mockSessionManager,
       mkdir: mockMkdir as WorkerHandlerDependencies['mkdir'],
+      unlink: mockUnlink as WorkerHandlerDependencies['unlink'],
       tmpdir: () => '/tmp/test',
+      imageCleanupDelayMs: 50,
     });
   });
 
@@ -92,6 +98,15 @@ describe('Worker Handler', () => {
       expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
     });
 
+    it('should reject array payloads that pass typeof object check', async () => {
+      // Arrays have typeof 'object' but should not be treated as valid message objects
+      const message = JSON.stringify([{ type: 'input', data: 'sneaky' }]);
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+
+      expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+      expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
+    });
+
     it('should handle request-history message', async () => {
       const message = JSON.stringify({ type: 'request-history' });
       await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
@@ -140,6 +155,50 @@ describe('Worker Handler', () => {
 
       // Unknown mime types should be rejected (no file written, no input sent)
       expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('image temp file cleanup', () => {
+    it('should schedule cleanup of uploaded image after delay', async () => {
+      const message = JSON.stringify({
+        type: 'image',
+        data: 'dGVzdA==', // base64 for "test"
+        mimeType: 'image/png',
+      });
+
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+
+      // Immediately after handling, unlink should not have been called yet
+      expect(mockUnlink).not.toHaveBeenCalled();
+
+      // Wait for the cleanup delay (50ms configured in beforeEach) plus a buffer
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Now unlink should have been called with the file path
+      expect(mockUnlink).toHaveBeenCalledTimes(1);
+      const deletedPath = mockUnlink.mock.calls[0][0] as string;
+      expect(deletedPath).toContain('/tmp/test/agent-console-images/');
+      expect(deletedPath).toContain('.png');
+    });
+
+    it('should handle ENOENT errors silently during cleanup', async () => {
+      // Simulate file already deleted
+      const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockUnlink.mockImplementation(() => Promise.reject(enoentError));
+
+      const message = JSON.stringify({
+        type: 'image',
+        data: 'dGVzdA==',
+        mimeType: 'image/png',
+      });
+
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+
+      // Wait for cleanup timer
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // unlink was called but ENOENT error was silently handled
+      expect(mockUnlink).toHaveBeenCalledTimes(1);
     });
   });
 });

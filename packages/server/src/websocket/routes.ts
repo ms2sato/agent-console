@@ -18,6 +18,7 @@ import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
+import { WebSocketConnectionRegistry } from './connection-registry.js';
 
 const logger = createLogger('websocket');
 
@@ -40,28 +41,9 @@ export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer
   return '';
 }
 
-// Track connected app clients for broadcasting
-const appClients = new Set<WSContext>();
-
-// Clients still syncing initial state - broadcasts are queued until sync completes
-const syncingClients = new Set<WSContext>();
-
-// Queue messages for clients that are still syncing initial state
-// Messages will be replayed after sync completes to prevent lost events
-const syncingClientQueues = new Map<WSContext, AppServerMessage[]>();
-
-// Maximum number of messages to queue per client to prevent memory issues
-const MAX_SYNC_QUEUE_SIZE = 100;
-
-// Track Worker WebSocket connections by session for session deletion notification
-const workerConnectionsBySession = new Map<string, Set<WSContext>>();
-
-// Track Worker WebSocket connections by session+worker for per-worker notifications (e.g., output truncation)
-const workerConnections = new Map<string, Set<WSContext>>();
-
-// Track connection IDs per WebSocket for cleanup on close/error
-// Maps WSContext to { sessionId, workerId, connectionId } for callback detachment
-const connectionMetadata = new Map<WSContext, { sessionId: string; workerId: string; connectionId: string }>();
+// Module-level registry instance used by exported functions.
+// Initialized once in setupWebSocketRoutes() and shared by broadcastToApp/notifySessionDeleted.
+let registry = new WebSocketConnectionRegistry();
 
 // Store the server PID at module load time for server restart detection
 const currentServerPid = getServerPid();
@@ -79,15 +61,6 @@ function getWebSocketReadyState(client: WSContext): number | undefined {
 }
 
 /**
- * Remove a client from all tracking sets/maps.
- */
-function cleanupClient(client: WSContext): void {
-  appClients.delete(client);
-  syncingClients.delete(client);
-  syncingClientQueues.delete(client);
-}
-
-/**
  * Broadcast a message to all connected app clients.
  * Used for real-time updates like session lifecycle events and async operation results.
  * Messages are queued for clients that are still syncing initial state.
@@ -96,16 +69,21 @@ export function broadcastToApp(msg: AppServerMessage): void {
   const msgStr = JSON.stringify(msg);
   const deadClients: WSContext[] = [];
 
-  for (const client of appClients) {
+  for (const client of registry.getAppClients()) {
     // Queue messages for clients that are still syncing initial state
-    if (syncingClients.has(client)) {
-      const queue = syncingClientQueues.get(client);
-      if (queue) {
-        // Limit queue size to prevent memory issues
-        if (queue.length < MAX_SYNC_QUEUE_SIZE) {
-          queue.push(msg);
-        } else {
-          logger.warn({ queueSize: queue.length }, 'Sync queue full, dropping message');
+    if (registry.isSyncing(client)) {
+      const result = registry.queueSyncMessage(client, msg);
+      if (result === 'overflow') {
+        // Queue overflow: too many events during initial sync.
+        // Close the connection to force a full reconnect + fresh sync,
+        // rather than silently dropping messages and leaving the client stale.
+        const queue = registry.getSyncQueue(client);
+        logger.warn({ queueSize: queue?.length ?? 0 }, 'Sync queue overflow, forcing client reconnect for full re-sync');
+        registry.removeAppClient(client);
+        try {
+          client.close(WS_CLOSE_CODE.INTERNAL_ERROR, 'Sync queue overflow');
+        } catch {
+          // Connection may already be closed
         }
       }
       continue;
@@ -129,21 +107,30 @@ export function broadcastToApp(msg: AppServerMessage): void {
   // Clean up dead clients
   if (deadClients.length > 0) {
     for (const client of deadClients) {
-      cleanupClient(client);
+      registry.removeAppClient(client);
     }
-    logger.debug({ removed: deadClients.length, remaining: appClients.size }, 'Cleaned up dead app clients');
+    logger.debug({ removed: deadClients.length, remaining: registry.appClientCount }, 'Cleaned up dead app clients');
   }
 }
 
 /**
- * Notify all Worker WebSocket connections for a session that the session has been deleted.
- * Sends error message with SESSION_DELETED code, exit message, and closes the connections.
- * Called by SessionManager before deleting the session.
+ * Notify all Worker WebSocket connections for a session about a lifecycle event
+ * (deletion, pause, etc.). Sends an error message with the given code, an exit message,
+ * and closes all connections for the session.
  */
-export function notifySessionDeleted(sessionId: string): void {
-  const connections = workerConnectionsBySession.get(sessionId);
+function notifySessionWorkerConnections(
+  sessionId: string,
+  options: {
+    errorMessage: string;
+    errorCode: WorkerErrorCode;
+    exitCode: number;
+    closeReason: string;
+    logAction: string;
+  }
+): void {
+  const connections = registry.getWorkerConnectionsBySession(sessionId);
   if (!connections || connections.size === 0) {
-    logger.debug({ sessionId }, 'No worker connections to notify for session deletion');
+    logger.debug({ sessionId, action: options.logAction }, 'No worker connections to notify');
     return;
   }
 
@@ -151,30 +138,53 @@ export function notifySessionDeleted(sessionId: string): void {
 
   for (const ws of connections) {
     try {
-      // Send error message first so client knows what went wrong
       const errorMsg: WorkerServerMessage = {
         type: 'error',
-        message: 'Session has been deleted',
-        code: 'SESSION_DELETED',
+        message: options.errorMessage,
+        code: options.errorCode,
       };
       ws.send(JSON.stringify(errorMsg));
 
-      // Then send exit message for proper cleanup
-      const exitMsg: WorkerServerMessage = { type: 'exit', exitCode: 1, signal: null };
+      const exitMsg: WorkerServerMessage = { type: 'exit', exitCode: options.exitCode, signal: null };
       ws.send(JSON.stringify(exitMsg));
 
-      // Close the WebSocket
-      ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'Session deleted');
+      ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, options.closeReason);
     } catch (err) {
-      // Connection may already be closed, log and continue
-      logger.debug({ sessionId, err }, 'Error notifying worker connection of session deletion');
+      logger.debug({ sessionId, err }, `Error notifying worker connection of session ${options.logAction}`);
     }
   }
 
-  // Remove the session from tracking
-  workerConnectionsBySession.delete(sessionId);
+  registry.removeSessionConnections(sessionId);
 
-  logger.info({ sessionId, notifiedConnections: connectionCount }, 'Notified worker connections of session deletion');
+  logger.info({ sessionId, notifiedConnections: connectionCount }, `Notified worker connections of session ${options.logAction}`);
+}
+
+/**
+ * Notify all Worker WebSocket connections for a session that the session has been deleted.
+ * Called by SessionManager before deleting the session.
+ */
+export function notifySessionDeleted(sessionId: string): void {
+  notifySessionWorkerConnections(sessionId, {
+    errorMessage: 'Session has been deleted',
+    errorCode: 'SESSION_DELETED',
+    exitCode: 1,
+    closeReason: 'Session deleted',
+    logAction: 'deletion',
+  });
+}
+
+/**
+ * Notify all Worker WebSocket connections for a session that the session has been paused.
+ * Called by SessionManager before pausing the session.
+ */
+export function notifySessionPaused(sessionId: string): void {
+  notifySessionWorkerConnections(sessionId, {
+    errorMessage: 'Session has been paused',
+    errorCode: 'SESSION_PAUSED',
+    exitCode: 0,
+    closeReason: 'Session paused',
+    logAction: 'pause',
+  });
 }
 
 /**
@@ -185,8 +195,7 @@ export function notifySessionDeleted(sessionId: string): void {
  * Called by WorkerOutputFileManager when output file exceeds size limits.
  */
 function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void {
-  const key = `${sessionId}:${workerId}`;
-  const connections = workerConnections.get(key);
+  const connections = registry.getWorkerConnections(sessionId, workerId);
   if (!connections || connections.size === 0) {
     logger.debug({ sessionId, workerId }, 'No worker connections to notify for output truncation');
     return;
@@ -209,6 +218,38 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
   logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
 }
 
+/**
+ * Names of all required callback configuration calls that must complete
+ * before WebSocket connections can be properly handled.
+ * Used by assertFullyInitialized() to detect missing initialization steps.
+ */
+const REQUIRED_INIT_STEPS = [
+  'setOutputTruncatedCallback',
+  'setSessionExistsCallback',
+  'setGlobalActivityCallback',
+  'setGlobalWorkerExitCallback',
+  'setSessionLifecycleCallbacks',
+  'setWebSocketCallbacks',
+  'setupPtyExitCallback',
+  'setAgentLifecycleCallbacks',
+  'setRepositoryLifecycleCallbacks',
+] as const;
+
+/**
+ * Assert that all required initialization steps have been completed.
+ * Throws a clear error if any step was missed, enabling early failure
+ * instead of silent misbehavior when a callback is not wired up.
+ */
+function assertFullyInitialized(completedSteps: Set<string>): void {
+  const missingSteps = REQUIRED_INIT_STEPS.filter(step => !completedSteps.has(step));
+  if (missingSteps.length > 0) {
+    throw new Error(
+      `WebSocket routes initialization incomplete. Missing steps: ${missingSteps.join(', ')}. ` +
+      'All callback configurations must be set before WebSocket connections are accepted.'
+    );
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function setupWebSocketRoutes(
   app: Hono<any>,
@@ -216,13 +257,27 @@ export async function setupWebSocketRoutes(
   // The `any` type parameter matches Hono's own export: `UpgradeWebSocket<any>`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upgradeWebSocket: UpgradeWebSocket<any>,
-  appContext: AppContext
+  appContext: AppContext,
+  /** Optional registry injection for testing. Production uses the module-level instance. */
+  registryOverride?: WebSocketConnectionRegistry
 ) {
+  // Replace the module-level registry if an override is provided (for testing)
+  if (registryOverride) {
+    registry = registryOverride;
+  } else {
+    // Fresh registry for each setup call (important for test isolation when no override)
+    registry = new WebSocketConnectionRegistry();
+  }
+
   const { sessionManager, notificationManager, agentManager, repositoryManager } = appContext;
+
+  // Track which initialization steps have been completed
+  const completedSteps = new Set<string>();
 
   // Register output truncation callback to avoid circular dependency
   // worker-output-file.ts needs to notify clients but can't import routes.ts directly
   setOutputTruncatedCallback(notifyWorkerOutputTruncated);
+  completedSteps.add('setOutputTruncatedCallback');
 
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
@@ -232,6 +287,7 @@ export async function setupWebSocketRoutes(
   notificationManager.setSessionExistsCallback((sessionId) => {
     return sessionManager.getSession(sessionId) !== undefined;
   });
+  completedSteps.add('setSessionExistsCallback');
 
   // Set up global activity callback to broadcast to all app clients
   sessionManager.setGlobalActivityCallback((sessionId, workerId, state) => {
@@ -260,6 +316,7 @@ export async function setupWebSocketRoutes(
       }
     }
   });
+  completedSteps.add('setGlobalActivityCallback');
 
   // Set up global worker exit callback to send notifications
   sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode) => {
@@ -277,6 +334,7 @@ export async function setupWebSocketRoutes(
       );
     }
   });
+  completedSteps.add('setGlobalWorkerExitCallback');
 
   // Set up session lifecycle callbacks to broadcast to all app clients
   sessionManager.setSessionLifecycleCallbacks({
@@ -315,16 +373,20 @@ export async function setupWebSocketRoutes(
       });
     },
   });
+  completedSteps.add('setSessionLifecycleCallbacks');
 
   // Wire WebSocket callbacks to break circular dependency
   // SessionManager needs these to notify clients during session deletion and message broadcast
   sessionManager.setWebSocketCallbacks({
     notifySessionDeleted,
+    notifySessionPaused,
     broadcastToApp,
   });
+  completedSteps.add('setWebSocketCallbacks');
 
   // Set up PTY exit callback to broadcast session activation state changes
   sessionManager.setupPtyExitCallback();
+  completedSteps.add('setupPtyExitCallback');
 
   // Set up agent lifecycle callbacks to broadcast to all app clients
   agentManager.setLifecycleCallbacks({
@@ -341,6 +403,7 @@ export async function setupWebSocketRoutes(
       broadcastToApp({ type: 'agent-deleted', agentId });
     },
   });
+  completedSteps.add('setAgentLifecycleCallbacks');
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
   repositoryManager.setLifecycleCallbacks({
@@ -357,6 +420,10 @@ export async function setupWebSocketRoutes(
       broadcastToApp({ type: 'repository-deleted', repositoryId });
     },
   });
+  completedSteps.add('setRepositoryLifecycleCallbacks');
+
+  // Verify all initialization steps completed before accepting connections
+  assertFullyInitialized(completedSteps);
 
   // Create dependency object for app handlers
   const appDeps = {
@@ -381,9 +448,8 @@ export async function setupWebSocketRoutes(
 
           // Add to clients immediately but mark as syncing to prevent race conditions
           // This ensures lifecycle events that occur during sync are properly queued
-          appClients.add(ws);
-          syncingClients.add(ws);
-          syncingClientQueues.set(ws, []);
+          registry.addAppClient(ws);
+          registry.startSyncing(ws);
 
           // Send all sync operations
           Promise.all([
@@ -408,7 +474,7 @@ export async function setupWebSocketRoutes(
             }),
           ]).then(() => {
             // Replay queued messages that were broadcast during sync
-            const queuedMessages = syncingClientQueues.get(ws);
+            const queuedMessages = registry.getSyncQueue(ws);
             if (queuedMessages && queuedMessages.length > 0) {
               logger.debug({ count: queuedMessages.length }, 'Replaying queued messages after sync');
               for (const queuedMsg of queuedMessages) {
@@ -420,14 +486,12 @@ export async function setupWebSocketRoutes(
                 }
               }
             }
-            syncingClientQueues.delete(ws);
-            syncingClients.delete(ws);
+            registry.stopSyncing(ws);
 
-            logger.debug({ clientCount: appClients.size }, 'App WebSocket ready for broadcasts');
+            logger.debug({ clientCount: registry.appClientCount }, 'App WebSocket ready for broadcasts');
           }).catch((err) => {
             // On error, clean up syncing state (client will be fully removed on close/error)
-            syncingClients.delete(ws);
-            syncingClientQueues.delete(ws);
+            registry.stopSyncing(ws);
             logger.error({ err }, 'Failed to send initial sync');
           });
         },
@@ -435,8 +499,8 @@ export async function setupWebSocketRoutes(
           handleAppMessage(ws, extractMessageData(event.data));
         },
         onClose(_event: CloseEvent, ws: WSContext) {
-          cleanupClient(ws);
-          logger.info({ clientCount: appClients.size }, 'App WebSocket disconnected');
+          registry.removeAppClient(ws);
+          logger.info({ clientCount: registry.appClientCount }, 'App WebSocket disconnected');
         },
       };
     })
@@ -497,7 +561,7 @@ export async function setupWebSocketRoutes(
         // Store connection metadata for cleanup in onClose/onError
         // This ensures callbacks are cleaned up even if close happens before connectionId is set in outer scope
         if (connectionId) {
-          connectionMetadata.set(ws, { sessionId, workerId, connectionId });
+          registry.setConnectionMetadata(ws, { sessionId, workerId, connectionId });
         }
 
         // If worker was restored (PTY was hibernated and is now active), send server-restarted notification
@@ -550,27 +614,49 @@ export async function setupWebSocketRoutes(
         }
       }
 
+      /**
+       * Clean up all resources for a worker WebSocket connection.
+       * Shared by onClose and onError to avoid duplicated cleanup logic.
+       * @returns The effective connection ID used for callback detachment (for logging)
+       */
+      function cleanupWorkerConnection(ws: WSContext, sid: string, wid: string): string | null {
+        connectionClosed = true;
+
+        // Dispose buffered sender to clear flush timer and prevent stale sends
+        sender?.dispose();
+
+        // Get connection ID from metadata map as well as closure variable
+        // This ensures cleanup works even if close/error happens during async setup
+        const metadata = registry.getConnectionMetadata(ws);
+        const effectiveConnectionId = connectionId || metadata?.connectionId || null;
+
+        // Remove from connection tracking (both session-level, worker-level, and metadata)
+        registry.removeWorkerConnection(sid, wid, ws);
+
+        // Detach worker-specific resources (git-diff file watcher or PTY callbacks)
+        const session = sessionManager.getSession(sid);
+        const worker = session?.workers.find(w => w.id === wid);
+
+        if (worker?.type === 'git-diff') {
+          handleGitDiffDisconnection(sid, wid).catch((err) => {
+            logger.error({ sessionId: sid, workerId: wid, err }, 'Error cleaning up git-diff on WebSocket close/error');
+          });
+        } else if (effectiveConnectionId) {
+          // Detach this connection's callbacks but keep worker alive (only for PTY workers)
+          // Other connections (browser tabs) will continue receiving output
+          sessionManager.detachWorkerCallbacks(sid, wid, effectiveConnectionId);
+        }
+
+        return effectiveConnectionId;
+      }
+
       return {
         onOpen(_event: Event, ws: WSContext) {
           const connectionStartTime = performance.now();
           logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
 
-          // Track this connection for session deletion notification
-          let sessionConnections = workerConnectionsBySession.get(sessionId);
-          if (!sessionConnections) {
-            sessionConnections = new Set();
-            workerConnectionsBySession.set(sessionId, sessionConnections);
-          }
-          sessionConnections.add(ws);
-
-          // Track this connection for per-worker notifications (e.g., output truncation)
-          const workerKey = `${sessionId}:${workerId}`;
-          let workerConns = workerConnections.get(workerKey);
-          if (!workerConns) {
-            workerConns = new Set();
-            workerConnections.set(workerKey, workerConns);
-          }
-          workerConns.add(ws);
+          // Track this connection for session deletion notification and per-worker notifications
+          registry.addWorkerConnection(sessionId, workerId, ws);
 
           const session = sessionManager.getSession(sessionId);
           if (!session) {
@@ -771,103 +857,12 @@ export async function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose(_event: CloseEvent, ws: WSContext) {
-          connectionClosed = true;
-
-          // Dispose buffered sender to clear flush timer and prevent stale sends
-          sender?.dispose();
-
-          // Get connection ID from metadata map as well as closure variable
-          // This ensures cleanup works even if close happens during async setup
-          const metadata = connectionMetadata.get(ws);
-          const effectiveConnectionId = connectionId || metadata?.connectionId;
-
+          const effectiveConnectionId = cleanupWorkerConnection(ws, sessionId, workerId);
           logger.info({ sessionId, workerId, connectionId: effectiveConnectionId }, 'Worker WebSocket disconnected');
-
-          // Remove from session connection tracking
-          const sessionConnections = workerConnectionsBySession.get(sessionId);
-          if (sessionConnections) {
-            sessionConnections.delete(ws);
-            if (sessionConnections.size === 0) {
-              workerConnectionsBySession.delete(sessionId);
-            }
-          }
-
-          // Remove from per-worker connection tracking
-          const workerKey = `${sessionId}:${workerId}`;
-          const workerConns = workerConnections.get(workerKey);
-          if (workerConns) {
-            workerConns.delete(ws);
-            if (workerConns.size === 0) {
-              workerConnections.delete(workerKey);
-            }
-          }
-
-          // Clean up connection metadata
-          connectionMetadata.delete(ws);
-
-          // Check if this was a git-diff worker
-          const session = sessionManager.getSession(sessionId);
-          const worker = session?.workers.find(w => w.id === workerId);
-
-          if (worker?.type === 'git-diff') {
-            // Stop file watching for git-diff workers
-            handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
-              logger.error({ sessionId, workerId, err }, 'Error handling git-diff disconnection');
-            });
-          } else if (effectiveConnectionId) {
-            // Detach this connection's callbacks but keep worker alive (only for PTY workers)
-            // Other connections (browser tabs) will continue receiving output
-            sessionManager.detachWorkerCallbacks(sessionId, workerId, effectiveConnectionId);
-          }
         },
         onError(event: Event, ws: WSContext) {
-          connectionClosed = true;
-
-          // Dispose buffered sender to clear flush timer and prevent stale sends
-          sender?.dispose();
-
-          // Get connection ID from metadata map as well as closure variable
-          // This ensures cleanup works even if error happens during async setup
-          const metadata = connectionMetadata.get(ws);
-          const effectiveConnectionId = connectionId || metadata?.connectionId;
-
+          const effectiveConnectionId = cleanupWorkerConnection(ws, sessionId, workerId);
           logger.error({ sessionId, workerId, connectionId: effectiveConnectionId, event }, 'Worker WebSocket error');
-
-          // Remove from session connection tracking
-          const sessionConnections = workerConnectionsBySession.get(sessionId);
-          if (sessionConnections) {
-            sessionConnections.delete(ws);
-            if (sessionConnections.size === 0) {
-              workerConnectionsBySession.delete(sessionId);
-            }
-          }
-
-          // Remove from per-worker connection tracking
-          const workerKey = `${sessionId}:${workerId}`;
-          const workerConns = workerConnections.get(workerKey);
-          if (workerConns) {
-            workerConns.delete(ws);
-            if (workerConns.size === 0) {
-              workerConnections.delete(workerKey);
-            }
-          }
-
-          // Clean up connection metadata
-          connectionMetadata.delete(ws);
-
-          // Clean up resources on error to prevent leaks
-          const session = sessionManager.getSession(sessionId);
-          const worker = session?.workers.find(w => w.id === workerId);
-
-          if (worker?.type === 'git-diff') {
-            // Stop file watching for git-diff workers on error
-            handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
-              logger.error({ sessionId, workerId, err }, 'Error cleaning up git-diff on WebSocket error');
-            });
-          } else if (worker && effectiveConnectionId) {
-            // Detach this connection's callbacks for PTY workers (agent/terminal)
-            sessionManager.detachWorkerCallbacks(sessionId, workerId, effectiveConnectionId);
-          }
         },
       };
     })

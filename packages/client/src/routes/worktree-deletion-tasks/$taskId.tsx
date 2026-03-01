@@ -5,6 +5,7 @@ import { Spinner } from '../../components/ui/Spinner';
 import { useWorktreeDeletionTasksContext } from '../__root';
 import { deleteWorktreeAsync } from '../../lib/api';
 import { generateTaskId } from '../../lib/id';
+import { logger } from '../../lib/logger';
 
 export const Route = createFileRoute('/worktree-deletion-tasks/$taskId')({
   component: WorktreeDeletionTaskPage,
@@ -62,7 +63,7 @@ function useWorktreeDeletionTask(taskId: string): {
       // Update the new task to failed state
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       markAsFailed(newTaskId, errorMessage);
-      console.error('Failed to force delete worktree:', error);
+      logger.error('Failed to force delete worktree:', error);
     }
   };
 

@@ -111,7 +111,8 @@ export type WorkerErrorCode =
   | 'ACTIVATION_FAILED'     // PTY spawn failed
   | 'WORKER_NOT_FOUND'      // Worker doesn't exist in session
   | 'HISTORY_LOAD_FAILED'   // History retrieval failed (timeout or error)
-  | 'SESSION_DELETED';      // Session was deleted while WebSocket was connected
+  | 'SESSION_DELETED'       // Session was deleted while WebSocket was connected
+  | 'SESSION_PAUSED';       // Session was paused while WebSocket was connected
 
 export type WorkerServerMessage =
   | { type: 'output'; data: string; offset: number }

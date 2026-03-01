@@ -20,6 +20,7 @@ import {
 import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
+import { logger } from '../lib/logger';
 import { ChevronDownIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
@@ -44,10 +45,11 @@ export interface TerminalProps {
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   onRequestRestart?: (continueConversation: boolean) => void;
+  onResumeSession?: () => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, hideStatusBar }: TerminalProps) {
   const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -138,9 +140,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
-      }).catch((e) => console.warn('[Terminal] Failed to save terminal state after history:', e));
+      }).catch((e) => logger.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
-      console.warn('[Terminal] Failed to serialize terminal state after history:', e);
+      logger.warn('[Terminal] Failed to serialize terminal state after history:', e);
     }
   }, [sessionId, workerId]);
 
@@ -182,7 +184,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         })
-        .catch((e) => console.error('[Terminal] Failed to write history:', e));
+        .catch((e) => logger.error('[Terminal] Failed to write history:', e));
     }
   }, [updateScrollButtonVisibility, saveCurrentTerminalState]);
 
@@ -242,7 +244,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       return;
     }
 
-    console.log(`[Terminal] Worker restarted: ${sessionId}/${workerId}`);
+    logger.debug(`[Terminal] Worker restarted: ${sessionId}/${workerId}`);
 
     // Show restart notification with auto-dismiss
     if (restartNotificationTimeoutRef.current) {
@@ -256,7 +258,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Clear IndexedDB terminal cache (fire-and-forget)
     clearTerminalState(sessionId, workerId).catch((e) =>
-      console.warn('[Terminal] Failed to clear terminal cache on restart:', e)
+      logger.warn('[Terminal] Failed to clear terminal cache on restart:', e)
     );
 
     resetTerminalForFreshHistory();
@@ -379,15 +381,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         // Existing stale checks remain as defense-in-depth
         // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
-          console.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
-          console.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
           return;
         }
         if (stateRef.current.mountGeneration !== currentGeneration) {
-          console.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
+          logger.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
 
@@ -411,20 +413,20 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         // Silently ignore aborted operations (not an error)
         if (abortController.signal.aborted) return;
 
-        console.warn('[Terminal] Failed to load cached state:', e);
+        logger.warn('[Terminal] Failed to load cached state:', e);
         setCacheError('Failed to load cached terminal state');
 
         // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
-          console.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
-          console.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
           return;
         }
         if (stateRef.current.mountGeneration !== currentGeneration) {
-          console.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
+          logger.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
 
@@ -440,7 +442,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         try {
           fitAddon.fit();
         } catch (e) {
-          console.warn('Failed to fit terminal:', e);
+          logger.warn('Failed to fit terminal:', e);
         }
       }
     };
@@ -555,7 +557,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       // Unregister from save manager - this triggers final save (async, best-effort)
       unregisterSaveManager(sessionId, workerId)
-        .catch((e) => console.warn('[Terminal] Failed to save on unmount:', e));
+        .catch((e) => logger.warn('[Terminal] Failed to save on unmount:', e));
 
       // Reset state for conditional rendering support
       // Note: mountGeneration is NOT reset here - it's incremented on mount to detect stale operations
@@ -682,6 +684,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             onDeleteSession={handleDeleteSession}
             onGoToDashboard={handleGoToDashboard}
             onRestart={onRequestRestart}
+            onResumeSession={onResumeSession}
           />
         )}
         {/* Truncation warning banner */}
@@ -753,8 +756,11 @@ export const MemoizedTerminal = React.memo(Terminal, (prevProps, nextProps) => {
     return false; // Changed (re-render)
   }
 
-  // onRequestRestart drives error recovery behavior and must stay current
+  // onRequestRestart and onResumeSession drive error recovery behavior and must stay current
   if (prevProps.onRequestRestart !== nextProps.onRequestRestart) {
+    return false; // Changed (re-render)
+  }
+  if (prevProps.onResumeSession !== nextProps.onResumeSession) {
     return false; // Changed (re-render)
   }
 

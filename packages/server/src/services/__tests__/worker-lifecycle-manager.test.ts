@@ -358,6 +358,24 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockPersistSession).toHaveBeenCalledTimes(1);
     });
+
+    it('should call onSessionUpdated after deletion to broadcast updated session', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'terminal',
+      });
+      const deletedWorkerId = worker!.id;
+
+      mockOnSessionUpdated.mockClear();
+      await lifecycleManager.deleteWorker(session.id, deletedWorkerId);
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      // The broadcast session should not contain the deleted worker
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(broadcastedSession.workers.find(w => w.id === deletedWorkerId)).toBeUndefined();
+    });
   });
 
   // ========== Worker Restart ==========

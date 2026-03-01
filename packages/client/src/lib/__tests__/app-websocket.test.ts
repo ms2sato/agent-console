@@ -108,6 +108,28 @@ describe('app-websocket', () => {
 
       expect(getState().connected).toBe(true);
     });
+
+    it('should set hasEverConnected to true on first connection', () => {
+      expect(getState().hasEverConnected).toBe(false);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      expect(getState().hasEverConnected).toBe(true);
+    });
+
+    it('should keep hasEverConnected true after disconnection', () => {
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      expect(getState().hasEverConnected).toBe(true);
+
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      expect(getState().connected).toBe(false);
+      expect(getState().hasEverConnected).toBe(true);
+    });
   });
 
   describe('disconnect', () => {
