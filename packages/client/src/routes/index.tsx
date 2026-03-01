@@ -166,6 +166,9 @@ function DashboardPage() {
   const [pullSuccessMessage, setPullSuccessMessage] = useState<string | null>(null);
   const { errorDialogProps: pullErrorDialogProps, showError: showPullError } = useErrorDialog();
 
+  // Track component mount state for guarding async state updates
+  const isMountedRef = useRef(true);
+
   // Remove a pull entry from activePulls, clearing its timeout
   const removePull = useCallback((worktreePath: string) => {
     setActivePulls(prev => {
@@ -177,10 +180,12 @@ function DashboardPage() {
     });
   }, []);
 
-  // Cleanup all pull timeouts on unmount
+  // Cleanup all pull timeouts on unmount and mark as unmounted
   // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       activePullsRef.current.forEach(entry => clearTimeout(entry.timeoutId));
     };
   }, []);
@@ -651,10 +656,12 @@ function DashboardPage() {
           queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
         })
         .catch((err) => {
+          if (!isMountedRef.current) return;
           const message = err instanceof Error ? err.message : 'Unknown error';
           setDescriptionGenerationError(message);
         })
         .finally(() => {
+          if (!isMountedRef.current) return;
           setGeneratingDescriptionForRepo(null);
         });
     }
@@ -1098,38 +1105,38 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling
         </span>
         <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
         <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium flex items-center gap-2">
-          {/* Show title from active session or paused session */}
-          {(session?.title || pausedSession?.title) && (
-            <>
-              <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
-              <span className="text-gray-500">-</span>
-            </>
-          )}
-          <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
-          {worktree.isMain && (
-            <span className="text-xs text-gray-500">(primary)</span>
-          )}
-          {hasVSCode() && (
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                try {
-                  await openInVSCode(worktree.path);
-                } catch (err) {
-                  console.error('Failed to open in VS Code:', err);
-                }
-              }}
-              className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
-              title="Open in VS Code"
-            >
-              <VSCodeIcon className="w-4 h-4" />
-            </button>
-          )}
-          {session && <ActivityBadge state={session.activityState} />}
+          <div className="text-sm font-medium flex items-center gap-2">
+            {/* Show title from active session or paused session */}
+            {(session?.title || pausedSession?.title) && (
+              <>
+                <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
+                <span className="text-gray-500">-</span>
+              </>
+            )}
+            <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
+            {worktree.isMain && (
+              <span className="text-xs text-gray-500">(primary)</span>
+            )}
+            {hasVSCode() && (
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await openInVSCode(worktree.path);
+                  } catch (err) {
+                    console.error('Failed to open in VS Code:', err);
+                  }
+                }}
+                className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
+                title="Open in VS Code"
+              >
+                <VSCodeIcon className="w-4 h-4" />
+              </button>
+            )}
+            {session && <ActivityBadge state={session.activityState} />}
+          </div>
+          <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
         </div>
-        <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
-      </div>
       </div>
       <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
         {session ? (

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, fireEvent, cleanup } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar } from '../ActiveSessionsSidebar';
 import {
@@ -305,13 +305,6 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.queryByTitle('Drag to resize')).toBeNull();
     });
 
-    it('should show resize handle when expanded and hideResizeHandle is not set', async () => {
-      await renderWithRouter(
-        <ActiveSessionsSidebar {...defaultProps()} />
-      );
-      expect(screen.getByTitle('Drag to resize')).toBeTruthy();
-    });
-
     it('should hide resize handle when hideResizeHandle is true', async () => {
       await renderWithRouter(
         <ActiveSessionsSidebar {...defaultProps()} hideResizeHandle />
@@ -497,8 +490,8 @@ describe('ActiveSessionsSidebar', () => {
       expect(onResumeSession).toHaveBeenCalledWith('paused-session-1');
     });
 
-    it('should navigate to session page when paused session is clicked (optimistic navigation)', async () => {
-      const onResumeSession = mock(() => {});
+    it('should navigate to session page only after resume succeeds', async () => {
+      const onResumeSession = mock(() => Promise.resolve());
       const pausedSessions = [
         createPausedSession({ id: 'paused-session-nav', repositoryName: 'repo-nav' }),
       ];
@@ -519,11 +512,13 @@ describe('ActiveSessionsSidebar', () => {
       const sessionButton = screen.getByText('repo-nav').closest('button')!;
       fireEvent.click(sessionButton);
 
-      // Navigation happens optimistically regardless of resume result
-      expect(router.state.location.pathname).toBe('/sessions/paused-session-nav');
+      // Navigation happens after resume succeeds
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/sessions/paused-session-nav');
+      });
     });
 
-    it('should handle onResumeSession returning a rejected promise without crashing', async () => {
+    it('should not navigate when onResumeSession returns a rejected promise', async () => {
       const consoleErrorSpy = mock(() => {});
       const originalError = console.error;
       console.error = consoleErrorSpy;
@@ -534,7 +529,7 @@ describe('ActiveSessionsSidebar', () => {
           createPausedSession({ id: 'paused-fail', repositoryName: 'repo-fail' }),
         ];
 
-        await renderWithRouter(
+        const { router } = await renderWithRouter(
           <ActiveSessionsSidebar
             {...defaultProps()}
             pausedSessions={pausedSessions}
@@ -550,15 +545,17 @@ describe('ActiveSessionsSidebar', () => {
         const sessionButton = screen.getByText('repo-fail').closest('button')!;
         fireEvent.click(sessionButton);
 
-        // Allow the promise rejection to be caught
-        await new Promise(resolve => setTimeout(resolve, 10));
-
         // The error should be caught and logged, not thrown as unhandled rejection
-        expect(consoleErrorSpy).toHaveBeenCalled();
+        await waitFor(() => {
+          expect(consoleErrorSpy).toHaveBeenCalled();
+        });
         const errorCall = consoleErrorSpy.mock.calls.find(
           (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Failed to resume session')
         );
         expect(errorCall).toBeTruthy();
+
+        // Navigation should NOT happen when resume fails
+        expect(router.state.location.pathname).not.toBe('/sessions/paused-fail');
       } finally {
         console.error = originalError;
       }

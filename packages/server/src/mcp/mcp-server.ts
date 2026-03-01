@@ -112,12 +112,23 @@ function buildMessageCallbackPrompt(
   return `${prompt}
 ---
 [Message Callback Instructions]
-After completing this task (whether successful or not), you MUST report your results back to the requesting session.
-Use the \`send_session_message\` MCP tool with the following parameters:
+You have a parent session that delegated this task to you. Use the \`send_session_message\` MCP tool to communicate with the parent session when needed.
+
+Common parameters for all messages:
 - toSessionId: "${parentSessionId}"
 - toWorkerId: "${parentWorkerId}"
 - fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable
-- content: A concise summary of what you accomplished, the outcome (success/failure), and any important details the caller needs to know.`;
+
+When to send a message:
+
+1. **Task completion**: After completing this task (whether successful or not), you MUST report your results back.
+   - content: A concise summary of what you accomplished, the outcome (success/failure), and any important details the caller needs to know.
+
+2. **PR merged**: When you receive a \`[inbound:pr:merged]\` notification indicating your PR has been merged, notify the parent immediately.
+   - content: Report that the PR was merged, including the PR URL and any relevant details.
+
+3. **Questions or concerns**: When you encounter uncertainty, blocking issues, or need a decision from the parent, send a consultation message instead of making assumptions.
+   - content: Clearly describe the question or concern, the options you've considered, and what you recommend (if applicable). Then wait for a response before proceeding.`;
 }
 
 // ---------- Dependencies ----------

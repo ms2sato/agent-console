@@ -1462,9 +1462,35 @@ describe('MCP Server Tools', () => {
 
       // Verify structure includes separator and all required fields
       expect(agentPrompt).toContain('\n---\n');
-      expect(agentPrompt).toContain('After completing this task');
+      expect(agentPrompt).toContain('Task completion');
       expect(agentPrompt).toContain('send_session_message');
       expect(agentPrompt).toContain('fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable');
+      expect(agentPrompt).toContain('You have a parent session');
+
+      // Verify PR merge notification instructions
+      expect(agentPrompt).toContain('PR merged');
+      expect(agentPrompt).toContain('[inbound:pr:merged]');
+
+      // Verify consultation instructions
+      expect(agentPrompt).toContain('Questions or concerns');
+      expect(agentPrompt).toContain('wait for a response');
+
+      // Verify numbered list structure
+      expect(agentPrompt).toMatch(/1\.\s+\*\*Task completion\*\*/);
+      expect(agentPrompt).toMatch(/2\.\s+\*\*PR merged\*\*/);
+      expect(agentPrompt).toMatch(/3\.\s+\*\*Questions or concerns\*\*/);
+
+      // Verify section order: PR merged instructions come before wait-for-response instruction
+      const prMergedIndex = agentPrompt.indexOf('[inbound:pr:merged]');
+      const waitForResponseIndex = agentPrompt.indexOf('wait for a response');
+      expect(prMergedIndex).toBeGreaterThan(-1);
+      expect(waitForResponseIndex).toBeGreaterThan(-1);
+      expect(prMergedIndex).toBeLessThan(waitForResponseIndex);
+
+      // Verify the old monolithic prompt text is replaced (not present alongside new structure)
+      // The old single-paragraph text directed the agent "to the requesting session" — the new
+      // three-section structure uses "report your results back." without that suffix.
+      expect(agentPrompt).not.toContain('you MUST report your results back to the requesting session');
     });
 
     it('should NOT append callback instructions when skipMessageCallbackPrompt is true', async () => {

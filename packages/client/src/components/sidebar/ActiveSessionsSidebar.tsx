@@ -397,13 +397,12 @@ export function ActiveSessionsSidebar({
     }
   };
 
-  const handlePausedSessionClick = (sessionId: string) => {
-    // Fire-and-forget: navigate immediately (optimistic), but catch errors from resume
-    const result = onResumeSession?.(sessionId);
-    if (result instanceof Promise) {
-      result.catch((error) => {
-        console.error('Failed to resume session:', error);
-      });
+  const handlePausedSessionClick = async (sessionId: string) => {
+    try {
+      await onResumeSession?.(sessionId);
+    } catch (error) {
+      console.error('Failed to resume session:', error);
+      return; // Do not navigate if resume failed
     }
     navigate({ to: '/sessions/$sessionId', params: { sessionId } });
   };

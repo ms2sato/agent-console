@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
-import { createContext, useContext } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, resumeSession } from '../lib/api';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
@@ -92,6 +91,32 @@ function RootLayout() {
   // Worktree deletion task management
   const worktreeDeletionTasks = useWorktreeDeletionTasks();
 
+  // Invalidate session validation cache so the warning badge stays current
+  const invalidateValidation = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: sessionKeys.validation() });
+  }, [queryClient]);
+
+  // Wrap session lifecycle handlers to also refresh validation status
+  const handleSessionCreatedWithValidation = useCallback((...args: Parameters<typeof handleSessionCreated>) => {
+    handleSessionCreated(...args);
+    invalidateValidation();
+  }, [handleSessionCreated, invalidateValidation]);
+
+  const handleSessionDeletedWithValidation = useCallback((...args: Parameters<typeof handleSessionDeleted>) => {
+    handleSessionDeleted(...args);
+    invalidateValidation();
+  }, [handleSessionDeleted, invalidateValidation]);
+
+  const handleSessionUpdatedWithValidation = useCallback((...args: Parameters<typeof handleSessionUpdated>) => {
+    handleSessionUpdated(...args);
+    invalidateValidation();
+  }, [handleSessionUpdated, invalidateValidation]);
+
+  const handleSessionsSyncWithValidation = useCallback((...args: Parameters<typeof handleSessionsSync>) => {
+    handleSessionsSync(...args);
+    invalidateValidation();
+  }, [handleSessionsSync, invalidateValidation]);
+
   // Wrap worktree deletion completed handler to also invalidate worktree queries
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {
     worktreeDeletionTasks.handleWorktreeDeletionCompleted(payload);
@@ -101,10 +126,10 @@ function RootLayout() {
 
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
-    onSessionsSync: handleSessionsSync,
-    onSessionCreated: handleSessionCreated,
-    onSessionUpdated: handleSessionUpdated,
-    onSessionDeleted: handleSessionDeleted,
+    onSessionsSync: handleSessionsSyncWithValidation,
+    onSessionCreated: handleSessionCreatedWithValidation,
+    onSessionUpdated: handleSessionUpdatedWithValidation,
+    onSessionDeleted: handleSessionDeletedWithValidation,
     onSessionPaused: handleSessionPaused,
     onSessionResumed: handleSessionResumed,
     onWorkerActivity: handleWorkerActivity,
@@ -125,6 +150,7 @@ function RootLayout() {
       handleSessionResumed(resumed);
     } catch (error) {
       console.error('Failed to resume session:', error);
+      throw error;
     }
   }, [handleSessionResumed]);
 
@@ -153,109 +179,109 @@ function RootLayout() {
   return (
     <WorktreeCreationTasksContext.Provider value={worktreeCreationTasks}>
       <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasks}>
-      <div className="h-dvh flex flex-col">
-        <header className="px-4 py-2 border-b border-slate-700 bg-[#0f172a] flex items-center shrink-0 relative">
-          <div className="flex items-center gap-1.5">
-            <Link
-              to="/"
-              className="text-white no-underline text-sm font-bold"
-            >
-              Agent Console
-            </Link>
-            {isSessionPage && currentSession && (
-              <span className="hidden md:contents">
-                {currentSession.type === 'worktree' && (
-                  <>
-                    <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                    <span className="text-slate-400 text-[0.8125rem]">
-                      {currentSession.repositoryName}
-                    </span>
-                  </>
-                )}
-                {currentSession.title && (
-                  <>
-                    <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                    <span className="text-slate-200 text-[0.8125rem]">
-                      {currentSession.title}
-                    </span>
-                  </>
-                )}
-              </span>
-            )}
-          </div>
-
-          <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
-            <ValidationWarningIndicator />
-            <JobsNavLink />
-            <AgentsNavLink />
-            <RepositoriesNavLink />
-          </nav>
-
-          <div className="ml-auto flex items-center gap-1 md:hidden">
-            <button
-              onClick={() => setMobileSidebarOpen(true)}
-              className="relative p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
-              aria-label="Open sessions"
-            >
-              <LayoutListIcon className="w-5 h-5" />
-              {hasAnyAsking && (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-yellow-400 rounded-full" aria-hidden="true" />
+        <div className="h-dvh flex flex-col">
+          <header className="px-4 py-2 border-b border-slate-700 bg-[#0f172a] flex items-center shrink-0 relative">
+            <div className="flex items-center gap-1.5">
+              <Link
+                to="/"
+                className="text-white no-underline text-sm font-bold"
+              >
+                Agent Console
+              </Link>
+              {isSessionPage && currentSession && (
+                <span className="hidden md:contents">
+                  {currentSession.type === 'worktree' && (
+                    <>
+                      <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-slate-400 text-[0.8125rem]">
+                        {currentSession.repositoryName}
+                      </span>
+                    </>
+                  )}
+                  {currentSession.title && (
+                    <>
+                      <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-slate-200 text-[0.8125rem]">
+                        {currentSession.title}
+                      </span>
+                    </>
+                  )}
+                </span>
               )}
-            </button>
-            <button
-              onClick={() => setMobileNavOpen(!mobileNavOpen)}
-              className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
-              aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
-              aria-expanded={mobileNavOpen}
-            >
-              <MenuIcon className="w-5 h-5" />
-            </button>
+            </div>
+
+            <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
+              <ValidationWarningIndicator />
+              <JobsNavLink />
+              <AgentsNavLink />
+              <RepositoriesNavLink />
+            </nav>
+
+            <div className="ml-auto flex items-center gap-1 md:hidden">
+              <button
+                onClick={() => setMobileSidebarOpen(true)}
+                className="relative p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
+                aria-label="Open sessions"
+              >
+                <LayoutListIcon className="w-5 h-5" />
+                {hasAnyAsking && (
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-yellow-400 rounded-full" aria-hidden="true" />
+                )}
+              </button>
+              <button
+                onClick={() => setMobileNavOpen(!mobileNavOpen)}
+                className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
+                aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+                aria-expanded={mobileNavOpen}
+              >
+                <MenuIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+          </header>
+          <ConnectionBanner connected={connected} />
+          <WebhookConfigBanner />
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            {!isMobile && (
+              <ActiveSessionsSidebar
+                collapsed={collapsed}
+                onToggle={toggle}
+                sessions={activeSessions}
+                width={width}
+                onWidthChange={setWidth}
+                creationTasks={worktreeCreationTasks.tasks}
+                onRemoveCreationTask={worktreeCreationTasks.removeTask}
+                worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+                onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+                pausedSessions={pausedSessions}
+                onResumeSession={handleResumeFromSidebar}
+              />
+            )}
+            <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
+              <Outlet />
+            </main>
           </div>
 
-          <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
-        </header>
-        <ConnectionBanner connected={connected} />
-        <WebhookConfigBanner />
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          {!isMobile && (
-            <ActiveSessionsSidebar
-              collapsed={collapsed}
-              onToggle={toggle}
-              sessions={activeSessions}
-              width={width}
-              onWidthChange={setWidth}
-              creationTasks={worktreeCreationTasks.tasks}
-              onRemoveCreationTask={worktreeCreationTasks.removeTask}
-              worktreeDeletionTasks={worktreeDeletionTasks.tasks}
-              onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
-              pausedSessions={pausedSessions}
-              onResumeSession={handleResumeFromSidebar}
-            />
+          {isMobile && (
+            <MobileSidebarDrawer open={mobileSidebarOpen} onClose={() => setMobileSidebarOpen(false)}>
+              <ActiveSessionsSidebar
+                collapsed={false}
+                onToggle={() => setMobileSidebarOpen(false)}
+                sessions={activeSessions}
+                width={288}
+                onWidthChange={() => {}}
+                creationTasks={worktreeCreationTasks.tasks}
+                onRemoveCreationTask={worktreeCreationTasks.removeTask}
+                worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+                onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+                pausedSessions={pausedSessions}
+                onResumeSession={handleResumeFromSidebar}
+                hideResizeHandle
+              />
+            </MobileSidebarDrawer>
           )}
-          <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
-            <Outlet />
-          </main>
         </div>
-
-        {isMobile && (
-          <MobileSidebarDrawer open={mobileSidebarOpen} onClose={() => setMobileSidebarOpen(false)}>
-            <ActiveSessionsSidebar
-              collapsed={false}
-              onToggle={() => setMobileSidebarOpen(false)}
-              sessions={activeSessions}
-              width={288}
-              onWidthChange={() => {}}
-              creationTasks={worktreeCreationTasks.tasks}
-              onRemoveCreationTask={worktreeCreationTasks.removeTask}
-              worktreeDeletionTasks={worktreeDeletionTasks.tasks}
-              onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
-              pausedSessions={pausedSessions}
-              onResumeSession={handleResumeFromSidebar}
-              hideResizeHandle
-            />
-          </MobileSidebarDrawer>
-        )}
-      </div>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>
   );
