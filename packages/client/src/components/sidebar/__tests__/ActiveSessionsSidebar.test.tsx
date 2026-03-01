@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, fireEvent, cleanup } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar } from '../ActiveSessionsSidebar';
 import {
@@ -512,11 +512,10 @@ describe('ActiveSessionsSidebar', () => {
       const sessionButton = screen.getByText('repo-nav').closest('button')!;
       fireEvent.click(sessionButton);
 
-      // Wait for the async resume handler to complete
-      await new Promise(resolve => setTimeout(resolve, 10));
-
       // Navigation happens after resume succeeds
-      expect(router.state.location.pathname).toBe('/sessions/paused-session-nav');
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/sessions/paused-session-nav');
+      });
     });
 
     it('should not navigate when onResumeSession returns a rejected promise', async () => {
@@ -546,11 +545,10 @@ describe('ActiveSessionsSidebar', () => {
         const sessionButton = screen.getByText('repo-fail').closest('button')!;
         fireEvent.click(sessionButton);
 
-        // Allow the promise rejection to be caught
-        await new Promise(resolve => setTimeout(resolve, 10));
-
         // The error should be caught and logged, not thrown as unhandled rejection
-        expect(consoleErrorSpy).toHaveBeenCalled();
+        await waitFor(() => {
+          expect(consoleErrorSpy).toHaveBeenCalled();
+        });
         const errorCall = consoleErrorSpy.mock.calls.find(
           (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Failed to resume session')
         );
