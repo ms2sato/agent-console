@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { WSContext } from 'hono/ws';
+import type pino from 'pino';
 import { WS_READY_STATE } from '@agent-console/shared';
 import { BufferedWebSocketSender } from '../buffered-ws-sender.js';
 
@@ -12,6 +13,8 @@ function createMockWs() {
     send: mock(),
     close: mock(),
     readyState: WS_READY_STATE.OPEN,
+  // WSContext has many required properties (binaryType, url, protocol);
+  // mock only provides the subset used by BufferedWebSocketSender
   } as unknown as WSContext & { send: ReturnType<typeof mock>; readyState: number };
 }
 
@@ -33,7 +36,7 @@ describe('BufferedWebSocketSender', () => {
   let mockWs: ReturnType<typeof createMockWs>;
   let mockLogger: ReturnType<typeof createMockLogger>;
   let sender: BufferedWebSocketSender;
-  let readyState: number;
+  let readyState: number | undefined;
 
   beforeEach(() => {
     mockWs = createMockWs();
@@ -41,9 +44,11 @@ describe('BufferedWebSocketSender', () => {
     readyState = WS_READY_STATE.OPEN;
 
     sender = new BufferedWebSocketSender(
-      mockWs as unknown as WSContext,
+      mockWs,
       () => readyState,
-      mockLogger as never,
+      // pino.Logger has many required properties (level, fatal, trace, etc.);
+      // mock only provides the subset used by BufferedWebSocketSender
+      mockLogger as unknown as pino.Logger,
       'test-worker',
       TEST_FLUSH_INTERVAL,
       TEST_FLUSH_THRESHOLD,
@@ -180,7 +185,7 @@ describe('BufferedWebSocketSender', () => {
     });
 
     it('should allow send when readyState is undefined (adapter does not expose it)', async () => {
-      readyState = undefined as unknown as number;
+      readyState = undefined;
 
       sender.send({ type: 'output', data: 'hello', offset: 5 });
       await waitForFlush();

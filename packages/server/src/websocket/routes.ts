@@ -455,6 +455,9 @@ export async function setupWebSocketRoutes(
       // Buffered sender for this connection, stored in outer scope so onClose/onError can dispose it
       let sender: BufferedWebSocketSender | null = null;
 
+      // Flag to prevent setupPtyWorkerHandlers from running after WebSocket is already closed
+      let connectionClosed = false;
+
       // Helper function to set up PTY worker handlers after async restore
       // The order is critical to prevent duplicates and lost data:
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
@@ -462,6 +465,10 @@ export async function setupWebSocketRoutes(
       // 3. Send history UP TO the offset we recorded
       // @param wasRestored - true if PTY was restored (was hibernated), false if already active
       async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number, wasRestored: boolean) {
+        if (connectionClosed) {
+          return;
+        }
+
         logger.info({ sessionId, workerId, workerType, wasRestored }, 'Worker WebSocket connected');
 
         // Create buffered sender for this connection
@@ -602,6 +609,10 @@ export async function setupWebSocketRoutes(
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
           sessionManager.restoreWorker(sessionId, workerId).then(async (result) => {
+            if (connectionClosed) {
+              return;
+            }
+
             if (!result.success) {
               logger.warn({ sessionId, workerId, errorCode: result.errorCode }, 'Failed to restore PTY worker');
               sendErrorAndClose(ws, result.message, result.errorCode);
@@ -760,6 +771,8 @@ export async function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose(_event: CloseEvent, ws: WSContext) {
+          connectionClosed = true;
+
           // Dispose buffered sender to clear flush timer and prevent stale sends
           sender?.dispose();
 
@@ -808,6 +821,8 @@ export async function setupWebSocketRoutes(
           }
         },
         onError(event: Event, ws: WSContext) {
+          connectionClosed = true;
+
           // Dispose buffered sender to clear flush timer and prevent stale sends
           sender?.dispose();
 

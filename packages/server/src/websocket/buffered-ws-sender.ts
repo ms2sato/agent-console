@@ -17,6 +17,7 @@ import type pino from 'pino';
  */
 export class BufferedWebSocketSender {
   private outputBuffer = '';
+  private outputBufferBytes = 0;
   private lastOffset = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -75,16 +76,19 @@ export class BufferedWebSocketSender {
     if (readyState !== undefined && readyState !== WS_READY_STATE.OPEN) {
       // Socket is not open; discard buffer (data preserved server-side)
       this.outputBuffer = '';
+      this.outputBufferBytes = 0;
       return;
     }
 
     try {
       this.ws.send(JSON.stringify({ type: 'output', data: this.outputBuffer, offset: this.lastOffset }));
       this.outputBuffer = '';
+      this.outputBufferBytes = 0;
     } catch (error) {
       this.logger.warn({ workerId: this.workerId, err: error }, 'Error flushing output buffer to worker');
       // Discard buffer on failure (data preserved server-side for recovery)
       this.outputBuffer = '';
+      this.outputBufferBytes = 0;
     }
   }
 
@@ -100,6 +104,7 @@ export class BufferedWebSocketSender {
     this.disposed = true;
     this.clearFlushTimer();
     this.outputBuffer = '';
+    this.outputBufferBytes = 0;
   }
 
   /** Whether this sender has been disposed. */
@@ -117,10 +122,11 @@ export class BufferedWebSocketSender {
    */
   private bufferOutput(data: string, offset: number): void {
     this.outputBuffer += data;
+    this.outputBufferBytes += Buffer.byteLength(data, 'utf-8');
     this.lastOffset = offset;
 
     // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
-    if (this.outputBuffer.length >= this.flushThreshold) {
+    if (this.outputBufferBytes >= this.flushThreshold) {
       this.flush();
       return;
     }
