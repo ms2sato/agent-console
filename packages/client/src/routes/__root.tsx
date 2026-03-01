@@ -112,6 +112,11 @@ function RootLayout() {
     invalidateValidation();
   }, [handleSessionUpdated, invalidateValidation]);
 
+  const handleSessionsSyncWithValidation = useCallback((...args: Parameters<typeof handleSessionsSync>) => {
+    handleSessionsSync(...args);
+    invalidateValidation();
+  }, [handleSessionsSync, invalidateValidation]);
+
   // Wrap worktree deletion completed handler to also invalidate worktree queries
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {
     worktreeDeletionTasks.handleWorktreeDeletionCompleted(payload);
@@ -121,7 +126,7 @@ function RootLayout() {
 
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
-    onSessionsSync: handleSessionsSync,
+    onSessionsSync: handleSessionsSyncWithValidation,
     onSessionCreated: handleSessionCreatedWithValidation,
     onSessionUpdated: handleSessionUpdatedWithValidation,
     onSessionDeleted: handleSessionDeletedWithValidation,
