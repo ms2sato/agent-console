@@ -284,6 +284,12 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     const session = extractRestartableSession(state.type, 'session' in state ? state.session : undefined);
     if (!session) return;
 
+    // Capture fallback state before transitioning to 'restarting', so we can
+    // restore correctly if the restart is skipped or fails early.
+    const fallbackState: PageState = state.type === 'disconnected'
+      ? { type: 'disconnected', session }
+      : { type: 'active', session };
+
     setState({ type: 'restarting' });
 
     const result = await executeWorkerRestart({
@@ -296,12 +302,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
     switch (result.outcome) {
       case 'skipped':
-        // Restore to pre-restart state. The session variable captured before
-        // setState({ type: 'restarting' }) holds the last known session data.
-        setState({ type: 'active', session });
+        setState(fallbackState);
         return;
       case 'no_agent_worker':
         showError(result.errorTitle, result.errorMessage);
+        setState(fallbackState);
         return;
       case 'success':
         setState(result.newState);

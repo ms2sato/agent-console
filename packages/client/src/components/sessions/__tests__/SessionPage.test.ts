@@ -150,7 +150,7 @@ describe('executeWorkerRestart', () => {
           expect(result.newState.session).toBe(updatedSession);
         }
       }
-      expect(mockUpdateTabsFromSession).toHaveBeenCalledWith([]);
+      expect(mockUpdateTabsFromSession).toHaveBeenCalledWith(updatedSession.workers);
     });
 
     it('should return disconnected state when updated session is inactive', async () => {

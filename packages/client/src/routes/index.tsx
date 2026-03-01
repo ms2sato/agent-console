@@ -56,8 +56,9 @@ function requestNotificationPermission() {
 
 // Show browser notification
 function showNotification(title: string, body: string, sessionId: string, tag: string) {
-  logger.debug(`[showNotification] permission=${Notification.permission}, title=${title}`);
-  if ('Notification' in window && Notification.permission === 'granted') {
+  const permission = 'Notification' in window ? Notification.permission : 'unsupported';
+  logger.debug(`[showNotification] permission=${permission}, title=${title}`);
+  if (permission === 'granted') {
     const notification = new Notification(title, {
       body,
       icon: '/favicon.ico',

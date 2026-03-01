@@ -86,7 +86,7 @@ export async function executeWorkerRestart(params: {
     }
 
     if (updatedSession.status === 'active') {
-      updateTabsFromSession([]);
+      updateTabsFromSession(updatedSession.workers);
       return { outcome: 'success', newState: { type: 'active', session: updatedSession } };
     }
     return { outcome: 'success', newState: { type: 'disconnected', session: updatedSession } };

@@ -1,7 +1,7 @@
 import { describe, expect, it, mock, jest } from 'bun:test';
 import type { InboundSystemEvent, Session, InboundEventSummary } from '@agent-console/shared';
 import { createInboundHandlers } from '../inbound/handlers.js';
-import type { SessionManager } from '../session-manager.js';
+import type { InboundHandlerDependencies } from '../inbound/handlers.js';
 
 function createReviewCommentEvent(): InboundSystemEvent {
   return {
@@ -70,13 +70,13 @@ function createAgentHandlerWithCapture(): {
   getCapturedMessage: () => string;
 } {
   let capturedMessage = '';
-  const mockSessionManager = {
+  const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
     getSession: mock(() => createMockSession()),
     writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
       capturedMessage = data;
       return true;
     }),
-  } as unknown as SessionManager;
+  };
 
   const handlers = createInboundHandlers({
     sessionManager: mockSessionManager,
@@ -125,10 +125,10 @@ describe('AgentWorkerHandler', () => {
   });
 
   it('returns false for unrecognized event type', async () => {
-    const mockSessionManager = {
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => createMockSession()),
       writeWorkerInput: mock(),
-    } as unknown as SessionManager;
+    };
 
     const handlers = createInboundHandlers({
       sessionManager: mockSessionManager,
@@ -156,13 +156,13 @@ describe('AgentWorkerHandler', () => {
     jest.useFakeTimers();
     try {
       const writtenData: string[] = [];
-      const mockSessionManager = {
+      const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
         getSession: mock(() => createMockSession()),
         writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
           writtenData.push(data);
           return true;
         }),
-      } as unknown as SessionManager;
+      };
 
       const handlers = createInboundHandlers({
         sessionManager: mockSessionManager,
@@ -200,7 +200,7 @@ function createUIHandlerWithCapture(): {
   });
 
   const handlers = createInboundHandlers({
-    sessionManager: {} as SessionManager,
+    sessionManager: {} as InboundHandlerDependencies['sessionManager'],
     broadcastToApp,
   });
   return {

@@ -40,8 +40,14 @@ export interface InboundEventHandler {
   handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean>;
 }
 
+/**
+ * Minimal SessionManager interface required by inbound handlers.
+ * Narrowed to only the methods actually used, reducing coupling.
+ */
+type InboundSessionManager = Pick<SessionManager, 'getSession' | 'writeWorkerInput'>;
+
 export interface InboundHandlerDependencies {
-  sessionManager: SessionManager;
+  sessionManager: InboundSessionManager;
   broadcastToApp: (message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => void;
 }
 
@@ -62,7 +68,7 @@ class AgentWorkerHandler implements InboundEventHandler {
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
-  constructor(private sessionManager: SessionManager) {}
+  constructor(private sessionManager: InboundSessionManager) {}
 
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
@@ -129,7 +135,7 @@ class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
   readonly supportedEvents: InboundEventType[] = ['ci:completed', 'pr:merged'];
 
-  constructor(private sessionManager: SessionManager) {}
+  constructor(private sessionManager: InboundSessionManager) {}
 
   async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);

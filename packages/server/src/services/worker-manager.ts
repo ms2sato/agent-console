@@ -662,7 +662,10 @@ export class WorkerManager {
       }
 
       // Kill PTY process
-      if (worker.pty) worker.pty.kill();
+      if (worker.pty) {
+        worker.pty.kill();
+        this.detachPty(worker);
+      }
 
       // Dispose activity detector for agent workers
       if (worker.type === 'agent' && worker.activityDetector) {

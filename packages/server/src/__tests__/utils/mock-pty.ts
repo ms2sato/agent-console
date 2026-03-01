@@ -30,12 +30,20 @@ export class MockPty {
 
   onData(callback: (data: string) => void): MockDisposable {
     this.dataCallback = callback;
-    return { dispose: () => { this.dataCallback = null; } };
+    return {
+      dispose: () => {
+        if (this.dataCallback === callback) this.dataCallback = null;
+      },
+    };
   }
 
   onExit(callback: (event: { exitCode: number; signal?: number }) => void): MockDisposable {
     this.exitCallback = callback;
-    return { dispose: () => { this.exitCallback = null; } };
+    return {
+      dispose: () => {
+        if (this.exitCallback === callback) this.exitCallback = null;
+      },
+    };
   }
 
   write(data: string) {

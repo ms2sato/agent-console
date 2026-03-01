@@ -22,7 +22,7 @@ export function ConnectionBanner({ connected, hasEverConnected }: ConnectionBann
   }
 
   return (
-    <div className="bg-amber-600/90 text-white px-4 py-2 text-sm flex items-center justify-center gap-2">
+    <div role="status" className="bg-amber-600/90 text-white px-4 py-2 text-sm flex items-center justify-center gap-2">
       <Spinner size="sm" />
       <span>Real-time updates disconnected. Reconnecting...</span>
     </div>
