@@ -17,6 +17,7 @@ import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
+import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 
 const logger = createLogger('websocket');
 
@@ -451,6 +452,12 @@ export async function setupWebSocketRoutes(
       // Track connection ID for this WebSocket (used to detach callbacks on close)
       let connectionId: string | null = null;
 
+      // Buffered sender for this connection, stored in outer scope so onClose/onError can dispose it
+      let sender: BufferedWebSocketSender | null = null;
+
+      // Flag to prevent setupPtyWorkerHandlers from running after WebSocket is already closed
+      let connectionClosed = false;
+
       // Helper function to set up PTY worker handlers after async restore
       // The order is critical to prevent duplicates and lost data:
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
@@ -458,67 +465,32 @@ export async function setupWebSocketRoutes(
       // 3. Send history UP TO the offset we recorded
       // @param wasRestored - true if PTY was restored (was hibernated), false if already active
       async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number, wasRestored: boolean) {
+        if (connectionClosed) {
+          return;
+        }
+
         logger.info({ sessionId, workerId, workerType, wasRestored }, 'Worker WebSocket connected');
 
-        // Helper to safely send WebSocket messages with buffering
-        let outputBuffer = '';
-        let lastOffset: number = 0;
-        let flushTimer: ReturnType<typeof setTimeout> | null = null;
-        const FLUSH_INTERVAL = 50; // ms
-
-        const flushBuffer = () => {
-          if (outputBuffer.length > 0) {
-            try {
-              ws.send(JSON.stringify({ type: 'output', data: outputBuffer, offset: lastOffset }));
-            } catch (error) {
-              logger.warn({ workerId, err: error }, 'Error flushing output buffer to worker');
-            }
-            outputBuffer = '';
-          }
-          flushTimer = null;
-        };
-
-        const safeSend = (msg: WorkerServerMessage) => {
-          // Check if WebSocket is still open
-          const readyState = getWebSocketReadyState(ws);
-          if (readyState !== undefined && readyState !== WS_READY_STATE.OPEN) {
-            return; // Don't send to closing/closed WebSocket
-          }
-
-          if (msg.type === 'output') {
-            // Buffer output messages
-            outputBuffer += msg.data;
-            lastOffset = msg.offset;
-
-            // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
-            if (outputBuffer.length >= serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD) {
-              flushBuffer();
-              return;
-            }
-
-            if (!flushTimer) {
-              flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL);
-            }
-          } else {
-            // Send other messages immediately
-            try {
-              ws.send(JSON.stringify(msg));
-            } catch (error) {
-              logger.warn({ workerId, err: error }, 'Error sending message to worker');
-            }
-          }
-        };
+        // Create buffered sender for this connection
+        sender = new BufferedWebSocketSender(
+          ws,
+          () => getWebSocketReadyState(ws),
+          logger,
+          workerId,
+          50, // flush interval (ms)
+          serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD,
+        );
 
         // Register callbacks for new output
         connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
           onData: (data, offset) => {
-            safeSend({ type: 'output', data, offset });
+            sender?.send({ type: 'output', data, offset });
           },
           onExit: (exitCode, signal) => {
-            safeSend({ type: 'exit', exitCode, signal });
+            sender?.send({ type: 'exit', exitCode, signal });
           },
           onActivityChange: (state: AgentActivityState) => {
-            safeSend({ type: 'activity', state });
+            sender?.send({ type: 'activity', state });
           },
         });
 
@@ -531,7 +503,7 @@ export async function setupWebSocketRoutes(
         // If worker was restored (PTY was hibernated and is now active), send server-restarted notification
         // This tells the client to invalidate cached terminal state and request fresh history
         if (wasRestored) {
-          safeSend({ type: 'server-restarted', serverPid: currentServerPid });
+          sender?.send({ type: 'server-restarted', serverPid: currentServerPid });
           logger.info({ sessionId, workerId, serverPid: currentServerPid }, 'Sent server-restarted notification');
         }
 
@@ -542,7 +514,7 @@ export async function setupWebSocketRoutes(
         if (workerType === 'agent') {
           const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
           if (activityState && activityState !== 'unknown') {
-            safeSend({ type: 'activity', state: activityState });
+            sender?.send({ type: 'activity', state: activityState });
           }
         }
 
@@ -637,6 +609,10 @@ export async function setupWebSocketRoutes(
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
           sessionManager.restoreWorker(sessionId, workerId).then(async (result) => {
+            if (connectionClosed) {
+              return;
+            }
+
             if (!result.success) {
               logger.warn({ sessionId, workerId, errorCode: result.errorCode }, 'Failed to restore PTY worker');
               sendErrorAndClose(ws, result.message, result.errorCode);
@@ -795,6 +771,11 @@ export async function setupWebSocketRoutes(
           handleWorkerMessage(ws, sessionId, workerId, data);
         },
         onClose(_event: CloseEvent, ws: WSContext) {
+          connectionClosed = true;
+
+          // Dispose buffered sender to clear flush timer and prevent stale sends
+          sender?.dispose();
+
           // Get connection ID from metadata map as well as closure variable
           // This ensures cleanup works even if close happens during async setup
           const metadata = connectionMetadata.get(ws);
@@ -840,6 +821,11 @@ export async function setupWebSocketRoutes(
           }
         },
         onError(event: Event, ws: WSContext) {
+          connectionClosed = true;
+
+          // Dispose buffered sender to clear flush timer and prevent stale sends
+          sender?.dispose();
+
           // Get connection ID from metadata map as well as closure variable
           // This ensures cleanup works even if error happens during async setup
           const metadata = connectionMetadata.get(ws);
