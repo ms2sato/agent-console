@@ -6,10 +6,14 @@
  */
 import { APP_SERVER_MESSAGE_TYPES, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
 import { getAppWsUrl } from './websocket-url.js';
+import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
+import { logger } from './logger.js';
 
 // Store state type
 export interface AppWebSocketState {
   connected: boolean;
+  /** True once the WebSocket has successfully connected at least once in this session */
+  hasEverConnected: boolean;
   sessionsSynced: boolean;
   agentsSynced: boolean;
   repositoriesSynced: boolean;
@@ -19,6 +23,7 @@ export interface AppWebSocketState {
 let ws: WebSocket | null = null;
 let state: AppWebSocketState = {
   connected: false,
+  hasEverConnected: false,
   sessionsSynced: false,
   agentsSynced: false,
   repositoriesSynced: false,
@@ -35,31 +40,10 @@ type StateListener = () => void;
 const messageListeners = new Set<MessageListener>();
 const stateListeners = new Set<StateListener>();
 
-// Reconnection settings
-const INITIAL_RETRY_DELAY = 1000;
-const MAX_RETRY_DELAY = 30000;
-const JITTER_FACTOR = 0.3;
 /** @internal Exported for testing */
 export const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
 /** @internal Exported for testing */
 export const LAST_RESORT_RETRY_DELAY = 60000; // 60s fixed interval after max retries exhausted
-
-// Close codes that should not trigger reconnection
-const NO_RECONNECT_CLOSE_CODES = [
-  WS_CLOSE_CODE.NORMAL_CLOSURE,
-  WS_CLOSE_CODE.GOING_AWAY,
-  WS_CLOSE_CODE.POLICY_VIOLATION,
-] as const;
-
-/**
- * Determine if reconnection should be attempted for the given close code.
- * Add new codes to NO_RECONNECT_CLOSE_CODES to automatically update this logic.
- */
-function isReconnectCode(code: number): boolean {
-  // Cast array to readonly number[] to allow includes() with external close codes.
-  // The literal types in NO_RECONNECT_CLOSE_CODES are preserved for type safety elsewhere.
-  return !(NO_RECONNECT_CLOSE_CODES as readonly number[]).includes(code);
-}
 
 /**
  * Validate that a parsed message has a valid type.
@@ -71,15 +55,6 @@ function isValidMessage(msg: unknown): msg is AppServerMessage {
   }
   const { type } = msg as { type?: unknown };
   return typeof type === 'string' && type in APP_SERVER_MESSAGE_TYPES;
-}
-
-function getReconnectDelay(count: number): number {
-  const baseDelay = Math.min(
-    INITIAL_RETRY_DELAY * Math.pow(2, count),
-    MAX_RETRY_DELAY
-  );
-  const jitter = baseDelay * JITTER_FACTOR * (Math.random() * 2 - 1);
-  return Math.round(baseDelay + jitter);
 }
 
 function hasStateChanged(prev: AppWebSocketState, next: AppWebSocketState): boolean {
@@ -101,7 +76,7 @@ function handleMessage(event: MessageEvent) {
   try {
     const parsed: unknown = JSON.parse(event.data);
     if (!isValidMessage(parsed)) {
-      console.error('[WebSocket] Invalid message type:', parsed);
+      logger.error('[WebSocket] Invalid message type:', parsed);
       return;
     }
 
@@ -118,7 +93,7 @@ function handleMessage(event: MessageEvent) {
     }
     messageListeners.forEach(fn => fn(parsed));
   } catch (e) {
-    console.error('[WebSocket] Failed to parse message:', e);
+    logger.error('[WebSocket] Failed to parse message:', e);
   }
 }
 
@@ -131,7 +106,7 @@ function scheduleReconnect() {
 
   // After max attempts, switch to last-resort mode with a fixed long interval
   if (retryCount >= MAX_RETRY_COUNT) {
-    console.warn(`[WebSocket] Entering last-resort reconnection mode (every ${LAST_RESORT_RETRY_DELAY / 1000}s)`);
+    logger.warn(`[WebSocket] Entering last-resort reconnection mode (every ${LAST_RESORT_RETRY_DELAY / 1000}s)`);
     retryTimeout = setTimeout(() => {
       connect();
     }, LAST_RESORT_RETRY_DELAY);
@@ -139,7 +114,7 @@ function scheduleReconnect() {
   }
 
   const delay = getReconnectDelay(retryCount);
-  console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${retryCount + 1})`);
+  logger.debug(`[WebSocket] Reconnecting in ${delay}ms (attempt ${retryCount + 1})`);
 
   retryTimeout = setTimeout(() => {
     retryCount++;
@@ -167,8 +142,8 @@ export function connect(): void {
 
     ws.onopen = () => {
       retryCount = 0;
-      setState({ connected: true });
-      console.log('[WebSocket] Connected');
+      setState({ connected: true, hasEverConnected: true });
+      logger.debug('[WebSocket] Connected');
     };
 
     ws.onmessage = handleMessage;
@@ -178,10 +153,10 @@ export function connect(): void {
       // This prevents Dashboard from being stuck in stale state after reconnect.
       syncPending = false;
       setState({ connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false });
-      console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
+      logger.debug(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
-      if (!isReconnectCode(event.code)) {
-        console.log('[WebSocket] Normal closure, not reconnecting');
+      if (!shouldReconnect(event.code)) {
+        logger.debug('[WebSocket] Normal closure, not reconnecting');
         return;
       }
 
@@ -189,10 +164,10 @@ export function connect(): void {
     };
 
     ws.onerror = (error) => {
-      console.error('[WebSocket] Error:', error);
+      logger.error('[WebSocket] Error:', error);
     };
   } catch (error) {
-    console.error('[WebSocket] Failed to create connection:', error);
+    logger.error('[WebSocket] Failed to create connection:', error);
     ws = null;
     setState({ connected: false });
     scheduleReconnect();
@@ -252,7 +227,7 @@ export function emitSessionDeleted(sessionId: string): void {
  */
 export function requestSync(): boolean {
   if (syncPending) {
-    console.log('[WebSocket] Sync already pending, skipping request');
+    logger.debug('[WebSocket] Sync already pending, skipping request');
     return false;
   }
 
@@ -297,7 +272,7 @@ export function _reset(): void {
   disconnect();
   retryCount = 0;
   syncPending = false;
-  state = { connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false };
+  state = { connected: false, hasEverConnected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false };
   messageListeners.clear();
   stateListeners.clear();
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import * as fs from 'fs';
+import { JOB_TYPES } from '@agent-console/shared';
 import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -474,6 +475,69 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
       const result = manager.sendMessage('non-existent', null, 'worker-1', 'hello');
       expect(result).toBeNull();
+    });
+
+    it('should not throw when session is deleted before delayed writes fire', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Send a message with file paths, which schedules delayed writes via setTimeout
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      expect(message).not.toBeNull();
+
+      const pty = ptyFactory.instances[0];
+      const writtenCountBeforeDelete = pty.writtenData.length;
+
+      // Immediately delete the session before the delayed writes fire
+      await manager.deleteSession(session.id);
+
+      // Wait long enough for all delayed writes to have fired (150ms * 4 parts = 600ms)
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // No additional PTY writes should have occurred after deletion
+      expect(pty.writtenData.length).toBe(writtenCountBeforeDelete);
+    });
+
+    it('should not throw when worker is deleted before delayed writes fire', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Create a second worker so the session remains valid after deleting one
+      await manager.createWorker(session.id, { type: 'terminal' });
+
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Send a message with file paths targeting the agent worker, which schedules delayed writes
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      expect(message).not.toBeNull();
+
+      const pty = ptyFactory.instances[0];
+      const writtenCountBeforeDelete = pty.writtenData.length;
+
+      // Delete only the target worker (not the whole session) before delayed writes fire
+      await manager.deleteWorker(session.id, agentWorker.id);
+
+      // Session should still exist (the terminal worker remains)
+      expect(manager.getSession(session.id)).toBeDefined();
+
+      // Wait long enough for all delayed writes to have fired (150ms * 4 parts = 600ms)
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // No additional PTY writes should have occurred after the worker was deleted
+      expect(pty.writtenData.length).toBe(writtenCountBeforeDelete);
     });
   });
 
@@ -2146,6 +2210,57 @@ describe('SessionManager', () => {
       }
     });
 
+    it('should preserve original workers when calculateBaseCommit throws for inactive session', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Record original workers before pausing (git-diff worker has its initial baseCommit)
+      const originalMetadata = await manager.getSessionMetadata(session.id);
+      expect(originalMetadata).not.toBeNull();
+      const originalGitDiffWorker = originalMetadata!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
+      expect(originalGitDiffWorker).toBeDefined();
+      const originalBaseCommit = originalGitDiffWorker!.type === 'git-diff' ? originalGitDiffWorker!.baseCommit : undefined;
+
+      // Pause the session to make it inactive
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Configure mocks: getCurrentBranch returns old branch, renameBranch succeeds,
+      // but getDefaultBranch throws (causing calculateBaseCommit to fail)
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      mockGit.getDefaultBranch.mockImplementation(() => {
+        throw new Error('calculateBaseCommit failure');
+      });
+
+      // Update both title and branch
+      const result = await manager.updateSessionMetadata(session.id, {
+        title: 'New Title',
+        branch: 'new-branch',
+      });
+
+      // Branch rename and title update should still succeed
+      expect(result.success).toBe(true);
+      expect(result.title).toBe('New Title');
+      expect(result.branch).toBe('new-branch');
+
+      // Verify the persisted session preserves original workers (baseCommit unchanged)
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.title).toBe('New Title');
+      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
+      expect(persistedGitDiffWorker).toBeDefined();
+      if (persistedGitDiffWorker!.type === 'git-diff') {
+        expect(persistedGitDiffWorker!.baseCommit).toBe(originalBaseCommit);
+      }
+    });
+
     it('should use HEAD as fallback when calculateBaseCommit returns null for inactive session', async () => {
       const manager = await getSessionManager();
 
@@ -2182,7 +2297,125 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('updateSessionMetadata - paused session with both title and branch', () => {
+    it('should persist both title and branch changes for a paused session', async () => {
+      const manager = await getSessionManager();
+
+      // Create a worktree session and pause it
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Configure mocks for branch rename
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+
+      // Update both title and branch at once
+      const result = await manager.updateSessionMetadata(session.id, {
+        title: 'New Title',
+        branch: 'new-branch',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.title).toBe('New Title');
+      expect(result.branch).toBe('new-branch');
+
+      // Verify BOTH changes are persisted
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.title).toBe('New Title');
+      expect(persisted!.type).toBe('worktree');
+      if (persisted!.type === 'worktree') {
+        expect(persisted!.worktreeId).toBe('new-branch');
+      }
+    });
+  });
+
+  describe('updateSessionMetadata - title-only update on paused session', () => {
+    it('should persist title change for inactive session without affecting worktreeId', async () => {
+      const manager = await getSessionManager();
+
+      // Create a worktree session and pause it
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      await manager.pauseSession(session.id);
+
+      // Confirm session is no longer in memory
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // Update only the title (no branch change)
+      const result = await manager.updateSessionMetadata(session.id, { title: 'New Title' });
+
+      expect(result.success).toBe(true);
+      expect(result.title).toBe('New Title');
+
+      // Verify the persisted metadata reflects the title change
+      const persisted = await manager.getSessionMetadata(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.title).toBe('New Title');
+
+      // Verify the worktreeId was NOT changed (preserves original value)
+      expect(persisted!.type).toBe('worktree');
+      if (persisted!.type === 'worktree') {
+        expect(persisted!.worktreeId).toBe('feature-branch');
+      }
+    });
+  });
+
   describe('pauseSession', () => {
+    it('should call notifySessionPaused before killing PTY workers', async () => {
+      const manager = await getSessionManager();
+
+      const callOrder: string[] = [];
+
+      // Set WebSocket callbacks with spy on notifySessionPaused
+      const notifySessionPaused = mock((_sessionId: string) => {
+        callOrder.push('notifySessionPaused');
+      });
+      manager.setWebSocketCallbacks({
+        notifySessionDeleted: mock(() => {}),
+        notifySessionPaused,
+        broadcastToApp: mock(() => {}),
+      });
+
+      // Create worktree session
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Track when PTY is killed to verify call order
+      const ptyIndex = ptyFactory.instances.length - 1;
+      const originalKill = ptyFactory.instances[ptyIndex].kill.bind(ptyFactory.instances[ptyIndex]);
+      ptyFactory.instances[ptyIndex].kill = (...args: Parameters<typeof originalKill>) => {
+        callOrder.push('ptyKill');
+        return originalKill(...args);
+      };
+
+      await manager.pauseSession(session.id);
+
+      // Verify notifySessionPaused was called
+      expect(notifySessionPaused).toHaveBeenCalledTimes(1);
+      expect(notifySessionPaused).toHaveBeenCalledWith(session.id);
+
+      // Verify notifySessionPaused was called BEFORE PTY kill
+      expect(callOrder.indexOf('notifySessionPaused')).toBeLessThan(callOrder.indexOf('ptyKill'));
+    });
+
     it('should return false for non-existent session', async () => {
       const manager = await getSessionManager();
 
@@ -2337,6 +2570,148 @@ describe('SessionManager', () => {
 
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
       expect(onSessionPaused).toHaveBeenCalledWith(session.id, expect.any(String));
+    });
+
+    it('should persist all worker entries with pid: null after pausing', async () => {
+      const manager = await getSessionManager();
+
+      // Create worktree session with agent worker (auto-created) and add a terminal worker
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      await manager.createWorker(session.id, {
+        type: 'terminal',
+        name: 'Shell',
+      });
+
+      // Verify workers have non-null PIDs before pausing
+      const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      const ptyWorkersBefore = savedDataBefore[0].workers.filter(
+        (w: PersistedWorker) => w.type === 'agent' || w.type === 'terminal'
+      );
+      expect(ptyWorkersBefore.length).toBeGreaterThanOrEqual(2);
+      for (const w of ptyWorkersBefore) {
+        expect(w.pid).not.toBeNull();
+      }
+
+      await manager.pauseSession(session.id);
+
+      // After pausing, all worker entries should have pid: null
+      const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      const allWorkers = savedDataAfter[0].workers as PersistedWorker[];
+      for (const worker of allWorkers) {
+        if (worker.type === 'agent' || worker.type === 'terminal') {
+          expect(worker.pid).toBeNull();
+        }
+      }
+    });
+  });
+
+  describe('forceDeleteSession', () => {
+    it('should delete an in-memory session (delegates to deleteSession)', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Session is in memory
+      expect(manager.getSession(session.id)).toBeDefined();
+
+      const result = await manager.forceDeleteSession(session.id);
+
+      expect(result).toBe(true);
+      // Session should be removed from memory
+      expect(manager.getSession(session.id)).toBeUndefined();
+      // PTY should be killed
+      expect(ptyFactory.instances[0].killed).toBe(true);
+    });
+
+    it('should delete a persistence-only session and enqueue CLEANUP_SESSION_OUTPUTS job', async () => {
+      const manager = await getSessionManager();
+
+      // Create and pause a worktree session so it only exists in persistence
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      await manager.pauseSession(session.id);
+
+      // Session is not in memory but exists in persistence
+      expect(manager.getSession(session.id)).toBeUndefined();
+      const metadataBefore = await manager.getSessionMetadata(session.id);
+      expect(metadataBefore).not.toBeNull();
+
+      const onSessionDeleted = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionDeleted });
+
+      const result = await manager.forceDeleteSession(session.id);
+
+      expect(result).toBe(true);
+      // Session should be removed from persistence
+      const metadataAfter = await manager.getSessionMetadata(session.id);
+      expect(metadataAfter).toBeNull();
+      // onSessionDeleted should be called
+      expect(onSessionDeleted).toHaveBeenCalledTimes(1);
+      expect(onSessionDeleted).toHaveBeenCalledWith(session.id);
+      // CLEANUP_SESSION_OUTPUTS job should be enqueued
+      const jobs = await testJobQueue!.getJobs({ type: JOB_TYPES.CLEANUP_SESSION_OUTPUTS });
+      expect(jobs.length).toBeGreaterThanOrEqual(1);
+      const cleanupJob = jobs.find(j => JSON.parse(j.payload).sessionId === session.id);
+      expect(cleanupJob).toBeDefined();
+    });
+
+    it('should return false when session does not exist anywhere', async () => {
+      const manager = await getSessionManager();
+
+      const result = await manager.forceDeleteSession('non-existent-id');
+
+      expect(result).toBe(false);
+    });
+
+    it('should delete persistence-only session without error when jobQueue is null', async () => {
+      // Create a manager WITH jobQueue first, so we can create and pause a session
+      const managerWithQueue = await getSessionManager();
+
+      const session = await managerWithQueue.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      await managerWithQueue.pauseSession(session.id);
+
+      // Create a new manager WITHOUT jobQueue, sharing the same database
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const managerWithoutQueue = await module.SessionManager.create({
+        ptyProvider: ptyFactory.provider,
+        pathExists: mockPathExists,
+        jobQueue: null,
+        agentManager,
+      });
+
+      // Verify session exists in persistence
+      const metadataBefore = await managerWithoutQueue.getSessionMetadata(session.id);
+      expect(metadataBefore).not.toBeNull();
+
+      // forceDeleteSession should succeed even without jobQueue
+      const result = await managerWithoutQueue.forceDeleteSession(session.id);
+
+      expect(result).toBe(true);
+      // Session should be removed from persistence
+      const metadataAfter = await managerWithoutQueue.getSessionMetadata(session.id);
+      expect(metadataAfter).toBeNull();
     });
   });
 

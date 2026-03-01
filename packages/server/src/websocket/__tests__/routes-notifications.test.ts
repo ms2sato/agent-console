@@ -1,26 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import type { Worker } from '@agent-console/shared';
-import { MockPty } from '../../__tests__/utils/mock-pty.js';
+import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-
-const TEST_CONFIG_DIR = '/test/config';
-process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
-
-// Track PTY instances for exit simulation.
-const mockPtyInstances: MockPty[] = [];
-let nextPtyPid = 10000;
-
-mock.module('../../lib/pty-provider.js', () => ({
-  bunPtyProvider: {
-    spawn: () => {
-      const pty = new MockPty(nextPtyPid++);
-      mockPtyInstances.push(pty);
-      return pty;
-    },
-  },
-}));
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -35,7 +18,8 @@ import { NotificationManager } from '../../services/notifications/notification-m
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
-import { asAppContext } from '../../__tests__/test-utils.js';
+
+const TEST_CONFIG_DIR = '/test/config';
 
 /**
  * Create a no-op upgradeWebSocket stub for tests that only need setupWebSocketRoutes
@@ -50,6 +34,7 @@ function createUpgradeWebSocketStub(): Parameters<typeof setupWebSocketRoutes>[1
 }
 
 describe('WebSocket routes notifications', () => {
+  const ptyFactory = createMockPtyFactory(10000);
   let testJobQueue: JobQueue | null = null;
   let sessionManager: SessionManager;
   let notificationManager: NotificationManager;
@@ -63,8 +48,7 @@ describe('WebSocket routes notifications', () => {
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    mockPtyInstances.length = 0;
-    nextPtyPid = 10000;
+    ptyFactory.reset();
 
     resetProcessMock();
     await initializeDatabase(':memory:');
@@ -74,11 +58,16 @@ describe('WebSocket routes notifications', () => {
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     notificationManager = new NotificationManager(new SlackHandler());
-    sessionManager = await SessionManager.create({ sessionRepository, jobQueue: testJobQueue, agentManager });
+    sessionManager = await SessionManager.create({
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager,
+      ptyProvider: ptyFactory.provider,
+    });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
 
-    appContext = asAppContext({ sessionManager, notificationManager, agentManager, repositoryManager });
+    appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as AppContext;
   });
 
   afterEach(async () => {
@@ -105,7 +94,7 @@ describe('WebSocket routes notifications', () => {
     });
     const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-    const pty = mockPtyInstances[0];
+    const pty = ptyFactory.instances[0];
     expect(pty).toBeDefined();
     pty.simulateExit(0);
 
@@ -132,7 +121,7 @@ describe('WebSocket routes notifications', () => {
     });
     const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-    const pty = mockPtyInstances[0];
+    const pty = ptyFactory.instances[0];
     expect(pty).toBeDefined();
     pty.simulateExit(0);
 

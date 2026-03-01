@@ -5,6 +5,7 @@ import { Spinner } from '../../components/ui/Spinner';
 import { useWorktreeCreationTasksContext } from '../__root';
 import { createWorktreeAsync } from '../../lib/api';
 import { generateTaskId } from '../../lib/id';
+import { logger } from '../../lib/logger';
 
 export const Route = createFileRoute('/worktree-creation-tasks/$taskId')({
   component: WorktreeCreationTaskPage,
@@ -60,7 +61,7 @@ function useWorktreeCreationTask(taskId: string): {
       // Update the new task to failed state so user can see the error in sidebar
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       handleWorktreeCreationFailed({ taskId: newTaskId, error: errorMessage });
-      console.error('Failed to retry worktree creation:', error);
+      logger.error('Failed to retry worktree creation:', error);
       // Navigate to the new failed task's detail page
       navigate({ to: '/worktree-creation-tasks/$taskId', params: { taskId: newTaskId } });
       return;

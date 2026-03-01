@@ -273,6 +273,25 @@ describe('worker-websocket', () => {
     });
   });
 
+  describe('server-restarted message handling', () => {
+    it('should handle server-restarted message without errors', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Send server-restarted message - should not throw
+      ws?.simulateMessage(JSON.stringify({ type: 'server-restarted', serverPid: 12345 }));
+
+      // Verify the message was logged (debug level)
+      const serverRestartLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Server restarted notification received'))
+      );
+      expect(serverRestartLogged).toBe(true);
+    });
+  });
+
   describe('close code handling', () => {
     // Helper to check if any log call contains a substring
     function wasLoggedWith(spy: ReturnType<typeof spyOn>, substring: string): boolean {

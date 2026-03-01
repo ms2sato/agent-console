@@ -1,6 +1,6 @@
 import type { WSContext } from 'hono/ws';
 import type { WorkerClientMessage } from '@agent-console/shared';
-import { mkdir as defaultMkdir } from 'node:fs/promises';
+import { mkdir as defaultMkdir, unlink as defaultUnlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir as defaultTmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -22,13 +22,21 @@ export interface WorkerHandlerSessionManager {
 export interface WorkerHandlerDependencies {
   sessionManager: WorkerHandlerSessionManager;
   mkdir: typeof defaultMkdir;
+  unlink: typeof defaultUnlink;
   tmpdir: typeof defaultTmpdir;
+  /** Delay in ms before auto-deleting uploaded images. Default: 5 minutes. */
+  imageCleanupDelayMs: number;
 }
+
+/** Default cleanup delay: 5 minutes */
+const DEFAULT_IMAGE_CLEANUP_DELAY_MS = 5 * 60 * 1000;
 
 // Default dependencies (sessionManager must be provided explicitly)
 const defaultDeps: Omit<WorkerHandlerDependencies, 'sessionManager'> = {
   mkdir: defaultMkdir,
+  unlink: defaultUnlink,
   tmpdir: defaultTmpdir,
+  imageCleanupDelayMs: DEFAULT_IMAGE_CLEANUP_DELAY_MS,
 };
 
 // Allowed MIME types and their extensions (security: only allow known image types)
@@ -56,7 +64,7 @@ function getExtensionFromMimeType(mimeType: string): string | null {
  * Returns null if the message is invalid.
  */
 function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
-  if (!parsed || typeof parsed !== 'object') {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return null;
   }
 
@@ -104,7 +112,7 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
 export function createWorkerMessageHandler(
   deps: Pick<WorkerHandlerDependencies, 'sessionManager'> & Partial<Omit<WorkerHandlerDependencies, 'sessionManager'>>
 ) {
-  const { sessionManager, mkdir, tmpdir } = { ...defaultDeps, ...deps };
+  const { sessionManager, mkdir, unlink, tmpdir, imageCleanupDelayMs } = { ...defaultDeps, ...deps };
 
   // Directory for storing uploaded images
   const IMAGE_UPLOAD_DIR = join(tmpdir(), 'agent-console-images');
@@ -147,13 +155,8 @@ export function createWorkerMessageHandler(
             break;
           }
 
-          // SECURITY: Validate base64 data size before decoding
-          if (!parsed.data || typeof parsed.data !== 'string') {
-            logger.warn({ sessionId, workerId }, 'Invalid image data');
-            break;
-          }
-
           // Base64 string length check (rough estimate: base64 is ~4/3 of original size)
+          // Note: parsed.data is guaranteed to be a non-empty string by validateWorkerMessage
           const estimatedSize = Math.ceil(parsed.data.length * 3 / 4);
           if (estimatedSize > MAX_IMAGE_SIZE_BYTES) {
             logger.warn({ estimatedSize, maxSize: MAX_IMAGE_SIZE_BYTES, sessionId, workerId }, 'Image too large');
@@ -195,6 +198,17 @@ export function createWorkerMessageHandler(
           await Bun.write(filePath, buffer);
 
           logger.debug({ filePath, size: buffer.length }, 'Image saved');
+
+          // Schedule cleanup to prevent unbounded disk growth.
+          // The agent should read the file well within the timeout window.
+          setTimeout(() => {
+            unlink(filePath).catch((err) => {
+              // ENOENT is expected if the file was already deleted (e.g., manual cleanup)
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+                logger.warn({ err, filePath }, 'Failed to clean up uploaded image');
+              }
+            });
+          }, imageCleanupDelayMs);
 
           // Send file path to PTY stdin (Claude Code will read the image)
           sessionManager.writeWorkerInput(sessionId, workerId, filePath);

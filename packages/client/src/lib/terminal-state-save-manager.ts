@@ -1,6 +1,7 @@
 import type { CachedState } from './terminal-state-cache';
 import { saveTerminalState as defaultSaveTerminalState } from './terminal-state-cache';
 import { isTruncationInProgress as defaultIsTruncationInProgress } from './worker-websocket';
+import { logger } from './logger.js';
 
 const DEFAULT_IDLE_SAVE_DELAY_MS = 60_000; // 1 minute
 
@@ -136,7 +137,7 @@ export async function unregister(
   // Skip saving if truncation recovery is in progress
   // This prevents saving stale state while the cache is being cleared
   if (truncationCheckFunction(sessionId, workerId)) {
-    console.log('[SaveManager] Skipping save during truncation recovery');
+    logger.debug('[SaveManager] Skipping save during truncation recovery');
     registry.delete(key);
     return;
   }
@@ -214,7 +215,7 @@ export function markDirty(sessionId: string, workerId: string): void {
     // Execute save with concurrent save handling
     // Intentional fire-and-forget: timeout callbacks cannot be async
     void executeIdleSave(sessionId, workerId, workerState).catch((error) => {
-      console.warn('Failed to save terminal state:', error);
+      logger.warn('Failed to save terminal state:', error);
     });
   }, idleSaveDelayMs);
 }

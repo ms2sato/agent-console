@@ -6,15 +6,17 @@ import { describe, it, expect, mock, afterEach } from 'bun:test';
 
 // Mock hooks that depend on server state (must precede component imports)
 mock.module('../../hooks/useAppWs', () => ({
-  useAppWsState: (selector: (s: { connected: boolean }) => unknown) =>
-    selector({ connected: true }),
+  useAppWsState: (selector: (s: { connected: boolean; hasEverConnected: boolean }) => unknown) =>
+    selector({ connected: true, hasEverConnected: true }),
   useAppWsEvent: () => {},
 }));
 
 mock.module('../../hooks/useSessionState', () => ({
   useSessionState: () => ({
     sessions: [],
+    wsInitialized: false,
     workerActivityStates: {},
+    sessionsRef: { current: [] },
     handleSessionsSync: () => {},
     handleSessionCreated: () => {},
     handleSessionUpdated: () => {},
