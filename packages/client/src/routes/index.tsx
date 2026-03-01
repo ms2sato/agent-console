@@ -183,6 +183,7 @@ function DashboardPage() {
   // Cleanup all pull timeouts on unmount and mark as unmounted
   // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       activePullsRef.current.forEach(entry => clearTimeout(entry.timeoutId));

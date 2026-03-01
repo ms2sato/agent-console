@@ -145,6 +145,7 @@ function RootLayout() {
       handleSessionResumed(resumed);
     } catch (error) {
       console.error('Failed to resume session:', error);
+      throw error;
     }
   }, [handleSessionResumed]);
 
