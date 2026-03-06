@@ -33,6 +33,7 @@ import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
+import { SingleUserMode, type UserMode } from './user-mode.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -108,7 +109,7 @@ export class SessionManager {
    * Options for creating a SessionManager instance.
    */
   static readonly defaultOptions = {
-    ptyProvider: bunPtyProvider,
+    userMode: new SingleUserMode(bunPtyProvider),
     pathExists: defaultPathExists,
   };
 
@@ -119,12 +120,14 @@ export class SessionManager {
    *                           Must be provided for proper cleanup operations.
    */
   static async create(options: {
-    ptyProvider?: PtyProvider;
+    userMode?: UserMode;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
     jobQueue?: JobQueue | null;
     agentManager: AgentManager;
     notificationManager?: NotificationManager | null;
+    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
+    ptyProvider?: PtyProvider;
   }): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
@@ -136,17 +139,21 @@ export class SessionManager {
    * The constructor is only public for backward compatibility during migration.
    */
   constructor(options: {
-    ptyProvider?: PtyProvider;
+    userMode?: UserMode;
     pathExists?: (path: string) => Promise<boolean>;
     sessionRepository?: SessionRepository;
     jobQueue?: JobQueue | null;
     agentManager: AgentManager;
     notificationManager?: NotificationManager | null;
+    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
+    ptyProvider?: PtyProvider;
   }) {
-    const ptyProvider = options?.ptyProvider ?? bunPtyProvider;
+    // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
+    const userMode = options?.userMode
+      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider);
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
-    this.workerManager = new WorkerManager(ptyProvider, agentManager);
+    this.workerManager = new WorkerManager(userMode, agentManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));

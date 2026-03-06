@@ -19,6 +19,7 @@ import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
+import type { UserMode } from './services/user-mode.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -33,6 +34,8 @@ import { SlackHandler } from './services/notifications/slack-handler.js';
 import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
+import { SingleUserMode } from './services/user-mode.js';
+import { bunPtyProvider } from './lib/pty-provider.js';
 import { createLogger } from './lib/logger.js';
 
 const logger = createLogger('app-context');
@@ -67,6 +70,9 @@ export interface AppContext {
 
   /** Agent definition management (built-in + custom agents) */
   agentManager: AgentManager;
+
+  /** User authentication and PTY spawning mode */
+  userMode: UserMode;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -129,8 +135,12 @@ export async function createAppContext(
   const slackHandler = new SlackHandler();
   const notificationManager = new NotificationManagerClass(slackHandler);
 
+  // 5.5. Create user mode (determines auth + PTY spawning strategy)
+  const userMode = new SingleUserMode(bunPtyProvider);
+
   // 6. Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
+    userMode,
     sessionRepository,
     jobQueue,
     agentManager,
@@ -181,6 +191,7 @@ export async function createAppContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    userMode,
     inboundIntegration,
   };
 }
@@ -195,6 +206,8 @@ export interface CreateTestContextOptions {
   notificationManager?: NotificationManager;
   /** Custom system capabilities service for mocking */
   systemCapabilities?: SystemCapabilitiesService;
+  /** Custom user mode for mocking */
+  userMode?: UserMode;
   /** Skip job queue start (useful for isolated unit tests) */
   skipJobQueueStart?: boolean;
 }
@@ -236,8 +249,12 @@ export async function createTestContext(
     overrides?.notificationManager ??
     new NotificationManagerClass(new SlackHandler());
 
+  // Create user mode
+  const userMode = overrides?.userMode ?? new SingleUserMode(bunPtyProvider);
+
   // Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
+    userMode,
     sessionRepository,
     jobQueue,
     agentManager,
@@ -290,6 +307,7 @@ export async function createTestContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    userMode,
     inboundIntegration,
   };
 }

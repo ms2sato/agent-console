@@ -15,6 +15,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
+import { SingleUserMode } from '../user-mode.js';
 import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-lifecycle-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
 import type { InternalSession } from '../internal-types.js';
@@ -136,7 +137,8 @@ describe('WorkerLifecycleManager', () => {
       onDiffBaseCommitChanged: mockOnDiffBaseCommitChanged as any,
     };
 
-    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
+    const userMode = new SingleUserMode(ptyFactory.provider);
+    workerManager = new WorkerManager(userMode, agentManager);
     lifecycleManager = new WorkerLifecycleManager(createDeps());
   });
 
@@ -1020,11 +1022,11 @@ describe('WorkerLifecycleManager', () => {
     });
 
     it('should return ACTIVATION_FAILED on PTY activation error', async () => {
-      // Create a PTY provider that throws on spawn
-      const failingProvider = {
+      // Create a UserMode that throws on spawnPty
+      const failingUserMode = new SingleUserMode({
         spawn: () => { throw new Error('PTY spawn failed'); },
-      };
-      const failingWorkerManager = new WorkerManager(failingProvider as any, agentManager);
+      } as any);
+      const failingWorkerManager = new WorkerManager(failingUserMode, agentManager);
       const manager = new WorkerLifecycleManager(createDeps({
         workerManager: failingWorkerManager,
       }));

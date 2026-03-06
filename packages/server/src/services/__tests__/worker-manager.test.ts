@@ -13,6 +13,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
+import { SingleUserMode } from '../user-mode.js';
 import type {
   InternalAgentWorker,
   InternalTerminalWorker,
@@ -40,7 +41,8 @@ describe('WorkerManager', () => {
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
     ptyFactory.reset();
-    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
+    const userMode = new SingleUserMode(ptyFactory.provider);
+    workerManager = new WorkerManager(userMode, agentManager);
   });
 
   afterEach(async () => {

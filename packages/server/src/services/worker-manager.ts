@@ -25,7 +25,6 @@ import type {
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
 } from './persistence-service.js';
-import type { PtyProvider } from '../lib/pty-provider.js';
 import type {
   InternalWorker,
   InternalPtyWorker,
@@ -35,10 +34,11 @@ import type {
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
+import * as os from 'os';
+import type { UserMode, AgentConsoleContext } from './user-mode.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
-import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { expandTemplate } from '../lib/template.js';
 import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -149,14 +149,14 @@ export interface SessionInfoForNotification {
 }
 
 export class WorkerManager {
-  private ptyProvider: PtyProvider;
+  private userMode: UserMode;
   private agentManager: AgentManager;
   private globalActivityCallback?: GlobalActivityCallback;
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
 
-  constructor(ptyProvider: PtyProvider, agentManager: AgentManager) {
-    this.ptyProvider = ptyProvider;
+  constructor(userMode: UserMode, agentManager: AgentManager) {
+    this.userMode = userMode;
     this.agentManager = agentManager;
   }
 
@@ -294,40 +294,34 @@ export class WorkerManager {
       cwd: locationPath,
     });
 
-    // Build AgentConsole context env vars so the agent knows its own context.
+    // Build AgentConsole context so the agent knows its own identity.
     // These enable self-delegation (e.g., MCP tools) and agent self-awareness.
-    const agentConsoleEnv: Record<string, string> = {
-      AGENT_CONSOLE_BASE_URL: `http://localhost:${serverConfig.PORT}`,
-      AGENT_CONSOLE_SESSION_ID: sessionId,
-      AGENT_CONSOLE_WORKER_ID: worker.id,
+    const agentConsoleContext: AgentConsoleContext = {
+      baseUrl: `http://localhost:${serverConfig.PORT}`,
+      sessionId,
+      workerId: worker.id,
+      repositoryId,
+      parentSessionId,
+      parentWorkerId,
     };
-    if (repositoryId) {
-      agentConsoleEnv.AGENT_CONSOLE_REPOSITORY_ID = repositoryId;
-    }
-    if (parentSessionId) {
-      agentConsoleEnv.AGENT_CONSOLE_PARENT_SESSION_ID = parentSessionId;
-    }
-    if (parentWorkerId) {
-      agentConsoleEnv.AGENT_CONSOLE_PARENT_WORKER_ID = parentWorkerId;
-    }
 
-    // Security: AgentConsole context vars (agentConsoleEnv) are spread LAST
-    // so they cannot be spoofed by repository-level configuration (repositoryEnvVars)
-    // or agent command templates (templateEnv).
-    const processEnv = {
-      ...getCleanChildProcessEnv(),
+    // additionalEnvVars: repository + template env vars
+    // Base env (getCleanChildProcessEnv) and AGENT_CONSOLE_* conversion
+    // are handled internally by UserMode.spawnPty()
+    const additionalEnvVars = {
       ...repositoryEnvVars,
       ...templateEnv,
-      ...agentConsoleEnv,
     };
 
-    const unsetPrefix = getUnsetEnvPrefix();
-    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', unsetPrefix + command], {
-      name: 'xterm-256color',
+    const ptyProcess = this.userMode.spawnPty({
+      type: 'agent',
+      username: os.userInfo().username, // Will be replaced by session.createdBy when multi-user is implemented
+      cwd: locationPath,
+      additionalEnvVars,
       cols: 120,
       rows: 30,
-      cwd: locationPath,
-      env: processEnv,
+      command,
+      agentConsoleContext,
     });
 
     const activityDetector = new ActivityDetector({
@@ -374,19 +368,16 @@ export class WorkerManager {
 
     const { sessionId, locationPath, repositoryEnvVars } = params;
 
-    const processEnv = {
-      ...getCleanChildProcessEnv(),
-      ...repositoryEnvVars,
-    };
-
-    const unsetPrefix = getUnsetEnvPrefix();
-    const shell = process.env.SHELL || '/bin/bash';
-    const ptyProcess = this.ptyProvider.spawn('sh', ['-c', `${unsetPrefix}exec ${shell} -l`], {
-      name: 'xterm-256color',
+    // additionalEnvVars: repository env vars only
+    // Base env (getCleanChildProcessEnv), shell detection, and unset prefix
+    // are handled internally by UserMode.spawnPty()
+    const ptyProcess = this.userMode.spawnPty({
+      type: 'terminal',
+      username: os.userInfo().username, // Will be replaced by session.createdBy when multi-user is implemented
+      cwd: locationPath,
+      additionalEnvVars: repositoryEnvVars,
       cols: 120,
       rows: 30,
-      cwd: locationPath,
-      env: processEnv,
     });
 
     worker.pty = ptyProcess;
