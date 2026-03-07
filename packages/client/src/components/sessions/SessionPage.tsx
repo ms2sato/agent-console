@@ -189,7 +189,15 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Handle session resumed (by another tab/client)
   const handleSessionResumed = useCallback((resumedSession: Session) => {
     if (resumedSession.id === sessionId) {
-      setState({ type: 'active', session: resumedSession });
+      // Check activationState before transitioning: resuming from the DB
+      // does not automatically start PTY workers. If workers are not running,
+      // transition to 'disconnected' instead of 'active' to avoid Terminal
+      // trying to connect to non-existent workers.
+      if (resumedSession.activationState === 'hibernated' || resumedSession.status !== 'active') {
+        setState({ type: 'disconnected', session: resumedSession });
+      } else {
+        setState({ type: 'active', session: resumedSession });
+      }
     }
   }, [sessionId]);
 

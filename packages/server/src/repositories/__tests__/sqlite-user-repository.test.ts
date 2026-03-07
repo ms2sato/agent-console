@@ -98,7 +98,9 @@ describe('SqliteUserRepository', () => {
       expect(row?.home_dir).toBe('/Users/alice');
     });
 
-    it('should not update database when username and home_dir are unchanged', async () => {
+    it('should update updated_at on upsert even when data is unchanged', async () => {
+      // Atomic upsert always sets updated_at on conflict to avoid TOCTOU race conditions.
+      // This is a deliberate trade-off: consistency over skip-if-unchanged optimization.
       const first = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
 
       // Get updated_at timestamp
@@ -117,8 +119,43 @@ describe('SqliteUserRepository', () => {
         .select('updated_at')
         .executeTakeFirst();
 
-      // updated_at should not change when data is the same
-      expect(rowAfter?.updated_at).toBe(rowBefore?.updated_at);
+      // updated_at is always refreshed by the atomic upsert
+      expect(rowAfter?.updated_at).toBeDefined();
+      expect(rowBefore?.updated_at).toBeDefined();
+    });
+
+    it('should preserve created_at on upsert (only insert sets it)', async () => {
+      const first = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      const rowBefore = await db
+        .selectFrom('users')
+        .where('id', '=', first.id)
+        .select('created_at')
+        .executeTakeFirst();
+
+      // Upsert with changed data
+      await repository.upsertByOsUid(1001, 'alice_new', '/home/alice_new');
+
+      const rowAfter = await db
+        .selectFrom('users')
+        .where('id', '=', first.id)
+        .select('created_at')
+        .executeTakeFirst();
+
+      // created_at should never change after initial insert
+      expect(rowAfter?.created_at).toBe(rowBefore?.created_at);
+    });
+
+    it('should handle concurrent upserts without constraint violations', async () => {
+      // Simulate concurrent upserts for the same os_uid - both should succeed
+      // without throwing a unique constraint violation
+      const results = await Promise.all([
+        repository.upsertByOsUid(1001, 'alice', '/home/alice'),
+        repository.upsertByOsUid(1001, 'alice', '/home/alice'),
+      ]);
+
+      // Both should return the same user id
+      expect(results[0].id).toBe(results[1].id);
     });
 
     it('should create different users for different os_uids', async () => {

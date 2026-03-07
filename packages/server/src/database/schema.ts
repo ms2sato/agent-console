@@ -47,7 +47,7 @@ export interface SessionsTable {
   parent_session_id: string | null;
   /** Parent worker ID that delegated this session (null for non-delegated sessions) */
   parent_worker_id: string | null;
-  /** Username of the user who created this session (null for pre-multi-user sessions) */
+  /** User UUID (from users table) of the user who created this session (null for pre-multi-user sessions) */
   created_by: string | null;
 }
 

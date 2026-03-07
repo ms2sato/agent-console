@@ -91,6 +91,7 @@ const worktrees = new Hono<AppBindings>()
     }
 
     const body = c.req.valid('json');
+    const authUser = c.get('authUser');
     const { taskId, mode, autoStartSession, agentId, initialPrompt, title } = body;
 
     // Validate agent exists before returning accepted (fail fast for invalid config)
@@ -211,7 +212,7 @@ const worktrees = new Hono<AppBindings>()
             agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
             initialPrompt,
             title: effectiveTitle,
-          });
+          }, { createdBy: authUser.id });
         }
 
         // Broadcast success

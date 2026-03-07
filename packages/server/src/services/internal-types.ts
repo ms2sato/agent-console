@@ -19,7 +19,7 @@ export interface InternalSessionBase {
   parentSessionId?: string;
   /** Parent worker ID that delegated this session */
   parentWorkerId?: string;
-  /** Username of the user who created this session */
+  /** User UUID (from users table) of the user who created this session */
   createdBy?: string;
 }
 

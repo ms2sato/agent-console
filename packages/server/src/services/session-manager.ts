@@ -721,6 +721,7 @@ export class SessionManager {
       pausedAt: p.pausedAt,
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
+      createdBy: p.createdBy,
     };
 
     if (p.type === 'worktree') {
