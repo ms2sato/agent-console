@@ -19,6 +19,7 @@ import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '.
 import { useWorktreeDeletionTasks, type UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
 import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { clearTerminalState } from '../lib/terminal-state-cache';
+import { disconnectSession } from '../lib/worker-websocket';
 import { logger } from '../lib/logger';
 
 /**
@@ -166,6 +167,15 @@ function RootLayout() {
     invalidateValidation();
   }, [handleSessionsSync, invalidateValidation]);
 
+  // Wrap session paused handler to also disconnect lingering worker WebSocket connections
+  const handleSessionPausedWithCleanup = useCallback((sessionId: string, pausedAt: string) => {
+    // Disconnect all worker WebSocket connections for the paused session
+    // to prevent them from attempting reconnection to a session that
+    // no longer exists in server memory.
+    disconnectSession(sessionId);
+    handleSessionPaused(sessionId, pausedAt);
+  }, [handleSessionPaused]);
+
   // Wrap worktree deletion completed handler to also invalidate worktree queries
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {
     worktreeDeletionTasks.handleWorktreeDeletionCompleted(payload);
@@ -188,7 +198,7 @@ function RootLayout() {
     onSessionCreated: handleSessionCreatedWithValidation,
     onSessionUpdated: handleSessionUpdatedWithValidation,
     onSessionDeleted: handleSessionDeletedWithValidation,
-    onSessionPaused: handleSessionPaused,
+    onSessionPaused: handleSessionPausedWithCleanup,
     onSessionResumed: handleSessionResumed,
     onWorkerActivity: handleWorkerActivity,
     onWorkerRestarted: handleWorkerRestarted,

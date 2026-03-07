@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
@@ -91,6 +92,17 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+interface SessionManagerOptions {
+  userMode?: UserMode;
+  pathExists?: (path: string) => Promise<boolean>;
+  sessionRepository?: SessionRepository;
+  jobQueue?: JobQueue | null;
+  agentManager: AgentManager;
+  notificationManager?: NotificationManager | null;
+  /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
+  ptyProvider?: PtyProvider;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private resumingSessionIds = new Set<string>();
@@ -106,29 +118,12 @@ export class SessionManager {
   private notificationManager: NotificationManager | null = null;
 
   /**
-   * Options for creating a SessionManager instance.
-   */
-  static readonly defaultOptions = {
-    userMode: new SingleUserMode(bunPtyProvider),
-    pathExists: defaultPathExists,
-  };
-
-  /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
    * @param options.jobQueue - JobQueue instance for background cleanup tasks.
    *                           Must be provided for proper cleanup operations.
    */
-  static async create(options: {
-    userMode?: UserMode;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
-    ptyProvider?: PtyProvider;
-  }): Promise<SessionManager> {
+  static async create(options: SessionManagerOptions): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
     return manager;
@@ -138,19 +133,14 @@ export class SessionManager {
    * Private constructor - use SessionManager.create() for async initialization.
    * The constructor is only public for backward compatibility during migration.
    */
-  constructor(options: {
-    userMode?: UserMode;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
-    ptyProvider?: PtyProvider;
-  }) {
+  constructor(options: SessionManagerOptions) {
     // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
     const userMode = options?.userMode
-      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider);
+      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
+        id: crypto.randomUUID(),
+        username: os.userInfo().username,
+        homeDir: os.homedir(),
+      });
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.workerManager = new WorkerManager(userMode, agentManager);
@@ -515,7 +505,7 @@ export class SessionManager {
 
   // ========== Session Lifecycle ==========
 
-  async createSession(request: CreateSessionRequest): Promise<Session> {
+  async createSession(request: CreateSessionRequest, options?: { createdBy?: string }): Promise<Session> {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
@@ -529,6 +519,7 @@ export class SessionManager {
       title: request.title,
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
+      createdBy: options?.createdBy,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -711,6 +702,7 @@ export class SessionManager {
       pausedAt: p.pausedAt,
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
+      createdBy: p.createdBy,
     };
 
     if (p.type === 'worktree') {
@@ -856,6 +848,7 @@ export class SessionManager {
       title: persisted.title,
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
+      createdBy: persisted.createdBy,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'
@@ -1364,6 +1357,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     return session.type === 'worktree'
@@ -1388,6 +1382,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     if (session.type === 'worktree') {

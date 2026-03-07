@@ -137,7 +137,7 @@ describe('WorkerLifecycleManager', () => {
       onDiffBaseCommitChanged: mockOnDiffBaseCommitChanged as any,
     };
 
-    const userMode = new SingleUserMode(ptyFactory.provider);
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
     workerManager = new WorkerManager(userMode, agentManager);
     lifecycleManager = new WorkerLifecycleManager(createDeps());
   });
@@ -1025,7 +1025,7 @@ describe('WorkerLifecycleManager', () => {
       // Create a UserMode that throws on spawnPty
       const failingUserMode = new SingleUserMode({
         spawn: () => { throw new Error('PTY spawn failed'); },
-      } as any);
+      } as any, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
       const failingWorkerManager = new WorkerManager(failingUserMode, agentManager);
       const manager = new WorkerLifecycleManager(createDeps({
         workerManager: failingWorkerManager,

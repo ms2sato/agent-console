@@ -232,6 +232,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 13) {
     await migrateToV13(database);
   }
+
+  if (currentVersion < 14) {
+    await migrateToV14(database);
+  }
 }
 
 /**
@@ -691,6 +695,45 @@ async function migrateToV13(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 13`.execute(database);
 
   logger.info('Migration to v13 completed');
+}
+
+/**
+ * Migration v14: Create users table and add created_by column to sessions.
+ * The users table provides stable UUID-based identity for session ownership.
+ * created_by references users.id and is NULL for pre-multi-user sessions.
+ */
+async function migrateToV14(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v14: Creating users table and adding created_by to sessions');
+
+  // Create users table
+  await database.schema
+    .createTable('users')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('os_uid', 'integer')
+    .addColumn('username', 'text', (col) => col.notNull())
+    .addColumn('home_dir', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('updated_at', 'text', (col) => col.notNull())
+    .execute();
+
+  // Partial unique index: unique os_uid where not null
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_os_uid ON users(os_uid) WHERE os_uid IS NOT NULL`.execute(database);
+
+  // Add created_by column to sessions (references users.id)
+  try {
+    await database.schema
+      .alterTable('sessions')
+      .addColumn('created_by', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column created_by already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 14`.execute(database);
+
+  logger.info('Migration to v14 completed');
 }
 
 /**

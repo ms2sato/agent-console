@@ -271,6 +271,83 @@ describe('worker-websocket', () => {
         'WORKER_NOT_FOUND'
       );
     });
+
+    it('should remove connection from map on SESSION_PAUSED error to prevent reconnection', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Verify connection exists
+      expect(getState('session-1', 'worker-1').connected).toBe(true);
+
+      // Send SESSION_PAUSED error
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'Session was paused',
+        code: 'SESSION_PAUSED'
+      }));
+
+      // Connection should be removed from the map
+      // (getState returns the default disconnected state when no connection exists)
+      const state = getState('session-1', 'worker-1');
+      expect(state.connected).toBe(false);
+
+      // Subsequent close event should NOT trigger reconnection
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      // Verify no reconnection was scheduled
+      const reconnectLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Reconnecting session-'))
+      );
+      expect(reconnectLogged).toBe(false);
+    });
+
+    it('should remove connection from map on SESSION_DELETED error to prevent reconnection', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Send SESSION_DELETED error
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'Session was deleted',
+        code: 'SESSION_DELETED'
+      }));
+
+      // Connection should be removed from the map
+      const state = getState('session-1', 'worker-1');
+      expect(state.connected).toBe(false);
+
+      // Subsequent close event should NOT trigger reconnection
+      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
+
+      const reconnectLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
+        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Reconnecting session-'))
+      );
+      expect(reconnectLogged).toBe(false);
+    });
+
+    it('should not remove connection from map for non-lifecycle error codes', () => {
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      // Send a non-lifecycle error (e.g., HISTORY_LOAD_FAILED)
+      ws?.simulateMessage(JSON.stringify({
+        type: 'error',
+        message: 'History load failed',
+        code: 'HISTORY_LOAD_FAILED'
+      }));
+
+      // Connection should still exist
+      expect(getState('session-1', 'worker-1').connected).toBe(true);
+    });
   });
 
   describe('server-restarted message handling', () => {

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
-import * as os from 'os';
 import * as fs from 'fs';
 import type {
   Session,
@@ -310,13 +309,14 @@ describe('API Routes Integration', () => {
   });
 
   describe('GET /api/config', () => {
-    it('should return config with homeDir', async () => {
+    it('should return config with homeDir from authenticated user', async () => {
       const app = await createApp();
       const res = await app.request('/api/config');
       expect(res.status).toBe(200);
 
       const body = (await res.json()) as { homeDir: string };
-      expect(body.homeDir).toBe(os.homedir());
+      // homeDir comes from the authenticated user, not the server process
+      expect(body.homeDir).toBe('/home/testuser');
     });
   });
 

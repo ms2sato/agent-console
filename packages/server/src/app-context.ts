@@ -19,6 +19,7 @@ import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
+import type { AuthUser } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
@@ -33,6 +34,7 @@ import { NotificationManager as NotificationManagerClass } from './services/noti
 import { SlackHandler } from './services/notifications/slack-handler.js';
 import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
+import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { SingleUserMode } from './services/user-mode.js';
 import { bunPtyProvider } from './lib/pty-provider.js';
@@ -136,7 +138,8 @@ export async function createAppContext(
   const notificationManager = new NotificationManagerClass(slackHandler);
 
   // 5.5. Create user mode (determines auth + PTY spawning strategy)
-  const userMode = new SingleUserMode(bunPtyProvider);
+  const userRepository = new SqliteUserRepository(db);
+  const userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
 
   // 6. Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
@@ -250,7 +253,13 @@ export async function createTestContext(
     new NotificationManagerClass(new SlackHandler());
 
   // Create user mode
-  const userMode = overrides?.userMode ?? new SingleUserMode(bunPtyProvider);
+  let userMode: UserMode;
+  if (overrides?.userMode) {
+    userMode = overrides.userMode;
+  } else {
+    const userRepository = new SqliteUserRepository(db);
+    userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
+  }
 
   // Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
@@ -365,5 +374,7 @@ export async function shutdownAppContext(
 export interface AppBindings {
   Variables: {
     appContext: AppContext;
+    /** Authenticated user identity, set by auth middleware */
+    authUser: AuthUser;
   };
 }

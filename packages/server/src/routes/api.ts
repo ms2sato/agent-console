@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { homedir } from 'node:os';
 import { sessions } from './sessions.js';
 import { workers } from './workers.js';
 import { repositories } from './repositories.js';
@@ -8,9 +7,14 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { serverConfig } from '../lib/server-config.js';
 import type { AppBindings } from '../app-context.js';
 
 const api = new Hono<AppBindings>()
+  // Auth middleware runs on all API routes.
+  // In single-user mode, SingleUserMode always returns the server process user.
+  .use('*', authMiddleware)
   // API info
   .get('/', (c) => {
     return c.json({ message: 'Agent Console API' });
@@ -18,10 +22,12 @@ const api = new Hono<AppBindings>()
   // Get server config
   .get('/config', (c) => {
     const { systemCapabilities } = c.get('appContext');
+    const authUser = c.get('authUser');
     return c.json({
-      homeDir: homedir(),
+      homeDir: authUser.homeDir,
       capabilities: systemCapabilities.getCapabilities(),
       serverPid: process.pid,
+      authMode: serverConfig.AUTH_MODE,
     });
   })
   // Mount domain-specific routers
