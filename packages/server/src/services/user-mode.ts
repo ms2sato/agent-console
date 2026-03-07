@@ -14,6 +14,7 @@
 import * as os from 'os';
 import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
+import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 
 // ========== PtySpawnRequest (Discriminated Union) ==========
@@ -72,30 +73,46 @@ export interface UserMode {
 /**
  * Null Object implementation for single-user mode (AUTH_MODE=none).
  *
- * - authenticate(): Always returns the server process user (ignores token)
- * - login(): Always returns the server process user (no credential validation)
+ * - authenticate(): Always returns the cached server process user (ignores token)
+ * - login(): Always returns the cached server process user (no credential validation)
  * - spawnPty(): Direct spawn with env vars passed via process env option
+ *
+ * On initialization, upserts a user record for the server process user
+ * and caches the resulting AuthUser (which includes a stable UUID).
  */
 export class SingleUserMode implements UserMode {
   private ptyProvider: PtyProvider;
+  private cachedUser: AuthUser;
 
-  constructor(ptyProvider: PtyProvider) {
+  /**
+   * Use SingleUserMode.create() factory method for production.
+   * Direct constructor is available for tests that need to inject a pre-built AuthUser.
+   */
+  constructor(ptyProvider: PtyProvider, cachedUser: AuthUser) {
     this.ptyProvider = ptyProvider;
+    this.cachedUser = cachedUser;
+  }
+
+  /**
+   * Factory method that upserts the server process user on init.
+   * This ensures a stable UUID exists in the users table.
+   */
+  static async create(ptyProvider: PtyProvider, userRepository: UserRepository): Promise<SingleUserMode> {
+    const userInfo = os.userInfo();
+    const cachedUser = await userRepository.upsertByOsUid(
+      userInfo.uid,
+      userInfo.username,
+      os.homedir(),
+    );
+    return new SingleUserMode(ptyProvider, cachedUser);
   }
 
   authenticate(_resolveToken: () => string | undefined): AuthUser {
-    return {
-      username: os.userInfo().username,
-      homeDir: os.homedir(),
-    };
+    return this.cachedUser;
   }
 
   async login(_username: string, _password: string): Promise<LoginResult> {
-    const user: AuthUser = {
-      username: os.userInfo().username,
-      homeDir: os.homedir(),
-    };
-    return { user, token: '' };
+    return { user: this.cachedUser, token: '' };
   }
 
   spawnPty(request: PtySpawnRequest): PtyInstance {

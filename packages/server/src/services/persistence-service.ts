@@ -71,6 +71,8 @@ interface PersistedSessionBase {
   parentSessionId?: string;
   /** Parent worker ID that delegated this session */
   parentWorkerId?: string;
+  /** Username of the user who created this session */
+  createdBy?: string;
 }
 
 export interface PersistedWorktreeSession extends PersistedSessionBase {

@@ -13,6 +13,7 @@ export interface Database {
   repository_slack_integrations: RepositorySlackIntegrationsTable;
   worktrees: WorktreesTable;
   inbound_event_notifications: InboundEventNotificationsTable;
+  users: UsersTable;
 }
 
 /**
@@ -46,6 +47,8 @@ export interface SessionsTable {
   parent_session_id: string | null;
   /** Parent worker ID that delegated this session (null for non-delegated sessions) */
   parent_worker_id: string | null;
+  /** Username of the user who created this session (null for pre-multi-user sessions) */
+  created_by: string | null;
 }
 
 /**
@@ -276,3 +279,29 @@ export interface InboundEventNotificationsTable {
 export type InboundEventNotification = Selectable<InboundEventNotificationsTable>;
 /** Inbound event notification data for INSERT queries */
 export type NewInboundEventNotification = Insertable<InboundEventNotificationsTable>;
+
+/**
+ * Users table schema.
+ * Stores user identity with UUID primary key for stable cross-reference.
+ */
+export interface UsersTable {
+  /** Primary key - UUID (app's stable identifier) */
+  id: string;
+  /** OS numeric user ID (nullable for future non-OS auth) */
+  os_uid: number | null;
+  /** Current OS username */
+  username: string;
+  /** Home directory path */
+  home_dir: string;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+  /** Last update timestamp as ISO 8601 string */
+  updated_at: string;
+}
+
+/** User row as returned from SELECT queries */
+export type UserRow = Selectable<UsersTable>;
+/** User data for INSERT queries */
+export type NewUser = Insertable<UsersTable>;
+/** User data for UPDATE queries */
+export type UserUpdate = Updateable<UsersTable>;

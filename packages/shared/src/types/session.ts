@@ -56,6 +56,8 @@ export interface SessionBase {
   parentSessionId?: string;
   /** Parent worker ID that delegated/created this session */
   parentWorkerId?: string;
+  /** Username of the user who created this session (nullable for backwards compatibility) */
+  createdBy?: string;
 }
 
 export interface WorktreeSession extends SessionBase {

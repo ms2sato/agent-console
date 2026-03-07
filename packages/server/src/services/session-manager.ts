@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
@@ -109,7 +110,11 @@ export class SessionManager {
    * Options for creating a SessionManager instance.
    */
   static readonly defaultOptions = {
-    userMode: new SingleUserMode(bunPtyProvider),
+    userMode: new SingleUserMode(bunPtyProvider, {
+      id: 'default-server-user',
+      username: os.userInfo().username,
+      homeDir: os.homedir(),
+    }),
     pathExists: defaultPathExists,
   };
 
@@ -150,7 +155,11 @@ export class SessionManager {
   }) {
     // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
     const userMode = options?.userMode
-      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider);
+      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
+        id: 'default-server-user',
+        username: os.userInfo().username,
+        homeDir: os.homedir(),
+      });
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.workerManager = new WorkerManager(userMode, agentManager);
@@ -515,7 +524,7 @@ export class SessionManager {
 
   // ========== Session Lifecycle ==========
 
-  async createSession(request: CreateSessionRequest): Promise<Session> {
+  async createSession(request: CreateSessionRequest, options?: { createdBy?: string }): Promise<Session> {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
@@ -529,6 +538,7 @@ export class SessionManager {
       title: request.title,
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
+      createdBy: options?.createdBy,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -856,6 +866,7 @@ export class SessionManager {
       title: persisted.title,
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
+      createdBy: persisted.createdBy,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'
@@ -1364,6 +1375,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     return session.type === 'worktree'
@@ -1388,6 +1400,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     if (session.type === 'worktree') {

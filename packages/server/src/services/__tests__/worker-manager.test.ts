@@ -41,7 +41,7 @@ describe('WorkerManager', () => {
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
     ptyFactory.reset();
-    const userMode = new SingleUserMode(ptyFactory.provider);
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
     workerManager = new WorkerManager(userMode, agentManager);
   });
 
