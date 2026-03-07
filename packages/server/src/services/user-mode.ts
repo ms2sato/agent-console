@@ -34,7 +34,6 @@ export interface AgentConsoleContext {
 }
 
 interface PtySpawnRequestBase {
-  username: string;
   cwd: string;
   additionalEnvVars: Record<string, string>;
   cols: number;

@@ -107,18 +107,6 @@ export class SessionManager {
   private notificationManager: NotificationManager | null = null;
 
   /**
-   * Options for creating a SessionManager instance.
-   */
-  static readonly defaultOptions = {
-    userMode: new SingleUserMode(bunPtyProvider, {
-      id: 'default-server-user',
-      username: os.userInfo().username,
-      homeDir: os.homedir(),
-    }),
-    pathExists: defaultPathExists,
-  };
-
-  /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
    * @param options.jobQueue - JobQueue instance for background cleanup tasks.
@@ -156,7 +144,7 @@ export class SessionManager {
     // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
     const userMode = options?.userMode
       ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
-        id: 'default-server-user',
+        id: crypto.randomUUID(),
         username: os.userInfo().username,
         homeDir: os.homedir(),
       });

@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { homedir } from 'node:os';
 import { sessions } from './sessions.js';
 import { workers } from './workers.js';
 import { repositories } from './repositories.js';
@@ -23,8 +22,9 @@ const api = new Hono<AppBindings>()
   // Get server config
   .get('/config', (c) => {
     const { systemCapabilities } = c.get('appContext');
+    const authUser = c.get('authUser');
     return c.json({
-      homeDir: homedir(),
+      homeDir: authUser.homeDir,
       capabilities: systemCapabilities.getCapabilities(),
       serverPid: process.pid,
       authMode: serverConfig.AUTH_MODE,

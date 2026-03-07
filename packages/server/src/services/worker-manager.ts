@@ -34,7 +34,6 @@ import type {
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
-import * as os from 'os';
 import type { UserMode, AgentConsoleContext } from './user-mode.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -315,7 +314,6 @@ export class WorkerManager {
 
     const ptyProcess = this.userMode.spawnPty({
       type: 'agent',
-      username: os.userInfo().username, // Will be replaced by session.createdBy when multi-user is implemented
       cwd: locationPath,
       additionalEnvVars,
       cols: 120,
@@ -373,7 +371,6 @@ export class WorkerManager {
     // are handled internally by UserMode.spawnPty()
     const ptyProcess = this.userMode.spawnPty({
       type: 'terminal',
-      username: os.userInfo().username, // Will be replaced by session.createdBy when multi-user is implemented
       cwd: locationPath,
       additionalEnvVars: repositoryEnvVars,
       cols: 120,
