@@ -92,6 +92,17 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+interface SessionManagerOptions {
+  userMode?: UserMode;
+  pathExists?: (path: string) => Promise<boolean>;
+  sessionRepository?: SessionRepository;
+  jobQueue?: JobQueue | null;
+  agentManager: AgentManager;
+  notificationManager?: NotificationManager | null;
+  /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
+  ptyProvider?: PtyProvider;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private resumingSessionIds = new Set<string>();
@@ -112,16 +123,7 @@ export class SessionManager {
    * @param options.jobQueue - JobQueue instance for background cleanup tasks.
    *                           Must be provided for proper cleanup operations.
    */
-  static async create(options: {
-    userMode?: UserMode;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
-    ptyProvider?: PtyProvider;
-  }): Promise<SessionManager> {
+  static async create(options: SessionManagerOptions): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
     return manager;
@@ -131,16 +133,7 @@ export class SessionManager {
    * Private constructor - use SessionManager.create() for async initialization.
    * The constructor is only public for backward compatibility during migration.
    */
-  constructor(options: {
-    userMode?: UserMode;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-    /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
-    ptyProvider?: PtyProvider;
-  }) {
+  constructor(options: SessionManagerOptions) {
     // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
     const userMode = options?.userMode
       ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {

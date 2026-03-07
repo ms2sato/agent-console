@@ -138,14 +138,6 @@ export function getTestConfigDir(): string {
 }
 
 /**
- * Create an AppContext from a partial object for testing.
- * Tests often only need a subset of services; this avoids unsafe `as unknown as AppContext` casts
- * while providing type-checking on the properties you do provide.
- *
- * Provides a default userMode (SingleUserMode) so tests that route through the API
- * pass the auth middleware without needing to explicitly set it.
- */
-/**
  * Default AuthUser for tests.
  * Used when tests need a simple user identity without setting up a UserRepository.
  */
@@ -155,6 +147,11 @@ export const TEST_AUTH_USER = {
   homeDir: '/home/testuser',
 } as const;
 
+/**
+ * Create an AppContext from a partial object for testing.
+ * Provides a default userMode (SingleUserMode) so tests that route through the API
+ * pass the auth middleware without needing to explicitly set it.
+ */
 export function asAppContext(partial: Partial<AppContext>): AppContext {
   return {
     userMode: new SingleUserMode(bunPtyProvider, TEST_AUTH_USER),

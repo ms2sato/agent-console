@@ -129,21 +129,18 @@ export class SingleUserMode implements UserMode {
     request: AgentPtySpawnRequest,
     baseEnv: Record<string, string>,
   ): PtyInstance {
-    // Convert AgentConsoleContext to AGENT_CONSOLE_* env vars
+    const ctx = request.agentConsoleContext;
+
+    // Convert AgentConsoleContext to AGENT_CONSOLE_* env vars.
+    // Optional fields are spread conditionally to avoid `undefined` values in the env.
     const agentConsoleEnv: Record<string, string> = {
-      AGENT_CONSOLE_BASE_URL: request.agentConsoleContext.baseUrl,
-      AGENT_CONSOLE_SESSION_ID: request.agentConsoleContext.sessionId,
-      AGENT_CONSOLE_WORKER_ID: request.agentConsoleContext.workerId,
+      AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
+      AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
+      AGENT_CONSOLE_WORKER_ID: ctx.workerId,
+      ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
+      ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
+      ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
     };
-    if (request.agentConsoleContext.repositoryId) {
-      agentConsoleEnv.AGENT_CONSOLE_REPOSITORY_ID = request.agentConsoleContext.repositoryId;
-    }
-    if (request.agentConsoleContext.parentSessionId) {
-      agentConsoleEnv.AGENT_CONSOLE_PARENT_SESSION_ID = request.agentConsoleContext.parentSessionId;
-    }
-    if (request.agentConsoleContext.parentWorkerId) {
-      agentConsoleEnv.AGENT_CONSOLE_PARENT_WORKER_ID = request.agentConsoleContext.parentWorkerId;
-    }
 
     // Security: agentConsoleEnv is spread LAST so AGENT_CONSOLE_* vars
     // cannot be spoofed by repository-level config or agent command templates

@@ -97,48 +97,14 @@ export class WebSocketConnectionRegistry {
   // --- Worker Connection Management (by session) ---
 
   addWorkerConnection(sessionId: string, workerId: string, ws: WSContext): void {
-    // Track by session
-    let sessionConns = this.workerConnectionsBySession.get(sessionId);
-    if (!sessionConns) {
-      sessionConns = new Set();
-      this.workerConnectionsBySession.set(sessionId, sessionConns);
-    }
-    sessionConns.add(ws);
-
-    // Track by session+worker
-    const workerKey = `${sessionId}\0${workerId}`;
-    let workerConns = this.workerConnections.get(workerKey);
-    if (!workerConns) {
-      workerConns = new Set();
-      this.workerConnections.set(workerKey, workerConns);
-    }
-    workerConns.add(ws);
-
-    // Track reverse mapping for reliable cleanup in removeSessionConnections
+    this.getOrCreateSet(this.workerConnectionsBySession, sessionId).add(ws);
+    this.getOrCreateSet(this.workerConnections, `${sessionId}\0${workerId}`).add(ws);
     this.workerIdByConnection.set(ws, workerId);
   }
 
   removeWorkerConnection(sessionId: string, workerId: string, ws: WSContext): void {
-    // Remove from session tracking
-    const sessionConns = this.workerConnectionsBySession.get(sessionId);
-    if (sessionConns) {
-      sessionConns.delete(ws);
-      if (sessionConns.size === 0) {
-        this.workerConnectionsBySession.delete(sessionId);
-      }
-    }
-
-    // Remove from per-worker tracking
-    const workerKey = `${sessionId}\0${workerId}`;
-    const workerConns = this.workerConnections.get(workerKey);
-    if (workerConns) {
-      workerConns.delete(ws);
-      if (workerConns.size === 0) {
-        this.workerConnections.delete(workerKey);
-      }
-    }
-
-    // Remove associated metadata and reverse mapping
+    this.deleteFromSet(this.workerConnectionsBySession, sessionId, ws);
+    this.deleteFromSet(this.workerConnections, `${sessionId}\0${workerId}`, ws);
     this.connectionMetadata.delete(ws);
     this.workerIdByConnection.delete(ws);
   }
@@ -150,20 +116,10 @@ export class WebSocketConnectionRegistry {
   removeSessionConnections(sessionId: string): void {
     const sessionConns = this.workerConnectionsBySession.get(sessionId);
     if (sessionConns) {
-      // Clean up per-worker tracking, metadata, and reverse mapping for each connection
       for (const ws of sessionConns) {
-        // Use workerIdByConnection (always set in addWorkerConnection) to find the workerId.
-        // This ensures cleanup works even when connectionMetadata was never set.
         const workerId = this.workerIdByConnection.get(ws);
         if (workerId) {
-          const workerKey = `${sessionId}\0${workerId}`;
-          const workerConns = this.workerConnections.get(workerKey);
-          if (workerConns) {
-            workerConns.delete(ws);
-            if (workerConns.size === 0) {
-              this.workerConnections.delete(workerKey);
-            }
-          }
+          this.deleteFromSet(this.workerConnections, `${sessionId}\0${workerId}`, ws);
         }
         this.connectionMetadata.delete(ws);
         this.workerIdByConnection.delete(ws);
@@ -189,5 +145,26 @@ export class WebSocketConnectionRegistry {
 
   removeConnectionMetadata(ws: WSContext): void {
     this.connectionMetadata.delete(ws);
+  }
+
+  // --- Private Helpers ---
+
+  private getOrCreateSet<K>(map: Map<K, Set<WSContext>>, key: K): Set<WSContext> {
+    let set = map.get(key);
+    if (!set) {
+      set = new Set();
+      map.set(key, set);
+    }
+    return set;
+  }
+
+  private deleteFromSet<K>(map: Map<K, Set<WSContext>>, key: K, ws: WSContext): void {
+    const set = map.get(key);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) {
+        map.delete(key);
+      }
+    }
   }
 }
