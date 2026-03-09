@@ -54,6 +54,8 @@ export interface WorkerContext {
   sessionId: string;
   locationPath: string;
   repositoryEnvVars: Record<string, string>;
+  /** OS username for PTY process ownership. Used by MultiUserMode for sudo -u. */
+  username: string;
 }
 
 /**
@@ -314,6 +316,7 @@ export class WorkerManager {
 
     const ptyProcess = this.userMode.spawnPty({
       type: 'agent',
+      username: params.username,
       cwd: locationPath,
       additionalEnvVars,
       cols: 120,
@@ -371,6 +374,7 @@ export class WorkerManager {
     // are handled internally by UserMode.spawnPty()
     const ptyProcess = this.userMode.spawnPty({
       type: 'terminal',
+      username: params.username,
       cwd: locationPath,
       additionalEnvVars: repositoryEnvVars,
       cols: 120,

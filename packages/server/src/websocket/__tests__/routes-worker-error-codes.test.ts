@@ -16,6 +16,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
+import { SingleUserMode } from '../../services/user-mode.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -92,8 +93,9 @@ describe('Worker WebSocket connection error codes', () => {
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as AppContext;
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();

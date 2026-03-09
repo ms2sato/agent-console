@@ -47,6 +47,7 @@ import { interSessionMessageService } from './inter-session-message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
+import type { UserRepository } from '../repositories/user-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 /**
@@ -98,6 +99,8 @@ interface SessionManagerOptions {
   sessionRepository?: SessionRepository;
   jobQueue?: JobQueue | null;
   agentManager: AgentManager;
+  /** User repository for resolving createdBy → username for PTY spawning */
+  userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
@@ -114,6 +117,7 @@ export class SessionManager {
   private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
+  private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private notificationManager: NotificationManager | null = null;
 
@@ -143,6 +147,7 @@ export class SessionManager {
       });
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
+    this.userRepository = options?.userRepository ?? null;
     this.workerManager = new WorkerManager(userMode, agentManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
@@ -160,6 +165,7 @@ export class SessionManager {
       toPublicSession: (session) => this.toPublicSession(session),
       getJobQueue: () => this.jobQueue,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+      resolveSpawnUsername: (createdBy) => this.resolveSpawnUsername(createdBy),
     });
   }
 
@@ -872,6 +878,7 @@ export class SessionManager {
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
+    const username = await this.resolveSpawnUsername(internalSession.createdBy);
     try {
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
@@ -879,6 +886,7 @@ export class SessionManager {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
+            username,
             agentId: worker.agentId,
             continueConversation: true,
             repositoryId,
@@ -891,6 +899,7 @@ export class SessionManager {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
+            username,
           });
           activatedWorkers.push(worker);
         }
@@ -1285,6 +1294,19 @@ export class SessionManager {
    * @param sessionId - Session ID to get repository env vars for
    * @returns Parsed environment variables as key-value pairs
    */
+  /**
+   * Resolve the OS username for PTY spawning from a session's createdBy field.
+   * If createdBy is null (pre-multi-user sessions), returns the server process username.
+   */
+  private async resolveSpawnUsername(createdBy?: string): Promise<string> {
+    if (!createdBy || !this.userRepository) {
+      return os.userInfo().username;
+    }
+
+    const user = await this.userRepository.findById(createdBy);
+    return user?.username ?? os.userInfo().username;
+  }
+
   private getRepositoryEnvVars(sessionId: string): Record<string, string> {
     const session = this.sessions.get(sessionId);
     if (!session) {

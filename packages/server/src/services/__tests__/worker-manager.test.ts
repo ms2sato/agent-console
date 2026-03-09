@@ -73,6 +73,7 @@ describe('WorkerManager', () => {
     sessionId: 'session-1',
     locationPath: '/test/project',
     repositoryEnvVars: {},
+    username: 'testuser',
     agentId: CLAUDE_CODE_AGENT_ID,
     continueConversation: false,
   };
@@ -81,6 +82,7 @@ describe('WorkerManager', () => {
     sessionId: 'session-1',
     locationPath: '/test/project',
     repositoryEnvVars: {},
+    username: 'testuser',
   };
 
   // ========== Worker Initialization ==========

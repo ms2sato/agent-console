@@ -36,8 +36,9 @@ import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
-import { SingleUserMode } from './services/user-mode.js';
+import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { bunPtyProvider } from './lib/pty-provider.js';
+import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 
 const logger = createLogger('app-context');
@@ -139,11 +140,15 @@ export async function createAppContext(
 
   // 5.5. Create user mode (determines auth + PTY spawning strategy)
   const userRepository = new SqliteUserRepository(db);
-  const userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
+  const userMode = serverConfig.AUTH_MODE === 'multi-user'
+    ? await MultiUserMode.create(bunPtyProvider, userRepository)
+    : await SingleUserMode.create(bunPtyProvider, userRepository);
+  logger.info({ authMode: serverConfig.AUTH_MODE }, 'User mode initialized');
 
   // 6. Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
     userMode,
+    userRepository,
     sessionRepository,
     jobQueue,
     agentManager,
@@ -253,17 +258,18 @@ export async function createTestContext(
     new NotificationManagerClass(new SlackHandler());
 
   // Create user mode
+  const userRepository = new SqliteUserRepository(db);
   let userMode: UserMode;
   if (overrides?.userMode) {
     userMode = overrides.userMode;
   } else {
-    const userRepository = new SqliteUserRepository(db);
     userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
   }
 
   // Create managers (with injected dependencies)
   const sessionManager = await SessionManagerClass.create({
     userMode,
+    userRepository,
     sessionRepository,
     jobQueue,
     agentManager,
