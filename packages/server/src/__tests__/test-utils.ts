@@ -28,6 +28,8 @@ import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
 import type { AppBindings, AppContext } from '../app-context.js';
+import { SingleUserMode } from '../services/user-mode.js';
+import { bunPtyProvider } from '../lib/pty-provider.js';
 
 // =============================================================================
 // PTY Mock (not in a separate helper file)
@@ -120,9 +122,7 @@ export async function createTestApp(appContext?: Partial<AppContext>): Promise<H
 
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
-    if (appContext) {
-      c.set('appContext', appContext as AppContext);
-    }
+    c.set('appContext', asAppContext(appContext ?? {}));
     await next();
   });
   app.onError(onApiError);
@@ -138,10 +138,23 @@ export function getTestConfigDir(): string {
 }
 
 /**
+ * Default AuthUser for tests.
+ * Used when tests need a simple user identity without setting up a UserRepository.
+ */
+export const TEST_AUTH_USER = {
+  id: 'test-user-id',
+  username: 'testuser',
+  homeDir: '/home/testuser',
+} as const;
+
+/**
  * Create an AppContext from a partial object for testing.
- * Tests often only need a subset of services; this avoids unsafe `as unknown as AppContext` casts
- * while providing type-checking on the properties you do provide.
+ * Provides a default userMode (SingleUserMode) so tests that route through the API
+ * pass the auth middleware without needing to explicitly set it.
  */
 export function asAppContext(partial: Partial<AppContext>): AppContext {
-  return partial as AppContext;
+  return {
+    userMode: new SingleUserMode(bunPtyProvider, TEST_AUTH_USER),
+    ...partial,
+  } as AppContext;
 }

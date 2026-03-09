@@ -64,6 +64,12 @@ export const serverConfig = {
    * Required for inbound GitHub integration. If not set, webhooks are dropped.
    */
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+  /**
+   * Authentication mode.
+   * - 'none': Single-user mode (default). No login required.
+   * - 'multi-user': Multi-user mode with OS authentication.
+   */
+  AUTH_MODE: process.env.AUTH_MODE || 'none',
 } as const;
 
 /**

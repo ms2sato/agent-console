@@ -6,6 +6,8 @@
  * In multi-user mode, this is the user who logged in via OS credentials.
  */
 export interface AuthUser {
+  /** Stable user identifier (UUID from users table) */
+  id: string;
   username: string;
   homeDir: string;
 }

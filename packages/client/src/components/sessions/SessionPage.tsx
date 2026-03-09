@@ -15,6 +15,7 @@ import { useTabManagement } from './hooks/useTabManagement';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
+import { resolveResumedState } from './sessionResumedState';
 import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 import { logger } from '../../lib/logger';
@@ -189,7 +190,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Handle session resumed (by another tab/client)
   const handleSessionResumed = useCallback((resumedSession: Session) => {
     if (resumedSession.id === sessionId) {
-      setState({ type: 'active', session: resumedSession });
+      setState(resolveResumedState(resumedSession));
     }
   }, [sessionId]);
 

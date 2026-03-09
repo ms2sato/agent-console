@@ -44,6 +44,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('paused_at', 'text')
       .addColumn('parent_session_id', 'text')
       .addColumn('parent_worker_id', 'text')
+      .addColumn('created_by', 'text')
       .execute();
 
     await db.schema

@@ -67,7 +67,8 @@ const sessions = new Hono<AppBindings>()
     }
 
     const { sessionManager } = c.get('appContext');
-    const session = await sessionManager.createSession(body);
+    const authUser = c.get('authUser');
+    const session = await sessionManager.createSession(body, { createdBy: authUser.id });
 
     return c.json({ session }, 201);
   })

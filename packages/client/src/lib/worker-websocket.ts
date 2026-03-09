@@ -236,6 +236,21 @@ function handleTerminalMessage(
       break;
     case 'error':
       callbacks.onError?.(msg.message, msg.code);
+      // Prevent reconnection for terminal lifecycle errors.
+      // When a session is paused or deleted, the server sends an error message
+      // followed by a close frame. Remove the connection from the map BEFORE
+      // the close event fires so that the onclose handler sees no entry and
+      // skips reconnection scheduling.
+      if (msg.code === 'SESSION_DELETED' || msg.code === 'SESSION_PAUSED') {
+        const conn = connections.get(key);
+        if (conn) {
+          if (conn.retryTimeout) {
+            clearTimeout(conn.retryTimeout);
+            conn.retryTimeout = null;
+          }
+          connections.delete(key);
+        }
+      }
       break;
     case 'output-truncated': {
       // Set truncation flag to prevent save manager from saving stale state
