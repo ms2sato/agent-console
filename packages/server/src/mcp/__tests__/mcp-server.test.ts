@@ -1567,6 +1567,34 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).not.toContain('toSessionId');
       expect(agentPrompt).not.toContain('toWorkerId');
     });
+
+    it('should inherit createdBy from parent session', async () => {
+      await setupDelegateEnvironment('feat/inherit-created-by');
+
+      // Create a parent session with a known createdBy
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: 'parent-user-abc' });
+
+      // Delegate with parentSessionId referencing the parent
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test createdBy inheritance',
+        branch: 'feat/inherit-created-by',
+        parentSessionId: parentSession.id,
+        parentWorkerId: 'dummy-worker-id',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { sessionId: string };
+
+      // Verify the child session inherited createdBy from the parent
+      const childSession = sessionManager.getSession(data.sessionId);
+      expect(childSession).toBeDefined();
+      expect(childSession!.createdBy).toBe('parent-user-abc');
+    });
   });
 
   // ===========================================================================
