@@ -878,8 +878,8 @@ export class SessionManager {
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
-    const username = await this.resolveSpawnUsername(internalSession.createdBy);
     try {
+      const username = await this.resolveSpawnUsername(internalSession.createdBy);
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
           await this.workerManager.activateAgentWorkerPty(worker, {
@@ -1299,6 +1299,10 @@ export class SessionManager {
    * If createdBy is null (pre-multi-user sessions), returns the server process username.
    */
   private async resolveSpawnUsername(createdBy?: string): Promise<string> {
+    if (createdBy && !this.userRepository) {
+      logger.warn({ createdBy }, 'Session has createdBy but no userRepository configured');
+    }
+
     if (!createdBy || !this.userRepository) {
       return os.userInfo().username;
     }

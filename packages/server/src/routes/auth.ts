@@ -14,6 +14,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { LoginRequestSchema } from '@agent-console/shared';
 import { vValidator } from '../middleware/validation.js';
 import type { AppBindings } from '../app-context.js';
+import { serverConfig } from '../lib/server-config.js';
 
 /** Cookie name for the auth token */
 const AUTH_COOKIE_NAME = 'auth_token';
@@ -21,20 +22,67 @@ const AUTH_COOKIE_NAME = 'auth_token';
 /** Cookie max-age in seconds (7 days, matches JWT expiry) */
 const AUTH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
 
+// ========== Login Rate Limiter ==========
+
+/** Simple per-username rate limiter for login attempts */
+class LoginRateLimiter {
+  private attempts = new Map<string, { count: number; resetAt: number }>();
+
+  constructor(
+    private maxAttempts: number = 5,
+    private windowMs: number = 60_000, // 1 minute
+  ) {}
+
+  isBlocked(username: string): boolean {
+    const now = Date.now();
+    const entry = this.attempts.get(username);
+    if (!entry || now >= entry.resetAt) return false;
+    return entry.count >= this.maxAttempts;
+  }
+
+  recordAttempt(username: string): void {
+    const now = Date.now();
+    const entry = this.attempts.get(username);
+    if (!entry || now >= entry.resetAt) {
+      this.attempts.set(username, { count: 1, resetAt: now + this.windowMs });
+    } else {
+      entry.count++;
+    }
+  }
+
+  recordSuccess(username: string): void {
+    this.attempts.delete(username);
+  }
+}
+
+const loginRateLimiter = new LoginRateLimiter();
+
+// ========== Routes ==========
+
 const auth = new Hono<AppBindings>()
   .post('/login', vValidator(LoginRequestSchema), async (c) => {
     const { userMode } = c.get('appContext');
     const { username, password } = c.req.valid('json');
+
+    // Check rate limiting before attempting login
+    if (loginRateLimiter.isBlocked(username)) {
+      return c.json({ error: 'Too many login attempts. Try again later.' }, 429);
+    }
+
+    loginRateLimiter.recordAttempt(username);
 
     const result = await userMode.login(username, password);
     if (!result) {
       return c.json({ error: 'Invalid credentials' }, 401);
     }
 
+    // Clear rate limit state on successful login
+    loginRateLimiter.recordSuccess(username);
+
     // Set httpOnly cookie with the token
     setCookie(c, AUTH_COOKIE_NAME, result.token, {
       httpOnly: true,
-      secure: false, // Allow HTTP for local development
+      secure: serverConfig.NODE_ENV === 'production',
       sameSite: 'Lax',
       path: '/',
       maxAge: AUTH_COOKIE_MAX_AGE,
@@ -56,4 +104,4 @@ const auth = new Hono<AppBindings>()
     return c.json({ user: authUser });
   });
 
-export { auth };
+export { auth, LoginRateLimiter };

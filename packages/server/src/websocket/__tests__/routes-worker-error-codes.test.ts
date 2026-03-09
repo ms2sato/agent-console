@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import { WS_CLOSE_CODE } from '@agent-console/shared';
+import type { AuthUser } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -17,6 +19,8 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { SingleUserMode } from '../../services/user-mode.js';
+import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user-mode.js';
+import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -249,5 +253,145 @@ describe('Worker WebSocket connection error codes', () => {
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);
+  });
+});
+
+// =========================================================================
+// C4: WebSocket auth rejection tests
+// =========================================================================
+
+describe('WebSocket authentication rejection (C4)', () => {
+  const ptyFactory = createMockPtyFactory(20000);
+  let testJobQueue: JobQueue | null = null;
+  let capturedAppHandlerFactory: WebSocketHandlerFactory | null = null;
+  let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
+
+  /**
+   * A UserMode that always rejects authentication.
+   * Used to test that unauthenticated WebSocket connections are rejected
+   * with POLICY_VIOLATION close code.
+   */
+  class RejectingUserMode implements UserMode {
+    authenticate(_resolveToken: () => string | undefined): AuthUser | null {
+      return null;
+    }
+    async login(_username: string, _password: string): Promise<LoginResult | null> {
+      return null;
+    }
+    spawnPty(_request: PtySpawnRequest): PtyInstance {
+      throw new Error('Should not be called in auth rejection tests');
+    }
+  }
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    ptyFactory.reset();
+    capturedAppHandlerFactory = null;
+    capturedWorkerHandlerFactory = null;
+
+    resetProcessMock();
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase());
+    registerJobHandlers(testJobQueue);
+    const sessionRepository = await createSessionRepository();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    const notificationManager = new NotificationManager(new SlackHandler());
+    const sessionManager = await SessionManager.create({
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager,
+      ptyProvider: ptyFactory.provider,
+    });
+    const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+
+    // Use a UserMode that always rejects authentication
+    const userMode = new RejectingUserMode();
+
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
+
+    // Set up routes with a custom upgradeWebSocket that captures BOTH handler factories
+    const app = new Hono();
+    let callCount = 0;
+    const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
+      callCount++;
+      // First registered handler is the app route, second is the worker route
+      if (callCount === 1) {
+        capturedAppHandlerFactory = handlerFactory;
+      } else {
+        capturedWorkerHandlerFactory = handlerFactory;
+      }
+      return handlerFactory;
+    };
+    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+  });
+
+  afterEach(async () => {
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue = null;
+    }
+
+    await closeDatabase();
+    cleanupMemfs();
+  });
+
+  it('should reject unauthenticated /ws/app connection with POLICY_VIOLATION close code', () => {
+    expect(capturedAppHandlerFactory).not.toBeNull();
+
+    const mockContext = {
+      req: {
+        param: (_name: string) => '',
+      },
+    };
+
+    const handlers = capturedAppHandlerFactory!(mockContext);
+    const mockWs = createMockWs();
+
+    // Trigger onOpen - authentication should fail
+    handlers.onOpen({}, mockWs);
+
+    // Verify connection was closed with POLICY_VIOLATION code
+    expect(mockWs.closeCalls.length).toBe(1);
+    expect(mockWs.closeCalls[0].code).toBe(WS_CLOSE_CODE.POLICY_VIOLATION);
+    expect(mockWs.closeCalls[0].reason).toBe('Authentication required');
+
+    // No data messages should be sent (no sync)
+    expect(mockWs.sentMessages.length).toBe(0);
+  });
+
+  it('should reject unauthenticated /ws/session/:id/worker/:id connection with POLICY_VIOLATION close code', () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    const mockContext = {
+      req: {
+        param: (name: string) => {
+          if (name === 'sessionId') return 'some-session';
+          if (name === 'workerId') return 'some-worker';
+          return '';
+        },
+      },
+    };
+
+    const handlers = capturedWorkerHandlerFactory!(mockContext);
+    const mockWs = createMockWs();
+
+    // Trigger onOpen - authentication should fail
+    handlers.onOpen({}, mockWs);
+
+    // Verify connection was closed with POLICY_VIOLATION code
+    expect(mockWs.closeCalls.length).toBe(1);
+    expect(mockWs.closeCalls[0].code).toBe(WS_CLOSE_CODE.POLICY_VIOLATION);
+    expect(mockWs.closeCalls[0].reason).toBe('Authentication required');
+
+    // No error/exit messages should be sent (auth rejection closes directly)
+    expect(mockWs.sentMessages.length).toBe(0);
   });
 });

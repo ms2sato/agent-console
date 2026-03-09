@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
-import { auth } from '../auth.js';
+import { auth, LoginRateLimiter } from '../auth.js';
 import { onApiError } from '../../lib/error-handler.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, LoginResult } from '../../services/user-mode.js';
@@ -149,8 +149,8 @@ describe('Auth Routes', () => {
         body: JSON.stringify({ password: 'test' }),
       });
 
-      // Valibot validation error should result in 400 or similar
-      expect(res.status).toBeGreaterThanOrEqual(400);
+      // Valibot validation error should result in 400
+      expect(res.status).toBe(400);
     });
 
     it('should return validation error for missing password', async () => {
@@ -163,7 +163,7 @@ describe('Auth Routes', () => {
         body: JSON.stringify({ username: 'alice' }),
       });
 
-      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBe(400);
     });
 
     it('should return validation error for empty body', async () => {
@@ -176,7 +176,7 @@ describe('Auth Routes', () => {
         body: JSON.stringify({}),
       });
 
-      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBe(400);
     });
   });
 
@@ -300,5 +300,130 @@ describe('Auth Routes', () => {
 
       expect(receivedToken).toBeUndefined();
     });
+  });
+
+  // =========================================================================
+  // Rate Limiting (H2)
+  // =========================================================================
+
+  describe('POST /api/auth/login - rate limiting', () => {
+    it('should return 429 after too many failed attempts', async () => {
+      const userMode = createMockUserMode({ loginResult: null });
+      const app = createTestApp(userMode);
+
+      // Make 5 failed login attempts (default limit)
+      for (let i = 0; i < 5; i++) {
+        const res = await app.request('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: 'ratelimit-test-user', password: 'wrong' }),
+        });
+        expect(res.status).toBe(401);
+      }
+
+      // 6th attempt should be rate limited
+      const res = await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'ratelimit-test-user', password: 'wrong' }),
+      });
+      expect(res.status).toBe(429);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Too many login attempts');
+    });
+
+    it('should not rate limit different usernames', async () => {
+      const userMode = createMockUserMode({ loginResult: null });
+      const app = createTestApp(userMode);
+
+      // Make 5 failed attempts for one user
+      for (let i = 0; i < 5; i++) {
+        await app.request('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: 'user-a-ratelimit', password: 'wrong' }),
+        });
+      }
+
+      // Different user should not be rate limited
+      const res = await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'user-b-ratelimit', password: 'wrong' }),
+      });
+      expect(res.status).toBe(401); // Not 429
+    });
+  });
+});
+
+// =========================================================================
+// LoginRateLimiter Unit Tests (H2)
+// =========================================================================
+
+describe('LoginRateLimiter', () => {
+  it('should not block before max attempts', () => {
+    const limiter = new LoginRateLimiter(3, 60_000);
+
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+
+    expect(limiter.isBlocked('user1')).toBe(false);
+  });
+
+  it('should block after max attempts', () => {
+    const limiter = new LoginRateLimiter(3, 60_000);
+
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+
+    expect(limiter.isBlocked('user1')).toBe(true);
+  });
+
+  it('should not block unknown users', () => {
+    const limiter = new LoginRateLimiter(3, 60_000);
+
+    expect(limiter.isBlocked('unknown-user')).toBe(false);
+  });
+
+  it('should clear state on recordSuccess', () => {
+    const limiter = new LoginRateLimiter(3, 60_000);
+
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+    expect(limiter.isBlocked('user1')).toBe(true);
+
+    limiter.recordSuccess('user1');
+    expect(limiter.isBlocked('user1')).toBe(false);
+  });
+
+  it('should reset after window expires', () => {
+    // Use a very short window for testing
+    const limiter = new LoginRateLimiter(1, 1); // 1ms window
+
+    limiter.recordAttempt('user1');
+    expect(limiter.isBlocked('user1')).toBe(true);
+
+    // Wait for window to expire (synchronous: the next check will be after resetAt)
+    // Since the window is 1ms, by the time we check again it should have expired
+    // Use a small busy-wait to ensure time passes
+    const start = Date.now();
+    while (Date.now() - start < 5) {
+      // wait
+    }
+
+    expect(limiter.isBlocked('user1')).toBe(false);
+  });
+
+  it('should track different users independently', () => {
+    const limiter = new LoginRateLimiter(2, 60_000);
+
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user1');
+    limiter.recordAttempt('user2');
+
+    expect(limiter.isBlocked('user1')).toBe(true);
+    expect(limiter.isBlocked('user2')).toBe(false);
   });
 });

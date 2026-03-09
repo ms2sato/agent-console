@@ -78,6 +78,68 @@ export interface UserMode {
   spawnPty(request: PtySpawnRequest): PtyInstance;
 }
 
+// ========== Shared Direct PTY Spawning ==========
+
+/**
+ * Spawn a PTY process directly (no sudo) with env vars passed via process env option.
+ * Shared by SingleUserMode.spawnPty() and MultiUserMode.spawnDirectPty() (sudo-skip optimization).
+ */
+function spawnDirectPty(ptyProvider: PtyProvider, request: PtySpawnRequest): PtyInstance {
+  const baseEnv = getCleanChildProcessEnv();
+
+  switch (request.type) {
+    case 'agent': {
+      const ctx = request.agentConsoleContext;
+
+      // Convert AgentConsoleContext to AGENT_CONSOLE_* env vars.
+      // Optional fields are spread conditionally to avoid `undefined` values in the env.
+      const agentConsoleEnv: Record<string, string> = {
+        AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
+        AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
+        AGENT_CONSOLE_WORKER_ID: ctx.workerId,
+        ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
+        ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
+        ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
+      };
+
+      // Security: agentConsoleEnv is spread LAST so AGENT_CONSOLE_* vars
+      // cannot be spoofed by repository-level config or agent command templates
+      const processEnv = {
+        ...baseEnv,
+        ...request.additionalEnvVars,
+        ...agentConsoleEnv,
+      };
+
+      const unsetPrefix = getUnsetEnvPrefix();
+      return ptyProvider.spawn('sh', ['-c', unsetPrefix + request.command], {
+        name: 'xterm-256color',
+        cols: request.cols,
+        rows: request.rows,
+        cwd: request.cwd,
+        env: processEnv,
+      });
+    }
+    case 'terminal': {
+      const processEnv = {
+        ...baseEnv,
+        ...request.additionalEnvVars,
+      };
+
+      const unsetPrefix = getUnsetEnvPrefix();
+      // Use $SHELL (shell variable resolved at PTY runtime, not process.env.SHELL at Node.js time).
+      // In SingleUserMode they are equivalent since the child inherits the server's env.
+      // In MultiUserMode, the login shell sets $SHELL to the target user's shell.
+      return ptyProvider.spawn('sh', ['-c', `${unsetPrefix}exec $SHELL -l`], {
+        name: 'xterm-256color',
+        cols: request.cols,
+        rows: request.rows,
+        cwd: request.cwd,
+        env: processEnv,
+      });
+    }
+  }
+}
+
 // ========== SingleUserMode ==========
 
 /**
@@ -126,71 +188,7 @@ export class SingleUserMode implements UserMode {
   }
 
   spawnPty(request: PtySpawnRequest): PtyInstance {
-    const baseEnv = getCleanChildProcessEnv();
-
-    switch (request.type) {
-      case 'agent':
-        return this.spawnAgentPty(request, baseEnv);
-      case 'terminal':
-        return this.spawnTerminalPty(request, baseEnv);
-    }
-  }
-
-  private spawnAgentPty(
-    request: AgentPtySpawnRequest,
-    baseEnv: Record<string, string>,
-  ): PtyInstance {
-    const ctx = request.agentConsoleContext;
-
-    // Convert AgentConsoleContext to AGENT_CONSOLE_* env vars.
-    // Optional fields are spread conditionally to avoid `undefined` values in the env.
-    const agentConsoleEnv: Record<string, string> = {
-      AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
-      AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
-      AGENT_CONSOLE_WORKER_ID: ctx.workerId,
-      ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
-      ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
-      ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
-    };
-
-    // Security: agentConsoleEnv is spread LAST so AGENT_CONSOLE_* vars
-    // cannot be spoofed by repository-level config or agent command templates
-    const processEnv = {
-      ...baseEnv,
-      ...request.additionalEnvVars,
-      ...agentConsoleEnv,
-    };
-
-    const unsetPrefix = getUnsetEnvPrefix();
-    return this.ptyProvider.spawn('sh', ['-c', unsetPrefix + request.command], {
-      name: 'xterm-256color',
-      cols: request.cols,
-      rows: request.rows,
-      cwd: request.cwd,
-      env: processEnv,
-    });
-  }
-
-  private spawnTerminalPty(
-    request: TerminalPtySpawnRequest,
-    baseEnv: Record<string, string>,
-  ): PtyInstance {
-    const processEnv = {
-      ...baseEnv,
-      ...request.additionalEnvVars,
-    };
-
-    const unsetPrefix = getUnsetEnvPrefix();
-    // Use $SHELL (shell variable resolved at PTY runtime, not process.env.SHELL at Node.js time).
-    // In SingleUserMode they are equivalent since the child inherits the server's env.
-    // In MultiUserMode, the login shell sets $SHELL to the target user's shell.
-    return this.ptyProvider.spawn('sh', ['-c', `${unsetPrefix}exec $SHELL -l`], {
-      name: 'xterm-256color',
-      cols: request.cols,
-      rows: request.rows,
-      cwd: request.cwd,
-      env: processEnv,
-    });
+    return spawnDirectPty(this.ptyProvider, request);
   }
 }
 
@@ -248,12 +246,17 @@ export class MultiUserMode implements UserMode {
       const secretBuffer = await fs.readFile(secretPath);
       jwtSecret = new Uint8Array(secretBuffer);
       logger.info('Loaded existing JWT secret');
-    } catch {
-      // Generate new secret
-      jwtSecret = new Uint8Array(crypto.randomBytes(32));
-      await fs.mkdir(path.dirname(secretPath), { recursive: true });
-      await fs.writeFile(secretPath, Buffer.from(jwtSecret), { mode: 0o600 });
-      logger.info('Generated new JWT secret');
+    } catch (err: unknown) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // File doesn't exist — generate new secret
+        jwtSecret = new Uint8Array(crypto.randomBytes(32));
+        await fs.mkdir(path.dirname(secretPath), { recursive: true });
+        await fs.writeFile(secretPath, Buffer.from(jwtSecret), { mode: 0o600 });
+        logger.info('Generated new JWT secret');
+      } else {
+        // Permission error, corruption, etc. — fail loudly
+        throw err;
+      }
     }
 
     return new MultiUserMode(ptyProvider, userRepository, jwtSecret);
@@ -317,7 +320,7 @@ export class MultiUserMode implements UserMode {
     // Sudo skip optimization: when the authenticated user is the server process user,
     // fall back to direct spawning (no sudo needed)
     if (request.username === this.serverProcessUsername) {
-      return this.spawnDirectPty(request);
+      return spawnDirectPty(this.ptyProvider, request);
     }
 
     return this.spawnSudoPty(request);
@@ -345,8 +348,15 @@ export class MultiUserMode implements UserMode {
 
   private async validateMacOs(username: string, password: string): Promise<boolean> {
     try {
-      const result = await $`dscl . -authonly ${username} ${password}`.quiet();
-      return result.exitCode === 0;
+      // Use Bun.spawn with an args array (no shell) to prevent shell injection.
+      // dscl requires the password as a command-line argument (no stdin option).
+      // This avoids shell metacharacter issues even if the password contains special chars.
+      const proc = Bun.spawn(['dscl', '.', '-authonly', username, password], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
+      const exitCode = await proc.exited;
+      return exitCode === 0;
     } catch {
       return false;
     }
@@ -449,8 +459,8 @@ export class MultiUserMode implements UserMode {
       // Decode payload
       const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as JwtTokenPayload;
 
-      // Check expiration
-      if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+      // Check expiration — tokens without exp claim are rejected
+      if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
 
       // Validate required fields
       if (!payload.sub || !payload.username || !payload.home) return null;
@@ -466,49 +476,6 @@ export class MultiUserMode implements UserMode {
   }
 
   // ========== Private: PTY Spawning ==========
-
-  /**
-   * Direct spawn (sudo-skip optimization).
-   * Used when the authenticated user is the same as the server process user.
-   * Identical to SingleUserMode.spawnPty().
-   */
-  private spawnDirectPty(request: PtySpawnRequest): PtyInstance {
-    const baseEnv = getCleanChildProcessEnv();
-
-    switch (request.type) {
-      case 'agent': {
-        const ctx = request.agentConsoleContext;
-        const agentConsoleEnv: Record<string, string> = {
-          AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
-          AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
-          AGENT_CONSOLE_WORKER_ID: ctx.workerId,
-          ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
-          ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
-          ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
-        };
-        const processEnv = { ...baseEnv, ...request.additionalEnvVars, ...agentConsoleEnv };
-        const unsetPrefix = getUnsetEnvPrefix();
-        return this.ptyProvider.spawn('sh', ['-c', unsetPrefix + request.command], {
-          name: 'xterm-256color',
-          cols: request.cols,
-          rows: request.rows,
-          cwd: request.cwd,
-          env: processEnv,
-        });
-      }
-      case 'terminal': {
-        const processEnv = { ...baseEnv, ...request.additionalEnvVars };
-        const unsetPrefix = getUnsetEnvPrefix();
-        return this.ptyProvider.spawn('sh', ['-c', `${unsetPrefix}exec $SHELL -l`], {
-          name: 'xterm-256color',
-          cols: request.cols,
-          rows: request.rows,
-          cwd: request.cwd,
-          env: processEnv,
-        });
-      }
-    }
-  }
 
   /**
    * Spawn PTY via sudo -u <user> -i.
@@ -568,9 +535,19 @@ export class MultiUserMode implements UserMode {
   /**
    * Convert a Record<string, string> to a shell export string.
    * e.g., "KEY1=val1 KEY2=val2"
+   *
+   * Keys are validated against POSIX environment variable naming rules
+   * to prevent shell injection via crafted key names.
    */
   private buildExportString(vars: Record<string, string>): string {
     return Object.entries(vars)
+      .filter(([key]) => {
+        const valid = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+        if (!valid) {
+          logger.warn({ key }, 'Skipping environment variable with invalid key name');
+        }
+        return valid;
+      })
       .map(([key, value]) => `${key}=${this.shellEscape(value)}`)
       .join(' ');
   }

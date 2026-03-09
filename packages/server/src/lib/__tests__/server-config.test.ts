@@ -55,6 +55,30 @@ describe('server-config', () => {
 
       expect(serverConfig.HOST).toBe('0.0.0.0');
     });
+
+    it('should default AUTH_MODE to none when not set', async () => {
+      delete process.env.AUTH_MODE;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_MODE).toBe('none');
+    });
+
+    it('should accept AUTH_MODE=multi-user', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_MODE).toBe('multi-user');
+    });
+
+    it('should throw for invalid AUTH_MODE value', async () => {
+      process.env.AUTH_MODE = 'invalid-mode';
+
+      await expect(importServerConfig()).rejects.toThrow(
+        "Invalid AUTH_MODE: 'invalid-mode'. Must be 'none' or 'multi-user'."
+      );
+    });
   });
 
   describe('SERVER_ONLY_ENV_VARS', () => {

@@ -312,6 +312,57 @@ describe('MultiUserMode', () => {
       const result = mode.authenticate(() => `${header}.${payload}.`);
       expect(result).toBeNull();
     });
+
+    it('should return null for token without exp claim (M2)', async () => {
+      const secret = new Uint8Array(crypto.randomBytes(32));
+      const mode = await createModeWithKnownSecret(secret);
+
+      // Manually construct a valid token but without exp claim
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256' })).toString('base64url');
+      const payload = Buffer.from(
+        JSON.stringify({
+          sub: 'user-1',
+          username: 'alice',
+          home: '/home/alice',
+          iat: Math.floor(Date.now() / 1000),
+          // No exp field
+        }),
+      ).toString('base64url');
+
+      // Sign correctly with the secret
+      const hmac = crypto.createHmac('sha256', secret);
+      hmac.update(`${header}.${payload}`);
+      const sig = hmac.digest().toString('base64url');
+
+      const result = mode.authenticate(() => `${header}.${payload}.${sig}`);
+      expect(result).toBeNull();
+    });
+
+    it('should verify JWT round-trip: token from login() is accepted by authenticate() (H4)', async () => {
+      // This test verifies the JWT generation (login) and validation (authenticate) integration.
+      // OS credential validation (dscl/pamtester) is not testable in unit tests,
+      // so we test the JWT round-trip by creating a token with a known secret
+      // and verifying that authenticate() correctly validates it.
+      const secret = new Uint8Array(crypto.randomBytes(32));
+      const mode = await createModeWithKnownSecret(secret);
+
+      // Create a user in the database
+      const authUser = await userRepository.upsertByOsUid(1001, 'testuser', '/home/testuser');
+
+      // Simulate what login() does: generate a JWT token
+      const token = await signToken(secret, {
+        sub: authUser.id,
+        username: authUser.username,
+        home: authUser.homeDir,
+      });
+
+      // Verify the token is accepted by authenticate()
+      const result = mode.authenticate(() => token);
+      expect(result).not.toBeNull();
+      expect(result!.id).toBe(authUser.id);
+      expect(result!.username).toBe('testuser');
+      expect(result!.homeDir).toBe('/home/testuser');
+    });
   });
 
   // =========================================================================
@@ -545,6 +596,49 @@ describe('MultiUserMode', () => {
       expect(innerCommand).toContain('exec $SHELL -l');
       // Terminal should NOT have AGENT_CONSOLE_* vars in the command
       expect(innerCommand).not.toContain('AGENT_CONSOLE_BASE_URL');
+    });
+
+    it('should properly escape dangerous shell metacharacters in env var values', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace',
+        additionalEnvVars: {
+          SINGLE_Q: "it's a test",
+          DOUBLE_Q: 'value with "double" quotes',
+          BACKTICK: 'value with `backticks`',
+          SUBSHELL: 'value with $(whoami)',
+          SEMICOLON: 'value; rm -rf /',
+          NEWLINE: "line1\nline2",
+          DOLLAR_BRACE: 'value ${HOME}',
+        },
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [, args] = getLastSpawnCall();
+      const innerCommand = args[5];
+
+      // All values should be enclosed in single quotes to prevent shell interpretation.
+      // Single quotes within values should be escaped as '\''
+      expect(innerCommand).toContain("SINGLE_Q='it'\\''s a test'");
+      expect(innerCommand).toContain("DOUBLE_Q='value with \"double\" quotes'");
+      expect(innerCommand).toContain("BACKTICK='value with `backticks`'");
+      expect(innerCommand).toContain("SUBSHELL='value with $(whoami)'");
+      expect(innerCommand).toContain("SEMICOLON='value; rm -rf /'");
+      // Actual newline character inside single quotes is safe in shell
+      expect(innerCommand).toContain("NEWLINE='line1\nline2'");
+      expect(innerCommand).toContain("DOLLAR_BRACE='value ${HOME}'");
     });
 
     it('should properly escape special characters in env var values via shellEscape', async () => {
