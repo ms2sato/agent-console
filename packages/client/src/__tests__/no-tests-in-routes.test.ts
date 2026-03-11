@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it } from 'bun:test';
 import { Glob } from 'bun';
 import path from 'node:path';
 
