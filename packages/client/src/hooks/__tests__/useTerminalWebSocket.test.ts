@@ -190,24 +190,6 @@ describe('useTerminalWebSocket', () => {
     expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
   });
 
-  it('should send image messages via WebSocket', async () => {
-    const options = createDefaultOptions();
-    const { result } = renderHook(() =>
-      useTerminalWebSocket('session-1', 'worker-1', options)
-    );
-
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-    });
-
-    act(() => {
-      result.current.sendImage('base64data', 'image/png');
-    });
-
-    expect(ws?.send).toHaveBeenCalledWith(JSON.stringify({ type: 'image', data: 'base64data', mimeType: 'image/png' }));
-  });
-
   it('should reconnect when sessionId or workerId changes', async () => {
     const options = createDefaultOptions();
     const { rerender } = renderHook(

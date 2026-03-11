@@ -924,3 +924,4 @@ describe('Lazy history loading optimization', () => {
     });
   });
 });
+

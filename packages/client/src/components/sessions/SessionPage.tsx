@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
@@ -17,7 +17,7 @@ import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { resolveResumedState } from './sessionResumedState';
 import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
-import { MessagePanel } from './MessagePanel';
+import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { logger } from '../../lib/logger';
 
 type PageState =
@@ -93,6 +93,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Track all worker activity states for the session (for EndSessionDialog warning)
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
+  const messagePanelRef = useRef<MessagePanelHandle>(null);
   const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
@@ -310,8 +311,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         setState(fallbackState);
         return;
       case 'success':
-        setState(result.newState);
-        return;
       case 'session_gone':
         setState(result.newState);
         return;
@@ -542,6 +541,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
             onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
             onResumeSession={handleResumeSession}
+            onFilesReceived={(files) => messagePanelRef.current?.addFiles(files)}
             hideStatusBar
           />
         )}
@@ -607,6 +607,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Message panel - only shown for agent workers */}
       {activeTab?.workerType === 'agent' && activeTabId && (
         <MessagePanel
+          ref={messagePanelRef}
           sessionId={sessionId}
           targetWorkerId={activeTabId}
           newMessage={lastMessage}
