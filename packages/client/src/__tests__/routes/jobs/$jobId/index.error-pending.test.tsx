@@ -2,7 +2,7 @@ import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../../test/renderWithRouter';
-import { JobDetailPending, JobDetailError } from '../index';
+import { JobDetailPending, JobDetailError } from '../../../../routes/jobs/$jobId/index';
 
 afterEach(() => {
   cleanup();

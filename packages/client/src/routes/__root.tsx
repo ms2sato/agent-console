@@ -4,9 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, resumeSession } from '../lib/api';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
-import { WarningIcon, ChevronRightIcon, MenuIcon, LayoutListIcon } from '../components/Icons';
-import { MobileSidebarDrawer } from '../components/sidebar/MobileSidebarDrawer';
-import { MobileNavMenu } from '../components/header/MobileNavMenu';
+import { WarningIcon, ChevronRightIcon } from '../components/Icons';
+import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { WebhookConfigBanner } from '../components/ui/WebhookConfigBanner';
@@ -288,28 +287,33 @@ function RootLayout() {
               <RepositoriesNavLink />
             </nav>
 
-            <div className="ml-auto flex items-center gap-1 md:hidden">
-              <button
-                onClick={() => setMobileSidebarOpen(true)}
-                className="relative p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
-                aria-label="Open sessions"
-              >
-                <LayoutListIcon className="w-5 h-5" />
-                {hasAnyAsking && (
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-yellow-400 rounded-full" aria-hidden="true" />
-                )}
-              </button>
-              <button
-                onClick={() => setMobileNavOpen(!mobileNavOpen)}
-                className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"
-                aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
-                aria-expanded={mobileNavOpen}
-              >
-                <MenuIcon className="w-5 h-5" />
-              </button>
-            </div>
-
-            <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+            {isMobile && (
+              <MobileHeaderControls
+                mobileNavOpen={mobileNavOpen}
+                mobileSidebarOpen={mobileSidebarOpen}
+                hasAnyAsking={hasAnyAsking}
+                onOpenSidebar={() => setMobileSidebarOpen(true)}
+                onCloseSidebar={() => setMobileSidebarOpen(false)}
+                onToggleNav={() => setMobileNavOpen(!mobileNavOpen)}
+                onCloseNav={() => setMobileNavOpen(false)}
+                sidebarContent={
+                  <ActiveSessionsSidebar
+                    collapsed={false}
+                    onToggle={() => setMobileSidebarOpen(false)}
+                    sessions={activeSessions}
+                    width={288}
+                    onWidthChange={() => {}}
+                    creationTasks={worktreeCreationTasks.tasks}
+                    onRemoveCreationTask={worktreeCreationTasks.removeTask}
+                    worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+                    onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+                    pausedSessions={pausedSessions}
+                    onResumeSession={handleResumeFromSidebar}
+                    hideResizeHandle
+                  />
+                }
+              />
+            )}
           </header>
           <ConnectionBanner connected={connected} hasEverConnected={hasEverConnected} />
           <WebhookConfigBanner />
@@ -333,25 +337,6 @@ function RootLayout() {
               <Outlet />
             </main>
           </div>
-
-          {isMobile && (
-            <MobileSidebarDrawer open={mobileSidebarOpen} onClose={() => setMobileSidebarOpen(false)}>
-              <ActiveSessionsSidebar
-                collapsed={false}
-                onToggle={() => setMobileSidebarOpen(false)}
-                sessions={activeSessions}
-                width={288}
-                onWidthChange={() => {}}
-                creationTasks={worktreeCreationTasks.tasks}
-                onRemoveCreationTask={worktreeCreationTasks.removeTask}
-                worktreeDeletionTasks={worktreeDeletionTasks.tasks}
-                onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
-                pausedSessions={pausedSessions}
-                onResumeSession={handleResumeFromSidebar}
-                hideResizeHandle
-              />
-            </MobileSidebarDrawer>
-          )}
         </div>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>

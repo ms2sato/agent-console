@@ -7,7 +7,9 @@ const serverPort = process.env.PORT || 3457;
 
 export default defineConfig({
   plugins: [
-    TanStackRouterVite(),
+    TanStackRouterVite({
+      routeFileIgnorePattern: '.*\\.test\\.tsx?$',
+    }),
     react(),
     tailwindcss(),
   ],
