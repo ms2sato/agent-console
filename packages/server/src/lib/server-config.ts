@@ -70,7 +70,7 @@ export const serverConfig = {
    * - 'multi-user': Multi-user mode with OS authentication.
    */
   AUTH_MODE: (() => {
-    const mode = process.env.AUTH_MODE || 'none';
+    const mode = process.env.AUTH_MODE ?? 'none';
     if (mode !== 'none' && mode !== 'multi-user') {
       throw new Error(`Invalid AUTH_MODE: '${mode}'. Must be 'none' or 'multi-user'.`);
     }

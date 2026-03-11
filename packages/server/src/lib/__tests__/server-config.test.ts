@@ -72,6 +72,14 @@ describe('server-config', () => {
       expect(serverConfig.AUTH_MODE).toBe('multi-user');
     });
 
+    it('should throw for empty AUTH_MODE string', async () => {
+      process.env.AUTH_MODE = '';
+
+      await expect(importServerConfig()).rejects.toThrow(
+        "Invalid AUTH_MODE: ''. Must be 'none' or 'multi-user'."
+      );
+    });
+
     it('should throw for invalid AUTH_MODE value', async () => {
       process.env.AUTH_MODE = 'invalid-mode';
 

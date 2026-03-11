@@ -244,6 +244,9 @@ export class MultiUserMode implements UserMode {
 
     try {
       const secretBuffer = await fs.readFile(secretPath);
+      if (secretBuffer.length !== 32) {
+        throw new Error(`Invalid JWT secret length: expected 32 bytes, got ${secretBuffer.length}`);
+      }
       jwtSecret = new Uint8Array(secretBuffer);
       logger.info('Loaded existing JWT secret');
     } catch (err: unknown) {
