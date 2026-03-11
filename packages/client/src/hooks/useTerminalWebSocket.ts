@@ -20,7 +20,6 @@ export interface WorkerError {
 interface UseTerminalWebSocketReturn {
   sendInput: (data: string) => void;
   sendResize: (cols: number, rows: number) => void;
-  sendImage: (data: string, mimeType: string) => void;
   connected: boolean;
   error: WorkerError | null;
 }
@@ -97,9 +96,5 @@ export function useTerminalWebSocket(
     workerWs.sendResize(sessionId, workerId, cols, rows);
   }, [sessionId, workerId]);
 
-  const sendImage = useCallback((data: string, mimeType: string) => {
-    workerWs.sendImage(sessionId, workerId, data, mimeType);
-  }, [sessionId, workerId]);
-
-  return { sendInput, sendResize, sendImage, connected: state.connected, error };
+  return { sendInput, sendResize, connected: state.connected, error };
 }

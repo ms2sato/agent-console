@@ -11,6 +11,7 @@ import {
 } from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
 import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
+import { logger } from './lib/logger';
 import './styles.css';
 
 // Create a new router instance
@@ -141,10 +142,10 @@ async function initApp() {
     // Clean up expired terminal states (24 hours old)
     // This runs after server PID check, so states from previous servers are already cleared
     cleanupOldStates().catch((e) => {
-      console.warn('Failed to cleanup old terminal states:', e);
+      logger.warn('Failed to cleanup old terminal states:', e);
     });
   } catch (e) {
-    console.error('Failed to fetch config:', e);
+    logger.error('Failed to fetch config:', e);
     showConnectionError(e);
     return;
   }
@@ -163,7 +164,7 @@ async function initApp() {
 window.addEventListener('beforeunload', () => {
   if (hasPendingSaves()) {
     flushSaveManager().catch((e) => {
-      console.error('[SaveManager] Failed to flush on beforeunload:', e);
+      logger.error('[SaveManager] Failed to flush on beforeunload:', e);
     });
   }
 });

@@ -24,8 +24,6 @@ interface UseSessionStateReturn {
   handleSessionResumed: (session: Session) => void;
   /** Handle worker activity state change */
   handleWorkerActivity: (sessionId: string, workerId: string, state: AgentActivityState) => void;
-  /** Set sessions from REST API fallback */
-  setSessionsFromApi: (sessions: Session[]) => void;
 }
 
 /**
@@ -71,6 +69,33 @@ export function useSessionState(): UseSessionStateReturn {
   const handleSessionUpdated = useCallback((session: Session) => {
     setSessions(prev => prev.map(s => s.id === session.id ? session : s));
     sessionsRef.current = sessionsRef.current.map(s => s.id === session.id ? session : s);
+
+    // Prune workerActivityStates entries for workers no longer in the updated session.
+    // When a worker is deleted, the session-updated event arrives with fewer workers,
+    // but stale entries would remain in the activity map without this cleanup.
+    const currentWorkerIds = new Set(session.workers.map(w => w.id));
+    setWorkerActivityStates(prev => {
+      const sessionStates = prev[session.id];
+      if (!sessionStates) return prev;
+
+      const prunedStates: Record<string, AgentActivityState> = {};
+      let changed = false;
+      for (const [workerId, state] of Object.entries(sessionStates)) {
+        if (currentWorkerIds.has(workerId)) {
+          prunedStates[workerId] = state;
+        } else {
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+
+      if (Object.keys(prunedStates).length === 0) {
+        const next = { ...prev };
+        delete next[session.id];
+        return next;
+      }
+      return { ...prev, [session.id]: prunedStates };
+    });
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
@@ -86,11 +111,17 @@ export function useSessionState(): UseSessionStateReturn {
 
   const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
     setSessions(prev => prev.map(s =>
-      s.id === sessionId ? { ...s, pausedAt } : s
+      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' } : s
     ));
     sessionsRef.current = sessionsRef.current.map(s =>
-      s.id === sessionId ? { ...s, pausedAt } : s
+      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' } : s
     );
+    // Clean up activity states for paused session (workers are no longer running)
+    setWorkerActivityStates(prev => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
   }, []);
 
   const handleSessionResumed = useCallback((session: Session) => {
@@ -105,12 +136,6 @@ export function useSessionState(): UseSessionStateReturn {
     }));
   }, []);
 
-  const setSessionsFromApi = useCallback((apiSessions: Session[]) => {
-    if (!wsInitialized) {
-      sessionsRef.current = apiSessions;
-    }
-  }, [wsInitialized]);
-
   return {
     sessions,
     wsInitialized,
@@ -123,6 +148,5 @@ export function useSessionState(): UseSessionStateReturn {
     handleSessionPaused,
     handleSessionResumed,
     handleWorkerActivity,
-    setSessionsFromApi,
   };
 }

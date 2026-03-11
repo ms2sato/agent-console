@@ -20,6 +20,7 @@ import {
 import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
+import { logger } from '../lib/logger';
 import { ChevronDownIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
@@ -44,10 +45,12 @@ export interface TerminalProps {
   onStatusChange?: (status: ConnectionStatus, exitInfo?: { code: number; signal: string | null }) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   onRequestRestart?: (continueConversation: boolean) => void;
+  onResumeSession?: () => void;
+  onFilesReceived?: (files: File[]) => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar }: TerminalProps) {
   const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -69,6 +72,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+  const onFilesReceivedRef = useRef(onFilesReceived);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
   const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -132,15 +138,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     try {
       const serializedData = serializeAddon.serialize();
+      const serverPid = getCurrentServerPid();
       saveTerminalState(sessionId, workerId, {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
-      }).catch((e) => console.warn('[Terminal] Failed to save terminal state after history:', e));
+        ...(serverPid !== null ? { serverPid } : {}),
+      }).catch((e) => logger.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
-      console.warn('[Terminal] Failed to serialize terminal state after history:', e);
+      logger.warn('[Terminal] Failed to serialize terminal state after history:', e);
     }
   }, [sessionId, workerId]);
 
@@ -182,7 +190,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         })
-        .catch((e) => console.error('[Terminal] Failed to write history:', e));
+        .catch((e) => logger.error('[Terminal] Failed to write history:', e));
     }
   }, [updateScrollButtonVisibility, saveCurrentTerminalState]);
 
@@ -242,7 +250,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       return;
     }
 
-    console.log(`[Terminal] Worker restarted: ${sessionId}/${workerId}`);
+    logger.debug(`[Terminal] Worker restarted: ${sessionId}/${workerId}`);
 
     // Show restart notification with auto-dismiss
     if (restartNotificationTimeoutRef.current) {
@@ -256,7 +264,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Clear IndexedDB terminal cache (fire-and-forget)
     clearTerminalState(sessionId, workerId).catch((e) =>
-      console.warn('[Terminal] Failed to clear terminal cache on restart:', e)
+      logger.warn('[Terminal] Failed to clear terminal cache on restart:', e)
     );
 
     resetTerminalForFreshHistory();
@@ -274,7 +282,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onWorkerRestarted: handleWorkerRestarted,
   });
 
-  const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(
+  const { sendInput, sendResize, connected, error } = useTerminalWebSocket(
     sessionId,
     workerId,
     {
@@ -287,6 +295,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     },
     retryCount
   );
+
+  // Keep onFilesReceivedRef in sync with the prop to avoid stale closures
+  // in xterm event handlers (paste, drop) without re-running the xterm init effect
+  useEffect(() => {
+    onFilesReceivedRef.current = onFilesReceived;
+  }, [onFilesReceived]);
 
   // Sync connected value from hook to ref for use in async callbacks
   // (The ref is also updated in handleConnectionChange, but this handles the initial value)
@@ -379,15 +393,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         // Existing stale checks remain as defense-in-depth
         // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
-          console.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
-          console.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
           return;
         }
         if (stateRef.current.mountGeneration !== currentGeneration) {
-          console.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
+          logger.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
 
@@ -411,20 +425,20 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         // Silently ignore aborted operations (not an error)
         if (abortController.signal.aborted) return;
 
-        console.warn('[Terminal] Failed to load cached state:', e);
+        logger.warn('[Terminal] Failed to load cached state:', e);
         setCacheError('Failed to load cached terminal state');
 
         // Race condition check: abort if component unmounted, worker changed, or mount generation changed
         if (!stateRef.current.isMounted) {
-          console.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
           return;
         }
         if (stateRef.current.currentWorkerId !== workerId) {
-          console.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
+          logger.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
           return;
         }
         if (stateRef.current.mountGeneration !== currentGeneration) {
-          console.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
+          logger.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
           return;
         }
 
@@ -440,7 +454,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         try {
           fitAddon.fit();
         } catch (e) {
-          console.warn('Failed to fit terminal:', e);
+          logger.warn('Failed to fit terminal:', e);
         }
       }
     };
@@ -483,29 +497,59 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Handle paste with image detection
     const handlePaste = (event: ClipboardEvent) => {
       const items = event.clipboardData?.items;
-      if (!items) return;
+      if (!items || !onFilesReceivedRef.current) return;
 
+      const imageFiles: File[] = [];
       for (const item of items) {
         if (item.type.startsWith('image/')) {
-          event.preventDefault();
           const blob = item.getAsFile();
-          if (!blob) continue;
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64 = reader.result as string;
-            // Remove data URL prefix (e.g., "data:image/png;base64,")
-            const base64Data = base64.split(',')[1];
-            sendImage(base64Data, item.type);
-          };
-          reader.readAsDataURL(blob);
-          return; // Only handle first image
+          if (blob) imageFiles.push(blob);
         }
+      }
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        onFilesReceivedRef.current(imageFiles);
       }
       // If no image, let xterm handle normal text paste
     };
 
+    // Handle drag-and-drop image upload
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current++;
+      if (dragCounterRef.current === 1) {
+        setIsDragOver(true);
+      }
+    };
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+    };
+
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current--;
+      if (dragCounterRef.current === 0) {
+        setIsDragOver(false);
+      }
+    };
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+
+      if (!onFilesReceivedRef.current) return;
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      onFilesReceivedRef.current(Array.from(files));
+    };
+
     container.addEventListener('paste', handlePaste);
+    container.addEventListener('dragenter', handleDragEnter);
+    container.addEventListener('dragover', handleDragOver);
+    container.addEventListener('dragleave', handleDragLeave);
+    container.addEventListener('drop', handleDrop);
     window.addEventListener('resize', handleResize);
 
     // Listen for scroll events to update scroll-to-bottom button visibility
@@ -555,7 +599,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       // Unregister from save manager - this triggers final save (async, best-effort)
       unregisterSaveManager(sessionId, workerId)
-        .catch((e) => console.warn('[Terminal] Failed to save on unmount:', e));
+        .catch((e) => logger.warn('[Terminal] Failed to save on unmount:', e));
 
       // Reset state for conditional rendering support
       // Note: mountGeneration is NOT reset here - it's incremented on mount to detect stale operations
@@ -574,6 +618,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
+      container.removeEventListener('dragenter', handleDragEnter);
+      container.removeEventListener('dragover', handleDragOver);
+      container.removeEventListener('dragleave', handleDragLeave);
+      container.removeEventListener('drop', handleDrop);
+      dragCounterRef.current = 0;
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('scroll', handleDOMScroll, { capture: true });
       if (viewportElement) {
@@ -598,7 +647,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         terminal.dispose();
       }, 0);
     };
-  }, [sessionId, workerId, sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, sendInput, sendResize, updateScrollButtonVisibility]);
 
   // Send resize when connection is established
   useEffect(() => {
@@ -682,6 +731,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             onDeleteSession={handleDeleteSession}
             onGoToDashboard={handleGoToDashboard}
             onRestart={onRequestRestart}
+            onResumeSession={onResumeSession}
           />
         )}
         {/* Truncation warning banner */}
@@ -708,6 +758,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             >
               x
             </button>
+          </div>
+        )}
+        {/* Drag-over overlay for file drop */}
+        {isDragOver && (
+          <div className="absolute inset-0 bg-blue-500/20 border-2 border-dashed border-blue-400 flex items-center justify-center z-10 pointer-events-none">
+            <span className="text-blue-300 text-lg font-medium">Drop file here</span>
           </div>
         )}
         {/* Scroll to bottom button */}
@@ -753,8 +809,11 @@ export const MemoizedTerminal = React.memo(Terminal, (prevProps, nextProps) => {
     return false; // Changed (re-render)
   }
 
-  // onRequestRestart drives error recovery behavior and must stay current
+  // onRequestRestart and onResumeSession drive error recovery behavior and must stay current
   if (prevProps.onRequestRestart !== nextProps.onRequestRestart) {
+    return false; // Changed (re-render)
+  }
+  if (prevProps.onResumeSession !== nextProps.onResumeSession) {
     return false; // Changed (re-render)
   }
 

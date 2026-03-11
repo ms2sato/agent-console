@@ -16,6 +16,7 @@ import { Spinner } from '../ui/Spinner';
 import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
 import { sessionKeys } from '../../lib/query-keys';
 import { hasVSCode } from '../../lib/capabilities';
+import { logger } from '../../lib/logger';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'view-initial-prompt';
 
@@ -79,7 +80,7 @@ export function SessionSettingsMenu({
     try {
       await openPath(worktreePath);
     } catch (err) {
-      console.error('Failed to open path:', err);
+      logger.error('Failed to open path:', err);
     }
   };
 
@@ -88,7 +89,7 @@ export function SessionSettingsMenu({
     try {
       await openInVSCode(worktreePath);
     } catch (err) {
-      console.error('Failed to open in VS Code:', err);
+      logger.error('Failed to open in VS Code:', err);
     }
   };
 
@@ -98,7 +99,7 @@ export function SessionSettingsMenu({
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
-      console.error('Failed to copy path:', err);
+      logger.error('Failed to copy path:', err);
     }
     setIsMenuOpen(false);
   };

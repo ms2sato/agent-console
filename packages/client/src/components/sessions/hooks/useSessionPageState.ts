@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, type MutableRefObject } from 'react'
 import { getSession, ServerUnavailableError } from '../../../lib/api'
 import { useAppWsEvent } from '../../../hooks/useAppWs'
+import { resolveResumedState } from '../sessionResumedState'
+import { logger } from '../../../lib/logger'
 import type { Session, AgentActivityState, WorkerActivityInfo, WorkerMessage, Worker } from '@agent-console/shared'
 
 export type PageState =
@@ -109,8 +111,11 @@ export function useSessionPageState({
     if (resumedSession.id !== sessionId) return
     if (stateRef.current.type === 'restarting') return
 
-    setState({ type: 'active', session: resumedSession })
-    updateTabsFromSessionRef.current(resumedSession.workers)
+    const nextState = resolveResumedState(resumedSession)
+    setState(nextState)
+    if (nextState.type === 'active') {
+      updateTabsFromSessionRef.current(resumedSession.workers)
+    }
   }, [sessionId, updateTabsFromSessionRef])
 
   // Handle sessions-sync (fires after WebSocket reconnects to reconcile stale state)
@@ -156,7 +161,7 @@ export function useSessionPageState({
           setState(nextState)
         } catch (error) {
           if (syncRequestIdRef.current !== requestId) return  // stale response
-          console.error('Failed to check session after sync:', error)
+          logger.error('Failed to check session after sync:', error)
           if (error instanceof ServerUnavailableError) {
             setState({ type: 'server_unavailable' })
           }
@@ -196,7 +201,7 @@ export function useSessionPageState({
         setState(sessionToPageState(session))
       } catch (error) {
         if (cancelled) return
-        console.error('Failed to check session:', error)
+        logger.error('Failed to check session:', error)
         if (error instanceof ServerUnavailableError) {
           setState({ type: 'server_unavailable' })
         } else {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, startTransition } from 'react
 import { createWorker, deleteWorker } from '../../../lib/api';
 import { getDefaultTabId, isWorkerIdReady } from '../sessionTabRouting';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
+import { logger } from '../../../lib/logger';
 
 export interface Tab {
   id: string;
@@ -136,7 +137,7 @@ export function useTabManagement({
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
     } catch (error) {
-      console.error('Failed to create terminal worker:', error);
+      logger.error('Failed to create terminal worker:', error);
       showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
     }
   }, [activeSession, sessionId, tabs, navigateToWorker, showError]);
@@ -169,7 +170,7 @@ export function useTabManagement({
         navigateToWorker(newActiveTabId);
       }
     } catch (error) {
-      console.error('Failed to delete worker:', error);
+      logger.error('Failed to delete worker:', error);
     }
   }, [sessionId, tabs, activeTabId, navigateToWorker]);
 

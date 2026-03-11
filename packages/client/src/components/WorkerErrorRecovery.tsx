@@ -1,5 +1,5 @@
 import type { WorkerErrorCode } from '@agent-console/shared';
-import { AlertCircleIcon, RefreshIcon, TrashIcon } from './Icons';
+import { AlertCircleIcon, PlayIcon, RefreshIcon, TrashIcon } from './Icons';
 
 export interface WorkerErrorRecoveryProps {
   errorCode?: WorkerErrorCode;
@@ -8,12 +8,13 @@ export interface WorkerErrorRecoveryProps {
   onDeleteSession?: () => void;
   onGoToDashboard?: () => void;
   onRestart?: (continueConversation: boolean) => void;
+  onResumeSession?: () => void;
 }
 
 interface ErrorDetails {
   title: string;
   description: string;
-  primaryAction: 'retry' | 'delete-session' | 'go-dashboard' | 'restart';
+  primaryAction: 'retry' | 'delete-session' | 'go-dashboard' | 'restart' | 'resume-session';
 }
 
 function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
@@ -54,6 +55,12 @@ function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
         description: 'This session has been deleted.',
         primaryAction: 'go-dashboard',
       };
+    case 'SESSION_PAUSED':
+      return {
+        title: 'Session Paused',
+        description: 'This session has been paused.',
+        primaryAction: 'resume-session',
+      };
     default:
       return {
         title: 'Worker Error',
@@ -65,7 +72,7 @@ function getErrorDetails(errorCode?: WorkerErrorCode): ErrorDetails {
 
 function renderActions(
   primaryAction: ErrorDetails['primaryAction'],
-  { onRetry, onDeleteSession, onGoToDashboard, onRestart }: Pick<WorkerErrorRecoveryProps, 'onRetry' | 'onDeleteSession' | 'onGoToDashboard' | 'onRestart'>,
+  { onRetry, onDeleteSession, onGoToDashboard, onRestart, onResumeSession }: Pick<WorkerErrorRecoveryProps, 'onRetry' | 'onDeleteSession' | 'onGoToDashboard' | 'onRestart' | 'onResumeSession'>,
 ) {
   switch (primaryAction) {
     case 'retry':
@@ -118,6 +125,26 @@ function renderActions(
         >
           Go to Dashboard
         </button>
+      );
+    case 'resume-session':
+      return (
+        <>
+          <button
+            onClick={() => (onResumeSession ?? onGoToDashboard)?.()}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+          >
+            <PlayIcon className="w-4 h-4" />
+            {onResumeSession ? 'Resume Session' : 'Go to Dashboard'}
+          </button>
+          {onResumeSession && (
+            <button
+              onClick={() => onGoToDashboard?.()}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-gray-300 rounded-md transition-colors"
+            >
+              Go to Dashboard
+            </button>
+          )}
+        </>
       );
     case 'restart':
       if (!onRestart) {
@@ -176,6 +203,7 @@ export function WorkerErrorRecovery({
   onDeleteSession,
   onGoToDashboard,
   onRestart,
+  onResumeSession,
 }: WorkerErrorRecoveryProps) {
   const { title, description, primaryAction } = getErrorDetails(errorCode);
 
@@ -189,7 +217,7 @@ export function WorkerErrorRecovery({
         <p className="text-gray-300 mb-2">{description}</p>
         <p className="text-gray-500 text-sm mb-6">{errorMessage}</p>
         <div className="flex justify-center gap-3">
-          {renderActions(primaryAction, { onRetry, onDeleteSession, onGoToDashboard, onRestart })}
+          {renderActions(primaryAction, { onRetry, onDeleteSession, onGoToDashboard, onRestart, onResumeSession })}
         </div>
       </div>
     </div>

@@ -1,17 +1,19 @@
 /**
  * Tests for SessionPage logic that remains in SessionPage.tsx.
  *
- * State management tests (sessions-sync, session-paused, etc.) have been moved
- * to useSessionPageState.test.ts which tests the actual production hook.
- *
- * This file tests:
- * - sessionToPageState (pure function, re-exported from SessionPage)
- * - handleWorkerRestart (extracted pure function in sessionPageActions)
+ * Tests the extracted workerRestart module directly, which is the same
+ * pure logic used by SessionPage.tsx. This avoids re-implementing production
+ * code in tests (logic duplication anti-pattern).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import type { Session, Worker } from '@agent-console/shared';
-import { sessionToPageState, type PageState } from '../SessionPage';
-import { handleWorkerRestart } from '../sessionPageActions';
+import {
+  extractRestartableSession,
+  findAgentWorker,
+  executeWorkerRestart,
+  type WorkerRestartResult,
+} from '../workerRestart';
+import { sessionToPageState } from '../SessionPage';
 
 // Test helpers
 
@@ -35,35 +37,88 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
   } as Session;
 }
 
-describe('SessionPage handleWorkerRestart logic', () => {
+describe('extractRestartableSession', () => {
+  it('should return session for active state', () => {
+    const session = createMockSession();
+    const result = extractRestartableSession('active', session);
+    expect(result).toBe(session);
+  });
+
+  it('should return session for disconnected state', () => {
+    const session = createMockSession();
+    const result = extractRestartableSession('disconnected', session);
+    expect(result).toBe(session);
+  });
+
+  it('should return null for loading state', () => {
+    expect(extractRestartableSession('loading', undefined)).toBeNull();
+  });
+
+  it('should return null for not_found state', () => {
+    expect(extractRestartableSession('not_found', undefined)).toBeNull();
+  });
+
+  it('should return null for server_unavailable state', () => {
+    expect(extractRestartableSession('server_unavailable', undefined)).toBeNull();
+  });
+
+  it('should return null for restarting state', () => {
+    expect(extractRestartableSession('restarting', undefined)).toBeNull();
+  });
+
+  it('should return null for paused state', () => {
+    // Paused state has a session but is not restartable
+    expect(extractRestartableSession('paused', createMockSession())).toBeNull();
+  });
+});
+
+describe('findAgentWorker', () => {
+  it('should find the first agent worker', () => {
+    const workers: Worker[] = [
+      { id: 'terminal-1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), activated: true },
+      { id: 'agent-1', type: 'agent', name: 'Claude Code 1', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      { id: 'agent-2', type: 'agent', name: 'Claude Code 2', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    const result = findAgentWorker(workers);
+    expect(result?.id).toBe('agent-1');
+  });
+
+  it('should return undefined when no agent worker exists', () => {
+    const workers: Worker[] = [
+      { id: 'terminal-1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(findAgentWorker(workers)).toBeUndefined();
+  });
+});
+
+describe('executeWorkerRestart', () => {
   let mockRestartAgentWorker: ReturnType<typeof mock>;
   let mockGetSession: ReturnType<typeof mock>;
-  let mockShowError: ReturnType<typeof mock>;
   let mockUpdateTabsFromSession: ReturnType<typeof mock>;
 
   beforeEach(() => {
     mockRestartAgentWorker = mock(() => Promise.resolve({ worker: { id: 'agent-worker-1' } }));
     mockGetSession = mock(() => Promise.resolve(createMockSession()));
-    mockShowError = mock(() => {});
     mockUpdateTabsFromSession = mock(() => {});
   });
 
   function callRestart(overrides: {
-    state?: PageState;
+    session?: Session;
     sessionId?: string;
     continueConversation?: boolean;
-  } = {}): Promise<PageState> {
-    return handleWorkerRestart(
-      overrides.state ?? { type: 'active', session: createMockSession() },
-      overrides.sessionId ?? 'session-1',
-      overrides.continueConversation ?? true,
-      {
+  } = {}): Promise<WorkerRestartResult> {
+    return executeWorkerRestart({
+      session: overrides.session ?? createMockSession(),
+      sessionId: overrides.sessionId ?? 'session-1',
+      continueConversation: overrides.continueConversation ?? true,
+      deps: {
         restartAgentWorker: mockRestartAgentWorker,
         getSession: mockGetSession,
-        showError: mockShowError,
-        updateTabsFromSession: mockUpdateTabsFromSession,
       },
-    );
+      updateTabsFromSession: mockUpdateTabsFromSession,
+    });
   }
 
   describe('restart with continue flag', () => {
@@ -83,134 +138,94 @@ describe('SessionPage handleWorkerRestart logic', () => {
   });
 
   describe('state transitions on success', () => {
-    it('should transition to active state when updated session is active', async () => {
+    it('should return active state when updated session is active', async () => {
       const updatedSession = createMockSession({ status: 'active' });
       mockGetSession.mockReturnValue(Promise.resolve(updatedSession));
 
       const result = await callRestart();
 
-      expect(result.type).toBe('active');
-      if (result.type === 'active') {
-        expect(result.session).toBe(updatedSession);
+      expect(result.outcome).toBe('success');
+      if (result.outcome === 'success') {
+        expect(result.newState.type).toBe('active');
+        if (result.newState.type === 'active') {
+          expect(result.newState.session).toBe(updatedSession);
+        }
       }
-      expect(mockUpdateTabsFromSession).toHaveBeenCalledWith([]);
+      expect(mockUpdateTabsFromSession).toHaveBeenCalledWith(updatedSession.workers);
     });
 
-    it('should transition to disconnected state when updated session is inactive', async () => {
+    it('should return disconnected state when updated session is inactive', async () => {
       const updatedSession = createMockSession({ status: 'inactive' });
       mockGetSession.mockReturnValue(Promise.resolve(updatedSession));
 
       const result = await callRestart();
 
-      expect(result.type).toBe('disconnected');
-      if (result.type === 'disconnected') {
-        expect(result.session).toBe(updatedSession);
+      expect(result.outcome).toBe('success');
+      if (result.outcome === 'success') {
+        expect(result.newState.type).toBe('disconnected');
+        if (result.newState.type === 'disconnected') {
+          expect(result.newState.session).toBe(updatedSession);
+        }
       }
     });
 
-    it('should transition to not_found when session no longer exists after restart', async () => {
+    it('should return session_gone when session no longer exists after restart', async () => {
       mockGetSession.mockReturnValue(Promise.resolve(null));
 
       const result = await callRestart();
 
-      expect(result.type).toBe('not_found');
+      expect(result.outcome).toBe('session_gone');
     });
   });
 
-  describe('works from disconnected state', () => {
-    it('should restart from disconnected state same as active', async () => {
+  describe('works from disconnected state session', () => {
+    it('should restart with an inactive session same as active', async () => {
       const session = createMockSession({ status: 'inactive' });
       const updatedSession = createMockSession({ status: 'active' });
       mockGetSession.mockReturnValue(Promise.resolve(updatedSession));
 
-      const result = await callRestart({
-        state: { type: 'disconnected', session },
-      });
+      const result = await callRestart({ session });
 
       expect(mockRestartAgentWorker).toHaveBeenCalledTimes(1);
-      expect(result.type).toBe('active');
+      expect(result.outcome).toBe('success');
+      if (result.outcome === 'success') {
+        expect(result.newState.type).toBe('active');
+      }
     });
   });
 
   describe('error when no agent worker found', () => {
-    it('should show error and return original state when session has no agent workers', async () => {
+    it('should return no_agent_worker when session has no agent workers', async () => {
       const session = createMockSession({
         workers: [
           { id: 'terminal-worker-1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), activated: true },
         ] as Worker[],
       });
-      const state: PageState = { type: 'active', session };
 
-      const result = await callRestart({ state });
+      const result = await callRestart({ session });
 
-      expect(mockShowError).toHaveBeenCalledTimes(1);
-      expect(mockShowError).toHaveBeenCalledWith('Restart Failed', 'No agent worker found in session');
-      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
-      expect(result).toBe(state);
-    });
-  });
-
-  describe('no-op for invalid states', () => {
-    it('should return original state when state is loading', async () => {
-      const state: PageState = { type: 'loading' };
-
-      const result = await callRestart({ state });
-
-      expect(result).toBe(state);
-      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
-    });
-
-    it('should return original state when state is paused', async () => {
-      const state: PageState = { type: 'paused', session: createMockSession() };
-
-      const result = await callRestart({ state });
-
-      expect(result).toBe(state);
-      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
-    });
-
-    it('should return original state when state is not_found', async () => {
-      const state: PageState = { type: 'not_found' };
-
-      const result = await callRestart({ state });
-
-      expect(result).toBe(state);
-      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
-    });
-
-    it('should return original state when state is server_unavailable', async () => {
-      const state: PageState = { type: 'server_unavailable' };
-
-      const result = await callRestart({ state });
-
-      expect(result).toBe(state);
-      expect(mockRestartAgentWorker).not.toHaveBeenCalled();
-    });
-
-    it('should return original state when state is restarting', async () => {
-      const state: PageState = { type: 'restarting' };
-
-      const result = await callRestart({ state });
-
-      expect(result).toBe(state);
+      expect(result.outcome).toBe('no_agent_worker');
+      if (result.outcome === 'no_agent_worker') {
+        expect(result.errorTitle).toBe('Restart Failed');
+        expect(result.errorMessage).toBe('No agent worker found in session');
+      }
       expect(mockRestartAgentWorker).not.toHaveBeenCalled();
     });
   });
 
   describe('API failure handling', () => {
-    it('should show error notification and revert to disconnected state when API call fails', async () => {
+    it('should return error with message when API call fails', async () => {
       const session = createMockSession();
       mockRestartAgentWorker.mockReturnValue(Promise.reject(new Error('Network error: server unreachable')));
 
-      const result = await callRestart({
-        state: { type: 'active', session },
-      });
+      const result = await callRestart({ session });
 
-      expect(mockShowError).toHaveBeenCalledTimes(1);
-      expect(mockShowError).toHaveBeenCalledWith('Restart Failed', 'Network error: server unreachable');
-      expect(result.type).toBe('disconnected');
-      if (result.type === 'disconnected') {
-        expect(result.session).toBe(session);
+      expect(result.outcome).toBe('error');
+      if (result.outcome === 'error') {
+        expect(result.errorTitle).toBe('Restart Failed');
+        expect(result.errorMessage).toBe('Network error: server unreachable');
+        expect(result.fallbackState.type).toBe('disconnected');
+        expect(result.fallbackState.session).toBe(session);
       }
     });
 
@@ -219,18 +234,33 @@ describe('SessionPage handleWorkerRestart logic', () => {
 
       const result = await callRestart();
 
-      expect(mockShowError).toHaveBeenCalledWith('Restart Failed', 'Failed to restart session');
-      expect(result.type).toBe('disconnected');
+      expect(result.outcome).toBe('error');
+      if (result.outcome === 'error') {
+        expect(result.errorMessage).toBe('Failed to restart session');
+      }
     });
 
-    it('should show error and revert when getSession fails after successful restart', async () => {
+    it('should return error when getSession fails after successful restart', async () => {
       mockGetSession.mockReturnValue(Promise.reject(new Error('Failed to reload session')));
 
       const result = await callRestart();
 
       expect(mockRestartAgentWorker).toHaveBeenCalledTimes(1);
-      expect(mockShowError).toHaveBeenCalledWith('Restart Failed', 'Failed to reload session');
-      expect(result.type).toBe('disconnected');
+      expect(result.outcome).toBe('error');
+      if (result.outcome === 'error') {
+        expect(result.errorMessage).toBe('Failed to reload session');
+      }
+    });
+  });
+
+  describe('skipped outcome type contract', () => {
+    it('should be a valid WorkerRestartResult outcome that callers must handle', () => {
+      // The 'skipped' outcome is part of the WorkerRestartResult union type.
+      // While executeWorkerRestart does not currently produce it, callers (SessionPage)
+      // must handle it correctly by resetting the UI state from 'restarting' back to
+      // the pre-restart state. This test documents the type contract.
+      const skippedResult: WorkerRestartResult = { outcome: 'skipped' };
+      expect(skippedResult.outcome).toBe('skipped');
     });
   });
 
@@ -244,7 +274,7 @@ describe('SessionPage handleWorkerRestart logic', () => {
         ] as Worker[],
       });
 
-      await callRestart({ state: { type: 'active', session } });
+      await callRestart({ session });
 
       // Should use the first agent worker (agent-1), not terminal-1 or agent-2
       expect(mockRestartAgentWorker.mock.calls[0][1]).toBe('agent-1');

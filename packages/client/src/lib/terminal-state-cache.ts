@@ -1,4 +1,5 @@
 import { get, set, del, keys } from 'idb-keyval';
+import { logger } from './logger.js';
 
 const PREFIX = 'terminal:';
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -35,7 +36,12 @@ export function resetCurrentServerPid(): void {
  * @returns true if cache was invalidated due to server restart
  */
 export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
-  const storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  let storedPidStr: string | null = null;
+  try {
+    storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  } catch (e) {
+    logger.warn('[TerminalCache] Failed to read serverPid from localStorage:', e);
+  }
   const storedPid = storedPidStr ? parseInt(storedPidStr, 10) : null;
 
   currentServerPid = serverPid;
@@ -44,12 +50,15 @@ export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
   try {
     localStorage.setItem(SERVER_PID_KEY, String(serverPid));
   } catch (e) {
-    console.warn('[TerminalCache] Failed to persist serverPid to localStorage:', e);
+    logger.warn('[TerminalCache] Failed to persist serverPid to localStorage:', e);
+    // Cannot detect restarts across page reloads without localStorage; clear all cache to be safe
+    await clearAllTerminalStates();
+    return false;
   }
 
   // If stored PID exists and differs from current, server has restarted
   if (storedPid !== null && !isNaN(storedPid) && storedPid !== serverPid) {
-    console.info(`[TerminalCache] Server restart detected (PID changed: ${storedPid} -> ${serverPid}), clearing all cached states`);
+    logger.info(`[TerminalCache] Server restart detected (PID changed: ${storedPid} -> ${serverPid}), clearing all cached states`);
     await clearAllTerminalStates();
     return true;
   }
@@ -122,7 +131,7 @@ export async function saveTerminalState(
     const key = buildKey(sessionId, workerId);
     await set(key, state);
   } catch (error) {
-    console.warn('Failed to save terminal state to IndexedDB:', error);
+    logger.warn('Failed to save terminal state to IndexedDB:', error);
   }
 }
 
@@ -160,7 +169,7 @@ export async function loadTerminalState(
     }
 
     if (!isCachedState(value)) {
-      console.warn('Invalid cached state format, removing:', key);
+      logger.warn('Invalid cached state format, removing:', key);
       await del(key);
       return null;
     }
@@ -170,10 +179,10 @@ export async function loadTerminalState(
       return null;
     }
 
-    // Validate serverPid if both are available
-    // If the cached state has a serverPid and it doesn't match current, invalidate
-    if (value.serverPid !== undefined && currentServerPid !== null && value.serverPid !== currentServerPid) {
-      console.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid}, current: ${currentServerPid}), removing:`, key);
+    // Invalidate if currentServerPid is known and cached entry doesn't match.
+    // This also invalidates legacy entries without serverPid, since undefined !== currentServerPid.
+    if (currentServerPid !== null && value.serverPid !== currentServerPid) {
+      logger.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid ?? 'none'}, current: ${currentServerPid}), removing:`, key);
       await del(key);
       return null;
     }
@@ -181,7 +190,7 @@ export async function loadTerminalState(
     return value;
   } catch (error) {
     if (signal?.aborted) return null;
-    console.warn('Failed to load terminal state from IndexedDB:', error);
+    logger.warn('Failed to load terminal state from IndexedDB:', error);
     return null;
   }
 }
@@ -200,7 +209,7 @@ export async function clearTerminalState(
     const key = buildKey(sessionId, workerId);
     await del(key);
   } catch (error) {
-    console.warn('Failed to clear terminal state from IndexedDB:', error);
+    logger.warn('Failed to clear terminal state from IndexedDB:', error);
   }
 }
 
@@ -233,13 +242,13 @@ export async function cleanupOldStates(): Promise<void> {
           await del(key);
         }
       } catch (error) {
-        console.warn(`Failed to check/delete key ${key}:`, error);
+        logger.warn(`Failed to check/delete key ${key}:`, error);
       }
     });
 
     await Promise.all(deletePromises);
   } catch (error) {
-    console.warn('Failed to cleanup old terminal states:', error);
+    logger.warn('Failed to cleanup old terminal states:', error);
   }
 }
 
@@ -260,8 +269,8 @@ export async function clearAllTerminalStates(): Promise<void> {
     const deletePromises = terminalKeys.map((key) => del(key));
     await Promise.all(deletePromises);
 
-    console.info(`[TerminalCache] Cleared ${terminalKeys.length} cached terminal states`);
+    logger.info(`[TerminalCache] Cleared ${terminalKeys.length} cached terminal states`);
   } catch (error) {
-    console.warn('Failed to clear all terminal states:', error);
+    logger.warn('Failed to clear all terminal states:', error);
   }
 }

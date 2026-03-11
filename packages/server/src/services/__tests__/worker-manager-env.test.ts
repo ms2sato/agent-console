@@ -5,6 +5,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
+import { SingleUserMode } from '../user-mode.js';
 import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 
@@ -31,7 +32,8 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
     ptyFactory.reset();
-    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+    workerManager = new WorkerManager(userMode, agentManager);
   });
 
   afterEach(async () => {

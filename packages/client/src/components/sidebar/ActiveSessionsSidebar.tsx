@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
@@ -401,7 +402,7 @@ export function ActiveSessionsSidebar({
     try {
       await onResumeSession?.(sessionId);
     } catch (error) {
-      console.error('Failed to resume session:', error);
+      logger.error('Failed to resume session:', error);
       return; // Do not navigate if resume failed
     }
     navigate({ to: '/sessions/$sessionId', params: { sessionId } });

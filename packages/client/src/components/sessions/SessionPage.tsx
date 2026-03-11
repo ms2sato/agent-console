@@ -8,15 +8,16 @@ import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
 import { getSession, restartAgentWorker, resumeSession, openPath } from '../../lib/api';
-import { handleWorkerRestart as handleWorkerRestartAction } from './sessionPageActions';
 import { formatPath } from '../../lib/path';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
-import { useSessionPageState } from './hooks/useSessionPageState';
+import { useSessionPageState, type PageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getNextTabIndex } from './tabKeyboardNavigation';
+import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import type { Session, Worker } from '@agent-console/shared';
-import { MessagePanel } from './MessagePanel';
+import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
+import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';
 export type { PageState } from './hooks/useSessionPageState';
@@ -81,6 +82,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const { errorDialogProps, showError } = useErrorDialog();
+  const messagePanelRef = useRef<MessagePanelHandle>(null);
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -159,18 +161,61 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     document.getElementById(`worker-tab-${newTabId}`)?.focus();
   }, [activeTabId, tabs, handleTabClick]);
 
+  // Resume handler for paused session recovery.
+  // Used by the worker error recovery overlay in Terminal when SESSION_PAUSED is received.
+  const handleResumeSession = useCallback(async () => {
+    if (isResuming) return;
+    setIsResuming(true);
+    try {
+      await resumeSession(sessionId);
+      // After resume, reload the page to reconnect
+      window.location.reload();
+    } catch (error) {
+      logger.error('Failed to resume session:', error);
+      showError('Resume Failed', error instanceof Error ? error.message : 'Failed to resume session');
+      setIsResuming(false);
+    }
+  }, [sessionId, isResuming, showError]);
+
   // Restart handler: works from both active and disconnected states.
   const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
-    if (state.type !== 'active' && state.type !== 'disconnected') return;
+    const session = extractRestartableSession(state.type, 'session' in state ? state.session : undefined);
+    if (!session) return;
+
+    // Capture fallback state before transitioning to 'restarting', so we can
+    // restore correctly if the restart is skipped or fails early.
+    const fallbackState: PageState = state.type === 'disconnected'
+      ? { type: 'disconnected', session }
+      : { type: 'active', session };
 
     setState({ type: 'restarting' });
-    const nextState = await handleWorkerRestartAction(state, sessionId, continueConversation, {
-      restartAgentWorker,
-      getSession,
-      showError,
+
+    const result = await executeWorkerRestart({
+      session,
+      sessionId,
+      continueConversation,
+      deps: { restartAgentWorker, getSession },
       updateTabsFromSession,
     });
-    setState(nextState);
+
+    switch (result.outcome) {
+      case 'skipped':
+        setState(fallbackState);
+        return;
+      case 'no_agent_worker':
+        showError(result.errorTitle, result.errorMessage);
+        setState(fallbackState);
+        return;
+      case 'success':
+      case 'session_gone':
+        setState(result.newState);
+        return;
+      case 'error':
+        logger.error('Failed to restart session:', result.errorMessage);
+        showError(result.errorTitle, result.errorMessage);
+        setState(result.fallbackState);
+        return;
+    }
   }, [sessionId, state, updateTabsFromSession, showError]);
 
   // Loading state
@@ -391,6 +436,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             onStatusChange={handleStatusChange}
             onActivityChange={activeTab.workerType === 'agent' ? setActivityState : undefined}
             onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
+            onResumeSession={handleResumeSession}
+            onFilesReceived={(files) => messagePanelRef.current?.addFiles(files)}
             hideStatusBar
           />
         )}
@@ -456,6 +503,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Message panel - only shown for agent workers */}
       {activeTab?.workerType === 'agent' && activeTabId && (
         <MessagePanel
+          ref={messagePanelRef}
           sessionId={sessionId}
           targetWorkerId={activeTabId}
           newMessage={lastMessage}

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
-import * as os from 'os';
 import * as fs from 'fs';
 import type {
   Session,
@@ -113,7 +112,7 @@ import { JobQueue } from '../jobs/job-queue.js';
 import { registerJobHandlers } from '../jobs/handlers.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 import type { AppBindings } from '../app-context.js';
-import { asAppContext } from './test-utils.js';
+import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
 
 // =============================================================================
 // Test Setup
@@ -310,13 +309,16 @@ describe('API Routes Integration', () => {
   });
 
   describe('GET /api/config', () => {
-    it('should return config with homeDir', async () => {
+    it('should return config with homeDir from authenticated user', async () => {
       const app = await createApp();
       const res = await app.request('/api/config');
       expect(res.status).toBe(200);
 
-      const body = (await res.json()) as { homeDir: string };
-      expect(body.homeDir).toBe(os.homedir());
+      const body = (await res.json()) as { homeDir: string; authMode: string };
+      // homeDir comes from the authenticated user, not the server process
+      expect(body.homeDir).toBe('/home/testuser');
+      // authMode reflects the server's AUTH_MODE config (default: 'none')
+      expect(body.authMode).toBe('none');
     });
   });
 
@@ -351,6 +353,24 @@ describe('API Routes Integration', () => {
 
         // Verify PTY was spawned (only agent worker has PTY)
         expect(mockPtyInstances.length).toBe(1);
+      });
+
+      it('should set createdBy to the authenticated user ID', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(res.status).toBe(201);
+
+        const body = (await res.json()) as { session: Session };
+        expect(body.session.createdBy).toBe(TEST_AUTH_USER.id);
       });
 
       it('should return 400 for non-existent locationPath', async () => {

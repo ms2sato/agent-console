@@ -15,6 +15,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
+import { SingleUserMode } from '../user-mode.js';
 import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-lifecycle-manager.js';
 import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
 import type { InternalSession } from '../internal-types.js';
@@ -136,7 +137,8 @@ describe('WorkerLifecycleManager', () => {
       onDiffBaseCommitChanged: mockOnDiffBaseCommitChanged as any,
     };
 
-    workerManager = new WorkerManager(ptyFactory.provider, agentManager);
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+    workerManager = new WorkerManager(userMode, agentManager);
     lifecycleManager = new WorkerLifecycleManager(createDeps());
   });
 
@@ -357,6 +359,24 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.deleteWorker(session.id, worker!.id);
 
       expect(mockPersistSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('should call onSessionUpdated after deletion to broadcast updated session', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'terminal',
+      });
+      const deletedWorkerId = worker!.id;
+
+      mockOnSessionUpdated.mockClear();
+      await lifecycleManager.deleteWorker(session.id, deletedWorkerId);
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      // The broadcast session should not contain the deleted worker
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(broadcastedSession.workers.find(w => w.id === deletedWorkerId)).toBeUndefined();
     });
   });
 
@@ -1002,11 +1022,11 @@ describe('WorkerLifecycleManager', () => {
     });
 
     it('should return ACTIVATION_FAILED on PTY activation error', async () => {
-      // Create a PTY provider that throws on spawn
-      const failingProvider = {
+      // Create a UserMode that throws on spawnPty
+      const failingUserMode = new SingleUserMode({
         spawn: () => { throw new Error('PTY spawn failed'); },
-      };
-      const failingWorkerManager = new WorkerManager(failingProvider as any, agentManager);
+      } as any, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+      const failingWorkerManager = new WorkerManager(failingUserMode, agentManager);
       const manager = new WorkerLifecycleManager(createDeps({
         workerManager: failingWorkerManager,
       }));

@@ -17,7 +17,38 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks, type UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
-import type { Session, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
+import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
+import { clearTerminalState } from '../lib/terminal-state-cache';
+import { disconnectSession } from '../lib/worker-websocket';
+import { logger } from '../lib/logger';
+
+/**
+ * Context for session data managed by the root layout.
+ * Provides the single source of truth for session list and worker activity states
+ * to all child routes, avoiding duplicate WebSocket subscriptions.
+ */
+export interface SessionDataContextValue {
+  /** All sessions (active and paused) */
+  sessions: Session[];
+  /** Whether the initial WebSocket sync has been received */
+  wsInitialized: boolean;
+  /** Worker activity states: { sessionId: { workerId: state } } */
+  workerActivityStates: Record<string, Record<string, AgentActivityState>>;
+}
+
+export const SessionDataContext = createContext<SessionDataContextValue | null>(null);
+
+/**
+ * Hook to access session data from the root layout context.
+ * Must be used within a route that is a child of __root.
+ */
+export function useSessionDataContext(): SessionDataContextValue {
+  const context = useContext(SessionDataContext);
+  if (!context) {
+    throw new Error('useSessionDataContext must be used within SessionDataContext.Provider');
+  }
+  return context;
+}
 
 /**
  * Context for worktree creation tasks.
@@ -69,12 +100,14 @@ function RootLayout() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const connected = useAppWsState((s) => s.connected);
+  const hasEverConnected = useAppWsState((s) => s.hasEverConnected);
   const isSessionPage = location.pathname.startsWith('/sessions/');
   const currentSessionId = isSessionPage ? extractSessionId(location.pathname) : null;
 
-  // Session state management for sidebar
+  // Session state management (single source of truth for all child routes)
   const {
     sessions,
+    wsInitialized,
     workerActivityStates,
     handleSessionsSync,
     handleSessionCreated,
@@ -84,6 +117,13 @@ function RootLayout() {
     handleSessionResumed,
     handleWorkerActivity,
   } = useSessionState();
+
+  // Memoize session data context to avoid unnecessary re-renders in consumers
+  const sessionDataContextValue = useMemo<SessionDataContextValue>(() => ({
+    sessions,
+    wsInitialized,
+    workerActivityStates,
+  }), [sessions, wsInitialized, workerActivityStates]);
 
   // Worktree creation task management
   const worktreeCreationTasks = useWorktreeCreationTasks();
@@ -102,10 +142,20 @@ function RootLayout() {
     invalidateValidation();
   }, [handleSessionCreated, invalidateValidation]);
 
-  const handleSessionDeletedWithValidation = useCallback((...args: Parameters<typeof handleSessionDeleted>) => {
-    handleSessionDeleted(...args);
+  const handleSessionDeletedWithValidation = useCallback((sessionId: string) => {
+    // Capture the worker list BEFORE removing the session from state,
+    // so we can clean up their IndexedDB terminal state cache entries.
+    const session = sessions.find(s => s.id === sessionId);
+    if (session) {
+      for (const worker of session.workers) {
+        clearTerminalState(sessionId, worker.id).catch((e) =>
+          logger.warn('[RootLayout] Failed to clear terminal cache on session delete:', e)
+        );
+      }
+    }
+    handleSessionDeleted(sessionId);
     invalidateValidation();
-  }, [handleSessionDeleted, invalidateValidation]);
+  }, [sessions, handleSessionDeleted, invalidateValidation]);
 
   const handleSessionUpdatedWithValidation = useCallback((...args: Parameters<typeof handleSessionUpdated>) => {
     handleSessionUpdated(...args);
@@ -117,6 +167,15 @@ function RootLayout() {
     invalidateValidation();
   }, [handleSessionsSync, invalidateValidation]);
 
+  // Wrap session paused handler to also disconnect lingering worker WebSocket connections
+  const handleSessionPausedWithCleanup = useCallback((sessionId: string, pausedAt: string) => {
+    // Disconnect all worker WebSocket connections for the paused session
+    // to prevent them from attempting reconnection to a session that
+    // no longer exists in server memory.
+    disconnectSession(sessionId);
+    handleSessionPaused(sessionId, pausedAt);
+  }, [handleSessionPaused]);
+
   // Wrap worktree deletion completed handler to also invalidate worktree queries
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {
     worktreeDeletionTasks.handleWorktreeDeletionCompleted(payload);
@@ -124,15 +183,25 @@ function RootLayout() {
     queryClient.invalidateQueries({ queryKey: worktreeKeys.root() });
   }, [worktreeDeletionTasks, queryClient]);
 
+  // Clear IndexedDB terminal cache when a worker is restarted.
+  // The active (mounted) Terminal component handles its own cache clearing,
+  // but unmounted workers on inactive tabs would retain stale cache entries.
+  const handleWorkerRestarted = useCallback((sessionId: string, workerId: string) => {
+    clearTerminalState(sessionId, workerId).catch((e) =>
+      logger.warn('[RootLayout] Failed to clear terminal cache on worker restart:', e)
+    );
+  }, []);
+
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
     onSessionsSync: handleSessionsSyncWithValidation,
     onSessionCreated: handleSessionCreatedWithValidation,
     onSessionUpdated: handleSessionUpdatedWithValidation,
     onSessionDeleted: handleSessionDeletedWithValidation,
-    onSessionPaused: handleSessionPaused,
+    onSessionPaused: handleSessionPausedWithCleanup,
     onSessionResumed: handleSessionResumed,
     onWorkerActivity: handleWorkerActivity,
+    onWorkerRestarted: handleWorkerRestarted,
     onWorktreeCreationCompleted: worktreeCreationTasks.handleWorktreeCreationCompleted,
     onWorktreeCreationFailed: worktreeCreationTasks.handleWorktreeCreationFailed,
     onWorktreeDeletionCompleted: handleWorktreeDeletionCompleted,
@@ -146,13 +215,14 @@ function RootLayout() {
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
-      const resumed = await resumeSession(sessionId);
-      handleSessionResumed(resumed);
+      // Only trigger the resume request. The state update will arrive
+      // via the WebSocket `session-resumed` event, avoiding double-application.
+      await resumeSession(sessionId);
     } catch (error) {
-      console.error('Failed to resume session:', error);
+      logger.error('Failed to resume session:', error);
       throw error;
     }
-  }, [handleSessionResumed]);
+  }, []);
 
   // Update favicon based on worker activity states
   useEffect(() => {
@@ -177,6 +247,7 @@ function RootLayout() {
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
 
   return (
+    <SessionDataContext.Provider value={sessionDataContextValue}>
     <WorktreeCreationTasksContext.Provider value={worktreeCreationTasks}>
       <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasks}>
         <div className="h-dvh flex flex-col">
@@ -240,7 +311,7 @@ function RootLayout() {
 
             <MobileNavMenu open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
           </header>
-          <ConnectionBanner connected={connected} />
+          <ConnectionBanner connected={connected} hasEverConnected={hasEverConnected} />
           <WebhookConfigBanner />
           <div className="flex-1 flex min-h-0 overflow-hidden">
             {!isMobile && (
@@ -284,6 +355,7 @@ function RootLayout() {
         </div>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>
+    </SessionDataContext.Provider>
   );
 }
 

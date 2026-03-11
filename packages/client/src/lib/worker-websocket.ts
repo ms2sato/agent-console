@@ -24,39 +24,11 @@ import {
   type ExpandedLineChunk,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
-import { clearTerminalState } from './terminal-state-cache.js';
+import { clearTerminalState, setCurrentServerPid } from './terminal-state-cache.js';
+import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
+import { logger } from './logger.js';
 
-// Reconnection settings (same as app-websocket.ts)
-const INITIAL_RETRY_DELAY = 1000;
-const MAX_RETRY_DELAY = 30000;
-const JITTER_FACTOR = 0.3;
 const MAX_RETRY_COUNT = 100;
-
-// Close codes that should not trigger reconnection
-const NO_RECONNECT_CLOSE_CODES = [
-  WS_CLOSE_CODE.NORMAL_CLOSURE,
-  WS_CLOSE_CODE.GOING_AWAY,
-  WS_CLOSE_CODE.POLICY_VIOLATION,
-] as const;
-
-/**
- * Determine if reconnection should be attempted for the given close code.
- */
-function isReconnectCode(code: number): boolean {
-  return !(NO_RECONNECT_CLOSE_CODES as readonly number[]).includes(code);
-}
-
-/**
- * Calculate reconnection delay with exponential backoff and jitter.
- */
-function getReconnectDelay(count: number): number {
-  const baseDelay = Math.min(
-    INITIAL_RETRY_DELAY * Math.pow(2, count),
-    MAX_RETRY_DELAY
-  );
-  const jitter = baseDelay * JITTER_FACTOR * (Math.random() * 2 - 1);
-  return Math.round(baseDelay + jitter);
-}
 
 /**
  * Validate that a parsed message is a valid WorkerServerMessage.
@@ -167,14 +139,14 @@ function scheduleReconnect(key: string): void {
 
   // Stop retrying after max attempts and clean up to prevent stuck state
   if (conn.retryCount >= MAX_RETRY_COUNT) {
-    console.error(`[WorkerWS] Max retry attempts reached for ${key}, giving up`);
+    logger.error(`[WorkerWS] Max retry attempts reached for ${key}, giving up`);
     // Clean up the failed connection to allow future connect() calls to work
     connections.delete(key);
     return;
   }
 
   const delay = getReconnectDelay(conn.retryCount);
-  console.log(`[WorkerWS] Reconnecting ${key} in ${delay}ms (attempt ${conn.retryCount + 1})`);
+  logger.debug(`[WorkerWS] Reconnecting ${key} in ${delay}ms (attempt ${conn.retryCount + 1})`);
 
   conn.retryTimeout = setTimeout(() => {
     const currentConn = connections.get(key);
@@ -195,7 +167,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
 
   // Re-check if connection was deleted (session may have been deleted during timeout)
   if (!existingConn) {
-    console.log(`[WorkerWS] Skipping reconnect for ${key}: connection no longer exists`);
+    logger.debug(`[WorkerWS] Skipping reconnect for ${key}: connection no longer exists`);
     return;
   }
 
@@ -264,6 +236,21 @@ function handleTerminalMessage(
       break;
     case 'error':
       callbacks.onError?.(msg.message, msg.code);
+      // Prevent reconnection for terminal lifecycle errors.
+      // When a session is paused or deleted, the server sends an error message
+      // followed by a close frame. Remove the connection from the map BEFORE
+      // the close event fires so that the onclose handler sees no entry and
+      // skips reconnection scheduling.
+      if (msg.code === 'SESSION_DELETED' || msg.code === 'SESSION_PAUSED') {
+        const conn = connections.get(key);
+        if (conn) {
+          if (conn.retryTimeout) {
+            clearTimeout(conn.retryTimeout);
+            conn.retryTimeout = null;
+          }
+          connections.delete(key);
+        }
+      }
       break;
     case 'output-truncated': {
       // Set truncation flag to prevent save manager from saving stale state
@@ -281,7 +268,7 @@ function handleTerminalMessage(
           }
         })
         .catch((err) => {
-          console.error('[WorkerWS] Failed to clear terminal cache on truncation:', err);
+          logger.error('[WorkerWS] Failed to clear terminal cache on truncation:', err);
           const currentConn = connections.get(key);
           if (currentConn) {
             currentConn.truncationInProgress = false;
@@ -293,15 +280,24 @@ function handleTerminalMessage(
       break;
     }
     case 'server-restarted':
-      // Server restart notification - cache invalidation is handled elsewhere
-      // (via setCurrentServerPid in app initialization)
-      console.log('[WorkerWS] Server restarted notification received, serverPid:', msg.serverPid);
+      // Server restart notification received on an active worker WebSocket.
+      // Update the in-memory PID and invalidate stale caches (setCurrentServerPid
+      // also clears all caches when the PID has changed). Additionally, clear
+      // this specific worker's terminal cache since the server's in-memory
+      // history buffer is lost on restart.
+      logger.debug('[WorkerWS] Server restarted notification received, serverPid:', msg.serverPid);
+      setCurrentServerPid(msg.serverPid).catch((err) => {
+        logger.error('[WorkerWS] Failed to update server PID on restart:', err);
+      });
+      clearTerminalState(sessionId, workerId).catch((err) => {
+        logger.error('[WorkerWS] Failed to clear terminal state on server restart:', err);
+      });
       break;
     default: {
       // Exhaustive check: TypeScript will error if a new message type is added
       // but not handled in this switch statement
       const _exhaustive: never = msg;
-      console.error('[WorkerWS] Unknown terminal message type:', _exhaustive);
+      logger.error('[WorkerWS] Unknown terminal message type:', _exhaustive);
     }
   }
 }
@@ -340,7 +336,7 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
       // Exhaustive check: TypeScript will error if a new message type is added
       // but not handled in this switch statement
       const _exhaustive: never = msg;
-      console.error('[WorkerWS] Unknown git-diff message type:', _exhaustive);
+      logger.error('[WorkerWS] Unknown git-diff message type:', _exhaustive);
     }
   }
 }
@@ -376,20 +372,20 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
 
       if (currentCallbacks.type === 'git-diff') {
         if (!isValidGitDiffMessage(parsed)) {
-          console.error('[WorkerWS] Invalid git-diff message type:', parsed);
+          logger.error('[WorkerWS] Invalid git-diff message type:', parsed);
           updateState(key, { diffError: 'Invalid server message', diffLoading: false });
           return;
         }
         handleGitDiffMessage(key, parsed, currentCallbacks);
       } else {
         if (!isValidWorkerMessage(parsed)) {
-          console.error('[WorkerWS] Invalid worker message type:', parsed);
+          logger.error('[WorkerWS] Invalid worker message type:', parsed);
           return;
         }
         handleTerminalMessage(parsed, currentCallbacks, currentConn.sessionId, currentConn.workerId);
       }
     } catch (e) {
-      console.error('[WorkerWS] Failed to parse message:', e);
+      logger.error('[WorkerWS] Failed to parse message:', e);
       if (currentCallbacks.type === 'git-diff') {
         updateState(key, { diffError: 'Failed to parse server message', diffLoading: false });
       }
@@ -398,7 +394,7 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
 
   ws.onclose = (event: CloseEvent) => {
     updateState(key, { connected: false });
-    console.log(`[WorkerWS] Disconnected: ${key} (code: ${event.code}, reason: ${event.reason || 'none'})`);
+    logger.debug(`[WorkerWS] Disconnected: ${key} (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
     // Check if connection was explicitly disconnected (removed from map)
     const conn = connections.get(key);
@@ -406,8 +402,8 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
       return; // Connection was intentionally closed, don't reconnect
     }
 
-    if (!isReconnectCode(event.code)) {
-      console.log(`[WorkerWS] Normal closure for ${key}, not reconnecting`);
+    if (!shouldReconnect(event.code)) {
+      logger.debug(`[WorkerWS] Normal closure for ${key}, not reconnecting`);
       return;
     }
 
@@ -415,7 +411,7 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
   };
 
   ws.onerror = (error) => {
-    console.error('[WorkerWS] Error:', error);
+    logger.error('[WorkerWS] Error:', error);
     // Get current callbacks from connection
     const currentConn = connections.get(key);
     if (currentConn?.callbacks.type === 'git-diff') {
@@ -571,10 +567,6 @@ export function sendInput(sessionId: string, workerId: string, data: string): bo
 
 export function sendResize(sessionId: string, workerId: string, cols: number, rows: number): boolean {
   return sendTerminalMessage(sessionId, workerId, { type: 'resize', cols, rows });
-}
-
-export function sendImage(sessionId: string, workerId: string, data: string, mimeType: string): boolean {
-  return sendTerminalMessage(sessionId, workerId, { type: 'image', data, mimeType });
 }
 
 /**

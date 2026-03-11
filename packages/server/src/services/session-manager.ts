@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
@@ -33,6 +34,7 @@ import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
+import { SingleUserMode, type UserMode } from './user-mode.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -63,6 +65,8 @@ export interface SessionRepositoryCallbacks {
 export interface WebSocketCallbacks {
   /** Notify all Worker WebSocket connections for a session that it's being deleted */
   notifySessionDeleted: (sessionId: string) => void;
+  /** Notify all Worker WebSocket connections for a session that it's being paused */
+  notifySessionPaused: (sessionId: string) => void;
   /** Broadcast a message to all connected app clients */
   broadcastToApp: (msg: AppServerMessage) => void;
 }
@@ -88,6 +92,17 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+interface SessionManagerOptions {
+  userMode?: UserMode;
+  pathExists?: (path: string) => Promise<boolean>;
+  sessionRepository?: SessionRepository;
+  jobQueue?: JobQueue | null;
+  agentManager: AgentManager;
+  notificationManager?: NotificationManager | null;
+  /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
+  ptyProvider?: PtyProvider;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private resumingSessionIds = new Set<string>();
@@ -103,27 +118,12 @@ export class SessionManager {
   private notificationManager: NotificationManager | null = null;
 
   /**
-   * Options for creating a SessionManager instance.
-   */
-  static readonly defaultOptions = {
-    ptyProvider: bunPtyProvider,
-    pathExists: defaultPathExists,
-  };
-
-  /**
    * Create a SessionManager instance with async initialization.
    * This is the preferred way to create a SessionManager.
    * @param options.jobQueue - JobQueue instance for background cleanup tasks.
    *                           Must be provided for proper cleanup operations.
    */
-  static async create(options: {
-    ptyProvider?: PtyProvider;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-  }): Promise<SessionManager> {
+  static async create(options: SessionManagerOptions): Promise<SessionManager> {
     const manager = new SessionManager(options);
     await manager.initialize();
     return manager;
@@ -133,18 +133,17 @@ export class SessionManager {
    * Private constructor - use SessionManager.create() for async initialization.
    * The constructor is only public for backward compatibility during migration.
    */
-  constructor(options: {
-    ptyProvider?: PtyProvider;
-    pathExists?: (path: string) => Promise<boolean>;
-    sessionRepository?: SessionRepository;
-    jobQueue?: JobQueue | null;
-    agentManager: AgentManager;
-    notificationManager?: NotificationManager | null;
-  }) {
-    const ptyProvider = options?.ptyProvider ?? bunPtyProvider;
+  constructor(options: SessionManagerOptions) {
+    // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
+    const userMode = options?.userMode
+      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
+        id: crypto.randomUUID(),
+        username: os.userInfo().username,
+        homeDir: os.homedir(),
+      });
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
-    this.workerManager = new WorkerManager(ptyProvider, agentManager);
+    this.workerManager = new WorkerManager(userMode, agentManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -162,14 +161,6 @@ export class SessionManager {
       getJobQueue: () => this.jobQueue,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
     });
-  }
-
-  /**
-   * Set the job queue for background task processing.
-   * @internal For testing only. In production, pass jobQueue to SessionManager.create().
-   */
-  setJobQueue(jobQueue: JobQueue): void {
-    this.jobQueue = jobQueue;
   }
 
   /**
@@ -385,7 +376,14 @@ export class SessionManager {
 
     // Execute queue with delays
     sendQueue.forEach((fn, i) => {
-      setTimeout(fn, DELAY_MS * (i + 1));
+      setTimeout(() => {
+        const s = this.sessions.get(sessionId);
+        if (!s || !s.workers.has(toWorkerId)) {
+          logger.debug({ sessionId, toWorkerId }, 'Skipping delayed sendMessage write: session or worker no longer exists');
+          return;
+        }
+        fn();
+      }, DELAY_MS * (i + 1));
     });
 
     // Store and broadcast
@@ -507,7 +505,7 @@ export class SessionManager {
 
   // ========== Session Lifecycle ==========
 
-  async createSession(request: CreateSessionRequest): Promise<Session> {
+  async createSession(request: CreateSessionRequest, options?: { createdBy?: string }): Promise<Session> {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
@@ -521,6 +519,7 @@ export class SessionManager {
       title: request.title,
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
+      createdBy: options?.createdBy,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -677,7 +676,7 @@ export class SessionManager {
           createdAt: w.createdAt,
           activated: false, // Paused sessions have no active PTY
         };
-      } else {
+      } else if (w.type === 'git-diff') {
         return {
           id: w.id,
           type: 'git-diff' as const,
@@ -685,6 +684,9 @@ export class SessionManager {
           createdAt: w.createdAt,
           baseCommit: w.baseCommit,
         };
+      } else {
+        const _exhaustive: never = w;
+        throw new Error(`Unknown worker type: ${(_exhaustive as PersistedWorker).type}`);
       }
     });
 
@@ -700,6 +702,7 @@ export class SessionManager {
       pausedAt: p.pausedAt,
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
+      createdBy: p.createdBy,
     };
 
     if (p.type === 'worktree') {
@@ -708,17 +711,19 @@ export class SessionManager {
         ? this.repositoryCallbacks.getRepository(p.repositoryId)
         : undefined;
 
-      return {
+      const worktreeSession: WorktreeSession = {
         ...base,
         type: 'worktree',
         repositoryId: p.repositoryId,
         repositoryName: repository?.name ?? 'Unknown',
         worktreeId: p.worktreeId,
         isMainWorktree: repository?.path === p.locationPath,
-      } as WorktreeSession;
+      };
+      return worktreeSession;
     }
 
-    return { ...base, type: 'quick' } as QuickSession;
+    const quickSession: QuickSession = { ...base, type: 'quick' };
+    return quickSession;
   }
 
   /**
@@ -741,6 +746,10 @@ export class SessionManager {
       return false;
     }
 
+    // Notify all active Worker WebSocket connections that session is being paused
+    // This must happen BEFORE killing workers so clients receive the notification
+    this.webSocketCallbacks?.notifySessionPaused(id);
+
     // Kill all PTY workers (preserve output files) and clear PTY references
     // Clearing PTY references ensures worker PIDs are saved as null in persistence
     for (const worker of session.workers.values()) {
@@ -751,7 +760,7 @@ export class SessionManager {
         // Kill PTY for agent/terminal workers (don't delete output files)
         this.workerManager.killWorker(worker);
         // Clear PTY reference so toPersistedWorker will return pid: null
-        worker.pty = null;
+        this.workerManager.detachPty(worker);
       }
     }
 
@@ -839,6 +848,7 @@ export class SessionManager {
       title: persisted.title,
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
+      createdBy: persisted.createdBy,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'
@@ -963,6 +973,15 @@ export class SessionManager {
     // Check persistence for orphaned session
     const persisted = await this.sessionRepository.findById(id);
     if (persisted) {
+      // Enqueue cleanup of worker output files (same as deleteSession)
+      if (this.jobQueue) {
+        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id });
+      } else {
+        logger.warn(
+          { sessionId: id, method: 'forceDeleteSession', skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS },
+          'JobQueue not available, skipping cleanup job for orphaned session'
+        );
+      }
       await this.sessionRepository.delete(id);
       // Broadcast deletion to connected clients
       this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
@@ -1130,13 +1149,16 @@ export class SessionManager {
         return { success: false, error: 'session_not_found' };
       }
 
+      // Build up the result and track whether persistence is needed
+      const result: { success: boolean; title?: string; branch?: string; error?: string } = { success: true };
+      let updatedTitle: string | undefined;
+      let updatedWorkers: PersistedWorker[] | undefined;
+      let updatedWorktreeId: string | undefined;
+
       // For inactive sessions, title update is supported via database persistence
       if (updates.title !== undefined) {
-        await this.sessionRepository.save({
-          ...metadata,
-          title: updates.title,
-        });
-        return { success: true, title: updates.title };
+        updatedTitle = updates.title;
+        result.title = updates.title;
       }
 
       // For inactive sessions, branch rename is also supported (no restart possible)
@@ -1156,7 +1178,6 @@ export class SessionManager {
 
         // Update git-diff workers' base commit after successful branch rename.
         // This is a secondary concern - failure should not abort the branch rename.
-        let updatedWorkers = metadata.workers;
         try {
           const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
           const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
@@ -1173,17 +1194,28 @@ export class SessionManager {
           );
         }
 
-        // Persist the updated branch name (worktreeId) and base commit for inactive sessions
-        await this.sessionRepository.save({
-          ...metadata,
-          worktreeId: updates.branch,
-          workers: updatedWorkers,
-        });
-
-        return { success: true, branch: updates.branch };
+        updatedWorktreeId = updates.branch;
+        result.branch = updates.branch;
       }
 
-      return { success: true };
+      // Persist all updates in a single save
+      if (updatedTitle !== undefined || updatedWorktreeId !== undefined) {
+        const toSave = { ...metadata } as PersistedSession;
+        if (updatedTitle !== undefined) {
+          toSave.title = updatedTitle;
+        }
+        if (updatedWorktreeId !== undefined && toSave.type === 'worktree') {
+          toSave.worktreeId = updatedWorktreeId;
+          // If calculateBaseCommit threw, updatedWorkers is undefined and we preserve
+          // the original metadata.workers via the ...metadata spread above.
+          if (updatedWorkers !== undefined) {
+            toSave.workers = updatedWorkers;
+          }
+        }
+        await this.sessionRepository.save(toSave);
+      }
+
+      return result;
     }
 
     // Handle title update
@@ -1325,6 +1357,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     return session.type === 'worktree'
@@ -1349,6 +1382,7 @@ export class SessionManager {
       title: session.title,
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
+      createdBy: session.createdBy,
     };
 
     if (session.type === 'worktree') {
@@ -1357,16 +1391,18 @@ export class SessionManager {
         ? this.repositoryCallbacks.getRepository(session.repositoryId)
         : undefined;
 
-      return {
+      const worktreeSession: WorktreeSession = {
         ...base,
         type: 'worktree',
         repositoryId: session.repositoryId,
         repositoryName: repository?.name ?? 'Unknown',
         worktreeId: session.worktreeId,
         isMainWorktree: repository?.path === session.locationPath,
-      } as WorktreeSession;
+      };
+      return worktreeSession;
     }
 
-    return { ...base, type: 'quick' } as QuickSession;
+    const quickSession: QuickSession = { ...base, type: 'quick' };
+    return quickSession;
   }
 }

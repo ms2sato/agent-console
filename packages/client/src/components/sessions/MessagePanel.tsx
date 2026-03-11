@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import type { WorkerMessage } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
@@ -26,7 +26,12 @@ export function validateFiles(files: { length: number; totalSize: number }): [st
   return null;
 }
 
-export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }: MessagePanelProps) {
+export interface MessagePanelHandle {
+  addFiles: (files: File[] | FileList) => void;
+}
+
+export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
+  function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }, ref) {
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
@@ -63,6 +68,10 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
       return combined.slice(0, MAX_MESSAGE_FILES);
     });
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    addFiles,
+  }), [addFiles]);
 
   const removeFile = useCallback((index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
@@ -197,4 +206,5 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
       )}
     </div>
   );
-}
+  }
+);

@@ -56,6 +56,8 @@ export interface SessionBase {
   parentSessionId?: string;
   /** Parent worker ID that delegated/created this session */
   parentWorkerId?: string;
+  /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
+  createdBy?: string;
 }
 
 export interface WorktreeSession extends SessionBase {
@@ -83,7 +85,6 @@ export interface CreateWorkerResponse {
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'image'; data: string; mimeType: string }
   | { type: 'request-history'; fromOffset?: number };
 
 /**
@@ -111,7 +112,8 @@ export type WorkerErrorCode =
   | 'ACTIVATION_FAILED'     // PTY spawn failed
   | 'WORKER_NOT_FOUND'      // Worker doesn't exist in session
   | 'HISTORY_LOAD_FAILED'   // History retrieval failed (timeout or error)
-  | 'SESSION_DELETED';      // Session was deleted while WebSocket was connected
+  | 'SESSION_DELETED'       // Session was deleted while WebSocket was connected
+  | 'SESSION_PAUSED';       // Session was paused while WebSocket was connected
 
 export type WorkerServerMessage =
   | { type: 'output'; data: string; offset: number }

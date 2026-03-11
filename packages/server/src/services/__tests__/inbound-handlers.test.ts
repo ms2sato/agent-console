@@ -1,7 +1,7 @@
 import { describe, expect, it, mock, jest } from 'bun:test';
 import type { InboundSystemEvent, Session, InboundEventSummary } from '@agent-console/shared';
 import { createInboundHandlers } from '../inbound/handlers.js';
-import type { SessionManager } from '../session-manager.js';
+import type { InboundHandlerDependencies } from '../inbound/handlers.js';
 
 function createReviewCommentEvent(): InboundSystemEvent {
   return {
@@ -70,13 +70,13 @@ function createAgentHandlerWithCapture(): {
   getCapturedMessage: () => string;
 } {
   let capturedMessage = '';
-  const mockSessionManager = {
+  const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
     getSession: mock(() => createMockSession()),
     writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
       capturedMessage = data;
       return true;
     }),
-  } as unknown as SessionManager;
+  };
 
   const handlers = createInboundHandlers({
     sessionManager: mockSessionManager,
@@ -124,17 +124,45 @@ describe('AgentWorkerHandler', () => {
     expect(getCapturedMessage()).toContain('type=pr:comment');
   });
 
+  it('returns false for unrecognized event type', async () => {
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => createMockSession()),
+      writeWorkerInput: mock(),
+    };
+
+    const handlers = createInboundHandlers({
+      sessionManager: mockSessionManager,
+      broadcastToApp: () => {},
+    });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    // Force an invalid event type through the handler (simulates a bug or unexpected dispatch)
+    const invalidEvent = {
+      type: 'issue:closed' as InboundSystemEvent['type'],
+      source: 'github' as const,
+      timestamp: '2024-01-01T00:00:00Z',
+      metadata: { repositoryName: 'owner/repo' },
+      payload: {},
+      summary: 'Issue closed',
+    };
+
+    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
+
+    expect(result).toBe(false);
+    expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+  });
+
   it('sends Enter keystroke separately after a 150ms delay', async () => {
     jest.useFakeTimers();
     try {
       const writtenData: string[] = [];
-      const mockSessionManager = {
+      const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
         getSession: mock(() => createMockSession()),
         writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
           writtenData.push(data);
           return true;
         }),
-      } as unknown as SessionManager;
+      };
 
       const handlers = createInboundHandlers({
         sessionManager: mockSessionManager,
@@ -172,7 +200,7 @@ function createUIHandlerWithCapture(): {
   });
 
   const handlers = createInboundHandlers({
-    sessionManager: {} as SessionManager,
+    sessionManager: {} as InboundHandlerDependencies['sessionManager'],
     broadcastToApp,
   });
   return {
