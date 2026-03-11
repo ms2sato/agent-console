@@ -287,31 +287,33 @@ function RootLayout() {
               <RepositoriesNavLink />
             </nav>
 
-            <MobileHeaderControls
-              mobileNavOpen={mobileNavOpen}
-              mobileSidebarOpen={mobileSidebarOpen}
-              hasAnyAsking={hasAnyAsking}
-              onOpenSidebar={() => setMobileSidebarOpen(true)}
-              onCloseSidebar={() => setMobileSidebarOpen(false)}
-              onToggleNav={() => setMobileNavOpen(!mobileNavOpen)}
-              onCloseNav={() => setMobileNavOpen(false)}
-              sidebarContent={
-                <ActiveSessionsSidebar
-                  collapsed={false}
-                  onToggle={() => setMobileSidebarOpen(false)}
-                  sessions={activeSessions}
-                  width={288}
-                  onWidthChange={() => {}}
-                  creationTasks={worktreeCreationTasks.tasks}
-                  onRemoveCreationTask={worktreeCreationTasks.removeTask}
-                  worktreeDeletionTasks={worktreeDeletionTasks.tasks}
-                  onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
-                  pausedSessions={pausedSessions}
-                  onResumeSession={handleResumeFromSidebar}
-                  hideResizeHandle
-                />
-              }
-            />
+            {isMobile && (
+              <MobileHeaderControls
+                mobileNavOpen={mobileNavOpen}
+                mobileSidebarOpen={mobileSidebarOpen}
+                hasAnyAsking={hasAnyAsking}
+                onOpenSidebar={() => setMobileSidebarOpen(true)}
+                onCloseSidebar={() => setMobileSidebarOpen(false)}
+                onToggleNav={() => setMobileNavOpen(!mobileNavOpen)}
+                onCloseNav={() => setMobileNavOpen(false)}
+                sidebarContent={
+                  <ActiveSessionsSidebar
+                    collapsed={false}
+                    onToggle={() => setMobileSidebarOpen(false)}
+                    sessions={activeSessions}
+                    width={288}
+                    onWidthChange={() => {}}
+                    creationTasks={worktreeCreationTasks.tasks}
+                    onRemoveCreationTask={worktreeCreationTasks.removeTask}
+                    worktreeDeletionTasks={worktreeDeletionTasks.tasks}
+                    onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
+                    pausedSessions={pausedSessions}
+                    onResumeSession={handleResumeFromSidebar}
+                    hideResizeHandle
+                  />
+                }
+              />
+            )}
           </header>
           <ConnectionBanner connected={connected} hasEverConnected={hasEverConnected} />
           <WebhookConfigBanner />
