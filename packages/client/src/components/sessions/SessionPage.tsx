@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
@@ -7,40 +7,18 @@ import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
-import { getSession, restartAgentWorker, resumeSession, openPath, ServerUnavailableError } from '../../lib/api';
+import { getSession, restartAgentWorker, resumeSession, openPath } from '../../lib/api';
 import { formatPath } from '../../lib/path';
-import { useAppWsEvent } from '../../hooks/useAppWs';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
+import { useSessionPageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getNextTabIndex } from './tabKeyboardNavigation';
-import type { Session, AgentActivityState, WorkerActivityInfo, WorkerMessage } from '@agent-console/shared';
+import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 
-type PageState =
-  | { type: 'loading' }
-  | { type: 'active'; session: Session }
-  | { type: 'disconnected'; session: Session }
-  | { type: 'not_found' }
-  | { type: 'server_unavailable' }
-  | { type: 'restarting' }
-  | { type: 'paused'; session: Session };
-
-/**
- * Canonically maps a Session to the appropriate PageState.
- * pausedAt takes precedence over status (a session can be status='active' with pausedAt set during edge cases).
- *
- * @internal - exported for testing
- */
-export function sessionToPageState(session: Session): Extract<PageState, { session: Session }> {
-  if (session.pausedAt) {
-    return { type: 'paused', session };
-  }
-  if (session.status === 'active') {
-    return { type: 'active', session };
-  }
-  return { type: 'disconnected', session };
-}
+export { sessionToPageState } from './hooks/useSessionPageState';
+export type { PageState } from './hooks/useSessionPageState';
 
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
@@ -99,19 +77,24 @@ export interface SessionPageProps {
 }
 
 export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
-  const [state, setState] = useState<PageState>({ type: 'loading' });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
-  const [activityState, setActivityState] = useState<AgentActivityState>('unknown');
-  // Track all worker activity states for the session (for EndSessionDialog warning)
-  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
-  const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
   const { navigateToWorker, navigateToSession } = useWorkerRouting(sessionId);
+
+  // Refs to break circular dependency between useSessionPageState and useTabManagement
+  const updateTabsFromSessionRef = useRef<(w: Worker[]) => void>(() => {});
+  const sessionActiveTabIdRef = useRef<string | null>(null);
+
+  const { state, setState, workerActivityStates, activityState, setActivityState, lastMessage } = useSessionPageState({
+    sessionId,
+    updateTabsFromSessionRef,
+    activeTabIdRef: sessionActiveTabIdRef,
+  });
 
   // Derive branchName and sessionTitle from state
   const branchName = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
@@ -124,7 +107,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const {
     tabs,
     activeTabId,
-    activeTabIdRef,
     addTerminalTab,
     closeTab,
     handleTabClick,
@@ -141,133 +123,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setExitInfo,
   });
 
+  // Sync refs after useTabManagement initializes
+  sessionActiveTabIdRef.current = activeTabId;
+  updateTabsFromSessionRef.current = updateTabsFromSession;
+
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
     setConnectionStatus(status);
     setExitInfo(info);
   }, []);
-
-  const handleActivityChange = useCallback((newState: AgentActivityState) => {
-    setActivityState(newState);
-  }, []);
-
-  // Subscribe to app-websocket for real-time activity state updates
-  // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
-  const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
-    // Only process activity events for the current session
-    if (eventSessionId !== sessionId) return;
-
-    // Update all worker activity states (for EndSessionDialog warning)
-    setWorkerActivityStates(prev => ({ ...prev, [workerId]: newState }));
-
-    // Update active tab's activity state (for status bar display)
-    if (workerId === activeTabIdRef.current) {
-      setActivityState(newState);
-    }
-  }, [sessionId]);
-
-  const handleSessionUpdated = useCallback((updatedSession: Session) => {
-    if (updatedSession.id === sessionId) {
-      updateTabsFromSession(updatedSession.workers);
-
-      setState(prev => {
-        if (prev.type === 'active' || prev.type === 'disconnected') {
-          return {
-            ...prev,
-            session: updatedSession,
-          };
-        }
-        return prev;
-      });
-    }
-  }, [sessionId, updateTabsFromSession]);
-
-  // Handle session paused (by another client or via settings menu)
-  const handleSessionPaused = useCallback((pausedSessionId: string) => {
-    if (pausedSessionId === sessionId) {
-      setState(prev => {
-        if (prev.type === 'active' || prev.type === 'disconnected') {
-          return { type: 'paused', session: prev.session };
-        }
-        return prev;
-      });
-    }
-  }, [sessionId]);
-
-  // Handle session deleted (by another tab/client)
-  const handleSessionDeleted = useCallback((deletedSessionId: string) => {
-    if (deletedSessionId === sessionId) {
-      setState({ type: 'not_found' });
-    }
-  }, [sessionId]);
-
-  // Handle session resumed (paused → active, triggered by another client or sidebar)
-  const handleSessionResumed = useCallback((resumedSession: Session) => {
-    if (resumedSession.id !== sessionId) return;
-    setState(prev => {
-      if (prev.type === 'restarting') return prev;
-      return { type: 'active', session: resumedSession };
-    });
-    updateTabsFromSession(resumedSession.workers);
-  }, [sessionId, updateTabsFromSession]);
-
-  // Handle sessions-sync (fires after WebSocket reconnects to reconcile stale state)
-  const handleSessionsSync = useCallback((syncedSessions: Session[], activityStates: WorkerActivityInfo[]) => {
-    const session = syncedSessions.find(s => s.id === sessionId);
-
-    if (session) {
-      // Session exists in sync - reconcile state directly
-      updateTabsFromSession(session.workers);
-
-      setState(prev => {
-        // Don't interrupt ongoing restart operations
-        if (prev.type === 'restarting') return prev;
-        return sessionToPageState(session);
-      });
-
-      // Refresh worker activity states for this session
-      const sessionActivities: Record<string, AgentActivityState> = {};
-      for (const info of activityStates) {
-        if (info.sessionId === sessionId) {
-          sessionActivities[info.workerId] = info.activityState;
-        }
-      }
-      setWorkerActivityStates(sessionActivities);
-    } else {
-      // Session missing from sync - check if it's paused in DB or deleted
-      (async () => {
-        try {
-          const fetchedSession = await getSession(sessionId);
-          if (fetchedSession?.status === 'active') {
-            updateTabsFromSession(fetchedSession.workers);
-          }
-          setState(prev => {
-            if (prev.type === 'restarting' || prev.type === 'not_found') return prev;
-            if (!fetchedSession) return { type: 'not_found' };
-            return sessionToPageState(fetchedSession);
-          });
-        } catch (error) {
-          console.error('Failed to check session after sync:', error);
-          if (error instanceof ServerUnavailableError) {
-            setState({ type: 'server_unavailable' });
-          }
-        }
-      })();
-    }
-  }, [sessionId, updateTabsFromSession]);
-
-  useAppWsEvent({
-    onSessionsSync: handleSessionsSync,
-    onWorkerActivity: handleWorkerActivity,
-    onWorkerMessage: (message) => {
-      if (message.sessionId === sessionId) {
-        setLastMessage(message);
-      }
-    },
-    onSessionUpdated: handleSessionUpdated,
-    onSessionPaused: handleSessionPaused,
-    onSessionDeleted: handleSessionDeleted,
-    onSessionResumed: handleSessionResumed,
-  });
 
   // Update page title based on state
   useEffect(() => {
@@ -282,30 +145,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       document.title = 'Agent Console';
     };
   }, [state.type, sessionTitle, branchName]);
-
-  // Load session data
-  useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const session = await getSession(sessionId);
-        if (!session) {
-          setState({ type: 'not_found' });
-          return;
-        }
-
-        setState(sessionToPageState(session));
-      } catch (error) {
-        console.error('Failed to check session:', error);
-        if (error instanceof ServerUnavailableError) {
-          setState({ type: 'server_unavailable' });
-        } else {
-          setState({ type: 'not_found' });
-        }
-      }
-    };
-
-    checkSession();
-  }, [sessionId]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -567,7 +406,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
-            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onActivityChange={activeTab.workerType === 'agent' ? setActivityState : undefined}
             onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
             hideStatusBar
           />
