@@ -429,6 +429,26 @@ describe('useAppWsEvent', () => {
       expect(onAgentDeleted).toHaveBeenCalledWith('agent-1');
     });
 
+    it('should call onSessionResumed for session-resumed message', () => {
+      const onSessionResumed = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionResumed }));
+
+      const ws = MockWebSocket.getLastInstance();
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] };
+
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'session-resumed',
+            session: mockSession,
+          })
+        );
+      });
+
+      expect(onSessionResumed).toHaveBeenCalledWith(mockSession);
+    });
+
     it('should call onWorkerRestarted for worker-restarted message', () => {
       const onWorkerRestarted = mock(() => {});
       renderHook(() => useAppWsEvent({ onWorkerRestarted }));

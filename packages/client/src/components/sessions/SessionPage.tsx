@@ -26,6 +26,22 @@ type PageState =
   | { type: 'restarting' }
   | { type: 'paused'; session: Session };
 
+/**
+ * Canonically maps a Session to the appropriate PageState.
+ * pausedAt takes precedence over status (a session can be status='active' with pausedAt set during edge cases).
+ *
+ * @internal - exported for testing
+ */
+export function sessionToPageState(session: Session): Extract<PageState, { session: Session }> {
+  if (session.pausedAt) {
+    return { type: 'paused', session };
+  }
+  if (session.status === 'active') {
+    return { type: 'active', session };
+  }
+  return { type: 'disconnected', session };
+}
+
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
   return session.type === 'worktree' ? session.worktreeId : '(quick)';
@@ -186,10 +202,12 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   // Handle session resumed (paused → active, triggered by another client or sidebar)
   const handleSessionResumed = useCallback((resumedSession: Session) => {
-    if (resumedSession.id === sessionId) {
-      updateTabsFromSession(resumedSession.workers);
-      setState({ type: 'active', session: resumedSession });
-    }
+    if (resumedSession.id !== sessionId) return;
+    setState(prev => {
+      if (prev.type === 'restarting') return prev;
+      return { type: 'active', session: resumedSession };
+    });
+    updateTabsFromSession(resumedSession.workers);
   }, [sessionId, updateTabsFromSession]);
 
   // Handle sessions-sync (fires after WebSocket reconnects to reconcile stale state)
@@ -203,14 +221,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setState(prev => {
         // Don't interrupt ongoing restart operations
         if (prev.type === 'restarting') return prev;
-
-        if (session.status === 'active') {
-          return { type: 'active', session };
-        } else if (session.pausedAt) {
-          return { type: 'paused', session };
-        } else {
-          return { type: 'disconnected', session };
-        }
+        return sessionToPageState(session);
       });
 
       // Refresh worker activity states for this session
@@ -223,27 +234,24 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setWorkerActivityStates(sessionActivities);
     } else {
       // Session missing from sync - check if it's paused in DB or deleted
-      getSession(sessionId).then(fetchedSession => {
-        setState(prev => {
-          if (prev.type === 'restarting') return prev;
-
-          if (!fetchedSession) {
-            return { type: 'not_found' };
+      (async () => {
+        try {
+          const fetchedSession = await getSession(sessionId);
+          if (fetchedSession?.status === 'active') {
+            updateTabsFromSession(fetchedSession.workers);
           }
-          if (fetchedSession.pausedAt) {
-            return { type: 'paused', session: fetchedSession };
+          setState(prev => {
+            if (prev.type === 'restarting' || prev.type === 'not_found') return prev;
+            if (!fetchedSession) return { type: 'not_found' };
+            return sessionToPageState(fetchedSession);
+          });
+        } catch (error) {
+          console.error('Failed to check session after sync:', error);
+          if (error instanceof ServerUnavailableError) {
+            setState({ type: 'server_unavailable' });
           }
-          if (fetchedSession.status === 'active') {
-            return { type: 'active', session: fetchedSession };
-          }
-          return { type: 'disconnected', session: fetchedSession };
-        });
-      }).catch(error => {
-        console.error('Failed to check session after sync:', error);
-        if (error instanceof ServerUnavailableError) {
-          setState({ type: 'server_unavailable' });
         }
-      });
+      })();
     }
   }, [sessionId, updateTabsFromSession]);
 
@@ -285,14 +293,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           return;
         }
 
-        if (session.status === 'active') {
-          setState({ type: 'active', session });
-        } else if (session.pausedAt) {
-          // Session is paused (intentionally), not disconnected
-          setState({ type: 'paused', session });
-        } else {
-          setState({ type: 'disconnected', session });
-        }
+        setState(sessionToPageState(session));
       } catch (error) {
         console.error('Failed to check session:', error);
         if (error instanceof ServerUnavailableError) {
