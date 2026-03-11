@@ -632,7 +632,7 @@ function DashboardPage() {
   );
 }
 
-type SessionWithActivity = Session & {
+export type SessionWithActivity = Session & {
   activityState?: AgentActivityState;
 };
 
@@ -806,7 +806,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
   );
 }
 
-interface WorktreeRowProps {
+export interface WorktreeRowProps {
   worktree: Worktree;
   session?: SessionWithActivity;
   /** Full session object if this worktree has a paused session */
@@ -818,7 +818,7 @@ interface WorktreeRowProps {
   onPull: () => void;
 }
 
-function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling, onPull }: WorktreeRowProps) {
+export function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling, onPull }: WorktreeRowProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete

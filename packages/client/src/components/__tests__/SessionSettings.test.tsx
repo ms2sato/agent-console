@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, fireEvent, waitFor, act, cleanup, render } from '@testing-library/react';
 import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createContext } from 'react';
+import { createContext, useContext } from 'react';
 import { SessionSettings } from '../SessionSettings';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 
@@ -89,13 +89,21 @@ async function renderWithRouterAndContext(
   return { ...result, router, queryClient };
 }
 
-// Mock module to inject the mock context
+// mock.module replaces the entire module permanently in bun:test.
+// The mock must:
+// 1. Export WorktreeDeletionTasksContext so other test files can wrap with Provider
+// 2. Have useWorktreeDeletionTasksContext read from the context via useContext,
+//    so Provider-wrapped tests get the provided value (not always empty tasks)
+// 3. Fall back to default mock when no Provider is present (for SessionSettings tests)
 mock.module('../../routes/__root', () => ({
   useWorktreeDeletionTasksContext: () => {
-    // This will be provided by test-specific setup
-    const mockTasks = createMockDeletionTasks();
-    return mockTasks;
+    const context = useContext(MockWorktreeDeletionTasksContext);
+    if (!context) {
+      return createMockDeletionTasks();
+    }
+    return context;
   },
+  WorktreeDeletionTasksContext: MockWorktreeDeletionTasksContext,
 }));
 
 describe('SessionSettings', () => {
