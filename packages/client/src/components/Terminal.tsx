@@ -46,10 +46,11 @@ export interface TerminalProps {
   onActivityChange?: (state: AgentActivityState) => void;
   onRequestRestart?: (continueConversation: boolean) => void;
   onResumeSession?: () => void;
+  onFilesReceived?: (files: File[]) => void;
   hideStatusBar?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar }: TerminalProps) {
   const navigate = useNavigate();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,6 +72,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
   const [workerError, setWorkerError] = useState<WorkerError | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
   const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -278,7 +281,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     onWorkerRestarted: handleWorkerRestarted,
   });
 
-  const { sendInput, sendResize, sendImage, connected, error } = useTerminalWebSocket(
+  const { sendInput, sendResize, connected, error } = useTerminalWebSocket(
     sessionId,
     workerId,
     {
@@ -487,29 +490,59 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Handle paste with image detection
     const handlePaste = (event: ClipboardEvent) => {
       const items = event.clipboardData?.items;
-      if (!items) return;
+      if (!items || !onFilesReceived) return;
 
+      const imageFiles: File[] = [];
       for (const item of items) {
         if (item.type.startsWith('image/')) {
-          event.preventDefault();
           const blob = item.getAsFile();
-          if (!blob) continue;
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64 = reader.result as string;
-            // Remove data URL prefix (e.g., "data:image/png;base64,")
-            const base64Data = base64.split(',')[1];
-            sendImage(base64Data, item.type);
-          };
-          reader.readAsDataURL(blob);
-          return; // Only handle first image
+          if (blob) imageFiles.push(blob);
         }
+      }
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        onFilesReceived(imageFiles);
       }
       // If no image, let xterm handle normal text paste
     };
 
+    // Handle drag-and-drop image upload
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current++;
+      if (dragCounterRef.current === 1) {
+        setIsDragOver(true);
+      }
+    };
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+    };
+
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current--;
+      if (dragCounterRef.current === 0) {
+        setIsDragOver(false);
+      }
+    };
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+
+      if (!onFilesReceived) return;
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      onFilesReceived(Array.from(files));
+    };
+
     container.addEventListener('paste', handlePaste);
+    container.addEventListener('dragenter', handleDragEnter);
+    container.addEventListener('dragover', handleDragOver);
+    container.addEventListener('dragleave', handleDragLeave);
+    container.addEventListener('drop', handleDrop);
     window.addEventListener('resize', handleResize);
 
     // Listen for scroll events to update scroll-to-bottom button visibility
@@ -578,6 +611,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
       container.removeEventListener('paste', handlePaste);
+      container.removeEventListener('dragenter', handleDragEnter);
+      container.removeEventListener('dragover', handleDragOver);
+      container.removeEventListener('dragleave', handleDragLeave);
+      container.removeEventListener('drop', handleDrop);
+      dragCounterRef.current = 0;
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('scroll', handleDOMScroll, { capture: true });
       if (viewportElement) {
@@ -602,7 +640,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         terminal.dispose();
       }, 0);
     };
-  }, [sessionId, workerId, sendInput, sendResize, sendImage, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, sendInput, sendResize, onFilesReceived, updateScrollButtonVisibility]);
 
   // Send resize when connection is established
   useEffect(() => {
@@ -713,6 +751,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             >
               x
             </button>
+          </div>
+        )}
+        {/* Drag-over overlay for file drop */}
+        {isDragOver && (
+          <div className="absolute inset-0 bg-blue-500/20 border-2 border-dashed border-blue-400 flex items-center justify-center z-10 pointer-events-none">
+            <span className="text-blue-300 text-lg font-medium">Drop file here</span>
           </div>
         )}
         {/* Scroll to bottom button */}

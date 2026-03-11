@@ -85,7 +85,6 @@ export interface CreateWorkerResponse {
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'image'; data: string; mimeType: string }
   | { type: 'request-history'; fromOffset?: number };
 
 /**

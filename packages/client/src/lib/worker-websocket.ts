@@ -569,10 +569,6 @@ export function sendResize(sessionId: string, workerId: string, cols: number, ro
   return sendTerminalMessage(sessionId, workerId, { type: 'resize', cols, rows });
 }
 
-export function sendImage(sessionId: string, workerId: string, data: string, mimeType: string): boolean {
-  return sendTerminalMessage(sessionId, workerId, { type: 'image', data, mimeType });
-}
-
 /**
  * Request history data from the server.
  * Used when a previously invisible tab becomes visible for the first time.

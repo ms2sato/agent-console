@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 
-const mockSendWorkerMessage = mock(() => Promise.resolve({ message: {} }));
+const mockSendWorkerMessage = mock(() => Promise.resolve({ message: { id: 'msg-1' } }));
 mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
 }));
@@ -58,7 +58,7 @@ describe('MessagePanel', () => {
     expect(button.disabled).toBe(true);
   });
 
-  it('Ctrl+Enter triggers send', async () => {
+  it('Ctrl+Enter triggers send via HTTP', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -73,7 +73,7 @@ describe('MessagePanel', () => {
     expect(mockSendWorkerMessage).toHaveBeenCalledWith('session-1', 'agent-1', 'hello', undefined);
   });
 
-  it('Cmd+Enter triggers send', async () => {
+  it('Cmd+Enter triggers send via HTTP', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -214,4 +214,5 @@ describe('MessagePanel', () => {
 
     expect(mockSendWorkerMessage).not.toHaveBeenCalled();
   });
+
 });
