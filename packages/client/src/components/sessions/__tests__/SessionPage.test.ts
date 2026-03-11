@@ -1,5 +1,5 @@
 /**
- * Tests for SessionPage handleWorkerRestart logic.
+ * Tests for SessionPage logic that remains in SessionPage.tsx.
  *
  * Tests the extracted workerRestart module directly, which is the same
  * pure logic used by SessionPage.tsx. This avoids re-implementing production
@@ -13,6 +13,7 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
+import { sessionToPageState } from '../SessionPage';
 
 // Test helpers
 
@@ -278,5 +279,52 @@ describe('executeWorkerRestart', () => {
       // Should use the first agent worker (agent-1), not terminal-1 or agent-2
       expect(mockRestartAgentWorker.mock.calls[0][1]).toBe('agent-1');
     });
+  });
+});
+
+describe('sessionToPageState', () => {
+  it('should return paused when session has pausedAt', () => {
+    const session = createMockSession({ status: 'active', pausedAt: '2026-01-01T00:00:00Z' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('paused');
+    expect(result.session).toBe(session);
+  });
+
+  it('should return paused when session is inactive with pausedAt', () => {
+    const session = createMockSession({ status: 'inactive', pausedAt: '2026-01-01T00:00:00Z' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('paused');
+  });
+
+  it('should return active when session status is active and no pausedAt', () => {
+    const session = createMockSession({ status: 'active' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('active');
+    expect(result.session).toBe(session);
+  });
+
+  it('should return disconnected when session status is inactive and no pausedAt', () => {
+    const session = createMockSession({ status: 'inactive' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('disconnected');
+    expect(result.session).toBe(session);
+  });
+
+  it('should prioritize pausedAt over active status', () => {
+    // Edge case: session has both status='active' and pausedAt set
+    const session = createMockSession({ status: 'active', pausedAt: '2026-01-01T00:00:00Z' });
+
+    const result = sessionToPageState(session);
+
+    // pausedAt takes precedence
+    expect(result.type).toBe('paused');
   });
 });

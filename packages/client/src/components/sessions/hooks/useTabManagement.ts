@@ -40,7 +40,6 @@ interface UseTabManagementOptions {
 export interface UseTabManagementResult {
   tabs: Tab[];
   activeTabId: string | null;
-  activeTabIdRef: React.RefObject<string | null>;
   addTerminalTab: () => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   handleTabClick: (tabId: string) => void;
@@ -61,10 +60,6 @@ export function useTabManagement({
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const pendingWorkerIdRef = useRef<string | null>(null);
-
-  // Track active tab for app-websocket activity filtering
-  const activeTabIdRef = useRef<string | null>(null);
-  activeTabIdRef.current = activeTabId;
 
   // Initialize tabs when session becomes active
   useEffect(() => {
@@ -200,7 +195,6 @@ export function useTabManagement({
   return {
     tabs,
     activeTabId,
-    activeTabIdRef,
     addTerminalTab,
     closeTab,
     handleTabClick,

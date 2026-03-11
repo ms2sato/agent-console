@@ -7,27 +7,20 @@ import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
-import { getSession, restartAgentWorker, resumeSession, openPath, ServerUnavailableError } from '../../lib/api';
+import { getSession, restartAgentWorker, resumeSession, openPath } from '../../lib/api';
 import { formatPath } from '../../lib/path';
-import { useAppWsEvent } from '../../hooks/useAppWs';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
+import { useSessionPageState, type PageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
-import { resolveResumedState } from './sessionResumedState';
-import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { logger } from '../../lib/logger';
 
-type PageState =
-  | { type: 'loading' }
-  | { type: 'active'; session: Session }
-  | { type: 'disconnected'; session: Session }
-  | { type: 'not_found' }
-  | { type: 'server_unavailable' }
-  | { type: 'restarting' }
-  | { type: 'paused'; session: Session };
+export { sessionToPageState } from './hooks/useSessionPageState';
+export type { PageState } from './hooks/useSessionPageState';
 
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
@@ -86,20 +79,25 @@ export interface SessionPageProps {
 }
 
 export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
-  const [state, setState] = useState<PageState>({ type: 'loading' });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
-  const [activityState, setActivityState] = useState<AgentActivityState>('unknown');
-  // Track all worker activity states for the session (for EndSessionDialog warning)
-  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({});
   const { errorDialogProps, showError } = useErrorDialog();
   const messagePanelRef = useRef<MessagePanelHandle>(null);
-  const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null);
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
   const { navigateToWorker, navigateToSession } = useWorkerRouting(sessionId);
+
+  // Refs to break circular dependency between useSessionPageState and useTabManagement
+  const updateTabsFromSessionRef = useRef<(w: Worker[]) => void>(() => {});
+  const sessionActiveTabIdRef = useRef<string | null>(null);
+
+  const { state, setState, workerActivityStates, activityState, setActivityState, lastMessage } = useSessionPageState({
+    sessionId,
+    updateTabsFromSessionRef,
+    activeTabIdRef: sessionActiveTabIdRef,
+  });
 
   // Derive branchName and sessionTitle from state
   const branchName = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
@@ -112,7 +110,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const {
     tabs,
     activeTabId,
-    activeTabIdRef,
     addTerminalTab,
     closeTab,
     handleTabClick,
@@ -129,84 +126,15 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setExitInfo,
   });
 
+  // Sync refs that break the circular dependency between useSessionPageState and useTabManagement.
+  // These refs are only read inside WS callbacks (after render), so the initial no-op is safe.
+  sessionActiveTabIdRef.current = activeTabId;
+  updateTabsFromSessionRef.current = updateTabsFromSession;
+
   const handleStatusChange = useCallback((status: ConnectionStatus, info?: { code: number; signal: string | null }) => {
     setConnectionStatus(status);
     setExitInfo(info);
   }, []);
-
-  const handleActivityChange = useCallback((newState: AgentActivityState) => {
-    setActivityState(newState);
-  }, []);
-
-  // Subscribe to app-websocket for real-time activity state updates
-  // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
-  const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
-    // Only process activity events for the current session
-    if (eventSessionId !== sessionId) return;
-
-    // Update all worker activity states (for EndSessionDialog warning)
-    setWorkerActivityStates(prev => ({ ...prev, [workerId]: newState }));
-
-    // Update active tab's activity state (for status bar display)
-    if (workerId === activeTabIdRef.current) {
-      setActivityState(newState);
-    }
-  }, [sessionId]);
-
-  const handleSessionUpdated = useCallback((updatedSession: Session) => {
-    if (updatedSession.id === sessionId) {
-      updateTabsFromSession(updatedSession.workers);
-
-      setState(prev => {
-        if (prev.type === 'active' || prev.type === 'disconnected') {
-          return {
-            ...prev,
-            session: updatedSession,
-          };
-        }
-        return prev;
-      });
-    }
-  }, [sessionId, updateTabsFromSession]);
-
-  // Handle session paused (by another client or via settings menu)
-  const handleSessionPaused = useCallback((pausedSessionId: string) => {
-    if (pausedSessionId === sessionId) {
-      setState(prev => {
-        if (prev.type === 'active' || prev.type === 'disconnected') {
-          return { type: 'paused', session: prev.session };
-        }
-        return prev;
-      });
-    }
-  }, [sessionId]);
-
-  // Handle session deleted (by another tab/client)
-  const handleSessionDeleted = useCallback((deletedSessionId: string) => {
-    if (deletedSessionId === sessionId) {
-      setState({ type: 'not_found' });
-    }
-  }, [sessionId]);
-
-  // Handle session resumed (by another tab/client)
-  const handleSessionResumed = useCallback((resumedSession: Session) => {
-    if (resumedSession.id === sessionId) {
-      setState(resolveResumedState(resumedSession));
-    }
-  }, [sessionId]);
-
-  useAppWsEvent({
-    onWorkerActivity: handleWorkerActivity,
-    onWorkerMessage: (message) => {
-      if (message.sessionId === sessionId) {
-        setLastMessage(message);
-      }
-    },
-    onSessionUpdated: handleSessionUpdated,
-    onSessionPaused: handleSessionPaused,
-    onSessionDeleted: handleSessionDeleted,
-    onSessionResumed: handleSessionResumed,
-  });
 
   // Update page title based on state
   useEffect(() => {
@@ -221,37 +149,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       document.title = 'Agent Console';
     };
   }, [state.type, sessionTitle, branchName]);
-
-  // Load session data
-  useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const session = await getSession(sessionId);
-        if (!session) {
-          setState({ type: 'not_found' });
-          return;
-        }
-
-        if (session.status === 'active') {
-          setState({ type: 'active', session });
-        } else if (session.pausedAt) {
-          // Session is paused (intentionally), not disconnected
-          setState({ type: 'paused', session });
-        } else {
-          setState({ type: 'disconnected', session });
-        }
-      } catch (error) {
-        logger.error('Failed to check session:', error);
-        if (error instanceof ServerUnavailableError) {
-          setState({ type: 'server_unavailable' });
-        } else {
-          setState({ type: 'not_found' });
-        }
-      }
-    };
-
-    checkSession();
-  }, [sessionId]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -281,7 +178,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   }, [sessionId, isResuming, showError]);
 
   // Restart handler: works from both active and disconnected states.
-  // Used by the disconnected state UI and by the worker error recovery overlay in Terminal.
   const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
     const session = extractRestartableSession(state.type, 'session' in state ? state.session : undefined);
     if (!session) return;
@@ -538,7 +434,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}
-            onActivityChange={activeTab.workerType === 'agent' ? handleActivityChange : undefined}
+            onActivityChange={activeTab.workerType === 'agent' ? setActivityState : undefined}
             onRequestRestart={activeTab.workerType === 'agent' ? handleWorkerRestart : undefined}
             onResumeSession={handleResumeSession}
             onFilesReceived={(files) => messagePanelRef.current?.addFiles(files)}
