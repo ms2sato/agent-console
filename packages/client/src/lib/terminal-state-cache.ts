@@ -170,10 +170,10 @@ export async function loadTerminalState(
       return null;
     }
 
-    // Validate serverPid if both are available
-    // If the cached state has a serverPid and it doesn't match current, invalidate
-    if (value.serverPid !== undefined && currentServerPid !== null && value.serverPid !== currentServerPid) {
-      console.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid}, current: ${currentServerPid}), removing:`, key);
+    // Invalidate if currentServerPid is known and cached entry doesn't match.
+    // This also invalidates legacy entries without serverPid, since undefined !== currentServerPid.
+    if (currentServerPid !== null && value.serverPid !== currentServerPid) {
+      console.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid ?? 'none'}, current: ${currentServerPid}), removing:`, key);
       await del(key);
       return null;
     }

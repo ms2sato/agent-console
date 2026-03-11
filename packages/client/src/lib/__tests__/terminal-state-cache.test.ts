@@ -448,18 +448,31 @@ describe('terminal-state-cache', () => {
       expect(result).toEqual(validState);
     });
 
-    it('should load cache entry without serverPid (backward compatibility)', async () => {
+    it('should invalidate cache entry without serverPid when currentServerPid is known', async () => {
       // Set current server PID
       await setCurrentServerPid(12345);
 
-      // Create a cached state without serverPid (old format)
-      const oldFormatState = createValidState();
-      // serverPid is optional, so this is valid
-      mockStore.set('terminal:session-1:worker-1', oldFormatState);
+      // Create a cached state without serverPid (legacy format)
+      const legacyState = createValidState();
+      // serverPid is optional, so undefined by default
+      mockStore.set('terminal:session-1:worker-1', legacyState);
 
       const result = await loadTerminalState('session-1', 'worker-1');
 
-      expect(result).toEqual(oldFormatState);
+      // Legacy entries without serverPid should be invalidated when currentServerPid is known
+      expect(result).toBeNull();
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should load cache entry without serverPid when currentServerPid is not set', async () => {
+      // Don't set current server PID (not yet initialized)
+      const legacyState = createValidState();
+      mockStore.set('terminal:session-1:worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      // When currentServerPid is null, we can't validate, so allow loading
+      expect(result).toEqual(legacyState);
     });
 
     it('should load cache entry when current serverPid is not set', async () => {
