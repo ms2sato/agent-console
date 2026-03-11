@@ -485,6 +485,34 @@ describe('terminal-state-cache', () => {
       expect(result).toEqual(stateWithPid);
     });
 
+    it('should clear all terminal states when localStorage.setItem throws', async () => {
+      // Pre-populate cache
+      const state = createValidState({ serverPid: 12345 });
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      // Make setItem throw
+      const originalSetItem = localStorage.setItem.bind(localStorage);
+      Object.defineProperty(localStorage, 'setItem', {
+        value: () => { throw new Error('Storage quota exceeded'); },
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        await setCurrentServerPid(12345);
+        // Even though setItem threw, the function completes
+        expect(getCurrentServerPid()).toBe(12345);
+        // Cache should be cleared because localStorage persistence failed
+        expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+      } finally {
+        Object.defineProperty(localStorage, 'setItem', {
+          value: originalSetItem,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
     it('should return false and not throw when localStorage.getItem throws', async () => {
       // Simulate restricted storage environment
       const originalGetItem = localStorage.getItem.bind(localStorage);
@@ -505,6 +533,40 @@ describe('terminal-state-cache', () => {
           configurable: true,
         });
       }
+    });
+  });
+
+  describe('round-trip integration', () => {
+    it('should load a state that was saved with matching serverPid', async () => {
+      await setCurrentServerPid(12345);
+
+      const stateToSave = createValidState({ serverPid: 12345 });
+      await saveTerminalState('session-1', 'worker-1', stateToSave);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toEqual(stateToSave);
+    });
+
+    it('should reject a state that was saved without serverPid when currentServerPid is known', async () => {
+      await setCurrentServerPid(12345);
+
+      // Legacy-format save: no serverPid field
+      const legacyState = createValidState(); // no serverPid
+      await saveTerminalState('session-1', 'worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toBeNull();
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should load a state saved without serverPid when currentServerPid is not yet set', async () => {
+      // No setCurrentServerPid called
+
+      const legacyState = createValidState(); // no serverPid
+      await saveTerminalState('session-1', 'worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toEqual(legacyState);
     });
   });
 });

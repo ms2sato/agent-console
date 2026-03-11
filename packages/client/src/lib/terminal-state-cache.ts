@@ -50,6 +50,8 @@ export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
     localStorage.setItem(SERVER_PID_KEY, String(serverPid));
   } catch (e) {
     console.warn('[TerminalCache] Failed to persist serverPid to localStorage:', e);
+    // Cannot detect restarts across page reloads without localStorage; clear all cache to be safe
+    await clearAllTerminalStates();
   }
 
   // If stored PID exists and differs from current, server has restarted
