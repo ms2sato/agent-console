@@ -74,6 +74,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
+  const onFilesReceivedRef = useRef(onFilesReceived);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<string | null>(null);
   const truncationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -295,6 +296,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     retryCount
   );
 
+  // Keep onFilesReceivedRef in sync with the prop to avoid stale closures
+  // in xterm event handlers (paste, drop) without re-running the xterm init effect
+  useEffect(() => {
+    onFilesReceivedRef.current = onFilesReceived;
+  }, [onFilesReceived]);
+
   // Sync connected value from hook to ref for use in async callbacks
   // (The ref is also updated in handleConnectionChange, but this handles the initial value)
   useEffect(() => {
@@ -490,7 +497,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // Handle paste with image detection
     const handlePaste = (event: ClipboardEvent) => {
       const items = event.clipboardData?.items;
-      if (!items || !onFilesReceived) return;
+      if (!items || !onFilesReceivedRef.current) return;
 
       const imageFiles: File[] = [];
       for (const item of items) {
@@ -501,7 +508,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       }
       if (imageFiles.length > 0) {
         event.preventDefault();
-        onFilesReceived(imageFiles);
+        onFilesReceivedRef.current(imageFiles);
       }
       // If no image, let xterm handle normal text paste
     };
@@ -532,10 +539,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       dragCounterRef.current = 0;
       setIsDragOver(false);
 
-      if (!onFilesReceived) return;
+      if (!onFilesReceivedRef.current) return;
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
-      onFilesReceived(Array.from(files));
+      onFilesReceivedRef.current(Array.from(files));
     };
 
     container.addEventListener('paste', handlePaste);
@@ -640,7 +647,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         terminal.dispose();
       }, 0);
     };
-  }, [sessionId, workerId, sendInput, sendResize, onFilesReceived, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, sendInput, sendResize, updateScrollButtonVisibility]);
 
   // Send resize when connection is established
   useEffect(() => {

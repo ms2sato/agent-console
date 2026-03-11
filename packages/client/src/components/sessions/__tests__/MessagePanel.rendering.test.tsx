@@ -1,6 +1,17 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 
-const mockSendWorkerMessage = mock(() => Promise.resolve({ message: { id: 'msg-1' } }));
+const mockSendWorkerMessage = mock(() => Promise.resolve({
+  message: {
+    id: 'msg-1',
+    sessionId: 'session-1',
+    fromWorkerId: 'user',
+    fromWorkerName: 'User',
+    toWorkerId: 'agent-1',
+    toWorkerName: 'Agent 1',
+    content: 'hello',
+    timestamp: new Date().toISOString(),
+  },
+}));
 mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
 }));
