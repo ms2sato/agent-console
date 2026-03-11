@@ -35,7 +35,12 @@ export function resetCurrentServerPid(): void {
  * @returns true if cache was invalidated due to server restart
  */
 export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
-  const storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  let storedPidStr: string | null = null;
+  try {
+    storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  } catch (e) {
+    console.warn('[TerminalCache] Failed to read serverPid from localStorage:', e);
+  }
   const storedPid = storedPidStr ? parseInt(storedPidStr, 10) : null;
 
   currentServerPid = serverPid;

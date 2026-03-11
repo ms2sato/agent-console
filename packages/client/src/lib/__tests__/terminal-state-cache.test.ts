@@ -484,5 +484,27 @@ describe('terminal-state-cache', () => {
 
       expect(result).toEqual(stateWithPid);
     });
+
+    it('should return false and not throw when localStorage.getItem throws', async () => {
+      // Simulate restricted storage environment
+      const originalGetItem = localStorage.getItem.bind(localStorage);
+      Object.defineProperty(localStorage, 'getItem', {
+        value: () => { throw new Error('Storage access denied'); },
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        const result = await setCurrentServerPid(12345);
+        expect(result).toBe(false); // No stored PID known, so no restart detected
+        expect(getCurrentServerPid()).toBe(12345);
+      } finally {
+        Object.defineProperty(localStorage, 'getItem', {
+          value: originalGetItem,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
   });
 });
