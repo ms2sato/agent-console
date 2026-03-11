@@ -14,7 +14,7 @@ import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getNextTabIndex } from './tabKeyboardNavigation';
-import type { Session, AgentActivityState, WorkerMessage } from '@agent-console/shared';
+import type { Session, AgentActivityState, WorkerActivityInfo, WorkerMessage } from '@agent-console/shared';
 import { MessagePanel } from './MessagePanel';
 
 type PageState =
@@ -184,7 +184,71 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     }
   }, [sessionId]);
 
+  // Handle session resumed (paused → active, triggered by another client or sidebar)
+  const handleSessionResumed = useCallback((resumedSession: Session) => {
+    if (resumedSession.id === sessionId) {
+      updateTabsFromSession(resumedSession.workers);
+      setState({ type: 'active', session: resumedSession });
+    }
+  }, [sessionId, updateTabsFromSession]);
+
+  // Handle sessions-sync (fires after WebSocket reconnects to reconcile stale state)
+  const handleSessionsSync = useCallback((syncedSessions: Session[], activityStates: WorkerActivityInfo[]) => {
+    const session = syncedSessions.find(s => s.id === sessionId);
+
+    if (session) {
+      // Session exists in sync - reconcile state directly
+      updateTabsFromSession(session.workers);
+
+      setState(prev => {
+        // Don't interrupt ongoing restart operations
+        if (prev.type === 'restarting') return prev;
+
+        if (session.status === 'active') {
+          return { type: 'active', session };
+        } else if (session.pausedAt) {
+          return { type: 'paused', session };
+        } else {
+          return { type: 'disconnected', session };
+        }
+      });
+
+      // Refresh worker activity states for this session
+      const sessionActivities: Record<string, AgentActivityState> = {};
+      for (const info of activityStates) {
+        if (info.sessionId === sessionId) {
+          sessionActivities[info.workerId] = info.activityState;
+        }
+      }
+      setWorkerActivityStates(sessionActivities);
+    } else {
+      // Session missing from sync - check if it's paused in DB or deleted
+      getSession(sessionId).then(fetchedSession => {
+        setState(prev => {
+          if (prev.type === 'restarting') return prev;
+
+          if (!fetchedSession) {
+            return { type: 'not_found' };
+          }
+          if (fetchedSession.pausedAt) {
+            return { type: 'paused', session: fetchedSession };
+          }
+          if (fetchedSession.status === 'active') {
+            return { type: 'active', session: fetchedSession };
+          }
+          return { type: 'disconnected', session: fetchedSession };
+        });
+      }).catch(error => {
+        console.error('Failed to check session after sync:', error);
+        if (error instanceof ServerUnavailableError) {
+          setState({ type: 'server_unavailable' });
+        }
+      });
+    }
+  }, [sessionId, updateTabsFromSession]);
+
   useAppWsEvent({
+    onSessionsSync: handleSessionsSync,
     onWorkerActivity: handleWorkerActivity,
     onWorkerMessage: (message) => {
       if (message.sessionId === sessionId) {
@@ -194,6 +258,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     onSessionUpdated: handleSessionUpdated,
     onSessionPaused: handleSessionPaused,
     onSessionDeleted: handleSessionDeleted,
+    onSessionResumed: handleSessionResumed,
   });
 
   // Update page title based on state

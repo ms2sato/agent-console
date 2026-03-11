@@ -1,10 +1,10 @@
 /**
- * Tests for SessionPage handleWorkerRestart logic.
+ * Tests for SessionPage state machine logic.
  *
  * SessionPage cannot be rendered in unit tests due to complex dependencies
  * (xterm.js, WebSocket, TanStack Router). Instead, we model the
- * handleWorkerRestart state machine as pure functions and test the logic
- * independently, following the same pattern as Terminal.test.tsx.
+ * state machine as pure functions and test the logic independently,
+ * following the same pattern as Terminal.test.tsx.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import type { Session, Worker } from '@agent-console/shared';
@@ -306,5 +306,268 @@ describe('SessionPage handleWorkerRestart logic', () => {
       // Should use the first agent worker (agent-1), not terminal-1 or agent-2
       expect(mockRestartAgentWorker.mock.calls[0][1]).toBe('agent-1');
     });
+  });
+});
+
+/**
+ * Models the sessions-sync reconciliation logic from SessionPage.tsx.
+ *
+ * When sessions-sync arrives (after WebSocket reconnects), SessionPage must
+ * reconcile its local PageState with the fresh session data from the server.
+ *
+ * Returns:
+ * - newState: The reconciled state
+ * - needsRefetch: true if the session was not found in the sync list and REST fallback is needed
+ */
+function reconcileFromSync(
+  prev: PageState,
+  sessionId: string,
+  syncedSessions: Session[],
+): { newState: PageState; needsRefetch: boolean } {
+  // Don't interrupt ongoing restart operations
+  if (prev.type === 'restarting') {
+    return { newState: prev, needsRefetch: false };
+  }
+
+  const session = syncedSessions.find(s => s.id === sessionId);
+  if (!session) {
+    // Session not in sync - need REST fallback
+    return { newState: prev, needsRefetch: true };
+  }
+
+  // Reconcile state from fresh session data
+  if (session.status === 'active') {
+    return { newState: { type: 'active', session }, needsRefetch: false };
+  } else if (session.pausedAt) {
+    return { newState: { type: 'paused', session }, needsRefetch: false };
+  } else {
+    return { newState: { type: 'disconnected', session }, needsRefetch: false };
+  }
+}
+
+/**
+ * Models the REST fallback reconciliation after sessions-sync when
+ * the session was not found in the synced list.
+ */
+function reconcileFromFetchedSession(
+  prev: PageState,
+  fetchedSession: Session | null,
+): PageState {
+  if (prev.type === 'restarting') return prev;
+
+  if (!fetchedSession) {
+    return { type: 'not_found' };
+  }
+  if (fetchedSession.pausedAt) {
+    return { type: 'paused', session: fetchedSession };
+  }
+  if (fetchedSession.status === 'active') {
+    return { type: 'active', session: fetchedSession };
+  }
+  return { type: 'disconnected', session: fetchedSession };
+}
+
+/**
+ * Models the session-resumed reconciliation logic from SessionPage.tsx.
+ */
+function reconcileFromResume(
+  prev: PageState,
+  sessionId: string,
+  resumedSession: Session,
+): PageState {
+  if (resumedSession.id !== sessionId) return prev;
+  return { type: 'active', session: resumedSession };
+}
+
+describe('SessionPage sessions-sync reconciliation', () => {
+  const sessionId = 'session-1';
+
+  describe('session found in sync - active', () => {
+    it('should transition to active when synced session is active', () => {
+      const session = createMockSession({ id: sessionId, status: 'active' });
+      const prev: PageState = { type: 'disconnected', session: createMockSession({ id: sessionId, status: 'inactive' }) };
+
+      const result = reconcileFromSync(prev, sessionId, [session]);
+
+      expect(result.needsRefetch).toBe(false);
+      expect(result.newState.type).toBe('active');
+      if (result.newState.type === 'active') {
+        expect(result.newState.session).toBe(session);
+      }
+    });
+
+    it('should transition from loading to active', () => {
+      const session = createMockSession({ id: sessionId, status: 'active' });
+      const prev: PageState = { type: 'loading' };
+
+      const result = reconcileFromSync(prev, sessionId, [session]);
+
+      expect(result.newState.type).toBe('active');
+    });
+  });
+
+  describe('session found in sync - paused', () => {
+    it('should transition to paused when synced session has pausedAt', () => {
+      const session = createMockSession({
+        id: sessionId,
+        status: 'inactive',
+        pausedAt: '2026-01-01T00:00:00Z',
+      });
+      const prev: PageState = { type: 'active', session: createMockSession({ id: sessionId }) };
+
+      const result = reconcileFromSync(prev, sessionId, [session]);
+
+      expect(result.needsRefetch).toBe(false);
+      expect(result.newState.type).toBe('paused');
+    });
+  });
+
+  describe('session found in sync - disconnected', () => {
+    it('should transition to disconnected when synced session is inactive without pausedAt', () => {
+      const session = createMockSession({ id: sessionId, status: 'inactive' });
+      const prev: PageState = { type: 'active', session: createMockSession({ id: sessionId }) };
+
+      const result = reconcileFromSync(prev, sessionId, [session]);
+
+      expect(result.needsRefetch).toBe(false);
+      expect(result.newState.type).toBe('disconnected');
+    });
+  });
+
+  describe('session not found in sync', () => {
+    it('should request refetch when session is not in sync list', () => {
+      const otherSession = createMockSession({ id: 'other-session' });
+      const prev: PageState = { type: 'active', session: createMockSession({ id: sessionId }) };
+
+      const result = reconcileFromSync(prev, sessionId, [otherSession]);
+
+      expect(result.needsRefetch).toBe(true);
+      expect(result.newState).toBe(prev); // Keeps current state until REST resolves
+    });
+
+    it('should request refetch when sync list is empty', () => {
+      const prev: PageState = { type: 'active', session: createMockSession({ id: sessionId }) };
+
+      const result = reconcileFromSync(prev, sessionId, []);
+
+      expect(result.needsRefetch).toBe(true);
+    });
+  });
+
+  describe('restarting state is preserved', () => {
+    it('should not change state during restart even if session is in sync', () => {
+      const session = createMockSession({ id: sessionId, status: 'active' });
+      const prev: PageState = { type: 'restarting' };
+
+      const result = reconcileFromSync(prev, sessionId, [session]);
+
+      expect(result.needsRefetch).toBe(false);
+      expect(result.newState).toBe(prev);
+    });
+  });
+
+  describe('multiple sessions in sync', () => {
+    it('should find the correct session among multiple', () => {
+      const otherSession = createMockSession({ id: 'other', status: 'active' });
+      const targetSession = createMockSession({ id: sessionId, status: 'active' });
+      const prev: PageState = { type: 'loading' };
+
+      const result = reconcileFromSync(prev, sessionId, [otherSession, targetSession]);
+
+      expect(result.newState.type).toBe('active');
+      if (result.newState.type === 'active') {
+        expect(result.newState.session.id).toBe(sessionId);
+      }
+    });
+  });
+});
+
+describe('SessionPage REST fallback reconciliation (session missing from sync)', () => {
+  describe('session fetched from REST', () => {
+    it('should transition to paused when fetched session has pausedAt', () => {
+      const session = createMockSession({ pausedAt: '2026-01-01T00:00:00Z', status: 'inactive' });
+      const prev: PageState = { type: 'active', session: createMockSession() };
+
+      const result = reconcileFromFetchedSession(prev, session);
+
+      expect(result.type).toBe('paused');
+    });
+
+    it('should transition to active when fetched session is active', () => {
+      const session = createMockSession({ status: 'active' });
+      const prev: PageState = { type: 'disconnected', session: createMockSession({ status: 'inactive' }) };
+
+      const result = reconcileFromFetchedSession(prev, session);
+
+      expect(result.type).toBe('active');
+    });
+
+    it('should transition to disconnected when fetched session is inactive without pausedAt', () => {
+      const session = createMockSession({ status: 'inactive' });
+      const prev: PageState = { type: 'active', session: createMockSession() };
+
+      const result = reconcileFromFetchedSession(prev, session);
+
+      expect(result.type).toBe('disconnected');
+    });
+  });
+
+  describe('session not found via REST', () => {
+    it('should transition to not_found when session does not exist', () => {
+      const prev: PageState = { type: 'active', session: createMockSession() };
+
+      const result = reconcileFromFetchedSession(prev, null);
+
+      expect(result.type).toBe('not_found');
+    });
+  });
+
+  describe('restarting state is preserved', () => {
+    it('should not change state during restart even if REST returns data', () => {
+      const session = createMockSession({ status: 'active' });
+      const prev: PageState = { type: 'restarting' };
+
+      const result = reconcileFromFetchedSession(prev, session);
+
+      expect(result).toBe(prev);
+    });
+  });
+});
+
+describe('SessionPage session-resumed reconciliation', () => {
+  const sessionId = 'session-1';
+
+  it('should transition to active when this session is resumed', () => {
+    const resumedSession = createMockSession({ id: sessionId, status: 'active' });
+    const prev: PageState = { type: 'paused', session: createMockSession({ id: sessionId, pausedAt: '2026-01-01T00:00:00Z' }) };
+
+    const result = reconcileFromResume(prev, sessionId, resumedSession);
+
+    expect(result.type).toBe('active');
+    if (result.type === 'active') {
+      expect(result.session).toBe(resumedSession);
+    }
+  });
+
+  it('should not change state when a different session is resumed', () => {
+    const resumedSession = createMockSession({ id: 'other-session', status: 'active' });
+    const prev: PageState = { type: 'paused', session: createMockSession({ id: sessionId }) };
+
+    const result = reconcileFromResume(prev, sessionId, resumedSession);
+
+    expect(result).toBe(prev);
+  });
+
+  it('should work from any state (loading, disconnected, etc.)', () => {
+    const resumedSession = createMockSession({ id: sessionId, status: 'active' });
+
+    // From loading
+    const resultFromLoading = reconcileFromResume({ type: 'loading' }, sessionId, resumedSession);
+    expect(resultFromLoading.type).toBe('active');
+
+    // From disconnected
+    const prevDisconnected: PageState = { type: 'disconnected', session: createMockSession({ id: sessionId }) };
+    const resultFromDisconnected = reconcileFromResume(prevDisconnected, sessionId, resumedSession);
+    expect(resultFromDisconnected.type).toBe('active');
   });
 });
