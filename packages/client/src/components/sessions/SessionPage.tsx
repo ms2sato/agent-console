@@ -8,6 +8,7 @@ import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon } from '../Icons';
 import { getSession, restartAgentWorker, resumeSession, openPath } from '../../lib/api';
+import { handleWorkerRestart as handleWorkerRestartAction } from './sessionPageActions';
 import { formatPath } from '../../lib/path';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
@@ -123,7 +124,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setExitInfo,
   });
 
-  // Sync refs after useTabManagement initializes
+  // Sync refs that break the circular dependency between useSessionPageState and useTabManagement.
+  // These refs are only read inside WS callbacks (after render), so the initial no-op is safe.
   sessionActiveTabIdRef.current = activeTabId;
   updateTabsFromSessionRef.current = updateTabsFromSession;
 
@@ -158,36 +160,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   }, [activeTabId, tabs, handleTabClick]);
 
   // Restart handler: works from both active and disconnected states.
-  // Used by the disconnected state UI and by the worker error recovery overlay in Terminal.
   const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
-    const session = (state.type === 'active' || state.type === 'disconnected') ? state.session : null;
-    if (!session) return;
-
-    const agentWorker = session.workers.find(w => w.type === 'agent');
-    if (!agentWorker) {
-      showError('Restart Failed', 'No agent worker found in session');
-      return;
-    }
+    if (state.type !== 'active' && state.type !== 'disconnected') return;
 
     setState({ type: 'restarting' });
-    try {
-      await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
-      const updatedSession = await getSession(sessionId);
-      if (!updatedSession) {
-        setState({ type: 'not_found' });
-        return;
-      }
-      if (updatedSession.status === 'active') {
-        updateTabsFromSession([]);
-        setState({ type: 'active', session: updatedSession });
-      } else {
-        setState({ type: 'disconnected', session: updatedSession });
-      }
-    } catch (error) {
-      console.error('Failed to restart session:', error);
-      showError('Restart Failed', error instanceof Error ? error.message : 'Failed to restart session');
-      setState({ type: 'disconnected', session });
-    }
+    const nextState = await handleWorkerRestartAction(state, sessionId, continueConversation, {
+      restartAgentWorker,
+      getSession,
+      showError,
+      updateTabsFromSession,
+    });
+    setState(nextState);
   }, [sessionId, state, updateTabsFromSession, showError]);
 
   // Loading state

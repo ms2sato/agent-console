@@ -429,6 +429,25 @@ describe('useAppWsEvent', () => {
       expect(onAgentDeleted).toHaveBeenCalledWith('agent-1');
     });
 
+    it('should call onSessionPaused for session-paused message', () => {
+      const onSessionPaused = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionPaused }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'session-paused',
+            sessionId: 'session-1',
+            pausedAt: '2026-01-01T00:00:00.000Z',
+          })
+        );
+      });
+
+      expect(onSessionPaused).toHaveBeenCalledWith('session-1', '2026-01-01T00:00:00.000Z');
+    });
+
     it('should call onSessionResumed for session-resumed message', () => {
       const onSessionResumed = mock(() => {});
       renderHook(() => useAppWsEvent({ onSessionResumed }));

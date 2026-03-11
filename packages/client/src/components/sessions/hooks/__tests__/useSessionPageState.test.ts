@@ -579,6 +579,24 @@ describe('useSessionPageState', () => {
       }
     })
 
+    it('should transition disconnected to paused and apply pausedAt to session', async () => {
+      const session = createMockSession({ status: 'inactive' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+      expect(result.current.state.type).toBe('disconnected')
+
+      const pausedAt = '2026-01-01T00:00:00.000Z'
+      act(() => {
+        capturedCallbacks.onSessionPaused?.('session-1', pausedAt)
+      })
+
+      expect(result.current.state.type).toBe('paused')
+      if (result.current.state.type === 'paused') {
+        expect(result.current.state.session.pausedAt).toBe(pausedAt)
+      }
+    })
+
     it('should ignore events for other sessions', async () => {
       const session = createMockSession({ status: 'active' })
       getSessionResponse = session

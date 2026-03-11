@@ -6,62 +6,12 @@
  *
  * This file tests:
  * - sessionToPageState (pure function, re-exported from SessionPage)
- * - handleWorkerRestart (logic that stays in SessionPage)
+ * - handleWorkerRestart (extracted pure function in sessionPageActions)
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import type { Session, Worker } from '@agent-console/shared';
 import { sessionToPageState, type PageState } from '../SessionPage';
-
-/**
- * Models the handleWorkerRestart logic from SessionPage.tsx.
- *
- * This function reproduces the exact behavior:
- * 1. Extract session from state (only active/disconnected)
- * 2. Find agent worker
- * 3. Call restartAgentWorker API
- * 4. Reload session via getSession API and update state
- */
-async function simulateHandleWorkerRestart(params: {
-  state: PageState;
-  sessionId: string;
-  continueConversation: boolean;
-  restartAgentWorker: (sessionId: string, workerId: string, continueConversation: boolean) => Promise<{ worker: Worker }>;
-  getSession: (sessionId: string) => Promise<Session | null>;
-  showError: (title: string, message: string) => void;
-  updateTabsFromSession: (workers: Worker[]) => void;
-}): Promise<PageState> {
-  const { state, sessionId, continueConversation, restartAgentWorker, getSession, showError, updateTabsFromSession } = params;
-
-  // Step 1: Extract session from state
-  const session = (state.type === 'active' || state.type === 'disconnected') ? state.session : null;
-  if (!session) return state;
-
-  // Step 2: Find agent worker
-  const agentWorker = session.workers.find(w => w.type === 'agent');
-  if (!agentWorker) {
-    showError('Restart Failed', 'No agent worker found in session');
-    return state;
-  }
-
-  try {
-    // Step 3: Call restart API
-    await restartAgentWorker(sessionId, agentWorker.id, continueConversation);
-
-    // Step 4: Reload session
-    const updatedSession = await getSession(sessionId);
-    if (!updatedSession) {
-      return { type: 'not_found' };
-    }
-    if (updatedSession.status === 'active') {
-      updateTabsFromSession([]);
-      return { type: 'active', session: updatedSession };
-    }
-    return { type: 'disconnected', session: updatedSession };
-  } catch (error) {
-    showError('Restart Failed', error instanceof Error ? error.message : 'Failed to restart session');
-    return { type: 'disconnected', session };
-  }
-}
+import { handleWorkerRestart } from '../sessionPageActions';
 
 // Test helpers
 
@@ -103,15 +53,17 @@ describe('SessionPage handleWorkerRestart logic', () => {
     sessionId?: string;
     continueConversation?: boolean;
   } = {}): Promise<PageState> {
-    return simulateHandleWorkerRestart({
-      state: overrides.state ?? { type: 'active', session: createMockSession() },
-      sessionId: overrides.sessionId ?? 'session-1',
-      continueConversation: overrides.continueConversation ?? true,
-      restartAgentWorker: mockRestartAgentWorker,
-      getSession: mockGetSession,
-      showError: mockShowError,
-      updateTabsFromSession: mockUpdateTabsFromSession,
-    });
+    return handleWorkerRestart(
+      overrides.state ?? { type: 'active', session: createMockSession() },
+      overrides.sessionId ?? 'session-1',
+      overrides.continueConversation ?? true,
+      {
+        restartAgentWorker: mockRestartAgentWorker,
+        getSession: mockGetSession,
+        showError: mockShowError,
+        updateTabsFromSession: mockUpdateTabsFromSession,
+      },
+    );
   }
 
   describe('restart with continue flag', () => {

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, type MutableRefObject } from 'react'
+import { useState, useCallback, useEffect, useRef, type MutableRefObject } from 'react'
 import { getSession, ServerUnavailableError } from '../../../lib/api'
 import { useAppWsEvent } from '../../../hooks/useAppWs'
 import type { Session, AgentActivityState, WorkerActivityInfo, WorkerMessage, Worker } from '@agent-console/shared'
@@ -50,20 +50,21 @@ export function useSessionPageState({
   activeTabIdRef,
 }: UseSessionPageStateOptions): UseSessionPageStateReturn {
   const [state, setState] = useState<PageState>({ type: 'loading' })
+  // Ref mirror of state: callbacks that trigger side effects based on current state
+  // must read this ref because React 18 automatic batching defers setState updaters.
+  const stateRef = useRef(state)
+  stateRef.current = state
   const [activityState, setActivityState] = useState<AgentActivityState>('unknown')
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({})
   const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null)
+  const syncRequestIdRef = useRef(0)
 
-  // Subscribe to app-websocket for real-time activity state updates
-  // This ensures favicon updates even when page is backgrounded and worker WebSocket disconnects
   const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
-    // Only process activity events for the current session
     if (eventSessionId !== sessionId) return
 
-    // Update all worker activity states (for EndSessionDialog warning)
     setWorkerActivityStates(prev => ({ ...prev, [workerId]: newState }))
 
-    // Update active tab's activity state (for status bar display)
+    // Sync the active tab's activity state for status bar display
     if (workerId === activeTabIdRef.current) {
       setActivityState(newState)
     }
@@ -72,13 +73,16 @@ export function useSessionPageState({
   const handleSessionUpdated = useCallback((updatedSession: Session) => {
     if (updatedSession.id !== sessionId) return
 
-    updateTabsFromSessionRef.current(updatedSession.workers)
     setState(prev => {
       if (prev.type === 'active' || prev.type === 'disconnected' || prev.type === 'paused') {
         return { ...prev, session: updatedSession }
       }
       return prev
     })
+    // Only sync tabs when session is active (stateRef avoids React 18 batching staleness)
+    if (stateRef.current.type === 'active') {
+      updateTabsFromSessionRef.current(updatedSession.workers)
+    }
   }, [sessionId, updateTabsFromSessionRef])
 
   // Handle session paused (by another client or via settings menu)
@@ -87,7 +91,8 @@ export function useSessionPageState({
 
     setState(prev => {
       if (prev.type === 'active' || prev.type === 'disconnected') {
-        return { type: 'paused', session: { ...prev.session, pausedAt } }
+        const updatedSession = { ...prev.session, pausedAt }
+        return sessionToPageState(updatedSession)
       }
       return prev
     })
@@ -102,10 +107,9 @@ export function useSessionPageState({
   // Handle session resumed (paused -> active, triggered by another client or sidebar)
   const handleSessionResumed = useCallback((resumedSession: Session) => {
     if (resumedSession.id !== sessionId) return
-    setState(prev => {
-      if (prev.type === 'restarting') return prev
-      return { type: 'active', session: resumedSession }
-    })
+    if (stateRef.current.type === 'restarting') return
+
+    setState({ type: 'active', session: resumedSession })
     updateTabsFromSessionRef.current(resumedSession.workers)
   }, [sessionId, updateTabsFromSessionRef])
 
@@ -133,19 +137,25 @@ export function useSessionPageState({
       setWorkerActivityStates(sessionActivities)
     } else {
       // Session missing from sync - check if it's paused in DB or deleted
+      const requestId = ++syncRequestIdRef.current
       ;(async () => {
         try {
           const fetchedSession = await getSession(sessionId)
-          setState(prev => {
-            if (prev.type === 'restarting' || prev.type === 'not_found') return prev
-            if (!fetchedSession) return { type: 'not_found' }
-            const nextState = sessionToPageState(fetchedSession)
-            if (nextState.type === 'active') {
-              updateTabsFromSessionRef.current(fetchedSession.workers)
-            }
-            return nextState
-          })
+          if (syncRequestIdRef.current !== requestId) return  // stale response
+          if (stateRef.current.type === 'restarting' || stateRef.current.type === 'not_found') return
+
+          if (!fetchedSession) {
+            setState({ type: 'not_found' })
+            return
+          }
+
+          const nextState = sessionToPageState(fetchedSession)
+          if (nextState.type === 'active') {
+            updateTabsFromSessionRef.current(fetchedSession.workers)
+          }
+          setState(nextState)
         } catch (error) {
+          if (syncRequestIdRef.current !== requestId) return  // stale response
           console.error('Failed to check session after sync:', error)
           if (error instanceof ServerUnavailableError) {
             setState({ type: 'server_unavailable' })
