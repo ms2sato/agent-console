@@ -74,7 +74,7 @@ export function useSessionPageState({
 
     updateTabsFromSessionRef.current(updatedSession.workers)
     setState(prev => {
-      if (prev.type === 'active' || prev.type === 'disconnected') {
+      if (prev.type === 'active' || prev.type === 'disconnected' || prev.type === 'paused') {
         return { ...prev, session: updatedSession }
       }
       return prev
@@ -82,12 +82,12 @@ export function useSessionPageState({
   }, [sessionId, updateTabsFromSessionRef])
 
   // Handle session paused (by another client or via settings menu)
-  const handleSessionPaused = useCallback((pausedSessionId: string) => {
+  const handleSessionPaused = useCallback((pausedSessionId: string, pausedAt: string) => {
     if (pausedSessionId !== sessionId) return
 
     setState(prev => {
       if (prev.type === 'active' || prev.type === 'disconnected') {
-        return { type: 'paused', session: prev.session }
+        return { type: 'paused', session: { ...prev.session, pausedAt } }
       }
       return prev
     })
@@ -136,13 +136,14 @@ export function useSessionPageState({
       ;(async () => {
         try {
           const fetchedSession = await getSession(sessionId)
-          if (fetchedSession?.status === 'active') {
-            updateTabsFromSessionRef.current(fetchedSession.workers)
-          }
           setState(prev => {
             if (prev.type === 'restarting' || prev.type === 'not_found') return prev
             if (!fetchedSession) return { type: 'not_found' }
-            return sessionToPageState(fetchedSession)
+            const nextState = sessionToPageState(fetchedSession)
+            if (nextState.type === 'active') {
+              updateTabsFromSessionRef.current(fetchedSession.workers)
+            }
+            return nextState
           })
         } catch (error) {
           console.error('Failed to check session after sync:', error)
@@ -170,9 +171,13 @@ export function useSessionPageState({
 
   // Load session data
   useEffect(() => {
+    let cancelled = false
+
     const checkSession = async () => {
       try {
         const session = await getSession(sessionId)
+        if (cancelled) return
+
         if (!session) {
           setState({ type: 'not_found' })
           return
@@ -180,6 +185,7 @@ export function useSessionPageState({
 
         setState(sessionToPageState(session))
       } catch (error) {
+        if (cancelled) return
         console.error('Failed to check session:', error)
         if (error instanceof ServerUnavailableError) {
           setState({ type: 'server_unavailable' })
@@ -190,6 +196,7 @@ export function useSessionPageState({
     }
 
     checkSession()
+    return () => { cancelled = true }
   }, [sessionId])
 
   return {

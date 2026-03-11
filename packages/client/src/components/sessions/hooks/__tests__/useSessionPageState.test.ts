@@ -412,6 +412,31 @@ describe('useSessionPageState', () => {
 
       expect(result.current.state.type).toBe('restarting')
     })
+
+    it('should NOT call updateTabsFromSession when session has status=active but pausedAt set', async () => {
+      const inactiveSession = createMockSession({ status: 'inactive' })
+      getSessionResponse = inactiveSession
+
+      const refs = createMockRefs()
+      const options = createDefaultOptions({
+        updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+        activeTabIdRef: refs.activeTabIdRef,
+      })
+
+      const { result } = await mountHook(options)
+      refs.updateTabsFromSession.mockClear()
+
+      // Edge case: status=active but pausedAt set - sessionToPageState returns 'paused'
+      const edgeCaseSession = createMockSession({ status: 'active', pausedAt: '2026-01-01T00:00:00Z' })
+      getSessionResponse = edgeCaseSession
+
+      await act(async () => {
+        capturedCallbacks.onSessionsSync?.([], [])
+      })
+
+      expect(result.current.state.type).toBe('paused')
+      expect(refs.updateTabsFromSession).not.toHaveBeenCalled()
+    })
   })
 
   describe('full reconnect flow', () => {
@@ -514,21 +539,44 @@ describe('useSessionPageState', () => {
       }
       expect(refs.updateTabsFromSession).not.toHaveBeenCalled()
     })
+
+    it('should update session data when state is paused', async () => {
+      const pausedSession = createMockSession({ status: 'inactive', pausedAt: '2026-01-01T00:00:00Z' })
+      getSessionResponse = pausedSession
+
+      const { result } = await mountHook(createDefaultOptions())
+      expect(result.current.state.type).toBe('paused')
+
+      const updatedSession = createMockSession({ status: 'inactive', pausedAt: '2026-01-01T00:00:00Z', title: 'Updated While Paused' })
+
+      act(() => {
+        capturedCallbacks.onSessionUpdated?.(updatedSession)
+      })
+
+      expect(result.current.state.type).toBe('paused')
+      if (result.current.state.type === 'paused') {
+        expect(result.current.state.session.title).toBe('Updated While Paused')
+      }
+    })
   })
 
   describe('session-paused', () => {
-    it('should transition active to paused', async () => {
+    it('should transition active to paused and apply pausedAt to session', async () => {
       const session = createMockSession({ status: 'active' })
       getSessionResponse = session
 
       const { result } = await mountHook(createDefaultOptions())
       expect(result.current.state.type).toBe('active')
 
+      const pausedAt = '2026-01-01T00:00:00.000Z'
       act(() => {
-        capturedCallbacks.onSessionPaused?.('session-1', new Date().toISOString())
+        capturedCallbacks.onSessionPaused?.('session-1', pausedAt)
       })
 
       expect(result.current.state.type).toBe('paused')
+      if (result.current.state.type === 'paused') {
+        expect(result.current.state.session.pausedAt).toBe(pausedAt)
+      }
     })
 
     it('should ignore events for other sessions', async () => {
