@@ -1,18 +1,28 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it } from 'bun:test';
 import { Glob } from 'bun';
+import path from 'node:path';
 
-describe('route directory hygiene', () => {
-  it('should not contain test files directly in route directories (outside __tests__ subdirs)', async () => {
-    const glob = new Glob('**/*.test.{ts,tsx}');
-    const routesDir = new URL('../routes/', import.meta.url).pathname;
+describe('no test files directly in routes/', () => {
+  it('should not have test files outside __tests__/ directories', async () => {
+    const routesDir = path.resolve(import.meta.dir, '../routes');
+    const glob = new Glob('**/*.{test,spec}.{ts,tsx}');
+
     const testFiles: string[] = [];
     for await (const file of glob.scan(routesDir)) {
-      // Allow test files inside __tests__/ subdirectories (colocated pattern).
-      // These are already excluded from TanStack Router via routeFileIgnorePattern.
-      if (!file.includes('__tests__/')) {
+      const isInTestsDir = file.includes('__tests__/');
+      const isSpecFile = file.endsWith('.spec.ts') || file.endsWith('.spec.tsx');
+
+      // Flag .spec files anywhere (project uses .test naming) and .test files outside __tests__/
+      if (!isInTestsDir || isSpecFile) {
         testFiles.push(file);
       }
     }
-    expect(testFiles).toEqual([]);
+
+    if (testFiles.length > 0) {
+      throw new Error(
+        `Invalid route test files found: ${testFiles.join(', ')}. ` +
+          'Use *.test.ts(x) under src/__tests__/routes/ or a routes/__tests__/ subdirectory.',
+      );
+    }
   });
 });
