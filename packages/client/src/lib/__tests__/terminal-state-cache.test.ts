@@ -448,18 +448,31 @@ describe('terminal-state-cache', () => {
       expect(result).toEqual(validState);
     });
 
-    it('should load cache entry without serverPid (backward compatibility)', async () => {
+    it('should invalidate cache entry without serverPid when currentServerPid is known', async () => {
       // Set current server PID
       await setCurrentServerPid(12345);
 
-      // Create a cached state without serverPid (old format)
-      const oldFormatState = createValidState();
-      // serverPid is optional, so this is valid
-      mockStore.set('terminal:session-1:worker-1', oldFormatState);
+      // Create a cached state without serverPid (legacy format)
+      const legacyState = createValidState();
+      // serverPid is optional, so undefined by default
+      mockStore.set('terminal:session-1:worker-1', legacyState);
 
       const result = await loadTerminalState('session-1', 'worker-1');
 
-      expect(result).toEqual(oldFormatState);
+      // Legacy entries without serverPid should be invalidated when currentServerPid is known
+      expect(result).toBeNull();
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should load cache entry without serverPid when currentServerPid is not set', async () => {
+      // Don't set current server PID (not yet initialized)
+      const legacyState = createValidState();
+      mockStore.set('terminal:session-1:worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+
+      // When currentServerPid is null, we can't validate, so allow loading
+      expect(result).toEqual(legacyState);
     });
 
     it('should load cache entry when current serverPid is not set', async () => {
@@ -470,6 +483,93 @@ describe('terminal-state-cache', () => {
       const result = await loadTerminalState('session-1', 'worker-1');
 
       expect(result).toEqual(stateWithPid);
+    });
+
+    it('should clear all terminal states when localStorage.setItem throws', async () => {
+      expect(localStorage.getItem('agent-console:serverPid')).toBeNull(); // precondition: no stored PID
+
+      // Pre-populate cache
+      const state = createValidState({ serverPid: 12345 });
+      mockStore.set('terminal:session-1:worker-1', state);
+
+      // Make setItem throw
+      const originalSetItem = localStorage.setItem.bind(localStorage);
+      Object.defineProperty(localStorage, 'setItem', {
+        value: () => { throw new Error('Storage quota exceeded'); },
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        const result = await setCurrentServerPid(12345);
+        // Returns false (not a restart detection) and completes despite setItem failure
+        expect(result).toBe(false);
+        expect(getCurrentServerPid()).toBe(12345);
+        // Cache should be cleared because localStorage persistence failed
+        expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+      } finally {
+        Object.defineProperty(localStorage, 'setItem', {
+          value: originalSetItem,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
+    it('should return false and not throw when localStorage.getItem throws', async () => {
+      // Simulate restricted storage environment
+      const originalGetItem = localStorage.getItem.bind(localStorage);
+      Object.defineProperty(localStorage, 'getItem', {
+        value: () => { throw new Error('Storage access denied'); },
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        const result = await setCurrentServerPid(12345);
+        expect(result).toBe(false); // No stored PID known, so no restart detected
+        expect(getCurrentServerPid()).toBe(12345);
+      } finally {
+        Object.defineProperty(localStorage, 'getItem', {
+          value: originalGetItem,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+  });
+
+  describe('round-trip integration', () => {
+    it('should load a state that was saved with matching serverPid', async () => {
+      await setCurrentServerPid(12345);
+
+      const stateToSave = createValidState({ serverPid: 12345 });
+      await saveTerminalState('session-1', 'worker-1', stateToSave);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toEqual(stateToSave);
+    });
+
+    it('should reject a state that was saved without serverPid when currentServerPid is known', async () => {
+      await setCurrentServerPid(12345);
+
+      // Legacy-format save: no serverPid field
+      const legacyState = createValidState(); // no serverPid
+      await saveTerminalState('session-1', 'worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toBeNull();
+      expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
+    });
+
+    it('should load a state saved without serverPid when currentServerPid is not yet set', async () => {
+      // No setCurrentServerPid called
+
+      const legacyState = createValidState(); // no serverPid
+      await saveTerminalState('session-1', 'worker-1', legacyState);
+
+      const result = await loadTerminalState('session-1', 'worker-1');
+      expect(result).toEqual(legacyState);
     });
   });
 });

@@ -36,7 +36,12 @@ export function resetCurrentServerPid(): void {
  * @returns true if cache was invalidated due to server restart
  */
 export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
-  const storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  let storedPidStr: string | null = null;
+  try {
+    storedPidStr = localStorage.getItem(SERVER_PID_KEY);
+  } catch (e) {
+    logger.warn('[TerminalCache] Failed to read serverPid from localStorage:', e);
+  }
   const storedPid = storedPidStr ? parseInt(storedPidStr, 10) : null;
 
   currentServerPid = serverPid;
@@ -46,6 +51,9 @@ export async function setCurrentServerPid(serverPid: number): Promise<boolean> {
     localStorage.setItem(SERVER_PID_KEY, String(serverPid));
   } catch (e) {
     logger.warn('[TerminalCache] Failed to persist serverPid to localStorage:', e);
+    // Cannot detect restarts across page reloads without localStorage; clear all cache to be safe
+    await clearAllTerminalStates();
+    return false;
   }
 
   // If stored PID exists and differs from current, server has restarted
@@ -171,10 +179,10 @@ export async function loadTerminalState(
       return null;
     }
 
-    // Validate serverPid if both are available
-    // If the cached state has a serverPid and it doesn't match current, invalidate
-    if (value.serverPid !== undefined && currentServerPid !== null && value.serverPid !== currentServerPid) {
-      logger.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid}, current: ${currentServerPid}), removing:`, key);
+    // Invalidate if currentServerPid is known and cached entry doesn't match.
+    // This also invalidates legacy entries without serverPid, since undefined !== currentServerPid.
+    if (currentServerPid !== null && value.serverPid !== currentServerPid) {
+      logger.warn(`[TerminalCache] Cache serverPid mismatch (cached: ${value.serverPid ?? 'none'}, current: ${currentServerPid}), removing:`, key);
       await del(key);
       return null;
     }

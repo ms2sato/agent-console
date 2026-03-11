@@ -134,12 +134,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     try {
       const serializedData = serializeAddon.serialize();
+      const serverPid = getCurrentServerPid();
       saveTerminalState(sessionId, workerId, {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
+        ...(serverPid !== null ? { serverPid } : {}),
       }).catch((e) => logger.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
       logger.warn('[Terminal] Failed to serialize terminal state after history:', e);
