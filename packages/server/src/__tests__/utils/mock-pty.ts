@@ -2,6 +2,13 @@ import { mock } from 'bun:test';
 import type { PtyProvider } from '../../lib/pty-provider.js';
 
 /**
+ * Disposable interface matching bun-pty's IDisposable.
+ */
+interface MockDisposable {
+  dispose(): void;
+}
+
+/**
  * Mock PTY class for testing PTY-dependent code.
  * Simulates PTY behavior without spawning actual processes.
  * Implements the PtyInstance interface from pty-provider.
@@ -21,12 +28,22 @@ export class MockPty {
     this.pid = pid;
   }
 
-  onData(callback: (data: string) => void): void {
+  onData(callback: (data: string) => void): MockDisposable {
     this.dataCallback = callback;
+    return {
+      dispose: () => {
+        if (this.dataCallback === callback) this.dataCallback = null;
+      },
+    };
   }
 
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void {
+  onExit(callback: (event: { exitCode: number; signal?: number }) => void): MockDisposable {
     this.exitCallback = callback;
+    return {
+      dispose: () => {
+        if (this.exitCallback === callback) this.exitCallback = null;
+      },
+    };
   }
 
   write(data: string) {

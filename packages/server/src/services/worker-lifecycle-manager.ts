@@ -260,6 +260,9 @@ export class WorkerLifecycleManager {
     session.workers.delete(workerId);
     await this.deps.persistSession(session);
 
+    // Broadcast session update so all clients learn the worker was removed
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
+
     logger.info({ workerId, sessionId }, 'Worker deleted');
     return true;
   }

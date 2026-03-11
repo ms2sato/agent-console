@@ -19,6 +19,8 @@ export interface InternalSessionBase {
   parentSessionId?: string;
   /** Parent worker ID that delegated this session */
   parentWorkerId?: string;
+  /** User UUID (from users table) of the user who created this session */
+  createdBy?: string;
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

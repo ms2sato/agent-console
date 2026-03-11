@@ -20,6 +20,13 @@ describe('WorkerErrorRecovery', () => {
       expect(screen.getByText('This session has been deleted.')).toBeTruthy();
     });
 
+    it('shows "Session Paused" for SESSION_PAUSED', () => {
+      renderComponent({ errorCode: 'SESSION_PAUSED', errorMessage: 'test error' });
+
+      expect(screen.getByText('Session Paused')).toBeTruthy();
+      expect(screen.getByText('This session has been paused.')).toBeTruthy();
+    });
+
     it('shows "Worker Not Found" for WORKER_NOT_FOUND', () => {
       renderComponent({ errorCode: 'WORKER_NOT_FOUND', errorMessage: 'test error' });
 
@@ -70,6 +77,32 @@ describe('WorkerErrorRecovery', () => {
       expect(screen.queryByRole('button', { name: /Delete Session/ })).toBeNull();
     });
 
+    it('shows "Resume Session" and "Go to Dashboard" buttons for SESSION_PAUSED', () => {
+      renderComponent({
+        errorCode: 'SESSION_PAUSED',
+        errorMessage: 'test error',
+        onResumeSession: mock(() => {}),
+        onGoToDashboard: mock(() => {}),
+      });
+
+      expect(screen.getByRole('button', { name: 'Resume Session' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Go to Dashboard' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Delete Session/ })).toBeNull();
+    });
+
+    it('shows "Go to Dashboard" as primary button for SESSION_PAUSED when onResumeSession is not provided', () => {
+      renderComponent({
+        errorCode: 'SESSION_PAUSED',
+        errorMessage: 'test error',
+        onGoToDashboard: mock(() => {}),
+      });
+
+      // When onResumeSession is not provided, the primary button should fall back
+      // to "Go to Dashboard" so users always have a visible action
+      expect(screen.queryByRole('button', { name: 'Resume Session' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Go to Dashboard' })).toBeTruthy();
+    });
+
     it('shows "Continue (-c)", "New Session", and "Dashboard" buttons for WORKER_NOT_FOUND', () => {
       renderComponent({
         errorCode: 'WORKER_NOT_FOUND',
@@ -114,6 +147,47 @@ describe('WorkerErrorRecovery', () => {
   });
 
   describe('button click handlers', () => {
+    it('calls onResumeSession when "Resume Session" is clicked for SESSION_PAUSED', () => {
+      const onResumeSession = mock(() => {});
+
+      renderComponent({
+        errorCode: 'SESSION_PAUSED',
+        errorMessage: 'test error',
+        onResumeSession,
+        onGoToDashboard: mock(() => {}),
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Resume Session' }));
+      expect(onResumeSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls onGoToDashboard when "Go to Dashboard" is clicked for SESSION_PAUSED', () => {
+      const onGoToDashboard = mock(() => {});
+
+      renderComponent({
+        errorCode: 'SESSION_PAUSED',
+        errorMessage: 'test error',
+        onResumeSession: mock(() => {}),
+        onGoToDashboard,
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Go to Dashboard' }));
+      expect(onGoToDashboard).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls onGoToDashboard when primary "Go to Dashboard" button is clicked for SESSION_PAUSED without onResumeSession', () => {
+      const onGoToDashboard = mock(() => {});
+
+      renderComponent({
+        errorCode: 'SESSION_PAUSED',
+        errorMessage: 'test error',
+        onGoToDashboard,
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Go to Dashboard' }));
+      expect(onGoToDashboard).toHaveBeenCalledTimes(1);
+    });
+
     it('calls onGoToDashboard when "Go to Dashboard" is clicked for SESSION_DELETED', () => {
       const onGoToDashboard = mock(() => {});
 
@@ -240,6 +314,7 @@ describe('WorkerErrorRecovery', () => {
   describe('error message display', () => {
     const errorCodes: (WorkerErrorCode | undefined)[] = [
       'SESSION_DELETED',
+      'SESSION_PAUSED',
       'WORKER_NOT_FOUND',
       'ACTIVATION_FAILED',
       'PATH_NOT_FOUND',

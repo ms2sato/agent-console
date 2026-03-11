@@ -66,6 +66,7 @@ export function toSessionRow(session: PersistedSession): NewSession {
     paused_at: session.pausedAt ?? null,
     parent_session_id: session.parentSessionId ?? null,
     parent_worker_id: session.parentWorkerId ?? null,
+    created_by: session.createdBy ?? null,
   };
 
   if (session.type === 'worktree') {
@@ -232,6 +233,7 @@ export function toPersistedSession(
       pausedAt: session.paused_at ?? undefined,
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
+      createdBy: session.created_by ?? undefined,
     } as PersistedWorktreeSession;
   } else if (session.type === 'quick') {
     return {
@@ -246,6 +248,7 @@ export function toPersistedSession(
       pausedAt: session.paused_at ?? undefined,
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
+      createdBy: session.created_by ?? undefined,
     } as PersistedQuickSession;
   } else {
     // This should never be reached due to the validation above,

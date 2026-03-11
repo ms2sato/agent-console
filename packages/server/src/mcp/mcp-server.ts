@@ -591,6 +591,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
             );
           }
 
+          // Inherit createdBy from parent session (if delegated)
+          const parentCreatedBy = parentSessionId
+            ? sessionManager.getSession(parentSessionId)?.createdBy
+            : undefined;
+
           // Create session with agent worker
           const session = await sessionManager.createSession({
             type: 'worktree',
@@ -602,7 +607,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             title: effectiveTitle,
             parentSessionId,
             parentWorkerId,
-          });
+          }, { createdBy: parentCreatedBy });
 
           // Re-check session still exists after async gap.
           // Session may have been deleted concurrently during createSession.

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   fetchRepositories,
@@ -18,9 +18,8 @@ import {
   updateRepository,
   generateRepositoryDescription,
 } from '../lib/api';
-import { useAppWsEvent, useAppWsState } from '../hooks/useAppWs';
+import { useAppWsEvent } from '../hooks/useAppWs';
 import { emitSessionDeleted } from '../lib/app-websocket';
-import { disconnectSession as disconnectWorkerWebSockets } from '../lib/worker-websocket.js';
 import { generateTaskId } from '../lib/id';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -40,9 +39,10 @@ import {
 import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext } from './__root';
+import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
-import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, WorkerActivityInfo, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
+import { logger } from '../lib/logger';
 
 // Timeout (ms) to auto-remove stale pull entries if WebSocket never responds
 const PULL_TIMEOUT_MS = 60_000;
@@ -56,21 +56,22 @@ function requestNotificationPermission() {
 
 // Show browser notification
 function showNotification(title: string, body: string, sessionId: string, tag: string) {
-  console.log(`[showNotification] permission=${Notification.permission}, title=${title}`);
-  if ('Notification' in window && Notification.permission === 'granted') {
+  const permission = 'Notification' in window ? Notification.permission : 'unsupported';
+  logger.debug(`[showNotification] permission=${permission}, title=${title}`);
+  if (permission === 'granted') {
     const notification = new Notification(title, {
       body,
       icon: '/favicon.ico',
       tag, // Prevent duplicate notifications
     });
-    console.log('[showNotification] Notification created');
+    logger.debug('[showNotification] Notification created');
     // Click to focus the session
     notification.onclick = () => {
       window.open(`/sessions/${sessionId}`, '_blank', 'noopener,noreferrer');
       notification.close();
     };
   } else {
-    console.log('[showNotification] Permission not granted, skipping');
+    logger.debug('[showNotification] Permission not granted, skipping');
   }
 }
 
@@ -105,7 +106,7 @@ function PathLink({ path, className = '' }: { path: string; className?: string }
     try {
       await openPath(path);
     } catch (err) {
-      console.error('Failed to open path:', err);
+      logger.error('Failed to open path:', err);
     }
   };
 
@@ -146,14 +147,25 @@ function DashboardPage() {
   const [showAddSession, setShowAddSession] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
-  // Sessions from WebSocket (source of truth)
-  const [wsSessions, setWsSessions] = useState<Session[]>([]);
-  /// Track paused sessions: { worktreePath: Session }
-  // Used to show "Resume" button instead of "Restore" on dashboard, and to display session title
-  const [pausedSessions, setPausedSessions] = useState<Record<string, Session>>({});
-  // Track activity states locally for real-time updates: { sessionId: { workerId: state } }
-  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, Record<string, AgentActivityState>>>({});
-  // Track previous states for detecting completion (active → idle)
+
+  // Session data from root layout (single source of truth)
+  const { sessions: allSessions, wsInitialized, workerActivityStates } = useSessionDataContext();
+
+  // Derive active sessions (not paused) from root context
+  const activeSessions = useMemo(() => allSessions.filter(s => !s.pausedAt), [allSessions]);
+
+  // Derive paused sessions keyed by worktree path (for "Resume" button on worktree cards)
+  const pausedSessions = useMemo(() => {
+    const result: Record<string, Session> = {};
+    for (const session of allSessions) {
+      if (session.pausedAt && session.type === 'worktree') {
+        result[session.locationPath] = session;
+      }
+    }
+    return result;
+  }, [allSessions]);
+
+  // Track previous activity states for detecting completion (active -> idle) for notifications
   const prevStatesRef = useRef<Record<string, Record<string, AgentActivityState>>>({});
   // Track when each worker entered 'active' state (for minimum working time check)
   const activeStartTimeRef = useRef<Record<string, number>>({});
@@ -194,206 +206,24 @@ function DashboardPage() {
   const MIN_WORKING_TIME_MS = 5000; // 5 seconds minimum working time
   const NOTIFICATION_COOLDOWN_MS = 30000; // 30 seconds between notifications
 
-  // Keep sessions data in ref for notification context
+  // Keep active sessions in ref for notification context (finding session info during callbacks)
   const sessionsRef = useRef<Session[]>([]);
+  sessionsRef.current = activeSessions;
 
   // Request notification permission on component mount
   useEffect(() => {
     requestNotificationPermission();
   }, []);
 
-  // Handle WebSocket sync (initializes sessions and activity states)
-  const handleSessionsSync = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
-    console.log(`[Sync] Initializing ${sessions.length} sessions from WebSocket`);
-
-    // Separate paused sessions (DB-only, explicitly paused) from active/phantom sessions
-    const activeSessions = sessions.filter(s => !s.pausedAt);
-    const pausedSessionsList = sessions.filter(s => !!s.pausedAt);
-
-    console.log(`[Sync] Active/Phantom: ${activeSessions.length}, Paused: ${pausedSessionsList.length}`);
-
-    // Update active sessions list (running + phantom/hibernated)
-    setWsSessions(activeSessions);
-    sessionsRef.current = activeSessions;
-
-    // Build pausedSessions map from truly paused worktree sessions
-    const newPausedSessions: Record<string, Session> = {};
-    for (const session of pausedSessionsList) {
-      if (session.type === 'worktree') {
-        newPausedSessions[session.locationPath] = session;
-      }
-    }
-    setPausedSessions(newPausedSessions);
-
-    // Build the full state first to avoid race condition
-    const newActivityStates: Record<string, Record<string, AgentActivityState>> = {};
-    const newPrevStates: Record<string, Record<string, AgentActivityState>> = {};
-
-    for (const { sessionId, workerId, activityState } of activityStates) {
-      const key = `${sessionId}:${workerId}`;
-      console.log(`[Sync] ${key}: ${activityState}`);
-      if (!newActivityStates[sessionId]) {
-        newActivityStates[sessionId] = {};
-        newPrevStates[sessionId] = {};
-      }
-      newActivityStates[sessionId][workerId] = activityState;
-      newPrevStates[sessionId][workerId] = activityState;
-    }
-
-    // Update state atomically
-    setWorkerActivityStates(newActivityStates);
-    prevStatesRef.current = newPrevStates;
-  }, []);
-
-  // Handle new session created
-  const handleSessionCreated = useCallback((session: Session) => {
-    console.log(`[Session] Created: ${session.id}`);
-    setWsSessions(prev => [...prev, session]);
-    sessionsRef.current = [...sessionsRef.current, session];
-  }, []);
-
-  // Handle session updated
-  const handleSessionUpdated = useCallback((session: Session) => {
-    console.log(`[Session] Updated: ${session.id}`);
-    if (session.pausedAt) {
-      // Session became paused - remove from active list
-      setWsSessions(prev => prev.filter(s => s.id !== session.id));
-      sessionsRef.current = sessionsRef.current.filter(s => s.id !== session.id);
-      // Track as paused session for resume UI
-      if (session.type === 'worktree') {
-        setPausedSessions(prev => ({
-          ...prev,
-          [session.locationPath]: session,
-        }));
-      }
-    } else {
-      // Active session update - upsert
-      setWsSessions(prev => {
-        const exists = prev.some(s => s.id === session.id);
-        if (exists) {
-          return prev.map(s => s.id === session.id ? session : s);
-        }
-        return [...prev, session];
-      });
-      sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-        ? sessionsRef.current.map(s => s.id === session.id ? session : s)
-        : [...sessionsRef.current, session];
-      // Remove from paused sessions if it was there
-      if (session.type === 'worktree') {
-        setPausedSessions(prev => {
-          const next = { ...prev };
-          for (const [path, pausedSession] of Object.entries(next)) {
-            if (pausedSession.id === session.id) {
-              delete next[path];
-              break;
-            }
-          }
-          return next;
-        });
-      }
-    }
-  }, []);
-
-  // Handle session deleted
-  const handleSessionDeleted = useCallback((sessionId: string) => {
-    console.log(`[Session] Deleted: ${sessionId}`);
-    setWsSessions(prev => prev.filter(s => s.id !== sessionId));
-    sessionsRef.current = sessionsRef.current.filter(s => s.id !== sessionId);
-    // Clean up activity states for this session
-    setWorkerActivityStates(prev => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    delete prevStatesRef.current[sessionId];
-    // Clean up notification tracking refs to prevent memory leak
-    Object.keys(activeStartTimeRef.current).forEach(key => {
-      if (key.startsWith(`${sessionId}:`)) {
-        delete activeStartTimeRef.current[key];
-      }
-    });
-    delete lastNotificationTimeRef.current[sessionId];
-    // Disconnect all worker WebSockets for this session
-    disconnectWorkerWebSockets(sessionId);
-    // Remove from paused sessions if it was tracked there
-    setPausedSessions(prev => {
-      const next = { ...prev };
-      // Find and remove by sessionId
-      for (const [path, pausedSession] of Object.entries(next)) {
-        if (pausedSession.id === sessionId) {
-          delete next[path];
-          break;
-        }
-      }
-      return next;
-    });
-  }, []);
-
-  // Handle session paused (removed from memory but preserved in DB)
-  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
-    console.log(`[Session] Paused: ${sessionId}`);
-    // Find the session to get its worktree path before removing
-    const session = sessionsRef.current.find(s => s.id === sessionId);
-    if (session && session.type === 'worktree') {
-      // Track as paused session for "Resume" button, storing full session to preserve title
-      const pausedSession: Session = { ...session, pausedAt };
-      setPausedSessions(prev => ({
-        ...prev,
-        [session.locationPath]: pausedSession,
-      }));
-    }
-    // Remove from active sessions (same as delete)
-    setWsSessions(prev => prev.filter(s => s.id !== sessionId));
-    sessionsRef.current = sessionsRef.current.filter(s => s.id !== sessionId);
-    // Clean up activity states
-    setWorkerActivityStates(prev => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    delete prevStatesRef.current[sessionId];
-    // Clean up notification tracking refs
-    Object.keys(activeStartTimeRef.current).forEach(key => {
-      if (key.startsWith(`${sessionId}:`)) {
-        delete activeStartTimeRef.current[key];
-      }
-    });
-    delete lastNotificationTimeRef.current[sessionId];
-    // Disconnect all worker WebSockets for this session
-    disconnectWorkerWebSockets(sessionId);
-  }, []);
-
-  // Handle session resumed (loaded from DB into memory)
-  const handleSessionResumed = useCallback((session: Session) => {
-    console.log(`[Session] Resumed: ${session.id}`);
-    // Remove from paused sessions
-    if (session.type === 'worktree') {
-      setPausedSessions(prev => {
-        const next = { ...prev };
-        delete next[session.locationPath];
-        return next;
-      });
-    }
-    // Add/update active sessions (avoid duplicates)
-    setWsSessions(prev =>
-      prev.some(s => s.id === session.id)
-        ? prev.map(s => (s.id === session.id ? session : s))
-        : [...prev, session]
-    );
-    sessionsRef.current = sessionsRef.current.some(s => s.id === session.id)
-      ? sessionsRef.current.map(s => (s.id === session.id ? session : s))
-      : [...sessionsRef.current, session];
-  }, []);
-
   // Handle initial agent sync from WebSocket
   const handleAgentsSync = useCallback((agents: AgentDefinition[]) => {
-    console.log(`[Sync] Initializing ${agents.length} agents from WebSocket`);
+    logger.debug(`[Sync] Initializing ${agents.length} agents from WebSocket`);
     queryClient.setQueryData(agentKeys.all(), { agents });
   }, [queryClient]);
 
   // Handle new agent created
   const handleAgentCreated = useCallback((agent: AgentDefinition) => {
-    console.log(`[Agent] Created: ${agent.id}`);
+    logger.debug(`[Agent] Created: ${agent.id}`);
     queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return { agents: [agent] };
       return { agents: [...old.agents, agent] };
@@ -402,7 +232,7 @@ function DashboardPage() {
 
   // Handle agent updated
   const handleAgentUpdated = useCallback((agent: AgentDefinition) => {
-    console.log(`[Agent] Updated: ${agent.id}`);
+    logger.debug(`[Agent] Updated: ${agent.id}`);
     // Update list cache
     queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return { agents: [agent] };
@@ -414,7 +244,7 @@ function DashboardPage() {
 
   // Handle agent deleted
   const handleAgentDeleted = useCallback((agentId: string) => {
-    console.log(`[Agent] Deleted: ${agentId}`);
+    logger.debug(`[Agent] Deleted: ${agentId}`);
     // Update list cache
     queryClient.setQueryData<{ agents: AgentDefinition[] } | undefined>(agentKeys.all(), (old) => {
       if (!old) return old;
@@ -426,25 +256,25 @@ function DashboardPage() {
 
   // Handle initial repository sync from WebSocket
   const handleRepositoriesSync = useCallback(() => {
-    console.log('[Sync] Repositories sync received');
+    logger.debug('[Sync] Repositories sync received');
     queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle new repository created
   const handleRepositoryCreated = useCallback(() => {
-    console.log('[Repository] Created');
+    logger.debug('[Repository] Created');
     queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle repository deleted
   const handleRepositoryDeleted = useCallback(() => {
-    console.log('[Repository] Deleted');
+    logger.debug('[Repository] Deleted');
     queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
   }, [queryClient]);
 
   // Handle repository updated
   const handleRepositoryUpdated = useCallback((repository: Repository) => {
-    console.log(`[Repository] Updated: ${repository.id}`);
+    logger.debug(`[Repository] Updated: ${repository.id}`);
     queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
       if (!old) return old;
       return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
@@ -453,7 +283,7 @@ function DashboardPage() {
 
   // Handle worktree pull completed
   const handleWorktreePullCompleted = useCallback((payload: WorktreePullCompletedPayload) => {
-    console.log(`[Pull] Completed: ${payload.worktreePath} (${payload.commitsPulled} commits)`);
+    logger.debug(`[Pull] Completed: ${payload.worktreePath} (${payload.commitsPulled} commits)`);
     const active = activePullsRef.current.get(payload.worktreePath);
     if (!active || active.taskId !== payload.taskId) return;
     removePull(payload.worktreePath);
@@ -468,7 +298,7 @@ function DashboardPage() {
 
   // Handle worktree pull failed
   const handleWorktreePullFailed = useCallback((payload: WorktreePullFailedPayload) => {
-    console.log(`[Pull] Failed: ${payload.worktreePath} - ${payload.error}`);
+    logger.debug(`[Pull] Failed: ${payload.worktreePath} - ${payload.error}`);
     const active = activePullsRef.current.get(payload.worktreePath);
     if (!active || active.taskId !== payload.taskId) return;
     removePull(payload.worktreePath);
@@ -480,7 +310,7 @@ function DashboardPage() {
     const taskId = generateTaskId();
     // Set a timeout to auto-remove the entry if WebSocket never responds
     const timeoutId = setTimeout(() => {
-      console.warn(`[Pull] Timeout: ${worktreePath} (${PULL_TIMEOUT_MS}ms elapsed)`);
+      logger.warn(`[Pull] Timeout: ${worktreePath} (${PULL_TIMEOUT_MS}ms elapsed)`);
       removePull(worktreePath);
     }, PULL_TIMEOUT_MS);
     setActivePulls(prev => {
@@ -496,20 +326,17 @@ function DashboardPage() {
     }
   }, [removePull, showPullError]);
 
-  // Handle real-time activity updates via WebSocket
-  // Note: ActivityDetector handles debouncing and sticky state transitions server-side
-  const handleWorkerActivityUpdate = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
+  // Handle real-time activity updates for notification tracking only.
+  // Activity state is managed by the root layout via SessionDataContext;
+  // this handler only tracks previous states for detecting work completion transitions.
+  const handleWorkerActivityForNotification = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {
     const key = `${sessionId}:${workerId}`;
     const prevState = prevStatesRef.current[sessionId]?.[workerId];
     const now = Date.now();
 
-    console.log(`[Activity] ${key}: ${prevState} → ${state}`);
+    logger.debug(`[Activity] ${key}: ${prevState} → ${state}`);
 
-    // Update local state
-    setWorkerActivityStates(prev => ({
-      ...prev,
-      [sessionId]: { ...(prev[sessionId] ?? {}), [workerId]: state },
-    }));
+    // Update prev state tracking (for notification transition detection)
     if (!prevStatesRef.current[sessionId]) {
       prevStatesRef.current[sessionId] = {};
     }
@@ -518,25 +345,25 @@ function DashboardPage() {
     // Track when worker enters 'active' state
     if (state === 'active' && prevState !== 'active') {
       activeStartTimeRef.current[key] = now;
-      console.log(`[Activity] ${key}: Started working at ${now}`);
+      logger.debug(`[Activity] ${key}: Started working at ${now}`);
     }
 
     // Skip notifications if this is the first state update (session just started)
     if (!prevState) {
-      console.log('[Notification] Skipped: initial state');
+      logger.debug('[Notification] Skipped: initial state');
       return;
     }
 
     // Only notify when page is hidden (user is not looking)
     if (document.visibilityState !== 'hidden') {
-      console.log('[Notification] Skipped: page is visible');
+      logger.debug('[Notification] Skipped: page is visible');
       return;
     }
 
     // Check cooldown (don't notify same session too frequently)
     const lastNotification = lastNotificationTimeRef.current[sessionId] || 0;
     if (now - lastNotification < NOTIFICATION_COOLDOWN_MS) {
-      console.log(`[Notification] Skipped: cooldown (${now - lastNotification}ms < ${NOTIFICATION_COOLDOWN_MS}ms)`);
+      logger.debug(`[Notification] Skipped: cooldown (${now - lastNotification}ms < ${NOTIFICATION_COOLDOWN_MS}ms)`);
       return;
     }
 
@@ -545,10 +372,10 @@ function DashboardPage() {
     const workingTime = now - activeStartTime;
     const wasWorkingLongEnough = prevState === 'active' && workingTime >= MIN_WORKING_TIME_MS;
 
-    // Send notification for work completion (active → idle or active → asking)
+    // Send notification for work completion (active -> idle or active -> asking)
     if (prevState === 'active' && (state === 'idle' || state === 'asking')) {
       if (!wasWorkingLongEnough) {
-        console.log(`[Notification] Skipped: working time too short (${workingTime}ms < ${MIN_WORKING_TIME_MS}ms)`);
+        logger.debug(`[Notification] Skipped: working time too short (${workingTime}ms < ${MIN_WORKING_TIME_MS}ms)`);
         return;
       }
 
@@ -557,7 +384,7 @@ function DashboardPage() {
       // Get session info for notification body
       const session = sessionsRef.current.find(s => s.id === sessionId);
       if (!session) {
-        console.log('[Notification] Skipped: session no longer exists');
+        logger.debug('[Notification] Skipped: session no longer exists');
         return;
       }
       // Extract project name from path
@@ -565,7 +392,7 @@ function DashboardPage() {
       const projectName = pathParts[pathParts.length - 1] || 'Unknown';
 
       if (state === 'idle') {
-        console.log('[Notification] Triggering: work completed');
+        logger.debug('[Notification] Triggering: work completed');
         showNotification(
           'Claude completed work',
           `${projectName} - Work completed`,
@@ -573,7 +400,7 @@ function DashboardPage() {
           `completed-${sessionId}-${now}`
         );
       } else if (state === 'asking') {
-        console.log('[Notification] Triggering: waiting for input');
+        logger.debug('[Notification] Triggering: waiting for input');
         showNotification(
           'Claude needs your input',
           `${projectName} - Waiting for input`,
@@ -584,15 +411,11 @@ function DashboardPage() {
     }
   }, []);
 
-  // Connect to app WebSocket for real-time updates
+  // Subscribe to WebSocket events for dashboard-specific concerns only.
+  // Session lifecycle events (created, updated, deleted, paused, resumed) and
+  // activity state updates are handled by the root layout via SessionDataContext.
   useAppWsEvent({
-    onSessionsSync: handleSessionsSync,
-    onSessionCreated: handleSessionCreated,
-    onSessionUpdated: handleSessionUpdated,
-    onSessionDeleted: handleSessionDeleted,
-    onSessionPaused: handleSessionPaused,
-    onSessionResumed: handleSessionResumed,
-    onWorkerActivity: handleWorkerActivityUpdate,
+    onWorkerActivity: handleWorkerActivityForNotification,
     onAgentsSync: handleAgentsSync,
     onAgentCreated: handleAgentCreated,
     onAgentUpdated: handleAgentUpdated,
@@ -604,15 +427,13 @@ function DashboardPage() {
     onWorktreePullCompleted: handleWorktreePullCompleted,
     onWorktreePullFailed: handleWorktreePullFailed,
   });
-  const sessionsSynced = useAppWsState(s => s.sessionsSynced);
-
   const { data: reposData } = useQuery({
     queryKey: repositoryKeys.all(),
     queryFn: fetchRepositories,
   });
 
-  // Add activity state to sessions
-  const sessions = wsSessions.map(session => ({
+  // Add activity state to active sessions for display
+  const sessions = activeSessions.map(session => ({
     ...session,
     activityState: getSessionActivityState(session, workerActivityStates),
   }));
@@ -680,8 +501,10 @@ function DashboardPage() {
     await createSessionMutation.mutateAsync(data);
   };
 
-  // Show loading state until first WebSocket sync
-  if (!sessionsSynced) {
+  // Show loading state only on initial load before first sync.
+  // After the first sync, keep showing previous data (stale-while-revalidate)
+  // even during WebSocket reconnection or re-sync to avoid jarring UI flashes.
+  if (!wsInitialized) {
     return (
       <div className="py-4 px-4 md:py-6 md:px-6">
         <div className="flex flex-col gap-3 mb-5 md:flex-row md:items-center md:justify-between">
@@ -919,7 +742,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
                 try {
                   await openInVSCode(repository.path);
                 } catch (err) {
-                  console.error('Failed to open in VS Code:', err);
+                  logger.error('Failed to open in VS Code:', err);
                 }
               }}
               className="btn text-sm bg-slate-700 hover:bg-slate-600"
@@ -1072,17 +895,17 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling
     // Close the dialog
     setDeleteConfirmType(null);
 
-    // Emit session-deleted locally for immediate UI update if session exists
-    if (session) {
-      emitSessionDeleted(session.id);
-    }
-
     try {
       // Call async API
       await deleteWorktreeAsync(repositoryId, worktree.path, taskId, force);
-      // Success/failure will be handled via WebSocket events
+      // Emit session-deleted locally for immediate UI update only after API succeeds
+      if (session) {
+        emitSessionDeleted(session.id);
+      }
+      // Further success/failure of the async operation will be handled via WebSocket events
     } catch (err) {
       // If API call fails immediately (network error), mark task as failed
+      // Session remains visible in the UI since we did not emit session-deleted
       const message = err instanceof Error ? err.message : 'Failed to delete worktree';
       markAsFailed(taskId, message);
     }
@@ -1124,7 +947,7 @@ function WorktreeRow({ worktree, session, pausedSession, repositoryId, isPulling
                   try {
                     await openInVSCode(worktree.path);
                   } catch (err) {
-                    console.error('Failed to open in VS Code:', err);
+                    logger.error('Failed to open in VS Code:', err);
                   }
                 }}
                 className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"

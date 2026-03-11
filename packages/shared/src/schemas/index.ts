@@ -1,3 +1,9 @@
+// Auth schemas
+export {
+  LoginRequestSchema,
+  type LoginRequest,
+} from './auth.js';
+
 // Agent schemas
 export {
   // Base schema for client form reuse

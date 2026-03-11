@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(13);
+      expect(result.rows[0]?.user_version).toBe(14);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(13);
+      expect(result.rows[0]?.user_version).toBe(14);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1365,6 +1365,65 @@ describe('migration', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].parent_session_id).toBeNull();
       expect(rows[0].parent_worker_id).toBeNull();
+    });
+  });
+
+  describe('schema migration v14: created_by column', () => {
+    it('should add created_by column to sessions table', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-with-owner',
+          type: 'quick',
+          location_path: '/test/owned',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+          created_by: 'alice',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].created_by).toBe('alice');
+    });
+
+    it('should allow null created_by for backwards compatibility', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-no-owner',
+          type: 'quick',
+          location_path: '/test/no-owner',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      const rows = await db.selectFrom('sessions').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].created_by).toBeNull();
+    });
+
+    it('should set schema version to 14', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      const { sql } = await import('kysely');
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(14);
     });
   });
 

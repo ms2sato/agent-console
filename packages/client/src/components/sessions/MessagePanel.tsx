@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { WorkerMessage } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
+import { logger } from '../../lib/logger';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -89,7 +90,7 @@ export function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }:
         textareaRef.current.style.height = 'auto';
       }
     } catch (err) {
-      console.error('Failed to send message:', err);
+      logger.error('Failed to send message:', err);
       onError?.('Failed to Send Message', err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setSending(false);

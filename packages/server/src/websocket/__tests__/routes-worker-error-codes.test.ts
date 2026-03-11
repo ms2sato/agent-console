@@ -1,26 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
-import { MockPty } from '../../__tests__/utils/mock-pty.js';
+import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-
-const TEST_CONFIG_DIR = '/test/config';
-process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
-
-// Track PTY instances for exit simulation.
-const mockPtyInstances: MockPty[] = [];
-let nextPtyPid = 10000;
-
-mock.module('../../lib/pty-provider.js', () => ({
-  bunPtyProvider: {
-    spawn: () => {
-      const pty = new MockPty(nextPtyPid++);
-      mockPtyInstances.push(pty);
-      return pty;
-    },
-  },
-}));
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -33,8 +16,10 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
-import { setupWebSocketRoutes } from '../routes.js';
-import { asAppContext } from '../../__tests__/test-utils.js';
+import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
+import type { AppContext } from '../../app-context.js';
+
+const TEST_CONFIG_DIR = '/test/config';
 
 /**
  * Capture the WebSocket handler factory for a given route path.
@@ -75,6 +60,7 @@ function createMockWs(): WSContext & {
 }
 
 describe('Worker WebSocket connection error codes', () => {
+  const ptyFactory = createMockPtyFactory(10000);
   let testJobQueue: JobQueue | null = null;
   let sessionManager: SessionManager;
   let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
@@ -87,8 +73,7 @@ describe('Worker WebSocket connection error codes', () => {
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-    mockPtyInstances.length = 0;
-    nextPtyPid = 10000;
+    ptyFactory.reset();
     capturedWorkerHandlerFactory = null;
 
     resetProcessMock();
@@ -99,11 +84,16 @@ describe('Worker WebSocket connection error codes', () => {
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler());
-    sessionManager = await SessionManager.create({ sessionRepository, jobQueue: testJobQueue, agentManager });
+    sessionManager = await SessionManager.create({
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager,
+      ptyProvider: ptyFactory.provider,
+    });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
 
-    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, repositoryManager });
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as AppContext;
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();
@@ -201,6 +191,59 @@ describe('Worker WebSocket connection error codes', () => {
     const exitMessage = JSON.parse(mockWs.sentMessages[1]);
     expect(exitMessage.type).toBe('exit');
     expect(exitMessage.exitCode).toBe(1);
+
+    // Verify connection was closed
+    expect(mockWs.closeCalls.length).toBe(1);
+  });
+
+  it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    // Create a real session with a worker
+    const session = await sessionManager.createSession({
+      type: 'quick',
+      locationPath: '/test/path',
+      agentId: 'claude-code',
+    });
+
+    const agentWorker = session.workers.find(w => w.type === 'agent');
+    expect(agentWorker).toBeDefined();
+
+    // Open a WebSocket connection for this worker (adds it to the module-level registry)
+    const mockContext = {
+      req: {
+        param: (name: string) => {
+          if (name === 'sessionId') return session.id;
+          if (name === 'workerId') return agentWorker!.id;
+          return '';
+        },
+      },
+    };
+
+    const handlers = capturedWorkerHandlerFactory!(mockContext);
+    const mockWs = createMockWs();
+
+    // Trigger onOpen - this registers the connection in the registry
+    handlers.onOpen({}, mockWs);
+
+    // Clear any messages sent during onOpen (initial state, etc.)
+    mockWs.sentMessages.length = 0;
+    mockWs.closeCalls.length = 0;
+
+    // Call notifySessionPaused - this uses the module-level registry
+    notifySessionPaused(session.id);
+
+    // Verify error message was sent with SESSION_PAUSED code
+    expect(mockWs.sentMessages.length).toBeGreaterThanOrEqual(2);
+    const errorMessage = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMessage.type).toBe('error');
+    expect(errorMessage.message).toBe('Session has been paused');
+    expect(errorMessage.code).toBe('SESSION_PAUSED');
+
+    // Verify exit message was sent with exitCode 0 (intentional pause)
+    const exitMessage = JSON.parse(mockWs.sentMessages[1]);
+    expect(exitMessage.type).toBe('exit');
+    expect(exitMessage.exitCode).toBe(0);
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);

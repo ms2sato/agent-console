@@ -282,6 +282,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -303,6 +304,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -324,6 +326,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -347,6 +350,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -371,6 +375,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       const workers: PersistedAgentWorker[] = [
@@ -405,6 +410,7 @@ describe('mappers', () => {
         paused_at: null,
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -430,6 +436,7 @@ describe('mappers', () => {
         paused_at: '2025-06-15T12:00:00.000Z',
         parent_session_id: null,
         parent_worker_id: null,
+        created_by: null,
       };
 
       const session = toPersistedSession(dbSession, []);
