@@ -486,6 +486,8 @@ describe('terminal-state-cache', () => {
     });
 
     it('should clear all terminal states when localStorage.setItem throws', async () => {
+      expect(localStorage.getItem('agent-console:serverPid')).toBeNull(); // precondition: no stored PID
+
       // Pre-populate cache
       const state = createValidState({ serverPid: 12345 });
       mockStore.set('terminal:session-1:worker-1', state);
@@ -499,8 +501,9 @@ describe('terminal-state-cache', () => {
       });
 
       try {
-        await setCurrentServerPid(12345);
-        // Even though setItem threw, the function completes
+        const result = await setCurrentServerPid(12345);
+        // Returns false (not a restart detection) and completes despite setItem failure
+        expect(result).toBe(false);
         expect(getCurrentServerPid()).toBe(12345);
         // Cache should be cleared because localStorage persistence failed
         expect(mockStore.get('terminal:session-1:worker-1')).toBeUndefined();
