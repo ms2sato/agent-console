@@ -9,16 +9,19 @@ describe('no test files directly in routes/', () => {
 
     const testFiles: string[] = [];
     for await (const file of glob.scan(routesDir)) {
-      // Allow test files inside __tests__/ directories
-      if (!file.includes('__tests__/')) {
+      const isInTestsDir = file.includes('__tests__/');
+      const isSpecFile = file.endsWith('.spec.ts') || file.endsWith('.spec.tsx');
+
+      // Flag .spec files anywhere (project uses .test naming) and .test files outside __tests__/
+      if (!isInTestsDir || isSpecFile) {
         testFiles.push(file);
       }
     }
 
     if (testFiles.length > 0) {
       throw new Error(
-        `Test files found directly in src/routes/ (outside __tests__/ dirs): ${testFiles.join(', ')}. ` +
-          'Move them to src/__tests__/routes/ or into a routes/__tests__/ subdirectory.',
+        `Invalid route test files found: ${testFiles.join(', ')}. ` +
+          'Use *.test.ts(x) under src/__tests__/routes/ or a routes/__tests__/ subdirectory.',
       );
     }
   });
