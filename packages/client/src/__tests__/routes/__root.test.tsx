@@ -81,7 +81,7 @@ import { createRouter, createMemoryHistory, RouterProvider } from '@tanstack/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Route import must come after mock.module calls
-import { Route as RootRoute } from '../__root';
+import { Route as RootRoute } from '../../routes/__root';
 
 async function renderRootLayout(initialPath = '/') {
   const queryClient = new QueryClient({
