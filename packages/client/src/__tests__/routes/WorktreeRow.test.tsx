@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { screen, cleanup } from '@testing-library/react';
 import { renderWithRouter } from '../../test/renderWithRouter';
-import { WorktreeDeletionTasksContext } from '../__root';
+import { WorktreeDeletionTasksContext } from '../../routes/__root';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { Worktree, WorktreeSession, WorktreeDeletionTask, Session } from '@agent-console/shared';
 
@@ -12,7 +12,7 @@ mock.module('../../lib/capabilities', () => ({
 }));
 
 // Import WorktreeRow AFTER mock.module calls to ensure mocks are applied
-import { WorktreeRow, type WorktreeRowProps, type SessionWithActivity } from '../index';
+import { WorktreeRow, type WorktreeRowProps, type SessionWithActivity } from '../../routes/index';
 
 afterEach(cleanup);
 
