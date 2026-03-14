@@ -16,6 +16,9 @@ import { onPolicyViolation } from './lib/app-websocket';
 import { logger } from './lib/logger';
 import './styles.css';
 
+// Tracks the policy violation unsubscribe function to prevent duplicate registrations on retry
+let policyViolationCleanup: (() => void) | null = null;
+
 // Create a new router instance
 const router = createRouter({ routeTree });
 
@@ -160,8 +163,10 @@ async function initApp() {
 
     // Register policy violation handler before React mounts.
     // Must be outside React lifecycle to catch early WebSocket closes.
+    // Store unsubscribe to prevent duplicate registrations on retry.
     if (config.authMode === 'multi-user') {
-      onPolicyViolation(() => {
+      policyViolationCleanup?.();
+      policyViolationCleanup = onPolicyViolation(() => {
         setCurrentUser(null);
         window.location.href = '/login';
       });

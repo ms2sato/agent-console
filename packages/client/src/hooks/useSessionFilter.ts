@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import { useAuth } from '../lib/auth';
 
 export type SessionFilterMode = 'all' | 'mine';
@@ -60,9 +60,5 @@ export function useSessionFilter(): {
     return sessions.filter(s => s.createdBy === userId);
   }, [filterMode, isMultiUser, currentUser]);
 
-  return useMemo(() => ({
-    filterMode,
-    setFilterMode,
-    filterSessions,
-  }), [filterMode, setFilterMode, filterSessions]);
+  return { filterMode, setFilterMode, filterSessions };
 }

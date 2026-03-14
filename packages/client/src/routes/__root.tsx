@@ -234,6 +234,11 @@ function RootLayout() {
   }, [filterSessions, allActiveSessions]);
   const pausedSessions = useMemo(() => filterSessions(sessions.filter(s => s.pausedAt)), [filterSessions, sessions]);
 
+  // Filter props for sidebar — only provided in multi-user mode
+  const filterProps = isMultiUser
+    ? { filterMode, onFilterModeChange: setFilterMode }
+    : {};
+
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
       // Only trigger the resume request. The state update will arrive
@@ -338,8 +343,7 @@ function RootLayout() {
                     pausedSessions={pausedSessions}
                     onResumeSession={handleResumeFromSidebar}
                     hideResizeHandle
-                    filterMode={isMultiUser ? filterMode : undefined}
-                    onFilterModeChange={isMultiUser ? setFilterMode : undefined}
+                    {...filterProps}
                   />
                 }
               />
