@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { useSessionFilter } from '../useSessionFilter';
+import { useSessionFilter, clearStoredFilterMode, STORAGE_KEY } from '../useSessionFilter';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../lib/auth';
-
-const STORAGE_KEY = 'session-filter-mode';
 
 describe('useSessionFilter', () => {
   beforeEach(() => {
@@ -115,6 +113,19 @@ describe('useSessionFilter', () => {
 
       const filtered = result.current.filterSessions(sessions);
       expect(filtered).toEqual(sessions);
+    });
+  });
+
+  describe('clearStoredFilterMode', () => {
+    it('should remove session-filter-mode from localStorage', () => {
+      localStorage.setItem(STORAGE_KEY, 'mine');
+      clearStoredFilterMode();
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it('should not throw when localStorage is empty', () => {
+      localStorage.removeItem(STORAGE_KEY);
+      expect(() => clearStoredFilterMode()).not.toThrow();
     });
   });
 });

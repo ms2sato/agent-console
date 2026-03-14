@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { login } from '../lib/api';
 import { setCurrentUser, useAuth } from '../lib/auth';
 import { setHomeDir } from '../lib/path';
@@ -15,13 +15,6 @@ function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Redirect away if not in multi-user mode or already authenticated
-  useEffect(() => {
-    if (!isMultiUser || currentUser) {
-      void navigate({ to: '/' });
-    }
-  }, [isMultiUser, currentUser, navigate]);
 
   if (!isMultiUser || currentUser) {
     return null;

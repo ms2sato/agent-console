@@ -20,6 +20,7 @@ import { useSessionFilter, clearStoredFilterMode } from '../hooks/useSessionFilt
 import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
+import { disconnect as disconnectAppWs } from '../lib/app-websocket';
 import { useAuth, setCurrentUser } from '../lib/auth';
 import { logger } from '../lib/logger';
 
@@ -426,6 +427,7 @@ function RepositoriesNavLink() {
 function LogoutButton() {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   if (!currentUser) return null;
@@ -437,6 +439,9 @@ function LogoutButton() {
     } catch {
       // Even if the API call fails, clear local state
     }
+    // Clear all client-side state to prevent cross-user data leakage
+    disconnectAppWs();
+    queryClient.clear();
     clearStoredFilterMode();
     setCurrentUser(null);
     void navigate({ to: '/login' });

@@ -5,9 +5,10 @@
  * testing the auth state transitions and loading state.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { useState } from 'react';
 import { setAuthMode, setCurrentUser, getCurrentUser, _reset as resetAuth, useAuth } from '../../lib/auth';
+import { clearStoredFilterMode, STORAGE_KEY } from '../../hooks/useSessionFilter';
 
 /**
  * Test harness that mirrors LogoutButton logic with an injectable logout function.
@@ -32,6 +33,7 @@ function LogoutButtonTestHarness({ logoutFn }: { logoutFn: () => Promise<void> }
     } catch {
       // Even if API fails, clear local state
     }
+    clearStoredFilterMode();
     // Set navigation target before clearing user, because clearing user
     // triggers a re-render via useAuth() which would show "No user" first
     setNavigatedTo('/login');
@@ -52,6 +54,7 @@ function LogoutButtonTestHarness({ logoutFn }: { logoutFn: () => Promise<void> }
 describe('LogoutButton', () => {
   beforeEach(() => {
     resetAuth();
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -159,5 +162,19 @@ describe('LogoutButton', () => {
     });
     expect(getCurrentUser()).toBeNull();
     expect(logoutFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('should clear session filter mode from localStorage on logout', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+    localStorage.setItem(STORAGE_KEY, 'mine');
+
+    render(<LogoutButtonTestHarness logoutFn={async () => {}} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /logout/i }));
+    });
+
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 });
