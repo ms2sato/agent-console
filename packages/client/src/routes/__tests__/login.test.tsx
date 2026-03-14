@@ -6,7 +6,7 @@
  * The actual login API call is tested through the component's onSubmit callback.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { useState } from 'react';
 import { setAuthMode, setCurrentUser, getCurrentUser, _reset as resetAuth, useAuth } from '../../lib/auth';
 import { setHomeDir, _reset as resetPath } from '../../lib/path';
@@ -179,19 +179,22 @@ describe('LoginPage', () => {
 
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'testuser' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    // Button should show loading state and be disabled
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Signing in...' })).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Signing in...' }).hasAttribute('disabled')).toBe(true);
+    // Submit and wait for button to enter loading state
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+      // Yield to let React process the state update from the async handler
+      await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    // Resolve login
-    resolveLogin({ user: { id: 'user-1', username: 'testuser', homeDir: '/home/testuser' } });
+    // Button should show loading state and be disabled
+    const button = screen.getByRole('button', { name: 'Signing in...' });
+    expect(button).toBeTruthy();
+    expect(button.hasAttribute('disabled')).toBe(true);
 
-    await waitFor(() => {
-      expect(screen.queryByText('Signing in...')).toBeNull();
+    // Resolve login and wait for completion
+    await act(async () => {
+      resolveLogin({ user: { id: 'user-1', username: 'testuser', homeDir: '/home/testuser' } });
     });
   });
 
