@@ -2163,7 +2163,10 @@ describe('API Routes Integration', () => {
         // broadcastToApp was called with worktree-deletion-failed
         const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
         const failedCall = broadcastSpy.mock.calls.find(
-          (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-failed'
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-task';
+          }
         );
         expect(failedCall).toBeDefined();
 
