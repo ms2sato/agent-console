@@ -568,6 +568,50 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('killSessionWorkers', () => {
+    it('should kill PTY processes but keep session in memory and persistence', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      manager.killSessionWorkers(session.id);
+
+      // PTY should be killed
+      expect(ptyFactory.instances[0].killed).toBe(true);
+      // Session should still exist in memory
+      expect(manager.getSession(session.id)).toBeDefined();
+      // Session should still be in persistence
+      const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
+      expect(savedData.length).toBe(1);
+    });
+
+    it('should be safe to call deleteSession after killSessionWorkers', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      manager.killSessionWorkers(session.id);
+      const result = await manager.deleteSession(session.id);
+
+      expect(result).toBe(true);
+      expect(manager.getSession(session.id)).toBeUndefined();
+    });
+
+    it('should do nothing for non-existent session', async () => {
+      const manager = await getSessionManager();
+      // Verifying it does not throw
+      manager.killSessionWorkers('non-existent');
+    });
+  });
+
   describe('deleteSession', () => {
     it('should delete session and remove from storage', async () => {
       const manager = await getSessionManager();

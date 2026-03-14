@@ -1946,7 +1946,7 @@ describe('API Routes Integration', () => {
         }
       });
 
-      it('should delete session before removing worktree directory (sync path)', async () => {
+      it('should kill workers before removing worktree, then delete session (sync path)', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
@@ -1966,19 +1966,23 @@ describe('API Routes Integration', () => {
         });
         expect(sessionRes.status).toBe(201);
 
-        // Track operation order
+        // Track 3-step operation order
         const operationOrder: string[] = [];
+
+        const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
+        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+          operationOrder.push('killSessionWorkers');
+          originalKillWorkers(id);
+        });
+
+        mockGit.removeWorktree.mockImplementation(async () => {
+          operationOrder.push('removeWorktree');
+        });
 
         const originalDeleteSession = testSessionManager!.deleteSession.bind(testSessionManager!);
         spyOn(testSessionManager!, 'deleteSession').mockImplementation(async (id: string) => {
           operationOrder.push('deleteSession');
           return originalDeleteSession(id);
-        });
-
-        const originalRemoveWorktree = mockGit.removeWorktree.getMockImplementation()!;
-        mockGit.removeWorktree.mockImplementation(async (...args: unknown[]) => {
-          operationOrder.push('removeWorktree');
-          return originalRemoveWorktree(...args);
         });
 
         // Delete worktree via sync path (no taskId)
@@ -1989,17 +1993,11 @@ describe('API Routes Integration', () => {
         );
         expect(res.status).toBe(200);
 
-        // Verify both operations were called
-        expect(operationOrder).toContain('deleteSession');
-        expect(operationOrder).toContain('removeWorktree');
-
-        // Verify deleteSession was called BEFORE removeWorktree
-        const deleteIndex = operationOrder.indexOf('deleteSession');
-        const removeIndex = operationOrder.indexOf('removeWorktree');
-        expect(deleteIndex).toBeLessThan(removeIndex);
+        // Verify exact 3-step order: killSessionWorkers -> removeWorktree -> deleteSession
+        expect(operationOrder).toEqual(['killSessionWorkers', 'removeWorktree', 'deleteSession']);
       });
 
-      it('should delete session before removing worktree directory (async path)', async () => {
+      it('should kill workers before removing worktree, then delete session (async path)', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
@@ -2019,19 +2017,23 @@ describe('API Routes Integration', () => {
         });
         expect(sessionRes.status).toBe(201);
 
-        // Track operation order
+        // Track 3-step operation order
         const operationOrder: string[] = [];
+
+        const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
+        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+          operationOrder.push('killSessionWorkers');
+          originalKillWorkers(id);
+        });
+
+        mockGit.removeWorktree.mockImplementation(async () => {
+          operationOrder.push('removeWorktree');
+        });
 
         const originalDeleteSession = testSessionManager!.deleteSession.bind(testSessionManager!);
         spyOn(testSessionManager!, 'deleteSession').mockImplementation(async (id: string) => {
           operationOrder.push('deleteSession');
           return originalDeleteSession(id);
-        });
-
-        const originalRemoveWorktree = mockGit.removeWorktree.getMockImplementation()!;
-        mockGit.removeWorktree.mockImplementation(async (...args: unknown[]) => {
-          operationOrder.push('removeWorktree');
-          return originalRemoveWorktree(...args);
         });
 
         // Delete worktree via async path (with taskId)
@@ -2045,14 +2047,130 @@ describe('API Routes Integration', () => {
         // Wait for background operation to complete
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        // Verify both operations were called
-        expect(operationOrder).toContain('deleteSession');
-        expect(operationOrder).toContain('removeWorktree');
+        // Verify exact 3-step order: killSessionWorkers -> removeWorktree -> deleteSession
+        expect(operationOrder).toEqual(['killSessionWorkers', 'removeWorktree', 'deleteSession']);
+      });
 
-        // Verify deleteSession was called BEFORE removeWorktree
-        const deleteIndex = operationOrder.indexOf('deleteSession');
-        const removeIndex = operationOrder.indexOf('removeWorktree');
-        expect(deleteIndex).toBeLessThan(removeIndex);
+      it('should preserve session when worktree removal fails (sync path)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Create worktree directory in memfs so session creation succeeds
+        fs.mkdirSync(worktreePath, { recursive: true });
+
+        // Create a session associated with the worktree path
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes.status).toBe(201);
+
+        // Spy on killSessionWorkers to verify it was called
+        const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
+        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+          originalKillWorkers(id);
+        });
+
+        // Make removeWorktree fail with a GitError
+        mockGit.removeWorktree.mockRejectedValue(
+          new GitError('worktree has uncommitted changes', 1, 'worktree has uncommitted changes')
+        );
+
+        // Spy on deleteSession to verify it is NOT called
+        const deleteSpy = spyOn(testSessionManager!, 'deleteSession');
+
+        // Delete worktree via sync path (force=true)
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?force=true`,
+          { method: 'DELETE' }
+        );
+
+        // Sync path throws ValidationError -> HTTP 400
+        expect(res.status).toBe(400);
+
+        // Workers were killed (to release directory handles)
+        expect(killSpy).toHaveBeenCalled();
+
+        // Session was NOT deleted (preserved for retry)
+        expect(deleteSpy).not.toHaveBeenCalled();
+
+        // Session still exists
+        const sessions = testSessionManager!.getAllSessions();
+        const sessionStillExists = sessions.some(s => s.locationPath === worktreePath);
+        expect(sessionStillExists).toBe(true);
+      });
+
+      it('should preserve session when worktree removal fails (async path)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Create worktree directory in memfs so session creation succeeds
+        fs.mkdirSync(worktreePath, { recursive: true });
+
+        // Create a session associated with the worktree path
+        const sessionRes = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes.status).toBe(201);
+
+        // Spy on killSessionWorkers to verify it was called
+        const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
+        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+          originalKillWorkers(id);
+        });
+
+        // Make removeWorktree fail with a GitError
+        mockGit.removeWorktree.mockRejectedValue(
+          new GitError('worktree has uncommitted changes', 1, 'worktree has uncommitted changes')
+        );
+
+        // Spy on deleteSession to verify it is NOT called
+        const deleteSpy = spyOn(testSessionManager!, 'deleteSession');
+
+        // Delete worktree via async path (with taskId)
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-fail-task&force=true`,
+          { method: 'DELETE' }
+        );
+
+        // Async path returns 202 immediately
+        expect(res.status).toBe(202);
+
+        // Wait for background operation to complete
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Workers were killed (to release directory handles)
+        expect(killSpy).toHaveBeenCalled();
+
+        // Session was NOT deleted (preserved for retry)
+        expect(deleteSpy).not.toHaveBeenCalled();
+
+        // broadcastToApp was called with worktree-deletion-failed
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const failedCall = broadcastSpy.mock.calls.find(
+          (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-failed'
+        );
+        expect(failedCall).toBeDefined();
+
+        // Session still exists
+        const sessions = testSessionManager!.getAllSessions();
+        const sessionStillExists = sessions.some(s => s.locationPath === worktreePath);
+        expect(sessionStillExists).toBe(true);
       });
     });
 
