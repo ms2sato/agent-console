@@ -23,9 +23,11 @@ import type {
   UpdateRepositoryRequest,
   WorkerMessage,
   GenerateRepositoryDescriptionResponse,
-  AuthUser,
+  AuthMode,
+  LoginRequest,
+  LoginResponse,
+  CurrentUserResponse,
 } from '@agent-console/shared';
-import type { AuthMode } from '@agent-console/shared';
 import { api } from './api-client';
 
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
@@ -802,15 +804,6 @@ export async function sendWorkerMessage(
 // Authentication
 // ===========================================================================
 
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
-
-export interface LoginResponse {
-  user: AuthUser;
-}
-
 export async function login(request: LoginRequest): Promise<LoginResponse> {
   const res = await api.auth.login.$post({ json: request });
   if (!res.ok) {
@@ -824,10 +817,6 @@ export async function logout(): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Logout failed');
   }
-}
-
-export interface CurrentUserResponse {
-  user: AuthUser | null;
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUserResponse> {

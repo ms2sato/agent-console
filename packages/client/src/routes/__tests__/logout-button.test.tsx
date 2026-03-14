@@ -11,6 +11,10 @@ import { setAuthMode, setCurrentUser, getCurrentUser, _reset as resetAuth, useAu
 
 /**
  * Test harness that mirrors LogoutButton logic with an injectable logout function.
+ *
+ * Intentional: state is always cleared even on API failure,
+ * matching production behavior in LogoutButton.
+ * A network error should not trap the user in a logged-in state.
  */
 function LogoutButtonTestHarness({ logoutFn }: { logoutFn: () => Promise<void> }) {
   const { currentUser } = useAuth();
@@ -130,5 +134,27 @@ describe('LogoutButton', () => {
     });
 
     expect(getCurrentUser()).toBeNull();
+  });
+
+  // Design decision: local auth state is always cleared regardless of API outcome.
+  // The server cookie will expire on its own, and a network error should never
+  // trap the user in a logged-in state with no way to re-authenticate.
+  it('should navigate to login and clear state on API failure (intentional design)', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+    const logoutFn = mock(() => Promise.reject(new Error('Server unreachable')));
+
+    render(<LogoutButtonTestHarness logoutFn={logoutFn} />);
+
+    expect(screen.getByRole('button', { name: 'Logout' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+
+    // Despite the API failure, the user should be redirected and state cleared
+    await waitFor(() => {
+      expect(screen.getByText('Navigated to /login')).toBeTruthy();
+    });
+    expect(getCurrentUser()).toBeNull();
+    expect(logoutFn).toHaveBeenCalledTimes(1);
   });
 });

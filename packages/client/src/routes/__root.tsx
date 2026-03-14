@@ -129,11 +129,6 @@ function RootLayout() {
     return unsubscribe;
   }, [isMultiUser, navigate]);
 
-  // Don't render protected content while redirecting to login
-  if (redirecting || (isMultiUser && !currentUser && location.pathname !== '/login')) {
-    return null;
-  }
-
   const currentSessionId = isSessionPage ? extractSessionId(location.pathname) : null;
 
   // Session state management (single source of truth for all child routes)
@@ -285,6 +280,11 @@ function RootLayout() {
   }, [location.pathname]);
 
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
+
+  // Don't render protected content while redirecting to login
+  if (redirecting || (isMultiUser && !currentUser && location.pathname !== '/login')) {
+    return null;
+  }
 
   return (
     <SessionDataContext.Provider value={sessionDataContextValue}>

@@ -13,3 +13,11 @@ export interface AuthUser {
   username: string;
   homeDir: string;
 }
+
+export interface LoginResponse {
+  user: AuthUser;
+}
+
+export interface CurrentUserResponse {
+  user: AuthUser | null;
+}

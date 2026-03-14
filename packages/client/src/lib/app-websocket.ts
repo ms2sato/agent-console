@@ -159,7 +159,9 @@ export function connect(): void {
       logger.debug(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
       if (event.code === WS_CLOSE_CODE.POLICY_VIOLATION) {
-        policyViolationListeners.forEach(fn => fn());
+        policyViolationListeners.forEach(fn => {
+          fn();
+        });
       }
 
       if (!shouldReconnect(event.code)) {
