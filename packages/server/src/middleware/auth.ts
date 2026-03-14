@@ -11,12 +11,13 @@
 
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
+import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import type { AppBindings } from '../app-context.js';
 
 export const authMiddleware = createMiddleware<AppBindings>(async (c, next) => {
   const { userMode } = c.get('appContext');
 
-  const authUser = userMode.authenticate(() => getCookie(c, 'auth_token'));
+  const authUser = userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
 
   if (!authUser) {
     return c.json({ error: 'Unauthorized', message: 'Authentication required' }, 401);

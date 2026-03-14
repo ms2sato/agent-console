@@ -48,6 +48,7 @@ import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
+import { resolveSpawnUsername } from './resolve-spawn-username.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 /**
@@ -165,7 +166,7 @@ export class SessionManager {
       toPublicSession: (session) => this.toPublicSession(session),
       getJobQueue: () => this.jobQueue,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
-      resolveSpawnUsername: (createdBy) => this.resolveSpawnUsername(createdBy),
+      resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
     });
   }
 
@@ -879,7 +880,7 @@ export class SessionManager {
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     try {
-      const username = await this.resolveSpawnUsername(internalSession.createdBy);
+      const username = await resolveSpawnUsername(internalSession.createdBy, this.userRepository);
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
           await this.workerManager.activateAgentWorkerPty(worker, {
@@ -1294,22 +1295,7 @@ export class SessionManager {
    * @param sessionId - Session ID to get repository env vars for
    * @returns Parsed environment variables as key-value pairs
    */
-  /**
-   * Resolve the OS username for PTY spawning from a session's createdBy field.
-   * If createdBy is null (pre-multi-user sessions), returns the server process username.
-   */
-  private async resolveSpawnUsername(createdBy?: string): Promise<string> {
-    if (createdBy && !this.userRepository) {
-      logger.warn({ createdBy }, 'Session has createdBy but no userRepository configured');
-    }
-
-    if (!createdBy || !this.userRepository) {
-      return os.userInfo().username;
-    }
-
-    const user = await this.userRepository.findById(createdBy);
-    return user?.username ?? os.userInfo().username;
-  }
+  // resolveSpawnUsername is now an imported standalone function from ./resolve-spawn-username.ts
 
   private getRepositoryEnvVars(sessionId: string): Record<string, string> {
     const session = this.sessions.get(sessionId);

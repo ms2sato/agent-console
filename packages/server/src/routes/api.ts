@@ -11,6 +11,7 @@ import { system } from './system.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { serverConfig } from '../lib/server-config.js';
+import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import type { AppBindings } from '../app-context.js';
 
 const api = new Hono<AppBindings>()
@@ -22,7 +23,7 @@ const api = new Hono<AppBindings>()
     const { systemCapabilities, userMode } = c.get('appContext');
     // In multi-user mode before login, authUser may not be available.
     // Use userMode.authenticate() directly instead of relying on auth middleware.
-    const authUser = userMode.authenticate(() => getCookie(c, 'auth_token'));
+    const authUser = userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
     return c.json({
       homeDir: authUser?.homeDir ?? '',
       capabilities: systemCapabilities.getCapabilities(),

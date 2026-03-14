@@ -14,6 +14,7 @@ import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit } from './git-diff-handler.js';
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
+import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -446,7 +447,7 @@ export async function setupWebSocketRoutes(
    * In multi-user mode, validates the JWT and returns false if invalid.
    */
   function authenticateWebSocket(c: Context): boolean {
-    const authUser = appContext.userMode.authenticate(() => getCookie(c, 'auth_token'));
+    const authUser = appContext.userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
     return authUser !== null;
   }
 

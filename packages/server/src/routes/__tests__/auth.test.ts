@@ -6,13 +6,17 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
+import { getCookie } from 'hono/cookie';
 import { auth, LoginRateLimiter } from '../auth.js';
 import { onApiError } from '../../lib/error-handler.js';
+import { AUTH_COOKIE_NAME } from '../../lib/auth-constants.js';
+import { serverConfig } from '../../lib/server-config.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, LoginResult } from '../../services/user-mode.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import type { PtySpawnRequest } from '../../services/user-mode.js';
+import type { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 
 // ============================================================================
 // Mock UserMode implementations
@@ -425,5 +429,78 @@ describe('LoginRateLimiter', () => {
 
     expect(limiter.isBlocked('user1')).toBe(true);
     expect(limiter.isBlocked('user2')).toBe(false);
+  });
+});
+
+// =========================================================================
+// GET /api/config in multi-user mode
+// =========================================================================
+
+describe('GET /api/config (multi-user mode)', () => {
+  /**
+   * Create a mock SystemCapabilitiesService for testing.
+   */
+  function createMockSystemCapabilities(): SystemCapabilitiesService {
+    return {
+      detect: async () => {},
+      getCapabilities: () => ({ vscode: false }),
+      getVSCodeCommand: () => null,
+    } as unknown as SystemCapabilitiesService;
+  }
+
+  /**
+   * Create a test app with the /api/config route that mirrors
+   * the production setup in api.ts.
+   */
+  function createConfigTestApp(userMode: UserMode): Hono<AppBindings> {
+    const app = new Hono<AppBindings>();
+    const systemCapabilities = createMockSystemCapabilities();
+
+    app.use('*', async (c, next) => {
+      c.set('appContext', { userMode, systemCapabilities } as AppContext);
+      await next();
+    });
+
+    app.onError(onApiError);
+
+    // Mount the /api/config route matching the production code in api.ts
+    app.get('/api/config', (c) => {
+      const { systemCapabilities: caps, userMode: um } = c.get('appContext');
+      const authUser = um.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+      return c.json({
+        homeDir: authUser?.homeDir ?? '',
+        capabilities: caps.getCapabilities(),
+        serverPid: process.pid,
+        authMode: serverConfig.AUTH_MODE,
+      });
+    });
+
+    return app;
+  }
+
+  it('should return authMode and homeDir when authenticated', async () => {
+    const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+    const app = createConfigTestApp(userMode);
+
+    const res = await app.request('/api/config', {
+      headers: { Cookie: 'auth_token=valid-token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { authMode: string; homeDir: string };
+    expect(body.authMode).toBe(serverConfig.AUTH_MODE);
+    expect(body.homeDir).toBe(TEST_USER.homeDir);
+  });
+
+  it('should return empty homeDir when not authenticated', async () => {
+    const userMode = createMockUserMode({ authenticateResult: null });
+    const app = createConfigTestApp(userMode);
+
+    const res = await app.request('/api/config');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { authMode: string; homeDir: string };
+    expect(body.authMode).toBe(serverConfig.AUTH_MODE);
+    expect(body.homeDir).toBe('');
   });
 });

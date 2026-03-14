@@ -15,9 +15,7 @@ import { LoginRequestSchema } from '@agent-console/shared';
 import { vValidator } from '../middleware/validation.js';
 import type { AppBindings } from '../app-context.js';
 import { serverConfig } from '../lib/server-config.js';
-
-/** Cookie name for the auth token */
-const AUTH_COOKIE_NAME = 'auth_token';
+import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 
 /** Cookie max-age in seconds (7 days, matches JWT expiry) */
 const AUTH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
@@ -36,7 +34,11 @@ class LoginRateLimiter {
   isBlocked(username: string): boolean {
     const now = Date.now();
     const entry = this.attempts.get(username);
-    if (!entry || now >= entry.resetAt) return false;
+    if (!entry) return false;
+    if (now >= entry.resetAt) {
+      this.attempts.delete(username);
+      return false;
+    }
     return entry.count >= this.maxAttempts;
   }
 
@@ -69,10 +71,9 @@ const auth = new Hono<AppBindings>()
       return c.json({ error: 'Too many login attempts. Try again later.' }, 429);
     }
 
-    loginRateLimiter.recordAttempt(username);
-
     const result = await userMode.login(username, password);
     if (!result) {
+      loginRateLimiter.recordAttempt(username);
       return c.json({ error: 'Invalid credentials' }, 401);
     }
 
