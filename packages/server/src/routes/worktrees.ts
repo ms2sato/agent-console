@@ -432,7 +432,12 @@ const worktrees = new Hono<AppBindings>()
           // Execute cleanup command before deletion if configured
           const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
 
-          // Try to remove worktree first
+          // Kill PTY processes first to release worktree directory handles (cwd)
+          if (sessionId) {
+            sessionManager.killSessionWorkers(sessionId);
+          }
+
+          // Remove worktree after PTY processes are terminated
           const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
           if (!result.success) {
@@ -453,12 +458,17 @@ const worktrees = new Hono<AppBindings>()
               gitStatus,
             });
             logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
+            // Do NOT delete session here — preserve it for retry
             return;
           }
 
-          // Worktree deletion succeeded - now clean up any associated sessions
+          // Clean up session after successful worktree removal
           if (sessionId) {
-            await sessionManager.deleteSession(sessionId);
+            try {
+              await sessionManager.deleteSession(sessionId);
+            } catch (error) {
+              logger.error({ taskId, repoId, worktreePath, sessionId, error }, 'Failed to delete session after worktree removal');
+            }
           }
 
           broadcastToApp({
@@ -507,19 +517,26 @@ const worktrees = new Hono<AppBindings>()
       // Execute cleanup command before deletion if configured
       const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
 
-      // Try to remove worktree first
+      // Kill PTY processes first to release worktree directory handles (cwd)
+      const sessions = sessionManager.getAllSessions();
+      const matchingSessions = sessions.filter(session => session.locationPath === worktreePath);
+      for (const session of matchingSessions) {
+        sessionManager.killSessionWorkers(session.id);
+      }
+
+      // Remove worktree after PTY processes are terminated
       const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
       if (!result.success) {
-        // Worktree deletion failed - don't touch sessions
         throw new ValidationError(result.error || 'Failed to remove worktree');
       }
 
-      // Worktree deletion succeeded - now clean up any associated sessions
-      const sessions = sessionManager.getAllSessions();
-      for (const session of sessions) {
-        if (session.locationPath === worktreePath) {
+      // Clean up sessions after successful worktree removal
+      for (const session of matchingSessions) {
+        try {
           await sessionManager.deleteSession(session.id);
+        } catch (error) {
+          logger.error({ repoId, worktreePath, sessionId: session.id, error }, 'Failed to delete session after worktree removal');
         }
       }
 

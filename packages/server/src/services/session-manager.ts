@@ -568,6 +568,24 @@ export class SessionManager {
     return this.sessionRepository.findById(id);
   }
 
+  /**
+   * Kill all workers in a session without deleting the session itself.
+   * Used to release directory handles (e.g., cwd) before worktree deletion
+   * while keeping the session recoverable if deletion fails.
+   */
+  killSessionWorkers(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+
+    for (const worker of session.workers.values()) {
+      if (worker.type === 'git-diff') {
+        stopWatching(session.locationPath);
+      } else {
+        this.workerManager.killWorker(worker);
+      }
+    }
+  }
+
   async deleteSession(id: string): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
