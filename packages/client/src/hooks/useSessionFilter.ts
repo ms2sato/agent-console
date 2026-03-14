@@ -18,6 +18,11 @@ export function clearStoredFilterMode(): void {
   }
 }
 
+/** Check if a session matches the current user's filter (including legacy sessions without createdBy) */
+export function matchesUserFilter(createdBy: string | undefined, userId: string): boolean {
+  return createdBy === userId || createdBy === undefined;
+}
+
 function readStoredFilterMode(): SessionFilterMode {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -58,7 +63,7 @@ export function useSessionFilter(): {
     if (!userId) {
       return sessions;
     }
-    return sessions.filter(s => s.createdBy === userId || s.createdBy === undefined);
+    return sessions.filter(s => matchesUserFilter(s.createdBy, userId));
   }, [filterMode, isMultiUser, currentUser]);
 
   return { filterMode, setFilterMode, filterSessions };

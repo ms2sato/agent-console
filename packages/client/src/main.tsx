@@ -12,7 +12,8 @@ import {
 } from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
 import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
-import { onPolicyViolation } from './lib/app-websocket';
+import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
+import { clearStoredFilterMode } from './hooks/useSessionFilter';
 import { logger } from './lib/logger';
 import './styles.css';
 
@@ -169,6 +170,8 @@ async function initApp() {
     if (config.authMode === 'multi-user') {
       policyViolationCleanup?.();
       policyViolationCleanup = onPolicyViolation(() => {
+        disconnectAppWs();
+        clearStoredFilterMode();
         setCurrentUser(null);
         window.location.href = '/login';
       });

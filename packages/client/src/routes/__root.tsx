@@ -16,7 +16,7 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks, type UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
-import { useSessionFilter, clearStoredFilterMode } from '../hooks/useSessionFilter';
+import { useSessionFilter, clearStoredFilterMode, matchesUserFilter } from '../hooks/useSessionFilter';
 import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
@@ -230,7 +230,7 @@ function RootLayout() {
   const { filterMode, setFilterMode, filterSessions } = useSessionFilter();
   const activeSessions = useMemo(() => {
     if (!isMultiUser || filterMode !== 'mine' || !currentUser) return allActiveSessions;
-    return allActiveSessions.filter(s => s.session.createdBy === currentUser.id || s.session.createdBy === undefined);
+    return allActiveSessions.filter(s => matchesUserFilter(s.session.createdBy, currentUser.id));
   }, [allActiveSessions, isMultiUser, filterMode, currentUser]);
   const pausedSessions = useMemo(() => filterSessions(sessions.filter(s => s.pausedAt)), [filterSessions, sessions]);
 
@@ -272,8 +272,13 @@ function RootLayout() {
 
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
 
-  // Don't render protected content if unauthenticated in multi-user mode
-  if (isMultiUser && !currentUser && location.pathname !== '/login') {
+  // In multi-user mode without authentication:
+  // - If on /login, render just the Outlet (login page without app shell)
+  // - Otherwise, render nothing while the useEffect navigates to /login
+  if (isMultiUser && !currentUser) {
+    if (location.pathname === '/login') {
+      return <Outlet />;
+    }
     return null;
   }
 
@@ -448,7 +453,6 @@ function LogoutButton() {
     clearStoredFilterMode();
     setCurrentUser(null);
     setHomeDir('');
-    setIsLoggingOut(false);
     void navigate({ to: '/login' });
   };
 
