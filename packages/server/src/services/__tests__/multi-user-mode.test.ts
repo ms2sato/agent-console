@@ -92,6 +92,17 @@ describe('MultiUserMode', () => {
       expect(result!.username).toBe('testuser');
     });
 
+    it('should throw error when existing JWT secret file has invalid length', async () => {
+      // Write a secret with wrong length (16 bytes instead of 32)
+      const fs = await import('fs/promises');
+      const invalidSecret = new Uint8Array(crypto.randomBytes(16));
+      await fs.writeFile(`${TEST_CONFIG_DIR}/jwt-secret`, Buffer.from(invalidSecret));
+
+      await expect(
+        MultiUserMode.create(ptyFactory.provider, userRepository)
+      ).rejects.toThrow('Invalid JWT secret length');
+    });
+
     it('should produce same authentication results when loaded from file', async () => {
       // Create first instance (generates secret)
       const mode1 = await MultiUserMode.create(ptyFactory.provider, userRepository);
@@ -721,6 +732,49 @@ describe('MultiUserMode', () => {
       expect(innerCommand).toContain("AGENT_CONSOLE_REPOSITORY_ID='repo-42'");
       expect(innerCommand).toContain("AGENT_CONSOLE_PARENT_SESSION_ID='parent-sess'");
       expect(innerCommand).toContain("AGENT_CONSOLE_PARENT_WORKER_ID='parent-wkr'");
+    });
+
+    it('should filter out invalid environment variable key names', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace',
+        additionalEnvVars: {
+          'VALID_KEY': 'good',
+          'ALSO_VALID': 'good',
+          'INVALID KEY': 'bad-spaces',
+          '123INVALID': 'bad-leading-digit',
+          'key-with-dashes': 'bad-dashes',
+          'key.with.dots': 'bad-dots',
+          '_UNDERSCORE_START': 'good',
+        },
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [, args] = getLastSpawnCall();
+      const innerCommand = args[5];
+
+      // Valid keys should appear in the export string
+      expect(innerCommand).toContain("VALID_KEY='good'");
+      expect(innerCommand).toContain("ALSO_VALID='good'");
+      expect(innerCommand).toContain("_UNDERSCORE_START='good'");
+
+      // Invalid keys should NOT appear
+      expect(innerCommand).not.toContain('INVALID KEY');
+      expect(innerCommand).not.toContain('123INVALID');
+      expect(innerCommand).not.toContain('key-with-dashes');
+      expect(innerCommand).not.toContain('key.with.dots');
     });
 
     it('should handle empty additionalEnvVars in sudo terminal spawn', async () => {

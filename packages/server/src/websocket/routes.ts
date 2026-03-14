@@ -442,30 +442,26 @@ export async function setupWebSocketRoutes(
   const handleAppMessage = createAppMessageHandler(appDeps);
 
   /**
-   * Authenticate a WebSocket connection using the auth cookie.
-   * In single-user mode, SingleUserMode always passes.
-   * In multi-user mode, validates the JWT and returns false if invalid.
+   * HTTP-level auth guard for WebSocket routes.
+   * Rejects unauthenticated requests with 401 BEFORE the WebSocket upgrade,
+   * preventing unauthorized connections from being established.
+   * In single-user mode, authenticate() always returns a user so this never blocks.
    */
-  function authenticateWebSocket(c: Context): boolean {
+  function wsAuthGuard(c: Context, next: () => Promise<void>): Response | Promise<void> {
     const authUser = appContext.userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
-    return authUser !== null;
+    if (!authUser) {
+      return c.text('Authentication required', 401);
+    }
+    return next();
   }
 
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',
-    upgradeWebSocket((c) => {
-      const isAuthenticated = authenticateWebSocket(c);
-
+    wsAuthGuard,
+    upgradeWebSocket((_c) => {
       return {
         onOpen(_event: Event, ws: WSContext) {
-          // Reject unauthenticated connections in multi-user mode
-          if (!isAuthenticated) {
-            logger.warn('App WebSocket connection rejected: authentication failed');
-            ws.close(WS_CLOSE_CODE.POLICY_VIOLATION, 'Authentication required');
-            return;
-          }
-
           logger.info('App WebSocket connected, sending initial sync');
 
           // Add to clients immediately but mark as syncing to prevent race conditions
@@ -531,10 +527,10 @@ export async function setupWebSocketRoutes(
   // WebSocket endpoint for worker connection
   app.get(
     '/ws/session/:sessionId/worker/:workerId',
+    wsAuthGuard,
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
-      const isAuthenticated = authenticateWebSocket(c);
 
       // Track connection ID for this WebSocket (used to detach callbacks on close)
       let connectionId: string | null = null;
@@ -675,13 +671,6 @@ export async function setupWebSocketRoutes(
 
       return {
         onOpen(_event: Event, ws: WSContext) {
-          // Reject unauthenticated connections in multi-user mode
-          if (!isAuthenticated) {
-            logger.warn({ sessionId, workerId }, 'Worker WebSocket connection rejected: authentication failed');
-            ws.close(WS_CLOSE_CODE.POLICY_VIOLATION, 'Authentication required');
-            return;
-          }
-
           const connectionStartTime = performance.now();
           logger.info({ sessionId, workerId }, 'Worker WebSocket connection started');
 

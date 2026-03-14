@@ -4,10 +4,10 @@
  * Uses a mock UserMode to control authentication behavior
  * without requiring real OS credential validation or JWT secrets.
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { auth, LoginRateLimiter } from '../auth.js';
+import { auth, LoginRateLimiter, loginRateLimiter } from '../auth.js';
 import { onApiError } from '../../lib/error-handler.js';
 import { AUTH_COOKIE_NAME } from '../../lib/auth-constants.js';
 import { serverConfig } from '../../lib/server-config.js';
@@ -311,6 +311,11 @@ describe('Auth Routes', () => {
   // =========================================================================
 
   describe('POST /api/auth/login - rate limiting', () => {
+    beforeEach(() => {
+      // Clear module-level rate limiter state between tests for isolation
+      loginRateLimiter.clear();
+    });
+
     it('should return 429 after too many failed attempts', async () => {
       const userMode = createMockUserMode({ loginResult: null });
       const app = createTestApp(userMode);
@@ -402,20 +407,15 @@ describe('LoginRateLimiter', () => {
     expect(limiter.isBlocked('user1')).toBe(false);
   });
 
-  it('should reset after window expires', () => {
+  it('should reset after window expires', async () => {
     // Use a very short window for testing
     const limiter = new LoginRateLimiter(1, 1); // 1ms window
 
     limiter.recordAttempt('user1');
     expect(limiter.isBlocked('user1')).toBe(true);
 
-    // Wait for window to expire (synchronous: the next check will be after resetAt)
-    // Since the window is 1ms, by the time we check again it should have expired
-    // Use a small busy-wait to ensure time passes
-    const start = Date.now();
-    while (Date.now() - start < 5) {
-      // wait
-    }
+    // Wait for window to expire
+    await Bun.sleep(10);
 
     expect(limiter.isBlocked('user1')).toBe(false);
   });

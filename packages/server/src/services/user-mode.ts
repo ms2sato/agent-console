@@ -183,8 +183,12 @@ export class SingleUserMode implements UserMode {
     return this.cachedUser;
   }
 
-  async login(_username: string, _password: string): Promise<LoginResult> {
-    return { user: this.cachedUser, token: '' };
+  async login(_username: string, _password: string): Promise<LoginResult | null> {
+    // Single-user mode has no credentials to validate.
+    // Return null so the login endpoint correctly returns 401.
+    // This is the expected behavior: in AUTH_MODE=none, authentication is unnecessary
+    // and the app works without login.
+    return null;
   }
 
   spawnPty(request: PtySpawnRequest): PtyInstance {

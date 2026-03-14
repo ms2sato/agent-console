@@ -22,7 +22,7 @@ const AUTH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
 
 // ========== Login Rate Limiter ==========
 
-/** Simple per-username rate limiter for login attempts */
+/** @internal Exported for testing */
 class LoginRateLimiter {
   private attempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -54,6 +54,11 @@ class LoginRateLimiter {
 
   recordSuccess(username: string): void {
     this.attempts.delete(username);
+  }
+
+  /** Clear all tracked attempts. Used for test isolation. */
+  clear(): void {
+    this.attempts.clear();
   }
 }
 
@@ -105,4 +110,4 @@ const auth = new Hono<AppBindings>()
     return c.json({ user: authUser });
   });
 
-export { auth, LoginRateLimiter };
+export { auth, LoginRateLimiter, loginRateLimiter };
