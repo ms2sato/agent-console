@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
 import { useAuth } from '../lib/auth';
+import type { SessionFilterMode } from '../types/session-filter';
 
-export type SessionFilterMode = 'all' | 'mine';
+export type { SessionFilterMode };
 
 export const STORAGE_KEY = 'session-filter-mode';
 
@@ -57,7 +58,7 @@ export function useSessionFilter(): {
     if (!userId) {
       return sessions;
     }
-    return sessions.filter(s => s.createdBy === userId);
+    return sessions.filter(s => s.createdBy === userId || s.createdBy === undefined);
   }, [filterMode, isMultiUser, currentUser]);
 
   return { filterMode, setFilterMode, filterSessions };

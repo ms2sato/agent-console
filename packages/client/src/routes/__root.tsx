@@ -22,6 +22,7 @@ import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
 import { disconnect as disconnectAppWs } from '../lib/app-websocket';
 import { useAuth, setCurrentUser } from '../lib/auth';
+import { setHomeDir } from '../lib/path';
 import { logger } from '../lib/logger';
 
 /**
@@ -228,16 +229,15 @@ function RootLayout() {
   // Session filtering for multi-user mode
   const { filterMode, setFilterMode, filterSessions } = useSessionFilter();
   const activeSessions = useMemo(() => {
-    const filteredSessions = filterSessions(allActiveSessions.map(s => s.session));
-    const filteredIds = new Set(filteredSessions.map(s => s.id));
-    return allActiveSessions.filter(s => filteredIds.has(s.session.id));
-  }, [filterSessions, allActiveSessions]);
+    if (!isMultiUser || filterMode !== 'mine' || !currentUser) return allActiveSessions;
+    return allActiveSessions.filter(s => s.session.createdBy === currentUser.id || s.session.createdBy === undefined);
+  }, [allActiveSessions, isMultiUser, filterMode, currentUser]);
   const pausedSessions = useMemo(() => filterSessions(sessions.filter(s => s.pausedAt)), [filterSessions, sessions]);
 
-  // Filter props for sidebar — only provided in multi-user mode
-  const filterProps = isMultiUser
-    ? { filterMode, onFilterModeChange: setFilterMode }
-    : {};
+  // Session filter state for sidebar — only provided in multi-user mode
+  const sessionFilter = isMultiUser
+    ? { mode: filterMode, onChange: setFilterMode }
+    : undefined;
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
@@ -343,7 +343,7 @@ function RootLayout() {
                     pausedSessions={pausedSessions}
                     onResumeSession={handleResumeFromSidebar}
                     hideResizeHandle
-                    {...filterProps}
+                    sessionFilter={sessionFilter}
                   />
                 }
               />
@@ -365,8 +365,7 @@ function RootLayout() {
                 onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
                 pausedSessions={pausedSessions}
                 onResumeSession={handleResumeFromSidebar}
-                filterMode={isMultiUser ? filterMode : undefined}
-                onFilterModeChange={isMultiUser ? setFilterMode : undefined}
+                sessionFilter={sessionFilter}
               />
             )}
             <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
@@ -448,6 +447,8 @@ function LogoutButton() {
     queryClient.clear();
     clearStoredFilterMode();
     setCurrentUser(null);
+    setHomeDir('');
+    setIsLoggingOut(false);
     void navigate({ to: '/login' });
   };
 

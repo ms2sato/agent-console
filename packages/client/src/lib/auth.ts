@@ -41,18 +41,28 @@ export function subscribeAuth(listener: () => void): () => void {
   return () => stateListeners.delete(listener);
 }
 
-/**
- * React hook for reactive auth state.
- * Uses useSyncExternalStore to re-render when auth state changes.
- */
-export function useAuth(): {
+interface AuthState {
   authMode: AuthMode;
   currentUser: AuthUser | null;
   isMultiUser: boolean;
-} {
-  const mode = useSyncExternalStore(subscribeAuth, getAuthMode);
-  const user = useSyncExternalStore(subscribeAuth, getCurrentUser);
-  return { authMode: mode, currentUser: user, isMultiUser: mode === 'multi-user' };
+}
+
+let cachedSnapshot: AuthState | null = null;
+
+function getAuthSnapshot(): AuthState {
+  if (cachedSnapshot && cachedSnapshot.authMode === authMode && cachedSnapshot.currentUser === currentUser) {
+    return cachedSnapshot;
+  }
+  cachedSnapshot = { authMode, currentUser, isMultiUser: authMode === 'multi-user' };
+  return cachedSnapshot;
+}
+
+/**
+ * React hook for reactive auth state.
+ * Uses useSyncExternalStore with a single subscription to re-render when auth state changes.
+ */
+export function useAuth(): AuthState {
+  return useSyncExternalStore(subscribeAuth, getAuthSnapshot);
 }
 
 /**
@@ -62,5 +72,6 @@ export function useAuth(): {
 export function _reset(): void {
   authMode = 'none';
   currentUser = null;
+  cachedSnapshot = null;
   stateListeners.clear();
 }

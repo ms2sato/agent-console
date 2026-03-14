@@ -84,7 +84,7 @@ describe('useSessionFilter', () => {
       expect(filtered).toEqual(sessions);
     });
 
-    it('should filter sessions by createdBy when mode is mine', () => {
+    it('should filter sessions by createdBy when mode is mine, including legacy sessions', () => {
       setAuthMode('multi-user');
       setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
 
@@ -98,6 +98,7 @@ describe('useSessionFilter', () => {
       expect(filtered).toEqual([
         { id: 's1', createdBy: 'user-1' },
         { id: 's3', createdBy: 'user-1' },
+        { id: 's4' }, // legacy session (no createdBy) included
       ]);
     });
 

@@ -168,6 +168,33 @@ describe('LoginPage', () => {
     expect(getCurrentUser()).toEqual(user);
   });
 
+  it('should disable submit button while logging in', async () => {
+    setAuthMode('multi-user');
+    let resolveLogin!: (value: { user: { id: string; username: string; homeDir: string } }) => void;
+    const loginFn = mock(() => new Promise<{ user: { id: string; username: string; homeDir: string } }>((resolve) => {
+      resolveLogin = resolve;
+    }));
+
+    render(<LoginFormTestHarness loginFn={loginFn} />);
+
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'testuser' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    // Button should show loading state and be disabled
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Signing in...' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Signing in...' }).hasAttribute('disabled')).toBe(true);
+    });
+
+    // Resolve login
+    resolveLogin({ user: { id: 'user-1', username: 'testuser', homeDir: '/home/testuser' } });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Signing in...')).toBeNull();
+    });
+  });
+
   it('should show rate limit error from server', async () => {
     setAuthMode('multi-user');
     const loginFn = mock(() => Promise.reject(new Error('Too many login attempts. Try again later.')));

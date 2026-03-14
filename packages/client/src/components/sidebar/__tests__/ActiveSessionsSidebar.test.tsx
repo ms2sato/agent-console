@@ -606,14 +606,13 @@ describe('ActiveSessionsSidebar', () => {
   });
 
   describe('Session filter toggle', () => {
-    it('should render "All" and "Mine" buttons when filter props are provided', async () => {
-      const onFilterModeChange = mock(() => {});
+    it('should render "All" and "Mine" buttons when sessionFilter is provided', async () => {
+      const onChange = mock(() => {});
 
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
-          filterMode="all"
-          onFilterModeChange={onFilterModeChange}
+          sessionFilter={{ mode: 'all', onChange }}
         />
       );
 
@@ -621,7 +620,7 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.getByText('Mine')).toBeTruthy();
     });
 
-    it('should not render filter toggle when filter props are not provided', async () => {
+    it('should not render filter toggle when sessionFilter is not provided', async () => {
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
@@ -633,14 +632,13 @@ describe('ActiveSessionsSidebar', () => {
     });
 
     it('should not render filter toggle when collapsed', async () => {
-      const onFilterModeChange = mock(() => {});
+      const onChange = mock(() => {});
 
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
           collapsed={true}
-          filterMode="all"
-          onFilterModeChange={onFilterModeChange}
+          sessionFilter={{ mode: 'all', onChange }}
         />
       );
 
@@ -648,32 +646,30 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.queryByText('Mine')).toBeNull();
     });
 
-    it('should call onFilterModeChange with correct value when buttons are clicked', async () => {
-      const onFilterModeChange = mock(() => {});
+    it('should call onChange with correct value when buttons are clicked', async () => {
+      const onChange = mock(() => {});
 
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
-          filterMode="all"
-          onFilterModeChange={onFilterModeChange}
+          sessionFilter={{ mode: 'all', onChange }}
         />
       );
 
       fireEvent.click(screen.getByText('Mine'));
-      expect(onFilterModeChange).toHaveBeenCalledWith('mine');
+      expect(onChange).toHaveBeenCalledWith('mine');
 
       fireEvent.click(screen.getByText('All'));
-      expect(onFilterModeChange).toHaveBeenCalledWith('all');
+      expect(onChange).toHaveBeenCalledWith('all');
     });
 
     it('should reflect active mode via aria-pressed', async () => {
-      const onFilterModeChange = mock(() => {});
+      const onChange = mock(() => {});
 
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
-          filterMode="mine"
-          onFilterModeChange={onFilterModeChange}
+          sessionFilter={{ mode: 'mine', onChange }}
         />
       );
 
