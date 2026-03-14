@@ -3,16 +3,22 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
-import { fetchConfig } from './lib/api';
+import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
+import { setAuthMode, setCurrentUser } from './lib/auth';
 import {
   hasPendingSaves,
   flush as flushSaveManager,
 } from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
 import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
+import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
+import { clearStoredFilterMode } from './hooks/useSessionFilter';
 import { logger } from './lib/logger';
 import './styles.css';
+
+// Tracks the policy violation unsubscribe function to prevent duplicate registrations on retry
+let policyViolationCleanup: (() => void) | null = null;
 
 // Create a new router instance
 const router = createRouter({ routeTree });
@@ -132,7 +138,45 @@ async function initApp() {
 
   try {
     const config = await fetchConfig();
-    setHomeDir(config.homeDir);
+    setAuthMode(config.authMode);
+
+    if (config.authMode === 'multi-user') {
+      // In multi-user mode, check if user is already authenticated.
+      // Separate try-catch so fetchCurrentUser failure doesn't show
+      // the "Failed to connect to server" error page.
+      try {
+        const { user } = await fetchCurrentUser();
+        if (user) {
+          setCurrentUser(user);
+          setHomeDir(user.homeDir);
+        } else {
+          // Not authenticated — clear any stale state from a previous attempt
+          setCurrentUser(null);
+          setHomeDir('');
+        }
+      } catch (e) {
+        // Network error fetching user — clear stale state, proceed as unauthenticated
+        logger.warn('Failed to fetch current user:', e);
+        setCurrentUser(null);
+        setHomeDir('');
+      }
+    } else {
+      setHomeDir(config.homeDir);
+    }
+
+    // Register policy violation handler before React mounts.
+    // Must be outside React lifecycle to catch early WebSocket closes.
+    // Store unsubscribe to prevent duplicate registrations on retry.
+    if (config.authMode === 'multi-user') {
+      policyViolationCleanup?.();
+      policyViolationCleanup = onPolicyViolation(() => {
+        disconnectAppWs();
+        clearStoredFilterMode();
+        setCurrentUser(null);
+        window.location.href = '/login';
+      });
+    }
+
     setCapabilities(config.capabilities);
 
     // Set current server PID and handle cache invalidation if server has restarted

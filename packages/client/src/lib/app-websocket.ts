@@ -40,6 +40,9 @@ type StateListener = () => void;
 const messageListeners = new Set<MessageListener>();
 const stateListeners = new Set<StateListener>();
 
+// Policy violation subscribers for auth-related WebSocket closures
+const policyViolationListeners = new Set<() => void>();
+
 /** @internal Exported for testing */
 export const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
 /** @internal Exported for testing */
@@ -155,6 +158,12 @@ export function connect(): void {
       setState({ connected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false });
       logger.debug(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
 
+      if (event.code === WS_CLOSE_CODE.POLICY_VIOLATION) {
+        policyViolationListeners.forEach(fn => {
+          fn();
+        });
+      }
+
       if (!shouldReconnect(event.code)) {
         logger.debug('[WebSocket] Normal closure, not reconnecting');
         return;
@@ -240,6 +249,16 @@ export function requestSync(): boolean {
 }
 
 /**
+ * Register a callback to be called when the WebSocket closes with POLICY_VIOLATION (1008).
+ * Used for redirecting to login when auth session is invalidated.
+ * @returns Unsubscribe function
+ */
+export function onPolicyViolation(callback: () => void): () => void {
+  policyViolationListeners.add(callback);
+  return () => policyViolationListeners.delete(callback);
+}
+
+/**
  * Subscribe to WebSocket messages.
  * @returns Unsubscribe function
  */
@@ -272,6 +291,7 @@ export function _reset(): void {
   disconnect();
   retryCount = 0;
   syncPending = false;
+  policyViolationListeners.clear();
   state = { connected: false, hasEverConnected: false, sessionsSynced: false, agentsSynced: false, repositoriesSynced: false };
   messageListeners.clear();
   stateListeners.clear();

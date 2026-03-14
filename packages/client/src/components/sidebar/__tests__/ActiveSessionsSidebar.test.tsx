@@ -604,4 +604,80 @@ describe('ActiveSessionsSidebar', () => {
       expect(pausedSessionButtons[2].textContent).toContain('repo-c');
     });
   });
+
+  describe('Session filter toggle', () => {
+    it('should render "All" and "Mine" buttons when sessionFilter is provided', async () => {
+      const onChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      expect(screen.getByText('All')).toBeTruthy();
+      expect(screen.getByText('Mine')).toBeTruthy();
+    });
+
+    it('should not render filter toggle when sessionFilter is not provided', async () => {
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+        />
+      );
+
+      expect(screen.queryByText('All')).toBeNull();
+      expect(screen.queryByText('Mine')).toBeNull();
+    });
+
+    it('should not render filter toggle when collapsed', async () => {
+      const onChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          collapsed={true}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      expect(screen.queryByText('All')).toBeNull();
+      expect(screen.queryByText('Mine')).toBeNull();
+    });
+
+    it('should call onChange with correct value when buttons are clicked', async () => {
+      const onChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      fireEvent.click(screen.getByText('Mine'));
+      expect(onChange).toHaveBeenCalledWith('mine');
+
+      fireEvent.click(screen.getByText('All'));
+      expect(onChange).toHaveBeenCalledWith('all');
+    });
+
+    it('should reflect active mode via aria-pressed', async () => {
+      const onChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'mine', onChange }}
+        />
+      );
+
+      const allButton = screen.getByText('All');
+      const mineButton = screen.getByText('Mine');
+
+      expect(allButton.getAttribute('aria-pressed')).toBe('false');
+      expect(mineButton.getAttribute('aria-pressed')).toBe('true');
+    });
+  });
 });

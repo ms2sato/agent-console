@@ -9,6 +9,14 @@ export function setHomeDir(homeDir: string): void {
 }
 
 /**
+ * Reset for testing.
+ * @internal
+ */
+export function _reset(): void {
+  cachedHomeDir = null;
+}
+
+/**
  * Format a path for display, replacing home directory with ~/
  */
 export function formatPath(path: string): string {

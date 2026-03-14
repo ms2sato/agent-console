@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import type { SessionFilterMode } from '../../types/session-filter';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
 import { Spinner } from '../ui/Spinner';
@@ -32,6 +33,11 @@ interface ActiveSessionsSidebarProps {
   onResumeSession?: (sessionId: string) => void | Promise<void>;
   /** Hide the drag-to-resize handle (used in mobile drawer mode) */
   hideResizeHandle?: boolean;
+  /** Session filter state — when provided, shows filter toggle UI */
+  sessionFilter?: {
+    mode: SessionFilterMode;
+    onChange: (mode: SessionFilterMode) => void;
+  };
 }
 
 /**
@@ -315,6 +321,7 @@ export function ActiveSessionsSidebar({
   pausedSessions = [],
   onResumeSession,
   hideResizeHandle,
+  sessionFilter,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -492,6 +499,34 @@ export function ActiveSessionsSidebar({
           )}
         </button>
       </div>
+
+      {/* Session filter toggle (shown when sessionFilter is provided) */}
+      {!collapsed && sessionFilter && (
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-slate-700 shrink-0">
+          <button
+            onClick={() => sessionFilter.onChange('all')}
+            className={`text-xs px-2 py-0.5 rounded transition-colors ${
+              sessionFilter.mode === 'all'
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            aria-pressed={sessionFilter.mode === 'all'}
+          >
+            All
+          </button>
+          <button
+            onClick={() => sessionFilter.onChange('mine')}
+            className={`text-xs px-2 py-0.5 rounded transition-colors ${
+              sessionFilter.mode === 'mine'
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            aria-pressed={sessionFilter.mode === 'mine'}
+          >
+            Mine
+          </button>
+        </div>
+      )}
 
       {/* Session and task list */}
       <div className="flex-1 overflow-y-auto" aria-label="Sessions">

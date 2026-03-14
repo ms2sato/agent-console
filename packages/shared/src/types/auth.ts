@@ -1,3 +1,5 @@
+export type AuthMode = 'none' | 'multi-user';
+
 /**
  * Authenticated user identity.
  *
@@ -10,4 +12,12 @@ export interface AuthUser {
   id: string;
   username: string;
   homeDir: string;
+}
+
+export interface LoginResponse {
+  user: AuthUser;
+}
+
+export interface CurrentUserResponse {
+  user: AuthUser | null;
 }

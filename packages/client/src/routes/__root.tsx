@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
-import { createRootRoute, Outlet, Link, useLocation } from '@tanstack/react-router';
+import { createRootRoute, Outlet, Link, useLocation, useNavigate } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { validateSessions, resumeSession } from '../lib/api';
+import { validateSessions, resumeSession, logout as logoutApi } from '../lib/api';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
@@ -16,9 +16,13 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks, type UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
+import { useSessionFilter, clearStoredFilterMode, matchesUserFilter } from '../hooks/useSessionFilter';
 import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
+import { disconnect as disconnectAppWs } from '../lib/app-websocket';
+import { useAuth, setCurrentUser } from '../lib/auth';
+import { setHomeDir } from '../lib/path';
 import { logger } from '../lib/logger';
 
 /**
@@ -97,10 +101,21 @@ function extractSessionId(pathname: string): string | null {
 
 function RootLayout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const connected = useAppWsState((s) => s.connected);
   const hasEverConnected = useAppWsState((s) => s.hasEverConnected);
   const isSessionPage = location.pathname.startsWith('/sessions/');
+
+  const { isMultiUser, currentUser } = useAuth();
+
+  // Auth gate: redirect to /login if multi-user mode and not authenticated
+  useEffect(() => {
+    if (isMultiUser && !currentUser && location.pathname !== '/login') {
+      void navigate({ to: '/login' });
+    }
+  }, [isMultiUser, currentUser, location.pathname, navigate]);
+
   const currentSessionId = isSessionPage ? extractSessionId(location.pathname) : null;
 
   // Session state management (single source of truth for all child routes)
@@ -209,8 +224,20 @@ function RootLayout() {
 
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();
-  const activeSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
-  const pausedSessions = useMemo(() => sessions.filter(s => s.pausedAt), [sessions]);
+  const allActiveSessions = useActiveSessionsWithActivity(sessions, workerActivityStates);
+
+  // Session filtering for multi-user mode
+  const { filterMode, setFilterMode, filterSessions } = useSessionFilter();
+  const activeSessions = useMemo(() => {
+    if (!isMultiUser || filterMode !== 'mine' || !currentUser) return allActiveSessions;
+    return allActiveSessions.filter(s => matchesUserFilter(s.session.createdBy, currentUser.id));
+  }, [allActiveSessions, isMultiUser, filterMode, currentUser]);
+  const pausedSessions = useMemo(() => filterSessions(sessions.filter(s => s.pausedAt)), [filterSessions, sessions]);
+
+  // Session filter state for sidebar — only provided in multi-user mode
+  const sessionFilter = isMultiUser
+    ? { mode: filterMode, onChange: setFilterMode }
+    : undefined;
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
@@ -244,6 +271,16 @@ function RootLayout() {
   }, [location.pathname]);
 
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
+
+  // In multi-user mode without authentication:
+  // - If on /login, render just the Outlet (login page without app shell)
+  // - Otherwise, render nothing while the useEffect navigates to /login
+  if (isMultiUser && !currentUser) {
+    if (location.pathname === '/login') {
+      return <Outlet />;
+    }
+    return null;
+  }
 
   return (
     <SessionDataContext.Provider value={sessionDataContextValue}>
@@ -285,6 +322,7 @@ function RootLayout() {
               <JobsNavLink />
               <AgentsNavLink />
               <RepositoriesNavLink />
+              {isMultiUser && <LogoutButton />}
             </nav>
 
             {isMobile && (
@@ -310,6 +348,7 @@ function RootLayout() {
                     pausedSessions={pausedSessions}
                     onResumeSession={handleResumeFromSidebar}
                     hideResizeHandle
+                    sessionFilter={sessionFilter}
                   />
                 }
               />
@@ -331,6 +370,7 @@ function RootLayout() {
                 onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
                 pausedSessions={pausedSessions}
                 onResumeSession={handleResumeFromSidebar}
+                sessionFilter={sessionFilter}
               />
             )}
             <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
@@ -389,6 +429,42 @@ function RepositoriesNavLink() {
     >
       Repositories
     </Link>
+  );
+}
+
+function LogoutButton() {
+  const { currentUser } = useAuth();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  if (!currentUser) return null;
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+    try {
+      await logoutApi();
+    } catch {
+      // Even if the API call fails, clear local state
+    }
+    // Clear all client-side state to prevent cross-user data leakage
+    disconnectAppWs();
+    queryClient.clear();
+    clearStoredFilterMode();
+    setCurrentUser(null);
+    setHomeDir('');
+    void navigate({ to: '/login' });
+  };
+
+  return (
+    <button
+      onClick={handleLogout}
+      disabled={isLoggingOut}
+      className="text-sm py-1 px-2 rounded text-slate-400 hover:text-white disabled:opacity-50"
+      title={`Logout (${currentUser.username})`}
+    >
+      {isLoggingOut ? 'Logging out...' : 'Logout'}
+    </button>
   );
 }
 

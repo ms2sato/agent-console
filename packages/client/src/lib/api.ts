@@ -23,6 +23,10 @@ import type {
   UpdateRepositoryRequest,
   WorkerMessage,
   GenerateRepositoryDescriptionResponse,
+  AuthMode,
+  LoginRequest,
+  LoginResponse,
+  CurrentUserResponse,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -47,6 +51,7 @@ export interface ConfigResponse {
     vscode: boolean;
   };
   serverPid: number;
+  authMode: AuthMode;
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
@@ -793,4 +798,31 @@ export async function sendWorkerMessage(
     await handleApiError(res, 'Failed to send worker message');
   }
   return res.json() as Promise<{ message: WorkerMessage }>;
+}
+
+// ===========================================================================
+// Authentication
+// ===========================================================================
+
+export async function login(request: LoginRequest): Promise<LoginResponse> {
+  const res = await api.auth.login.$post({ json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Login failed');
+  }
+  return res.json() as Promise<LoginResponse>;
+}
+
+export async function logout(): Promise<void> {
+  const res = await api.auth.logout.$post();
+  if (!res.ok) {
+    await handleApiError(res, 'Logout failed');
+  }
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
+  const res = await api.auth.me.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch current user');
+  }
+  return res.json() as Promise<CurrentUserResponse>;
 }
