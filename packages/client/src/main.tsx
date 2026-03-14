@@ -149,12 +149,14 @@ async function initApp() {
           setCurrentUser(user);
           setHomeDir(user.homeDir);
         } else {
-          // Not authenticated - set empty homeDir, router will redirect to /login
+          // Not authenticated — clear any stale state from a previous attempt
+          setCurrentUser(null);
           setHomeDir('');
         }
       } catch (e) {
-        // Network error fetching user - proceed as unauthenticated
+        // Network error fetching user — clear stale state, proceed as unauthenticated
         logger.warn('Failed to fetch current user:', e);
+        setCurrentUser(null);
         setHomeDir('');
       }
     } else {
