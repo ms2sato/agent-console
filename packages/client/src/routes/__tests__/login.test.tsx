@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { useState } from 'react';
 import { setAuthMode, setCurrentUser, getCurrentUser, _reset as resetAuth, useAuth } from '../../lib/auth';
-import { setHomeDir } from '../../lib/path';
+import { setHomeDir, _reset as resetPath } from '../../lib/path';
 
 /**
  * Test harness component that mirrors the LoginPage logic
@@ -73,6 +73,7 @@ function LoginFormTestHarness({ loginFn }: { loginFn: (req: { username: string; 
 describe('LoginPage', () => {
   beforeEach(() => {
     resetAuth();
+    resetPath();
   });
 
   afterEach(() => {

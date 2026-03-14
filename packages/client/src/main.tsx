@@ -12,6 +12,7 @@ import {
 } from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
 import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
+import { onPolicyViolation } from './lib/app-websocket';
 import { logger } from './lib/logger';
 import './styles.css';
 
@@ -136,17 +137,34 @@ async function initApp() {
     setAuthMode(config.authMode);
 
     if (config.authMode === 'multi-user') {
-      // In multi-user mode, check if user is already authenticated
-      const { user } = await fetchCurrentUser();
-      if (user) {
-        setCurrentUser(user);
-        setHomeDir(user.homeDir);
-      } else {
-        // Not authenticated - set empty homeDir, router will redirect to /login
+      // In multi-user mode, check if user is already authenticated.
+      // Separate try-catch so fetchCurrentUser failure doesn't show
+      // the "Failed to connect to server" error page.
+      try {
+        const { user } = await fetchCurrentUser();
+        if (user) {
+          setCurrentUser(user);
+          setHomeDir(user.homeDir);
+        } else {
+          // Not authenticated - set empty homeDir, router will redirect to /login
+          setHomeDir('');
+        }
+      } catch (e) {
+        // Network error fetching user - proceed as unauthenticated
+        logger.warn('Failed to fetch current user:', e);
         setHomeDir('');
       }
     } else {
       setHomeDir(config.homeDir);
+    }
+
+    // Register policy violation handler before React mounts.
+    // Must be outside React lifecycle to catch early WebSocket closes.
+    if (config.authMode === 'multi-user') {
+      onPolicyViolation(() => {
+        setCurrentUser(null);
+        window.location.href = '/login';
+      });
     }
 
     setCapabilities(config.capabilities);

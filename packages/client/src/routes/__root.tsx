@@ -16,11 +16,10 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks, type UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks, type UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
-import { useSessionFilter } from '../hooks/useSessionFilter';
+import { useSessionFilter, clearStoredFilterMode } from '../hooks/useSessionFilter';
 import type { Session, AgentActivityState, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
-import { onPolicyViolation } from '../lib/app-websocket';
 import { useAuth, setCurrentUser } from '../lib/auth';
 import { logger } from '../lib/logger';
 
@@ -109,25 +108,11 @@ function RootLayout() {
   const { isMultiUser, currentUser } = useAuth();
 
   // Auth gate: redirect to /login if multi-user mode and not authenticated
-  const [redirecting, setRedirecting] = useState(false);
   useEffect(() => {
     if (isMultiUser && !currentUser && location.pathname !== '/login') {
-      setRedirecting(true);
       void navigate({ to: '/login' });
-    } else {
-      setRedirecting(false);
     }
   }, [isMultiUser, currentUser, location.pathname, navigate]);
-
-  // Handle POLICY_VIOLATION WebSocket close (auth session invalidated)
-  useEffect(() => {
-    if (!isMultiUser) return;
-    const unsubscribe = onPolicyViolation(() => {
-      setCurrentUser(null);
-      void navigate({ to: '/login' });
-    });
-    return unsubscribe;
-  }, [isMultiUser, navigate]);
 
   const currentSessionId = isSessionPage ? extractSessionId(location.pathname) : null;
 
@@ -281,8 +266,8 @@ function RootLayout() {
 
   const hasAnyAsking = activeSessions.some(s => s.activityState === 'asking');
 
-  // Don't render protected content while redirecting to login
-  if (redirecting || (isMultiUser && !currentUser && location.pathname !== '/login')) {
+  // Don't render protected content if unauthenticated in multi-user mode
+  if (isMultiUser && !currentUser && location.pathname !== '/login') {
     return null;
   }
 
@@ -352,8 +337,8 @@ function RootLayout() {
                     pausedSessions={pausedSessions}
                     onResumeSession={handleResumeFromSidebar}
                     hideResizeHandle
-                    filterMode={filterMode}
-                    onFilterModeChange={setFilterMode}
+                    filterMode={isMultiUser ? filterMode : undefined}
+                    onFilterModeChange={isMultiUser ? setFilterMode : undefined}
                   />
                 }
               />
@@ -375,8 +360,8 @@ function RootLayout() {
                 onRemoveWorktreeDeletionTask={worktreeDeletionTasks.removeTask}
                 pausedSessions={pausedSessions}
                 onResumeSession={handleResumeFromSidebar}
-                filterMode={filterMode}
-                onFilterModeChange={setFilterMode}
+                filterMode={isMultiUser ? filterMode : undefined}
+                onFilterModeChange={isMultiUser ? setFilterMode : undefined}
               />
             )}
             <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
@@ -452,6 +437,7 @@ function LogoutButton() {
     } catch {
       // Even if the API call fails, clear local state
     }
+    clearStoredFilterMode();
     setCurrentUser(null);
     void navigate({ to: '/login' });
   };

@@ -100,8 +100,11 @@ describe('LogoutButton', () => {
     const button = screen.getByRole('button');
     expect(button.hasAttribute('disabled')).toBe(true);
 
-    // Resolve the logout to complete
+    // Resolve the logout to complete and wait for state transition
     resolveLogout!();
+    await waitFor(() => {
+      expect(screen.queryByText('Logging out...')).toBeNull();
+    });
   });
 
   it('should clear user and navigate on successful logout', async () => {

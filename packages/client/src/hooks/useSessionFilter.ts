@@ -3,7 +3,19 @@ import { useAuth } from '../lib/auth';
 
 export type SessionFilterMode = 'all' | 'mine';
 
-const STORAGE_KEY = 'session-filter-mode';
+export const STORAGE_KEY = 'session-filter-mode';
+
+/**
+ * Clear the stored filter mode from localStorage.
+ * Used during logout to prevent preference leakage between users.
+ */
+export function clearStoredFilterMode(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore localStorage errors
+  }
+}
 
 function readStoredFilterMode(): SessionFilterMode {
   try {

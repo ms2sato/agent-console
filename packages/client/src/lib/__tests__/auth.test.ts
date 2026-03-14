@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import {
   getAuthMode,
   setAuthMode,
   getCurrentUser,
   setCurrentUser,
   isMultiUserMode,
+  subscribeAuth,
   _reset,
 } from '../auth';
 
@@ -56,6 +57,37 @@ describe('auth module', () => {
     it('should return true when auth mode is multi-user', () => {
       setAuthMode('multi-user');
       expect(isMultiUserMode()).toBe(true);
+    });
+  });
+
+  describe('subscribeAuth', () => {
+    it('should notify listener when setAuthMode is called', () => {
+      const listener = mock(() => {});
+      subscribeAuth(listener);
+
+      setAuthMode('multi-user');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('should notify listener when setCurrentUser is called', () => {
+      const listener = mock(() => {});
+      subscribeAuth(listener);
+
+      setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not notify after unsubscribing', () => {
+      const listener = mock(() => {});
+      const unsubscribe = subscribeAuth(listener);
+
+      unsubscribe();
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+
+      expect(listener).toHaveBeenCalledTimes(0);
     });
   });
 

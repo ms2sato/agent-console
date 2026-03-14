@@ -1,7 +1,6 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
-import { useAuth } from '../../lib/auth';
 import type { SessionFilterMode } from '../../hooks/useSessionFilter';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
@@ -326,7 +325,6 @@ export function ActiveSessionsSidebar({
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isMultiUser } = useAuth();
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -502,8 +500,8 @@ export function ActiveSessionsSidebar({
         </button>
       </div>
 
-      {/* Session filter toggle (multi-user mode only) */}
-      {!collapsed && isMultiUser && filterMode && onFilterModeChange && (
+      {/* Session filter toggle (shown when filter props are provided) */}
+      {!collapsed && filterMode && onFilterModeChange && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-slate-700 shrink-0">
           <button
             onClick={() => onFilterModeChange('all')}

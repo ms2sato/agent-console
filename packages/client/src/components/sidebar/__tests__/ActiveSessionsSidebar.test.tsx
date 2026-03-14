@@ -6,7 +6,6 @@ import {
   SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
-import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
@@ -607,12 +606,7 @@ describe('ActiveSessionsSidebar', () => {
   });
 
   describe('Session filter toggle', () => {
-    afterEach(() => {
-      resetAuth();
-    });
-
-    it('should render "All" and "Mine" buttons in multi-user mode with filter props', async () => {
-      setAuthMode('multi-user');
+    it('should render "All" and "Mine" buttons when filter props are provided', async () => {
       const onFilterModeChange = mock(() => {});
 
       await renderWithRouter(
@@ -627,15 +621,10 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.getByText('Mine')).toBeTruthy();
     });
 
-    it('should not render filter toggle in single-user mode', async () => {
-      // authMode defaults to 'none' after resetAuth
-      const onFilterModeChange = mock(() => {});
-
+    it('should not render filter toggle when filter props are not provided', async () => {
       await renderWithRouter(
         <ActiveSessionsSidebar
           {...defaultProps()}
-          filterMode="all"
-          onFilterModeChange={onFilterModeChange}
         />
       );
 
@@ -644,7 +633,6 @@ describe('ActiveSessionsSidebar', () => {
     });
 
     it('should not render filter toggle when collapsed', async () => {
-      setAuthMode('multi-user');
       const onFilterModeChange = mock(() => {});
 
       await renderWithRouter(
@@ -661,7 +649,6 @@ describe('ActiveSessionsSidebar', () => {
     });
 
     it('should call onFilterModeChange with correct value when buttons are clicked', async () => {
-      setAuthMode('multi-user');
       const onFilterModeChange = mock(() => {});
 
       await renderWithRouter(
@@ -680,7 +667,6 @@ describe('ActiveSessionsSidebar', () => {
     });
 
     it('should reflect active mode via aria-pressed', async () => {
-      setAuthMode('multi-user');
       const onFilterModeChange = mock(() => {});
 
       await renderWithRouter(
