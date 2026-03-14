@@ -69,7 +69,13 @@ export const serverConfig = {
    * - 'none': Single-user mode (default). No login required.
    * - 'multi-user': Multi-user mode with OS authentication.
    */
-  AUTH_MODE: process.env.AUTH_MODE || 'none',
+  AUTH_MODE: (() => {
+    const mode = process.env.AUTH_MODE ?? 'none';
+    if (mode !== 'none' && mode !== 'multi-user') {
+      throw new Error(`Invalid AUTH_MODE: '${mode}'. Must be 'none' or 'multi-user'.`);
+    }
+    return mode as 'none' | 'multi-user';
+  })(),
 } as const;
 
 /**

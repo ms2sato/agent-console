@@ -47,6 +47,8 @@ import { interSessionMessageService } from './inter-session-message-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
+import type { UserRepository } from '../repositories/user-repository.js';
+import { resolveSpawnUsername } from './resolve-spawn-username.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 /**
@@ -98,6 +100,8 @@ interface SessionManagerOptions {
   sessionRepository?: SessionRepository;
   jobQueue?: JobQueue | null;
   agentManager: AgentManager;
+  /** User repository for resolving createdBy → username for PTY spawning */
+  userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
@@ -114,6 +118,7 @@ export class SessionManager {
   private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
+  private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private notificationManager: NotificationManager | null = null;
 
@@ -143,6 +148,7 @@ export class SessionManager {
       });
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
+    this.userRepository = options?.userRepository ?? null;
     this.workerManager = new WorkerManager(userMode, agentManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
@@ -160,6 +166,7 @@ export class SessionManager {
       toPublicSession: (session) => this.toPublicSession(session),
       getJobQueue: () => this.jobQueue,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+      resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
     });
   }
 
@@ -891,12 +898,14 @@ export class SessionManager {
     const repositoryEnvVars = this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     try {
+      const username = await resolveSpawnUsername(internalSession.createdBy, this.userRepository);
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
           await this.workerManager.activateAgentWorkerPty(worker, {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
+            username,
             agentId: worker.agentId,
             continueConversation: true,
             repositoryId,
@@ -909,6 +918,7 @@ export class SessionManager {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
+            username,
           });
           activatedWorkers.push(worker);
         }
@@ -1303,6 +1313,8 @@ export class SessionManager {
    * @param sessionId - Session ID to get repository env vars for
    * @returns Parsed environment variables as key-value pairs
    */
+  // resolveSpawnUsername is now an imported standalone function from ./resolve-spawn-username.ts
+
   private getRepositoryEnvVars(sessionId: string): Record<string, string> {
     const session = this.sessions.get(sessionId);
     if (!session) {

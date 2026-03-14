@@ -93,16 +93,13 @@ describe('SingleUserMode', () => {
   });
 
   describe('login()', () => {
-    it('should return cached user (no credential validation)', async () => {
+    it('should return null (login is not a valid operation in single-user mode)', async () => {
       const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
       const userMode = new SingleUserMode(mockPtyProvider, cachedUser);
 
       const result = await userMode.login('any-user', 'any-password');
 
-      expect(result).not.toBeNull();
-      expect(result!.user).toEqual(cachedUser);
-      expect(result!.user.id).toBe('cached-id');
-      expect(result!.token).toBe('');
+      expect(result).toBeNull();
     });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import type { AuthUser } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -16,6 +17,9 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
+import { SingleUserMode } from '../../services/user-mode.js';
+import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user-mode.js';
+import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -92,8 +96,9 @@ describe('Worker WebSocket connection error codes', () => {
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager } as AppContext;
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();
@@ -247,5 +252,96 @@ describe('Worker WebSocket connection error codes', () => {
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);
+  });
+});
+
+// =========================================================================
+// C4: WebSocket auth rejection tests
+// =========================================================================
+
+describe('WebSocket authentication rejection (C4)', () => {
+  const ptyFactory = createMockPtyFactory(20000);
+  let testJobQueue: JobQueue | null = null;
+  let app: InstanceType<typeof Hono>;
+
+  /**
+   * A UserMode that always rejects authentication.
+   * Used to test that unauthenticated WebSocket connections are rejected
+   * at the HTTP level (401) before the WebSocket upgrade.
+   */
+  class RejectingUserMode implements UserMode {
+    authenticate(_resolveToken: () => string | undefined): AuthUser | null {
+      return null;
+    }
+    async login(_username: string, _password: string): Promise<LoginResult | null> {
+      return null;
+    }
+    spawnPty(_request: PtySpawnRequest): PtyInstance {
+      throw new Error('Should not be called in auth rejection tests');
+    }
+  }
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    ptyFactory.reset();
+
+    resetProcessMock();
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase());
+    registerJobHandlers(testJobQueue);
+    const sessionRepository = await createSessionRepository();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    const notificationManager = new NotificationManager(new SlackHandler());
+    const sessionManager = await SessionManager.create({
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager,
+      ptyProvider: ptyFactory.provider,
+    });
+    const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
+
+    // Use a UserMode that always rejects authentication
+    const userMode = new RejectingUserMode();
+
+    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
+
+    // Set up routes with a mock upgradeWebSocket
+    app = new Hono();
+    const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
+      return handlerFactory;
+    };
+    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+  });
+
+  afterEach(async () => {
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue = null;
+    }
+
+    await closeDatabase();
+    cleanupMemfs();
+  });
+
+  it('should reject unauthenticated /ws/app connection with 401 at HTTP level', async () => {
+    const response = await app.request('/ws/app');
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('Authentication required');
+  });
+
+  it('should reject unauthenticated /ws/session/:id/worker/:id connection with 401 at HTTP level', async () => {
+    const response = await app.request('/ws/session/some-session/worker/some-worker');
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('Authentication required');
   });
 });

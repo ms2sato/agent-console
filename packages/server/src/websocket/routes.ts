@@ -12,6 +12,9 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit } from './git-diff-handler.js';
+import { getCookie } from 'hono/cookie';
+import type { Context } from 'hono';
+import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -438,10 +441,25 @@ export async function setupWebSocketRoutes(
   // Create app message handler with dependencies
   const handleAppMessage = createAppMessageHandler(appDeps);
 
+  /**
+   * HTTP-level auth guard for WebSocket routes.
+   * Rejects unauthenticated requests with 401 BEFORE the WebSocket upgrade,
+   * preventing unauthorized connections from being established.
+   * In single-user mode, authenticate() always returns a user so this never blocks.
+   */
+  function wsAuthGuard(c: Context, next: () => Promise<void>): Response | Promise<void> {
+    const authUser = appContext.userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+    if (!authUser) {
+      return c.text('Authentication required', 401);
+    }
+    return next();
+  }
+
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',
-    upgradeWebSocket(() => {
+    wsAuthGuard,
+    upgradeWebSocket((_c) => {
       return {
         onOpen(_event: Event, ws: WSContext) {
           logger.info('App WebSocket connected, sending initial sync');
@@ -509,6 +527,7 @@ export async function setupWebSocketRoutes(
   // WebSocket endpoint for worker connection
   app.get(
     '/ws/session/:sessionId/worker/:workerId',
+    wsAuthGuard,
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');

@@ -94,6 +94,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -111,6 +112,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-abc-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -126,6 +128,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -141,6 +144,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-456',
@@ -157,6 +161,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         // repositoryId is not provided (quick session)
@@ -173,6 +178,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'sess-all-four',
         locationPath: '/test/worktree/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-all-four',
@@ -192,6 +198,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -210,6 +217,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'org/repo-name',
@@ -230,6 +238,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           AGENT_CONSOLE_BASE_URL: 'http://malicious:9999',
           AGENT_CONSOLE_SESSION_ID: 'spoofed-session',
         },
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-1',
@@ -251,6 +260,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         parentSessionId: 'parent-sess-abc',
@@ -267,6 +277,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         parentWorkerId: 'parent-wkr-xyz',
@@ -283,6 +294,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         // parentSessionId and parentWorkerId are intentionally omitted
@@ -304,6 +316,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           AGENT_CONSOLE_PARENT_SESSION_ID: 'spoofed-parent-session',
           AGENT_CONSOLE_PARENT_WORKER_ID: 'spoofed-parent-worker',
         },
+        username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
         parentSessionId: 'real-parent-session',
@@ -325,6 +338,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
+        username: 'testuser',
       });
 
       const env = getLastSpawnEnv();

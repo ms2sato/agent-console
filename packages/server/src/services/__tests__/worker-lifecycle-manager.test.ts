@@ -94,6 +94,7 @@ describe('WorkerLifecycleManager', () => {
           ),
         } as Session;
       },
+      resolveSpawnUsername: async () => 'testuser',
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
       ...overrides,
