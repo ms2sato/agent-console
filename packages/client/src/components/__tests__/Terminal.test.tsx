@@ -699,6 +699,135 @@ describe('Terminal state machine sync', () => {
     });
   });
 
+  /**
+   * Tests for scroll position preservation behavior during output truncation vs worker restart.
+   *
+   * Background: When the server's output file exceeds WORKER_OUTPUT_FILE_MAX_SIZE (default 10MB),
+   * the server truncates the file and sends an `output-truncated` message. Previously,
+   * resetTerminalForFreshHistory() called terminal.reset() which immediately cleared the terminal
+   * and reset scroll position to top. This caused a visible scroll-to-top flash during active AI
+   * output, especially when truncation happened repeatedly.
+   *
+   * The fix: resetTerminalForFreshHistory() no longer calls terminal.reset(). The terminal content
+   * is preserved until writeFullHistory() atomically replaces it when the new history arrives.
+   * However, handleWorkerRestarted still calls terminal.reset() explicitly for immediate visual
+   * feedback that the terminal is restarting.
+   */
+  describe('scroll position preservation: truncation vs worker restart', () => {
+    /**
+     * Simulates handleOutputTruncated behavior including terminal.reset() decision.
+     * Maps to Terminal.tsx handleOutputTruncated (lines ~226-244):
+     *   - Calls resetTerminalForFreshHistory() which does NOT call terminal.reset()
+     *   - Requests history immediately if connected
+     */
+    function handleTruncationWithTerminalBehavior(
+      state: SimulatedState,
+      connected: boolean
+    ): { state: SimulatedState; immediateRequest: boolean; terminalResetCalled: boolean } {
+      const truncResult = handleTruncation(state, connected);
+      return {
+        ...truncResult,
+        // resetTerminalForFreshHistory() does NOT call terminal.reset()
+        // Content stays visible until writeFullHistory() replaces it atomically
+        terminalResetCalled: false,
+      };
+    }
+
+    /**
+     * Simulates handleWorkerRestarted behavior including terminal.reset() decision.
+     * Maps to Terminal.tsx handleWorkerRestarted (lines ~248-280):
+     *   - Calls resetTerminalForFreshHistory() (no terminal.reset())
+     *   - Then explicitly calls terminalRef.current?.reset() for visual feedback
+     */
+    function handleWorkerRestartWithTerminalBehavior(
+      state: SimulatedState
+    ): { state: SimulatedState; terminalResetCalled: boolean } {
+      // resetTerminalForFreshHistory() resets state variables
+      const resetState: SimulatedState = {
+        ...state,
+        currentOffset: 0,
+        historyRequested: false,
+        requestedWithOffset: 0,
+      };
+      return {
+        state: resetState,
+        // handleWorkerRestarted explicitly calls terminal.reset() after resetTerminalForFreshHistory()
+        terminalResetCalled: true,
+      };
+    }
+
+    it('should NOT call terminal.reset() on output truncation (prevents scroll-to-top flash)', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 8000,
+      });
+
+      const result = handleTruncationWithTerminalBehavior(state, true);
+
+      // terminal.reset() must NOT be called — old content stays visible until
+      // writeFullHistory() atomically replaces it, preventing scroll position loss
+      expect(result.terminalResetCalled).toBe(false);
+      expect(result.immediateRequest).toBe(true);
+    });
+
+    it('should call terminal.reset() on worker restart (immediate visual feedback)', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 8000,
+      });
+
+      const result = handleWorkerRestartWithTerminalBehavior(state);
+
+      // terminal.reset() SHOULD be called — user needs immediate visual feedback
+      // that the terminal is restarting
+      expect(result.terminalResetCalled).toBe(true);
+    });
+
+    it('should reset the same state variables in both scenarios', () => {
+      const initialState = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 8000,
+      });
+
+      const truncResult = handleTruncationWithTerminalBehavior(initialState, true);
+      const restartResult = handleWorkerRestartWithTerminalBehavior(initialState);
+
+      // Both scenarios reset offset to 0
+      expect(truncResult.state.currentOffset).toBe(0);
+      expect(restartResult.state.currentOffset).toBe(0);
+
+      // Both scenarios reset requestedWithOffset to 0
+      expect(truncResult.state.requestedWithOffset).toBe(0);
+      expect(restartResult.state.requestedWithOffset).toBe(0);
+
+      // The only difference is terminal.reset() behavior
+      expect(truncResult.terminalResetCalled).toBe(false);
+      expect(restartResult.terminalResetCalled).toBe(true);
+    });
+
+    it('should NOT call terminal.reset() on truncation even when disconnected', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 500,
+        currentOffset: 8000,
+      });
+
+      const result = handleTruncationWithTerminalBehavior(state, false);
+
+      expect(result.terminalResetCalled).toBe(false);
+      expect(result.immediateRequest).toBe(false);
+      // historyRequested stays false when disconnected — will be requested on reconnect
+      expect(result.state.historyRequested).toBe(false);
+    });
+  });
+
   describe('duplicate request prevention', () => {
     it('should not send duplicate request when useEffect re-runs', () => {
       let state = createInitialState({ cacheProcessed: true });

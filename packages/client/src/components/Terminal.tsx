@@ -221,7 +221,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     offsetRef.current = 0;
     stateRef.current.historyRequested = false;
     stateRef.current.requestedWithOffset = 0;
-    terminalRef.current?.reset();
   }, []);
 
   const handleOutputTruncated = useCallback((message: string) => {
@@ -268,6 +267,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     );
 
     resetTerminalForFreshHistory();
+    // Immediately clear the terminal to visually indicate restart
+    terminalRef.current?.reset();
 
     // Reset exit state so the terminal reconnects
     setExitInfo(null);
@@ -318,7 +319,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (!containerRef.current) return;
 
     const container = containerRef.current;
-
     const terminal = new XTerm({
       cursorBlink: true,
       fontSize: 14,
