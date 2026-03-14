@@ -218,6 +218,10 @@ describe('JobQueue', () => {
         }
       });
 
+      (jobQueue as any).calculateBackoff = function (_attempts: number): number {
+        return 0;
+      };
+
       const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 3 });
       await jobQueue.start();
 
@@ -249,6 +253,10 @@ describe('JobQueue', () => {
         attempts++;
         throw new Error('Persistent failure');
       });
+
+      (jobQueue as any).calculateBackoff = function (_attempts: number): number {
+        return 0;
+      };
 
       const id = await jobQueue.enqueue('test:job', {}, { maxAttempts: 2 });
       await jobQueue.start();
@@ -853,6 +861,11 @@ describe('JobQueue', () => {
         }
       });
 
+      // Use short backoff to avoid long waits in CI while still allowing cancel before retry fires
+      (jobQueue as any).calculateBackoff = function (_attempts: number): number {
+        return 200;
+      };
+
       // Create a job that will fail once and be scheduled for retry
       const id = await jobQueue.enqueue('retry-job', {}, { maxAttempts: 3 });
       await jobQueue.start();
@@ -870,8 +883,8 @@ describe('JobQueue', () => {
       const canceled = await jobQueue.cancelJob(id);
       expect(canceled).toBe(true);
 
-      // Wait past the retry time (default backoff is 1s for first retry)
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Wait past the retry time (patched backoff is 200ms)
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Verify job was not processed again
       expect(attempts).toBe(1);
@@ -887,6 +900,11 @@ describe('JobQueue', () => {
         attempts++;
         throw new Error('Always fails');
       });
+
+      // Use short backoff so the timer exists but doesn't cause long waits
+      (jobQueue as any).calculateBackoff = function (_attempts: number): number {
+        return 200;
+      };
 
       const id = await jobQueue.enqueue('retry-job', {}, { maxAttempts: 5 });
       await jobQueue.start();
