@@ -3,8 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
-import { fetchConfig } from './lib/api';
+import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
+import { setAuthMode, setCurrentUser } from './lib/auth';
 import {
   hasPendingSaves,
   flush as flushSaveManager,
@@ -132,7 +133,22 @@ async function initApp() {
 
   try {
     const config = await fetchConfig();
-    setHomeDir(config.homeDir);
+    setAuthMode(config.authMode);
+
+    if (config.authMode === 'multi-user') {
+      // In multi-user mode, check if user is already authenticated
+      const { user } = await fetchCurrentUser();
+      if (user) {
+        setCurrentUser(user);
+        setHomeDir(user.homeDir);
+      } else {
+        // Not authenticated - set empty homeDir, router will redirect to /login
+        setHomeDir('');
+      }
+    } else {
+      setHomeDir(config.homeDir);
+    }
+
     setCapabilities(config.capabilities);
 
     // Set current server PID and handle cache invalidation if server has restarted

@@ -8,6 +8,7 @@ import {
   subscribeState,
   getState,
   requestSync,
+  onPolicyViolation,
   _reset,
   _setRetryCount,
   MAX_RETRY_COUNT,
@@ -509,6 +510,61 @@ describe('app-websocket', () => {
       ws?.simulateError();
 
       expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('onPolicyViolation', () => {
+    it('should call registered callback on POLICY_VIOLATION close', () => {
+      const callback = mock(() => {});
+      onPolicyViolation(callback);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateClose(WS_CLOSE_CODE.POLICY_VIOLATION);
+
+      expect(callback).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not call callback on normal close', () => {
+      const callback = mock(() => {});
+      onPolicyViolation(callback);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateClose(WS_CLOSE_CODE.NORMAL_CLOSURE);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it('should remove callback when unsubscribe is called', () => {
+      const callback = mock(() => {});
+      const unsubscribe = onPolicyViolation(callback);
+
+      unsubscribe();
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateClose(WS_CLOSE_CODE.POLICY_VIOLATION);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it('should call multiple subscribers on POLICY_VIOLATION', () => {
+      const callback1 = mock(() => {});
+      const callback2 = mock(() => {});
+      onPolicyViolation(callback1);
+      onPolicyViolation(callback2);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateClose(WS_CLOSE_CODE.POLICY_VIOLATION);
+
+      expect(callback1).toHaveBeenCalledTimes(1);
+      expect(callback2).toHaveBeenCalledTimes(1);
     });
   });
 

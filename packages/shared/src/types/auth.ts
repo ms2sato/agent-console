@@ -1,3 +1,5 @@
+export type AuthMode = 'none' | 'multi-user';
+
 /**
  * Authenticated user identity.
  *

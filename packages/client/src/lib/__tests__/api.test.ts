@@ -644,6 +644,88 @@ describe('API Client', () => {
     });
   });
 
+  describe('login', () => {
+    it('should login successfully and return user', async () => {
+      const { login } = await import('../api');
+      const mockResponse = { user: { id: 'user-1', username: 'alice', homeDir: '/home/alice' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await login({ username: 'alice', password: 'pass123' });
+
+      expect(getLastFetchUrl()).toContain('/api/auth/login');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ username: 'alice', password: 'pass123' });
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should throw error on failed login', async () => {
+      const { login } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: mock(() => Promise.resolve({ error: 'Invalid credentials' })),
+      } as unknown as Response);
+
+      await expect(login({ username: 'bad', password: 'bad' })).rejects.toThrow('Invalid credentials');
+    });
+  });
+
+  describe('logout', () => {
+    it('should logout successfully', async () => {
+      const { logout } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      await logout();
+
+      expect(getLastFetchUrl()).toContain('/api/auth/logout');
+      expect(getLastFetchMethod()).toBe('POST');
+    });
+
+    it('should throw error on failed logout', async () => {
+      const { logout } = await import('../api');
+      mockFetch.mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(logout()).rejects.toThrow('Logout failed');
+    });
+  });
+
+  describe('fetchCurrentUser', () => {
+    it('should fetch current user successfully', async () => {
+      const { fetchCurrentUser } = await import('../api');
+      const mockResponse = { user: { id: 'user-1', username: 'alice', homeDir: '/home/alice' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await fetchCurrentUser();
+
+      expect(getLastFetchUrl()).toContain('/api/auth/me');
+      expect(getLastFetchMethod()).toBe('GET');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should return null user when not authenticated', async () => {
+      const { fetchCurrentUser } = await import('../api');
+      const mockResponse = { user: null };
+      mockFetch.mockResolvedValue(createMockResponse(mockResponse));
+
+      const result = await fetchCurrentUser();
+
+      expect(result).toEqual({ user: null });
+    });
+
+    it('should throw error on server error', async () => {
+      const { fetchCurrentUser } = await import('../api');
+      mockFetch.mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(fetchCurrentUser()).rejects.toThrow('Failed to fetch current user');
+    });
+  });
+
   describe('handleApiError', () => {
     it('should extract error from response with both error and message fields', async () => {
       const { createSession } = await import('../api');

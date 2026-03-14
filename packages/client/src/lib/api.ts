@@ -23,7 +23,9 @@ import type {
   UpdateRepositoryRequest,
   WorkerMessage,
   GenerateRepositoryDescriptionResponse,
+  AuthUser,
 } from '@agent-console/shared';
+import type { AuthMode } from '@agent-console/shared';
 import { api } from './api-client';
 
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
@@ -47,6 +49,7 @@ export interface ConfigResponse {
     vscode: boolean;
   };
   serverPid: number;
+  authMode: AuthMode;
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
@@ -793,4 +796,44 @@ export async function sendWorkerMessage(
     await handleApiError(res, 'Failed to send worker message');
   }
   return res.json() as Promise<{ message: WorkerMessage }>;
+}
+
+// ===========================================================================
+// Authentication
+// ===========================================================================
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  user: AuthUser;
+}
+
+export async function login(request: LoginRequest): Promise<LoginResponse> {
+  const res = await api.auth.login.$post({ json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Login failed');
+  }
+  return res.json() as Promise<LoginResponse>;
+}
+
+export async function logout(): Promise<void> {
+  const res = await api.auth.logout.$post();
+  if (!res.ok) {
+    await handleApiError(res, 'Logout failed');
+  }
+}
+
+export interface CurrentUserResponse {
+  user: AuthUser | null;
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
+  const res = await api.auth.me.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch current user');
+  }
+  return res.json() as Promise<CurrentUserResponse>;
 }

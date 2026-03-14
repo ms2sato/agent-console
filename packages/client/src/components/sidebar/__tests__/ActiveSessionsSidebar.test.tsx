@@ -6,6 +6,7 @@ import {
   SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
+import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
@@ -602,6 +603,99 @@ describe('ActiveSessionsSidebar', () => {
       expect(pausedSessionButtons[0].textContent).toContain('repo-a');
       expect(pausedSessionButtons[1].textContent).toContain('repo-b');
       expect(pausedSessionButtons[2].textContent).toContain('repo-c');
+    });
+  });
+
+  describe('Session filter toggle', () => {
+    afterEach(() => {
+      resetAuth();
+    });
+
+    it('should render "All" and "Mine" buttons in multi-user mode with filter props', async () => {
+      setAuthMode('multi-user');
+      const onFilterModeChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          filterMode="all"
+          onFilterModeChange={onFilterModeChange}
+        />
+      );
+
+      expect(screen.getByText('All')).toBeTruthy();
+      expect(screen.getByText('Mine')).toBeTruthy();
+    });
+
+    it('should not render filter toggle in single-user mode', async () => {
+      // authMode defaults to 'none' after resetAuth
+      const onFilterModeChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          filterMode="all"
+          onFilterModeChange={onFilterModeChange}
+        />
+      );
+
+      expect(screen.queryByText('All')).toBeNull();
+      expect(screen.queryByText('Mine')).toBeNull();
+    });
+
+    it('should not render filter toggle when collapsed', async () => {
+      setAuthMode('multi-user');
+      const onFilterModeChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          collapsed={true}
+          filterMode="all"
+          onFilterModeChange={onFilterModeChange}
+        />
+      );
+
+      expect(screen.queryByText('All')).toBeNull();
+      expect(screen.queryByText('Mine')).toBeNull();
+    });
+
+    it('should call onFilterModeChange with correct value when buttons are clicked', async () => {
+      setAuthMode('multi-user');
+      const onFilterModeChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          filterMode="all"
+          onFilterModeChange={onFilterModeChange}
+        />
+      );
+
+      fireEvent.click(screen.getByText('Mine'));
+      expect(onFilterModeChange).toHaveBeenCalledWith('mine');
+
+      fireEvent.click(screen.getByText('All'));
+      expect(onFilterModeChange).toHaveBeenCalledWith('all');
+    });
+
+    it('should reflect active mode via aria-pressed', async () => {
+      setAuthMode('multi-user');
+      const onFilterModeChange = mock(() => {});
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          filterMode="mine"
+          onFilterModeChange={onFilterModeChange}
+        />
+      );
+
+      const allButton = screen.getByText('All');
+      const mineButton = screen.getByText('Mine');
+
+      expect(allButton.getAttribute('aria-pressed')).toBe('false');
+      expect(mineButton.getAttribute('aria-pressed')).toBe('true');
     });
   });
 });

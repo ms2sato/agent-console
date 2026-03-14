@@ -1,6 +1,8 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import { useAuth } from '../../lib/auth';
+import type { SessionFilterMode } from '../../hooks/useSessionFilter';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
 import { Spinner } from '../ui/Spinner';
@@ -32,6 +34,10 @@ interface ActiveSessionsSidebarProps {
   onResumeSession?: (sessionId: string) => void | Promise<void>;
   /** Hide the drag-to-resize handle (used in mobile drawer mode) */
   hideResizeHandle?: boolean;
+  /** Current session filter mode (only used in multi-user mode) */
+  filterMode?: SessionFilterMode;
+  /** Callback when filter mode changes */
+  onFilterModeChange?: (mode: SessionFilterMode) => void;
 }
 
 /**
@@ -315,9 +321,12 @@ export function ActiveSessionsSidebar({
   pausedSessions = [],
   onResumeSession,
   hideResizeHandle,
+  filterMode,
+  onFilterModeChange,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { isMultiUser } = useAuth();
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -492,6 +501,34 @@ export function ActiveSessionsSidebar({
           )}
         </button>
       </div>
+
+      {/* Session filter toggle (multi-user mode only) */}
+      {!collapsed && isMultiUser && filterMode && onFilterModeChange && (
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-slate-700 shrink-0">
+          <button
+            onClick={() => onFilterModeChange('all')}
+            className={`text-xs px-2 py-0.5 rounded transition-colors ${
+              filterMode === 'all'
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            aria-pressed={filterMode === 'all'}
+          >
+            All
+          </button>
+          <button
+            onClick={() => onFilterModeChange('mine')}
+            className={`text-xs px-2 py-0.5 rounded transition-colors ${
+              filterMode === 'mine'
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            aria-pressed={filterMode === 'mine'}
+          >
+            Mine
+          </button>
+        </div>
+      )}
 
       {/* Session and task list */}
       <div className="flex-1 overflow-y-auto" aria-label="Sessions">
