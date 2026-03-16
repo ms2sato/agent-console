@@ -283,7 +283,14 @@ export class WorkerManager {
     const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, parentSessionId, parentWorkerId } = params;
 
     const agentManager = this.agentManager;
-    const agent = agentManager.getAgent(agentId) ?? agentManager.getDefaultAgent();
+    const requestedAgent = agentManager.getAgent(agentId);
+    const agent = requestedAgent ?? agentManager.getDefaultAgent();
+    if (!requestedAgent) {
+      logger.debug(
+        { workerId: worker.id, requestedAgentId: agentId, fallbackAgentId: agent.id },
+        'Requested agent not found, falling back to default agent'
+      );
+    }
 
     const template = continueConversation && agent.continueTemplate
       ? agent.continueTemplate
@@ -339,7 +346,7 @@ export class WorkerManager {
 
     worker.pty = ptyProcess;
     worker.activityDetector = activityDetector;
-    worker.agentId = agentId;
+    worker.agentId = agent.id;
 
     // Set initial activity state to match ActivityDetector's initial state ('idle').
     // The onStateChange callback only fires on state *changes*, not on initialization,

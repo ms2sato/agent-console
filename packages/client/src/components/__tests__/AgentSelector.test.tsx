@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -36,7 +36,7 @@ function createMockResponse(body: unknown) {
 }
 
 // Wrapper component with QueryClientProvider
-function TestWrapper({ children }: { children: React.ReactNode }) {
+function createTestWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -44,7 +44,9 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
       },
     },
   });
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return function TestWrapper({ children }: { children: React.ReactNode }) {
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  };
 }
 
 function renderAgentSelector(props: Partial<React.ComponentProps<typeof AgentSelector>> = {}) {
@@ -56,9 +58,8 @@ function renderAgentSelector(props: Partial<React.ComponentProps<typeof AgentSel
 
   return {
     ...render(
-      <TestWrapper>
-        <AgentSelector {...mergedProps} />
-      </TestWrapper>
+      <AgentSelector {...mergedProps} />,
+      { wrapper: createTestWrapper() }
     ),
     props: mergedProps,
   };
@@ -122,6 +123,102 @@ describe('AgentSelector', () => {
       expect(options[0].textContent).toBe('Claude Code (built-in)');
       expect(options[1].textContent).toBe('Custom Agent');
       expect(options[2].textContent).toBe('Another Agent');
+    });
+  });
+
+  describe('loading state', () => {
+    it('should show loading state while fetching agents', () => {
+      // Use a fetch that never resolves to keep loading state
+      mockFetch.mockReturnValue(new Promise(() => {}));
+
+      renderAgentSelector({ value: undefined });
+
+      expect(screen.getByText('Loading...')).toBeTruthy();
+    });
+  });
+});
+
+describe('useResolvedAgentId', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
+  });
+
+  it('should return the original value while loading', () => {
+    // Use a fetch that never resolves to keep loading state
+    mockFetch.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(
+      () => useResolvedAgentId('some-agent'),
+      { wrapper: createTestWrapper() }
+    );
+
+    expect(result.current).toBe('some-agent');
+  });
+
+  it('should return undefined while loading when value is undefined', () => {
+    mockFetch.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(
+      () => useResolvedAgentId(undefined),
+      { wrapper: createTestWrapper() }
+    );
+
+    expect(result.current).toBeUndefined();
+  });
+
+  it('should return first agent when value is undefined and agents are loaded', async () => {
+    const { result } = renderHook(
+      () => useResolvedAgentId(undefined),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('claude-code');
+    });
+  });
+
+  it('should return priority agent when value is undefined and priorityAgentId is set', async () => {
+    const { result } = renderHook(
+      () => useResolvedAgentId(undefined, 'another-agent'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('another-agent');
+    });
+  });
+
+  it('should return existing value when it matches an agent', async () => {
+    const { result } = renderHook(
+      () => useResolvedAgentId('custom-agent'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('custom-agent');
+    });
+  });
+
+  it('should return first agent when value does not match any agent', async () => {
+    const { result } = renderHook(
+      () => useResolvedAgentId('nonexistent-agent'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('claude-code');
+    });
+  });
+
+  it('should return priority agent when value does not match and priorityAgentId is set', async () => {
+    const { result } = renderHook(
+      () => useResolvedAgentId('nonexistent-agent', 'another-agent'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('another-agent');
     });
   });
 });

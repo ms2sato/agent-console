@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
 import { Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
@@ -74,6 +74,9 @@ export function CreateWorktreeForm({
     mode: 'onBlur',
     shouldUnregister: true,
   });
+
+  const agentId = watch('agentId');
+  const resolvedAgentId = useResolvedAgentId(agentId, defaultAgentId ?? undefined);
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
@@ -179,7 +182,7 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: data.agentId,
+          agentId: resolvedAgentId,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
         };
@@ -189,7 +192,7 @@ export function CreateWorktreeForm({
           branch: data.customBranch!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: data.agentId,
+          agentId: resolvedAgentId,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
@@ -199,7 +202,7 @@ export function CreateWorktreeForm({
           mode: 'existing',
           branch: data.customBranch!.trim(),
           autoStartSession: true,
-          agentId: data.agentId,
+          agentId: resolvedAgentId,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
         };
@@ -239,7 +242,7 @@ export function CreateWorktreeForm({
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
-                value={watch('agentId')}
+                value={resolvedAgentId}
                 onChange={(value) => {
                   setValue('agentId', value);
                   if (setAsDefault && value) {

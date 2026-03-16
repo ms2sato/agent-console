@@ -152,6 +152,21 @@ describe('WorkerManager', () => {
       expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
     });
 
+    it('should set agentId to the actual agent id, not the requested one, when fallback occurs', () => {
+      const worker = createTestAgentWorker();
+      // Start with a different agentId to verify fallback actually updates it
+      worker.agentId = 'originally-different-agent';
+
+      workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        agentId: 'non-existent-agent',
+      });
+
+      // Should fall back to default agent and record its actual id
+      expect(worker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
+      expect(worker.pty).not.toBeNull();
+    });
+
     it('should set initial activity state to idle and fire global callback', () => {
       const globalCallback = mock(() => {});
       workerManager.setGlobalActivityCallback(globalCallback);
