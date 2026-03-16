@@ -1,7 +1,7 @@
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
 import { FormOverlay } from '../ui/Spinner';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
@@ -34,9 +34,12 @@ export function QuickSessionForm({
     mode: 'onBlur',
   });
 
+  const agentId = watch('agentId');
+  const resolvedAgentId = useResolvedAgentId(agentId);
+
   const handleFormSubmit = async (data: CreateQuickSessionRequest) => {
     try {
-      await onSubmit(data);
+      await onSubmit({ ...data, agentId: resolvedAgentId });
     } catch (err) {
       setError('root', {
         message: err instanceof Error ? err.message : 'Failed to start session',
@@ -62,7 +65,7 @@ export function QuickSessionForm({
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400">Agent:</span>
             <AgentSelector
-              value={watch('agentId')}
+              value={resolvedAgentId}
               onChange={(value) => {
                 setValue('agentId', value);
               }}

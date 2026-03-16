@@ -10,7 +10,7 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { restartAgentWorker, getSession } from '../../lib/api';
-import { AgentSelector } from '../AgentSelector';
+import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
 
 export interface RestartSessionDialogProps {
   open: boolean;
@@ -37,6 +37,7 @@ export function RestartSessionDialog({
   const [error, setError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(currentAgentId);
   const [branchValue, setBranchValue] = useState(currentBranch ?? '');
+  const resolvedAgentId = useResolvedAgentId(selectedAgentId, currentAgentId);
 
   // Reset selected agent and branch when dialog opens
   useEffect(() => {
@@ -46,7 +47,7 @@ export function RestartSessionDialog({
     }
   }, [open, currentAgentId, currentBranch]);
 
-  const isAgentChanged = selectedAgentId !== currentAgentId;
+  const isAgentChanged = resolvedAgentId !== currentAgentId;
   const trimmedBranch = branchValue.trim();
   const isBranchEmpty = isWorktreeSession === true && trimmedBranch === '';
   const isBranchChanged = isWorktreeSession === true && trimmedBranch !== '' && trimmedBranch !== (currentBranch ?? '');
@@ -65,7 +66,7 @@ export function RestartSessionDialog({
       if (!agentWorker) {
         throw new Error('No agent worker found');
       }
-      const agentId = isAgentChanged ? selectedAgentId : undefined;
+      const agentId = isAgentChanged ? resolvedAgentId : undefined;
       const newBranch = isBranchChanged ? trimmedBranch : undefined;
       await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
       onOpenChange(false);
@@ -100,7 +101,7 @@ export function RestartSessionDialog({
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400 shrink-0 w-14">Agent:</span>
             <AgentSelector
-              value={selectedAgentId}
+              value={resolvedAgentId}
               onChange={setSelectedAgentId}
               className="flex-1"
               priorityAgentId={currentAgentId}
