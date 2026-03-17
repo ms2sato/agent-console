@@ -9,7 +9,7 @@ interface UseTerminalWebSocketOptions {
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
   onActivity?: (state: AgentActivityState) => void;
-  onOutputTruncated?: (message: string) => void;
+  onOutputTruncated?: (message: string, newOffset: number) => void;
 }
 
 export interface WorkerError {

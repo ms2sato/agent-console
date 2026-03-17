@@ -15,7 +15,7 @@ const logger = createLogger('worker-output-file');
  * Callback type for output truncation notification.
  * Used to notify WebSocket clients when output file is truncated.
  */
-export type OutputTruncatedCallback = (sessionId: string, workerId: string) => void;
+export type OutputTruncatedCallback = (sessionId: string, workerId: string, newOffset: number) => void;
 
 /** Registered callback for output truncation notifications */
 let onOutputTruncatedCallback: OutputTruncatedCallback | null = null;
@@ -292,7 +292,7 @@ export class WorkerOutputFileManager {
 
       // Notify connected clients about the truncation via registered callback
       if (onOutputTruncatedCallback) {
-        onOutputTruncatedCallback(sessionId, workerId);
+        onOutputTruncatedCallback(sessionId, workerId, trimmedBuffer.length);
       }
     } catch (error) {
       logger.error({ filePath, err: error }, 'Failed to truncate output file');

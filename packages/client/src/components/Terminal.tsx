@@ -223,7 +223,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     stateRef.current.requestedWithOffset = 0;
   }, []);
 
-  const handleOutputTruncated = useCallback((message: string) => {
+  const handleOutputTruncated = useCallback((message: string, newOffset: number) => {
     if (truncationTimeoutRef.current) {
       clearTimeout(truncationTimeoutRef.current);
     }
@@ -233,15 +233,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       truncationTimeoutRef.current = null;
     }, 10000);
 
-    resetTerminalForFreshHistory();
-
-    // Request immediately if connected (no need to wait for cacheProcessed since truncation means we're already past that)
-    if (connectedRef.current) {
-      stateRef.current.historyRequested = true;
-      stateRef.current.requestedWithOffset = 0;
-      requestHistory(sessionId, workerId, 0);
-    }
-  }, [sessionId, workerId, resetTerminalForFreshHistory]);
+    // Just update offset — no need to re-render terminal content.
+    // The xterm.js terminal still has valid content; the server only removed
+    // old data from the beginning of the file.
+    offsetRef.current = newOffset;
+  }, []);
 
   // Handle worker-restarted event from app WebSocket
   const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string) => {

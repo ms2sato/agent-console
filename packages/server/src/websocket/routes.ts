@@ -197,7 +197,7 @@ export function notifySessionPaused(sessionId: string): void {
  * Registered as callback in setupWebSocketRoutes() to avoid circular dependency.
  * Called by WorkerOutputFileManager when output file exceeds size limits.
  */
-function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void {
+function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOffset: number): void {
   const connections = registry.getWorkerConnections(sessionId, workerId);
   if (!connections || connections.size === 0) {
     logger.debug({ sessionId, workerId }, 'No worker connections to notify for output truncation');
@@ -207,6 +207,7 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string): void 
   const msg: WorkerServerMessage = {
     type: 'output-truncated',
     message: 'Output history truncated due to size limits',
+    newOffset,
   };
   const msgStr = JSON.stringify(msg);
 
