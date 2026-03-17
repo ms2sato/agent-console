@@ -121,7 +121,7 @@ export type WorkerServerMessage =
   | { type: 'history'; data: string; offset: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode }
-  | { type: 'output-truncated'; message: string }
+  | { type: 'output-truncated'; message: string; newOffset: number }
   | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
 
 export interface WorkerActivityInfo {

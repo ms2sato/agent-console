@@ -4,7 +4,6 @@
  */
 export interface ChunkableTerminal {
   write: (data: string, callback?: () => void) => void;
-  clear: () => void;
   scrollToBottom: () => void;
 }
 
@@ -176,8 +175,6 @@ export async function writeDataInChunks(
  * staying well within these limits.
  */
 export async function writeFullHistory(terminal: ChunkableTerminal, data: string): Promise<void> {
-  terminal.clear();
-
   await writeDataInChunks(terminal, data);
 
   terminal.scrollToBottom();

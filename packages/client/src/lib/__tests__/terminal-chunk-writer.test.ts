@@ -25,7 +25,6 @@ function createMockTerminal(): ChunkableTerminal & {
         setTimeout(callback, 0);
       }
     }),
-    clear: mock(() => {}),
     scrollToBottom: mock(() => {}),
   };
 }
@@ -291,15 +290,6 @@ describe('terminal-chunk-writer', () => {
   });
 
   describe('writeFullHistory', () => {
-    it('should call terminal.clear() first', async () => {
-      const terminal = createMockTerminal();
-      const data = 'History content';
-
-      await writeFullHistory(terminal, data);
-
-      expect(terminal.clear).toHaveBeenCalledTimes(1);
-    });
-
     it('should write the data', async () => {
       const terminal = createMockTerminal();
       const data = 'History content';
@@ -323,7 +313,6 @@ describe('terminal-chunk-writer', () => {
 
       await writeFullHistory(terminal, '');
 
-      expect(terminal.clear).toHaveBeenCalledTimes(1);
       expect(terminal.writtenData).toHaveLength(1);
       expect(terminal.writtenData[0]).toBe('');
       expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
@@ -335,7 +324,6 @@ describe('terminal-chunk-writer', () => {
 
       await writeFullHistory(terminal, data);
 
-      expect(terminal.clear).toHaveBeenCalledTimes(1);
       expect(terminal.writtenData.join('')).toBe(data);
       expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
     });

@@ -503,28 +503,19 @@ describe('Terminal state machine sync', () => {
   }
 
   /**
-   * Simulates handleOutputTruncated (lines 216-228):
-   *   offsetRef.current = 0; historyRequested = false; requestedWithOffset = 0;
-   *   if (connectedRef.current) { historyRequested = true; requestedWithOffset = 0; requestHistory(..., 0); }
+   * Simulates handleOutputTruncated:
+   *   offsetRef.current = newOffset;
+   *   (no state reset, no history re-request — the xterm.js terminal still has valid content)
    */
-  function handleTruncation(state: SimulatedState, connected: boolean): {
+  function handleTruncation(state: SimulatedState, _connected: boolean, newOffset: number): {
     state: SimulatedState;
-    immediateRequest: boolean;
   } {
-    const resetState: SimulatedState = {
-      ...state,
-      currentOffset: 0,
-      historyRequested: false,
-      requestedWithOffset: 0,
+    return {
+      state: {
+        ...state,
+        currentOffset: newOffset,
+      },
     };
-
-    if (connected) {
-      return {
-        state: { ...resetState, historyRequested: true, requestedWithOffset: 0 },
-        immediateRequest: true,
-      };
-    }
-    return { state: resetState, immediateRequest: false };
   }
 
   /**
@@ -621,8 +612,8 @@ describe('Terminal state machine sync', () => {
     });
   });
 
-  describe('truncation -> reset -> full history', () => {
-    it('should reset offset and request full history when connected', () => {
+  describe('truncation -> offset update only', () => {
+    it('should update offset to newOffset without re-requesting history when connected', () => {
       // 1. Initial sync completed, offset at 3000
       let state = createInitialState({
         cacheProcessed: true,
@@ -631,22 +622,20 @@ describe('Terminal state machine sync', () => {
         currentOffset: 3000,
       });
 
-      // 2. Truncation event while connected
-      const truncResult = handleTruncation(state, true);
+      // 2. Truncation event while connected — server provides newOffset
+      const newOffset = 1500;
+      const truncResult = handleTruncation(state, true, newOffset);
       state = truncResult.state;
 
-      // Truncation immediately requests history when connected
-      expect(truncResult.immediateRequest).toBe(true);
-      expect(state.currentOffset).toBe(0);
+      // Truncation just updates offset — no history re-request
+      expect(state.currentOffset).toBe(newOffset);
+      // historyRequested remains unchanged (already true)
       expect(state.historyRequested).toBe(true);
-      expect(state.requestedWithOffset).toBe(0);
-
-      // 3. handleHistory arrives -> full write since requestedWithOffset is 0
-      const action = determineHistoryAction(state.requestedWithOffset, true);
-      expect(action).toBe('full-write');
+      // requestedWithOffset remains unchanged
+      expect(state.requestedWithOffset).toBe(500);
     });
 
-    it('should defer history request when disconnected at truncation time', () => {
+    it('should update offset to newOffset without re-requesting history when disconnected', () => {
       let state = createInitialState({
         cacheProcessed: true,
         historyRequested: true,
@@ -654,18 +643,16 @@ describe('Terminal state machine sync', () => {
         currentOffset: 3000,
       });
 
-      // Truncation while disconnected
-      const truncResult = handleTruncation(state, false);
+      // Truncation while disconnected — same behavior, just update offset
+      const newOffset = 1500;
+      const truncResult = handleTruncation(state, false, newOffset);
       state = truncResult.state;
 
-      expect(truncResult.immediateRequest).toBe(false);
-      expect(state.historyRequested).toBe(false);
-      expect(state.currentOffset).toBe(0);
-
-      // Later, reconnect -> useEffect fires and requests from offset 0
-      const request = evaluateHistoryRequest(state, true);
-      expect(request.shouldRequest).toBe(true);
-      expect(request.requestOffset).toBe(0);
+      expect(state.currentOffset).toBe(newOffset);
+      // historyRequested remains unchanged
+      expect(state.historyRequested).toBe(true);
+      // requestedWithOffset remains unchanged
+      expect(state.requestedWithOffset).toBe(500);
     });
   });
 
@@ -716,19 +703,20 @@ describe('Terminal state machine sync', () => {
   describe('scroll position preservation: truncation vs worker restart', () => {
     /**
      * Simulates handleOutputTruncated behavior including terminal.reset() decision.
-     * Maps to Terminal.tsx handleOutputTruncated (lines ~226-244):
-     *   - Calls resetTerminalForFreshHistory() which does NOT call terminal.reset()
-     *   - Requests history immediately if connected
+     * Maps to Terminal.tsx handleOutputTruncated:
+     *   - Just updates offsetRef.current = newOffset
+     *   - Does NOT call terminal.reset() or re-request history
      */
     function handleTruncationWithTerminalBehavior(
       state: SimulatedState,
-      connected: boolean
-    ): { state: SimulatedState; immediateRequest: boolean; terminalResetCalled: boolean } {
-      const truncResult = handleTruncation(state, connected);
+      _connected: boolean,
+      newOffset: number
+    ): { state: SimulatedState; terminalResetCalled: boolean } {
+      const truncResult = handleTruncation(state, _connected, newOffset);
       return {
         ...truncResult,
-        // resetTerminalForFreshHistory() does NOT call terminal.reset()
-        // Content stays visible until writeFullHistory() replaces it atomically
+        // handleOutputTruncated does NOT call terminal.reset()
+        // Content stays visible — server only removed old data from beginning of file
         terminalResetCalled: false,
       };
     }
@@ -764,12 +752,14 @@ describe('Terminal state machine sync', () => {
         currentOffset: 8000,
       });
 
-      const result = handleTruncationWithTerminalBehavior(state, true);
+      const newOffset = 4000;
+      const result = handleTruncationWithTerminalBehavior(state, true, newOffset);
 
-      // terminal.reset() must NOT be called — old content stays visible until
-      // writeFullHistory() atomically replaces it, preventing scroll position loss
+      // terminal.reset() must NOT be called — xterm.js still has valid content;
+      // the server only removed old data from the beginning of the file
       expect(result.terminalResetCalled).toBe(false);
-      expect(result.immediateRequest).toBe(true);
+      // offset is updated to the server-provided newOffset
+      expect(result.state.currentOffset).toBe(newOffset);
     });
 
     it('should call terminal.reset() on worker restart (immediate visual feedback)', () => {
@@ -787,7 +777,7 @@ describe('Terminal state machine sync', () => {
       expect(result.terminalResetCalled).toBe(true);
     });
 
-    it('should reset the same state variables in both scenarios', () => {
+    it('should have different behaviors: truncation updates offset, restart resets everything', () => {
       const initialState = createInitialState({
         cacheProcessed: true,
         historyRequested: true,
@@ -795,18 +785,21 @@ describe('Terminal state machine sync', () => {
         currentOffset: 8000,
       });
 
-      const truncResult = handleTruncationWithTerminalBehavior(initialState, true);
+      const newOffset = 4000;
+      const truncResult = handleTruncationWithTerminalBehavior(initialState, true, newOffset);
       const restartResult = handleWorkerRestartWithTerminalBehavior(initialState);
 
-      // Both scenarios reset offset to 0
-      expect(truncResult.state.currentOffset).toBe(0);
+      // Truncation: offset updated to newOffset, other state unchanged
+      expect(truncResult.state.currentOffset).toBe(newOffset);
+      expect(truncResult.state.historyRequested).toBe(true);
+      expect(truncResult.state.requestedWithOffset).toBe(500);
+
+      // Restart: everything reset to 0
       expect(restartResult.state.currentOffset).toBe(0);
-
-      // Both scenarios reset requestedWithOffset to 0
-      expect(truncResult.state.requestedWithOffset).toBe(0);
       expect(restartResult.state.requestedWithOffset).toBe(0);
+      expect(restartResult.state.historyRequested).toBe(false);
 
-      // The only difference is terminal.reset() behavior
+      // terminal.reset() behavior differs
       expect(truncResult.terminalResetCalled).toBe(false);
       expect(restartResult.terminalResetCalled).toBe(true);
     });
@@ -819,12 +812,14 @@ describe('Terminal state machine sync', () => {
         currentOffset: 8000,
       });
 
-      const result = handleTruncationWithTerminalBehavior(state, false);
+      const newOffset = 4000;
+      const result = handleTruncationWithTerminalBehavior(state, false, newOffset);
 
       expect(result.terminalResetCalled).toBe(false);
-      expect(result.immediateRequest).toBe(false);
-      // historyRequested stays false when disconnected — will be requested on reconnect
-      expect(result.state.historyRequested).toBe(false);
+      // offset is updated to newOffset
+      expect(result.state.currentOffset).toBe(newOffset);
+      // historyRequested stays unchanged — truncation does not touch it
+      expect(result.state.historyRequested).toBe(true);
     });
   });
 
