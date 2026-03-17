@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isScrolledToBottom, type TerminalScrollInfo } from '../terminal-utils';
+import { isScrolledToBottom, stripScrollbackClear, type TerminalScrollInfo } from '../terminal-utils';
 
 /**
  * Helper to create a mock terminal with scroll info.
@@ -104,6 +104,32 @@ describe('terminal-utils', () => {
         const terminal = createMockTerminal(99, 1, 100);
         expect(isScrolledToBottom(terminal)).toBe(true);
       });
+    });
+  });
+
+  describe('stripScrollbackClear', () => {
+    it('should strip CSI 3J from a string', () => {
+      const input = 'hello\x1b[3Jworld';
+      expect(stripScrollbackClear(input)).toBe('helloworld');
+    });
+
+    it('should preserve CSI 2J (screen clear) and other sequences', () => {
+      const input = '\x1b[2J\x1b[H\x1b[0m';
+      expect(stripScrollbackClear(input)).toBe('\x1b[2J\x1b[H\x1b[0m');
+    });
+
+    it('should handle multiple occurrences', () => {
+      const input = '\x1b[3Jfoo\x1b[3Jbar\x1b[3J';
+      expect(stripScrollbackClear(input)).toBe('foobar');
+    });
+
+    it('should return empty string unchanged', () => {
+      expect(stripScrollbackClear('')).toBe('');
+    });
+
+    it('should return string without the sequence unchanged', () => {
+      const input = 'no escape sequences here';
+      expect(stripScrollbackClear(input)).toBe(input);
     });
   });
 });

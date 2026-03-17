@@ -9,7 +9,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
-import { isScrolledToBottom } from '../lib/terminal-utils.js';
+import { isScrolledToBottom, stripScrollbackClear } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
@@ -159,7 +159,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleOutput = useCallback((data: string, offset: number) => {
     offsetRef.current = offset;
-    terminalRef.current?.write(data, () => {
+    terminalRef.current?.write(stripScrollbackClear(data), () => {
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
@@ -175,7 +175,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
-        terminal.write(data, () => {
+        terminal.write(stripScrollbackClear(data), () => {
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
@@ -185,7 +185,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     } else {
       // No cache — full history
       if (!data) return;
-      writeFullHistory(terminal, data)
+      writeFullHistory(terminal, stripScrollbackClear(data))
         .then(() => {
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
@@ -406,7 +406,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const currentTerminal = terminalRef.current;
         if (cached && cached.data && currentTerminal) {
           // Restore cached terminal state
-          currentTerminal.write(cached.data, () => {
+          currentTerminal.write(stripScrollbackClear(cached.data), () => {
             updateScrollButtonVisibility();
           });
           offsetRef.current = cached.offset;

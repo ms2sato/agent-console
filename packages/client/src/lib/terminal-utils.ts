@@ -32,3 +32,15 @@ export function isScrolledToBottom(terminal: TerminalScrollInfo): boolean {
   const buffer = terminal.buffer.active;
   return buffer.viewportY + terminal.rows >= buffer.length;
 }
+
+/**
+ * Strip CSI 3J (Erase Scrollback) escape sequence from terminal output.
+ *
+ * TUI programs like Claude Code send \x1b[3J as part of screen redraws,
+ * which clears the xterm.js scrollback buffer and resets scroll position to top.
+ * In a browser-based terminal manager, preserving scrollback is more valuable
+ * than honoring scrollback-clear requests.
+ */
+export function stripScrollbackClear(data: string): string {
+  return data.replaceAll('\x1b[3J', '');
+}
