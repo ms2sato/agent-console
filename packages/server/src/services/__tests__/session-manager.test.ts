@@ -3130,9 +3130,8 @@ describe('SessionManager', () => {
       // The agent worker PTY spawn should have received the expanded env vars.
       // ptyFactory.spawn is called with (cmd, args, opts) where opts.env has the env vars.
       expect(ptyFactory.spawn.mock.calls.length).toBeGreaterThanOrEqual(1);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const spawnCall = (ptyFactory.spawn.mock.calls as any[][])[0];
-      const spawnEnv = spawnCall[2].env as Record<string, string>;
+      const spawnOptions = (ptyFactory.spawn.mock.calls[0] as unknown as [string, string[], PtySpawnOptions])[2];
+      const spawnEnv = (spawnOptions.env ?? {}) as Record<string, string>;
 
       // WORKTREE_NUM=3, so {{WORKTREE_NUM * 100}} should expand to '300'
       expect(spawnEnv.PORT).toBe('300');

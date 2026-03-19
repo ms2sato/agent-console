@@ -25,7 +25,7 @@ export function substituteVariables(content: string, vars: TemplateVariables): s
       case '+': return String(vars.worktreeNum + n);
       case '-': return String(vars.worktreeNum - n);
       case '*': return String(vars.worktreeNum * n);
-      case '/': return String(Math.floor(vars.worktreeNum / n));
+      case '/': return n === 0 ? '0' : String(Math.floor(vars.worktreeNum / n));
       default: return String(vars.worktreeNum);
     }
   });

@@ -45,6 +45,10 @@ describe('substituteVariables', () => {
     it('handles division with floor: {{WORKTREE_NUM / 2}}', () => {
       expect(substituteVariables('val={{WORKTREE_NUM / 2}}', defaultVars)).toBe('val=1');
     });
+
+    it('handles division by zero safely', () => {
+      expect(substituteVariables('val={{WORKTREE_NUM / 0}}', defaultVars)).toBe('val=0');
+    });
   });
 
   describe('passthrough', () => {

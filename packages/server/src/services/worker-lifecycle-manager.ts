@@ -106,11 +106,11 @@ export class WorkerLifecycleManager {
     const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
-    const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-    const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
     if (request.type === 'agent') {
+      const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
+      const username = await this.deps.resolveSpawnUsername(session.createdBy);
       const agentWorker = this.deps.workerManager.initializeAgentWorker({
         id: workerId,
         name: workerName,
@@ -131,6 +131,8 @@ export class WorkerLifecycleManager {
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
+      const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
+      const username = await this.deps.resolveSpawnUsername(session.createdBy);
       const terminalWorker = this.deps.workerManager.initializeTerminalWorker({
         id: workerId,
         name: workerName,
