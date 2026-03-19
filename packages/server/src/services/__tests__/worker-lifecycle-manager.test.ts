@@ -78,7 +78,7 @@ describe('WorkerLifecycleManager', () => {
       pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
       getSession: (id: string) => sessions.get(id),
       persistSession: mockPersistSession as unknown as (session: InternalSession) => Promise<void>,
-      getRepositoryEnvVars: () => ({}),
+      getRepositoryEnvVars: async () => ({}),
       toPublicSession: (session: InternalSession) => {
         const ptyWorkers = Array.from(session.workers.values()).filter(
           (w) => w.type === 'agent' || w.type === 'terminal'

@@ -15,6 +15,7 @@ import {
   GitError,
 } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
@@ -62,41 +63,6 @@ async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<stri
   }
 
   return null;
-}
-
-/**
- * Substitute template variables in content
- * Supports: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
- * Also supports arithmetic: {{WORKTREE_NUM + 3000}}
- *
- * SECURITY NOTE: The variables (branch, repo) come from git which enforces
- * strict naming rules. Git branch names cannot contain shell metacharacters
- * like ;, |, &, etc., so command injection via these values is not possible.
- * See: https://git-scm.com/docs/git-check-ref-format
- */
-function substituteVariables(
-  content: string,
-  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
-): string {
-  // Handle arithmetic expressions like {{WORKTREE_NUM + 3000}}
-  content = content.replace(/\{\{WORKTREE_NUM\s*([+\-*/])\s*(\d+)\}\}/g, (_match, op, num) => {
-    const n = parseInt(num, 10);
-    switch (op) {
-      case '+': return String(vars.worktreeNum + n);
-      case '-': return String(vars.worktreeNum - n);
-      case '*': return String(vars.worktreeNum * n);
-      case '/': return String(Math.floor(vars.worktreeNum / n));
-      default: return String(vars.worktreeNum);
-    }
-  });
-
-  // Simple substitutions
-  content = content.replace(/\{\{WORKTREE_NUM\}\}/g, String(vars.worktreeNum));
-  content = content.replace(/\{\{BRANCH\}\}/g, vars.branch);
-  content = content.replace(/\{\{REPO\}\}/g, vars.repo);
-  content = content.replace(/\{\{WORKTREE_PATH\}\}/g, vars.worktreePath);
-
-  return content;
 }
 
 /**
@@ -420,6 +386,15 @@ export class WorktreeService {
     // Check DB for registered worktree
     const record = await this.worktreeRepository.findByPath(worktreePath);
     return record !== null && record.repositoryId === repositoryId;
+  }
+
+  /**
+   * Get the index number for a worktree by its path.
+   * Returns 0 for the main worktree (no DB record).
+   */
+  async getWorktreeIndexNumber(worktreePath: string): Promise<number> {
+    const record = await this.worktreeRepository.findByPath(worktreePath);
+    return record?.indexNumber ?? 0;
   }
 
   /**
