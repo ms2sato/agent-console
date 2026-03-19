@@ -62,7 +62,7 @@ export interface WorkerLifecycleDeps {
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
-  getRepositoryEnvVars: (sessionId: string) => Record<string, string>;
+  getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   toPublicSession: (session: InternalSession) => Session;
   getJobQueue: () => JobQueue | null;
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
@@ -106,7 +106,7 @@ export class WorkerLifecycleManager {
     const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
 
     let worker: InternalWorker;
-    const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
+    const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
     const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
@@ -203,7 +203,7 @@ export class WorkerLifecycleManager {
       return null;
     }
 
-    const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
+    const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
     const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
@@ -348,7 +348,7 @@ export class WorkerLifecycleManager {
     await workerOutputFileManager.resetWorkerOutput(sessionId, workerId);
 
     // Create new worker with same ID, preserving original createdAt for tab order
-    const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
+    const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
     const username = await this.deps.resolveSpawnUsername(session.createdBy);
     const newWorker = this.deps.workerManager.initializeAgentWorker({
@@ -485,7 +485,7 @@ export class WorkerLifecycleManager {
 
     // Activate PTY for the worker
     try {
-      const repositoryEnvVars = this.deps.getRepositoryEnvVars(sessionId);
+      const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
 

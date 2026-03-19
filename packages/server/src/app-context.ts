@@ -40,6 +40,7 @@ import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { bunPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
+import { worktreeService } from './services/worktree-service.js';
 
 const logger = createLogger('app-context');
 
@@ -169,6 +170,7 @@ export async function createAppContext(
   sessionManager.setRepositoryCallbacks({
     getRepository: (repoId) => repositoryManager.getRepository(repoId),
     isInitialized: () => true, // Always true once context is created
+    getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
   });
 
   // Wire notification callbacks
@@ -290,6 +292,7 @@ export async function createTestContext(
   sessionManager.setRepositoryCallbacks({
     getRepository: (repoId) => repositoryManager.getRepository(repoId),
     isInitialized: () => true,
+    getWorktreeIndexNumber: async () => 0,
   });
 
   notificationManager.setSessionExistsCallback((sessionId) =>

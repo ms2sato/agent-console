@@ -32,6 +32,7 @@ import type { AgentManager } from './agent-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
+import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { SingleUserMode, type UserMode } from './user-mode.js';
@@ -58,6 +59,7 @@ import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 export interface SessionRepositoryCallbacks {
   getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
   isInitialized: () => boolean;
+  getWorktreeIndexNumber: (worktreePath: string) => Promise<number>;
 }
 
 /**
@@ -895,7 +897,7 @@ export class SessionManager {
     const activatedWorkers: InternalPtyWorker[] = [];
 
     // Restore all PTY workers with continueConversation: true
-    const repositoryEnvVars = this.getRepositoryEnvVars(id);
+    const repositoryEnvVars = await this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     try {
       const username = await resolveSpawnUsername(internalSession.createdBy, this.userRepository);
@@ -1315,7 +1317,7 @@ export class SessionManager {
    */
   // resolveSpawnUsername is now an imported standalone function from ./resolve-spawn-username.ts
 
-  private getRepositoryEnvVars(sessionId: string): Record<string, string> {
+  private async getRepositoryEnvVars(sessionId: string): Promise<Record<string, string>> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return {};
@@ -1339,7 +1341,29 @@ export class SessionManager {
 
     // Parse and filter repository env vars to remove protected/dangerous variables
     const parsedEnvVars = parseEnvVars(repository.envVars);
-    return filterRepositoryEnvVars(parsedEnvVars);
+    const filtered = filterRepositoryEnvVars(parsedEnvVars);
+
+    // Fast path: skip DB + git calls when no values contain template placeholders.
+    // Uses {{ as a heuristic signal. False positives (e.g., JSON values containing {{)
+    // only cause unnecessary variable resolution, not incorrect behavior.
+    const hasTemplates = Object.values(filtered).some(v => v.includes('{{'));
+    if (!hasTemplates) return filtered;
+
+    // Resolve template variables and apply substitution
+    const worktreeNum = await this.repositoryCallbacks.getWorktreeIndexNumber(session.locationPath);
+    const branch = await gitGetCurrentBranch(session.locationPath);
+    const vars = {
+      worktreeNum,
+      branch,
+      repo: repository.name,
+      worktreePath: session.locationPath,
+    };
+
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(filtered)) {
+      result[key] = substituteVariables(value, vars);
+    }
+    return result;
   }
 
   /**

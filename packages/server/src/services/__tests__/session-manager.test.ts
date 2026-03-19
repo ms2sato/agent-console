@@ -3098,6 +3098,49 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('repository env var template expansion', () => {
+    it('should expand template placeholders in repository env vars when creating a worker', async () => {
+      const manager = await getSessionManager();
+
+      // Configure repository callbacks to return env vars with template placeholders
+      manager.setRepositoryCallbacks({
+        getRepository: () => ({
+          name: 'my-repo',
+          path: '/test/repo',
+          envVars: 'PORT={{WORKTREE_NUM * 100}}\nBRANCH_NAME={{BRANCH}}',
+        }),
+        isInitialized: () => true,
+        getWorktreeIndexNumber: async () => 3,
+      });
+
+      // Mock getCurrentBranch to return a known branch name
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('feature-xyz'));
+
+      // Create a worktree session (which triggers worker creation with env vars)
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-xyz',
+        agentId: 'claude-code',
+      });
+
+      expect(session.workers.length).toBeGreaterThanOrEqual(1);
+
+      // The agent worker PTY spawn should have received the expanded env vars.
+      // ptyFactory.spawn is called with (cmd, args, opts) where opts.env has the env vars.
+      expect(ptyFactory.spawn.mock.calls.length).toBeGreaterThanOrEqual(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const spawnCall = (ptyFactory.spawn.mock.calls as any[][])[0];
+      const spawnEnv = spawnCall[2].env as Record<string, string>;
+
+      // WORKTREE_NUM=3, so {{WORKTREE_NUM * 100}} should expand to '300'
+      expect(spawnEnv.PORT).toBe('300');
+      // {{BRANCH}} should expand to the mocked branch name
+      expect(spawnEnv.BRANCH_NAME).toBe('feature-xyz');
+    });
+  });
+
   describe('error recovery', () => {
     it('should propagate callback errors (caller is responsible for error handling)', async () => {
       const manager = await getSessionManager();
