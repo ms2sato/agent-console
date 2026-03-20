@@ -171,6 +171,87 @@ Note: The stall was difficult to reproduce on the MCP headless browser (6000+ wr
 2. **Check xterm.js issue tracker** for known render stall bugs in v5.5.0
 3. **Consider workaround:** Periodic check for stalled debouncer + auto-recovery via `debouncer.refresh()` — this would be a targeted fix (not a generic periodic refresh) since we now know the exact mechanism
 
+## Diagnostic Scripts
+
+### Stall Detector + Auto-Recovery (paste into browser DevTools console)
+
+Hooks `debouncer.refresh()` to track whether it's being called. Detects "write happened but refresh was NOT called" — the actual stall condition. Auto-recovers by calling `debouncer.refresh()` when stall is detected. Survives tab switches by re-hooking when the xterm instance changes.
+
+```javascript
+(() => {
+  let currentTerminal = null;
+  let currentDebouncer = null;
+  let origWrite = null;
+  let origRefresh = null;
+  let wCount = 0, rCount = 0, lastW = 0, lastR = 0, stallCount = 0;
+
+  function findTerminal() {
+    const x = document.querySelector('.xterm');
+    if (!x?.parentElement) return null;
+    const f = Object.keys(x.parentElement).find(k => k.startsWith('__reactFiber'));
+    if (!f) return null;
+    let c = x.parentElement[f];
+    while (c) {
+      if (c.memoizedState) {
+        let h = c.memoizedState;
+        while (h) {
+          const v = h.memoizedState;
+          if (v?.current?.write && typeof v.current.cols === 'number') return v.current;
+          h = h.next;
+        }
+      }
+      c = c.return;
+    }
+    return null;
+  }
+
+  function hookTerminal(t) {
+    if (currentTerminal === t) return;
+    currentTerminal = t;
+    const db = t._core?._renderService?._renderDebouncer;
+    if (!db) { console.warn('[STALL-DET] No debouncer'); return; }
+    currentDebouncer = db;
+    wCount = 0; rCount = 0; lastW = 0; lastR = 0;
+
+    origWrite = t.write.bind(t);
+    t.write = function(d, cb) { wCount++; return origWrite(d, cb); };
+
+    origRefresh = db.refresh.bind(db);
+    db.refresh = function(s, e) { rCount++; return origRefresh(s, e); };
+
+    console.warn('[STALL-DET] Hooked terminal', t.cols + 'x' + t.rows);
+  }
+
+  setInterval(() => {
+    const t = findTerminal();
+    if (!t) return;
+    if (t !== currentTerminal) hookTerminal(t);
+    if (!currentDebouncer) return;
+
+    const newWrites = wCount - lastW;
+    const newRefreshes = rCount - lastR;
+
+    // Stall: writes happened but refresh was NOT called
+    if (newWrites > 0 && newRefreshes === 0) {
+      stallCount++;
+      console.warn(
+        '[AUTO-FIX] Stall #' + stallCount +
+        '! writes: +' + newWrites + ' refreshes: +0. Recovering...'
+      );
+      currentDebouncer.refresh(0, currentTerminal.rows - 1);
+      console.warn('[AUTO-FIX] Recovered. af:', currentDebouncer._animationFrame);
+    }
+
+    lastW = wCount;
+    lastR = rCount;
+  }, 2000);
+
+  console.warn('[STALL-DET] Installed. Detects: write without refresh. Auto-recovers.');
+})();
+```
+
+**Previous incorrect approach:** Checking `_animationFrame === undefined` alone produces false positives because `_animationFrame` is normally `undefined` after rAF fires and rendering completes.
+
 ## Diagnostic Tools Used
 
 - **Chrome DevTools MCP:** `evaluate_script` to inject debugging code at runtime
