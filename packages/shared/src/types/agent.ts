@@ -71,6 +71,17 @@ export interface AgentDefinition {
    */
   activityPatterns?: AgentActivityPatterns;
 
+  // === Terminal Output Processing (Optional) ===
+
+  /**
+   * Whether to strip scrollback-clearing escape sequences from terminal output.
+   * When true:
+   *   - CSI 3J (Erase Scrollback) is removed entirely
+   *   - CSI 2J (Erase Display) is replaced with CSI H + CSI J (cursor home + erase below)
+   * This preserves scrollback history in the browser terminal.
+   */
+  stripScrollbackClear?: boolean;
+
   // === Computed (read-only, set by server) ===
 
   /**

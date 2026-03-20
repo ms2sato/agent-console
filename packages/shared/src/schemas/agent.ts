@@ -183,6 +183,7 @@ export const AgentFieldsBaseSchema = v.object({
   continueTemplate: v.optional(continueTemplateValidation),
   headlessTemplate: v.optional(headlessTemplateValidation),
   description: v.optional(v.pipe(v.string(), v.trim())),
+  stripScrollbackClear: v.optional(v.boolean()),
 });
 
 // === Server Schemas ===
@@ -208,6 +209,7 @@ export const UpdateAgentRequestSchema = v.object({
   description: v.optional(v.pipe(v.string(), v.trim())),
   // Allow null to explicitly clear activityPatterns (PATCH semantics: null = clear, undefined = no change)
   activityPatterns: v.optional(v.nullable(AgentActivityPatternsSchema)),
+  stripScrollbackClear: v.optional(v.nullable(v.boolean())),
 });
 
 /**
