@@ -168,6 +168,10 @@ export class AgentManager {
         request.activityPatterns === null
           ? undefined
           : (request.activityPatterns ?? existing.activityPatterns),
+      stripScrollbackClear:
+        request.stripScrollbackClear === null
+          ? undefined
+          : (request.stripScrollbackClear ?? existing.stripScrollbackClear),
     };
 
     // Remove the capabilities from agentBase before recomputing

@@ -60,6 +60,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     [stripScrollbackClear]
   );
 
+  const processOutputRef = useRef(processOutput);
+  useEffect(() => {
+    processOutputRef.current = processOutput;
+  }, [processOutput]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -413,7 +418,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const currentTerminal = terminalRef.current;
         if (cached && cached.data && currentTerminal) {
           // Restore cached terminal state
-          currentTerminal.write(processOutput(cached.data), () => {
+          currentTerminal.write(processOutputRef.current(cached.data), () => {
             updateScrollButtonVisibility();
           });
           offsetRef.current = cached.offset;
