@@ -173,9 +173,17 @@ Note: The stall was difficult to reproduce on the MCP headless browser (6000+ wr
 
 ## Diagnostic Scripts
 
-### Stall Detector + Auto-Recovery (paste into browser DevTools console)
+### Stall Detector v3 (paste into browser DevTools console)
 
-Hooks `debouncer.refresh()` to track whether it's being called. Detects "write happened but refresh was NOT called" — the actual stall condition. Auto-recovers by calling `debouncer.refresh()` when stall is detected. Survives tab switches by re-hooking when the xterm instance changes.
+Comprehensive stall detector that:
+1. Hooks `terminal.write()` and `debouncer.refresh()` to track both
+2. Monitors DOM content changes directly (last 3 rows fingerprint)
+3. Checks `_animationFrame` state
+4. Logs snapshots to `window.__stallLog` array for post-mortem analysis
+5. Attempts auto-recovery via `debouncer.refresh()`
+6. Survives tab switches by re-hooking when the xterm instance changes
+
+After a stall resolves (e.g., by resizing the browser), check `window.__stallLog` in the console to see what was captured.
 
 ```javascript
 (() => {
@@ -184,6 +192,8 @@ Hooks `debouncer.refresh()` to track whether it's being called. Detects "write h
   let origWrite = null;
   let origRefresh = null;
   let wCount = 0, rCount = 0, lastW = 0, lastR = 0, stallCount = 0;
+  let lastDomFingerprint = '';
+  window.__stallLog = [];
 
   function findTerminal() {
     const x = document.querySelector('.xterm');
@@ -205,6 +215,40 @@ Hooks `debouncer.refresh()` to track whether it's being called. Detects "write h
     return null;
   }
 
+  function getDomFingerprint() {
+    const rows = document.querySelector('.xterm-rows');
+    if (!rows) return '';
+    const children = rows.children;
+    const len = children.length;
+    let text = '';
+    for (let i = Math.max(0, len - 5); i < len; i++) {
+      text += children[i]?.textContent ?? '';
+    }
+    return text;
+  }
+
+  function getSnapshot(reason) {
+    const t = currentTerminal;
+    const db = currentDebouncer;
+    const active = t?.buffer?.active;
+    return {
+      reason,
+      time: new Date().toISOString(),
+      wCount, rCount,
+      newWrites: wCount - lastW,
+      newRefreshes: rCount - lastR,
+      af: db?._animationFrame ?? 'undef',
+      rowStart: db?._rowStart ?? 'undef',
+      rowEnd: db?._rowEnd ?? 'undef',
+      isPaused: t?._core?._renderService?._isPaused,
+      baseY: active?.baseY,
+      viewportY: active?.viewportY,
+      cursorY: active?.cursorY,
+      domChanged: getDomFingerprint() !== lastDomFingerprint,
+      visibilityState: document.visibilityState,
+    };
+  }
+
   function hookTerminal(t) {
     if (currentTerminal === t) return;
     currentTerminal = t;
@@ -212,6 +256,7 @@ Hooks `debouncer.refresh()` to track whether it's being called. Detects "write h
     if (!db) { console.warn('[STALL-DET] No debouncer'); return; }
     currentDebouncer = db;
     wCount = 0; rCount = 0; lastW = 0; lastR = 0;
+    lastDomFingerprint = getDomFingerprint();
 
     origWrite = t.write.bind(t);
     t.write = function(d, cb) { wCount++; return origWrite(d, cb); };
@@ -230,25 +275,47 @@ Hooks `debouncer.refresh()` to track whether it's being called. Detects "write h
 
     const newWrites = wCount - lastW;
     const newRefreshes = rCount - lastR;
+    const domFp = getDomFingerprint();
+    const domChanged = domFp !== lastDomFingerprint;
 
-    // Stall: writes happened but refresh was NOT called
+    // Pattern A: writes without refresh
     if (newWrites > 0 && newRefreshes === 0) {
       stallCount++;
-      console.warn(
-        '[AUTO-FIX] Stall #' + stallCount +
-        '! writes: +' + newWrites + ' refreshes: +0. Recovering...'
-      );
+      const snap = getSnapshot('NO_REFRESH');
+      window.__stallLog.push(snap);
+      console.warn('[STALL] #' + stallCount + ' NO_REFRESH', snap);
       currentDebouncer.refresh(0, currentTerminal.rows - 1);
-      console.warn('[AUTO-FIX] Recovered. af:', currentDebouncer._animationFrame);
+      console.warn('[STALL] Recovery attempted. af:', currentDebouncer._animationFrame);
+    }
+
+    // Pattern B: writes AND refreshes happened, but DOM didn't change
+    if (newWrites > 3 && newRefreshes > 0 && !domChanged) {
+      stallCount++;
+      const snap = getSnapshot('DOM_FROZEN');
+      window.__stallLog.push(snap);
+      console.warn('[STALL] #' + stallCount + ' DOM_FROZEN (refresh called but DOM unchanged)', snap);
+      // Try resize trick as recovery
+      const cols = currentTerminal.cols;
+      const rows = currentTerminal.rows;
+      currentTerminal.resize(cols + 1, rows);
+      currentTerminal.resize(cols, rows);
+      console.warn('[STALL] Resize recovery attempted');
     }
 
     lastW = wCount;
     lastR = rCount;
+    lastDomFingerprint = domFp;
   }, 2000);
 
-  console.warn('[STALL-DET] Installed. Detects: write without refresh. Auto-recovers.');
+  console.warn('[STALL-DET] v3 installed. Detects: NO_REFRESH + DOM_FROZEN. Logs to window.__stallLog');
 })();
 ```
+
+After a stall resolves, run `window.__stallLog` in the console to see captured snapshots.
+
+**Detection patterns:**
+- `NO_REFRESH`: writes happened but `debouncer.refresh()` was not called → recovers via `debouncer.refresh()`
+- `DOM_FROZEN`: `debouncer.refresh()` was called but DOM content didn't change → recovers via resize trick
 
 **Previous incorrect approach:** Checking `_animationFrame === undefined` alone produces false positives because `_animationFrame` is normally `undefined` after rAF fires and rendering completes.
 
