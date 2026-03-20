@@ -9,7 +9,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
-import { isScrolledToBottom, stripScrollbackClear } from '../lib/terminal-utils.js';
+import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
@@ -49,10 +49,22 @@ export interface TerminalProps {
   onResumeSession?: () => void;
   onFilesReceived?: (files: File[]) => void;
   hideStatusBar?: boolean;
+  stripScrollbackClear?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar, stripScrollbackClear }: TerminalProps) {
   const navigate = useNavigate();
+
+  /** Conditionally apply scrollback filter based on the stripScrollbackClear prop. */
+  const processOutput = useCallback(
+    (data: string) => stripScrollbackClear ? applyScrollbackFilter(data) : data,
+    [stripScrollbackClear]
+  );
+
+  const processOutputRef = useRef(processOutput);
+  useEffect(() => {
+    processOutputRef.current = processOutput;
+  }, [processOutput]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
@@ -162,13 +174,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const handleOutput = useCallback((data: string, offset: number) => {
     watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
-    terminalRef.current?.write(stripScrollbackClear(data), () => {
+    terminalRef.current?.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
     markSaveManagerDirty(sessionId, workerId);
-  }, [sessionId, workerId, updateScrollButtonVisibility]);
+  }, [sessionId, workerId, updateScrollButtonVisibility, processOutput]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
     watchdogRef.current?.onHistoryReceived(data.length, offset);
@@ -180,7 +192,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
-        terminal.write(stripScrollbackClear(data), () => {
+        terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
@@ -192,7 +204,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     } else {
       // No cache — full history
       if (!data) return;
-      writeFullHistory(terminal, stripScrollbackClear(data))
+      writeFullHistory(terminal, processOutput(data))
         .then(() => {
           watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
@@ -200,7 +212,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         })
         .catch((e) => logger.error('[Terminal] Failed to write history:', e));
     }
-  }, [updateScrollButtonVisibility, saveCurrentTerminalState]);
+  }, [updateScrollButtonVisibility, saveCurrentTerminalState, processOutput]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -419,7 +431,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const currentTerminal = terminalRef.current;
         if (cached && cached.data && currentTerminal) {
           // Restore cached terminal state
-          currentTerminal.write(stripScrollbackClear(cached.data), () => {
+          currentTerminal.write(processOutputRef.current(cached.data), () => {
             updateScrollButtonVisibility();
           });
           offsetRef.current = cached.offset;
