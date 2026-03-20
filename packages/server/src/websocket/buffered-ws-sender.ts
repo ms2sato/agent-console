@@ -80,6 +80,11 @@ export class BufferedWebSocketSender {
       return;
     }
 
+    this.logger.debug(
+      { workerId: this.workerId, bufferBytes: this.outputBufferBytes, offset: this.lastOffset },
+      'Flushing output buffer',
+    );
+
     try {
       this.ws.send(JSON.stringify({ type: 'output', data: this.outputBuffer, offset: this.lastOffset }));
       this.outputBuffer = '';
@@ -124,6 +129,14 @@ export class BufferedWebSocketSender {
     this.outputBuffer += data;
     this.outputBufferBytes += Buffer.byteLength(data, 'utf-8');
     this.lastOffset = offset;
+
+    // Log when buffer exceeds 50% of threshold
+    if (this.outputBufferBytes >= this.flushThreshold * 0.5) {
+      this.logger.debug(
+        { workerId: this.workerId, bufferBytes: this.outputBufferBytes, threshold: this.flushThreshold },
+        'Output buffer exceeds 50% of flush threshold',
+      );
+    }
 
     // Flush immediately if buffer exceeds threshold (prevents unbounded memory growth)
     if (this.outputBufferBytes >= this.flushThreshold) {

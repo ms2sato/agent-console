@@ -9,7 +9,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
-import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter } from '../lib/terminal-utils.js';
+import { isScrolledToBottom, stripScrollbackClear } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
@@ -21,6 +21,7 @@ import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { logger } from '../lib/logger';
+import { createRenderWatchdog, type RenderWatchdog } from '../lib/render-diagnostics.js';
 import { ChevronDownIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
@@ -48,22 +49,10 @@ export interface TerminalProps {
   onResumeSession?: () => void;
   onFilesReceived?: (files: File[]) => void;
   hideStatusBar?: boolean;
-  stripScrollbackClear?: boolean;
 }
 
-export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar, stripScrollbackClear }: TerminalProps) {
+export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar }: TerminalProps) {
   const navigate = useNavigate();
-
-  /** Conditionally apply scrollback filter based on the stripScrollbackClear prop. */
-  const processOutput = useCallback(
-    (data: string) => stripScrollbackClear ? applyScrollbackFilter(data) : data,
-    [stripScrollbackClear]
-  );
-
-  const processOutputRef = useRef(processOutput);
-  useEffect(() => {
-    processOutputRef.current = processOutput;
-  }, [processOutput]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
@@ -93,6 +82,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [restartNotification, setRestartNotification] = useState<string | null>(null);
   const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const watchdogRef = useRef<RenderWatchdog | null>(null);
 
   // Mutation for deleting session on error recovery
   const deleteSessionMutation = useMutation({
@@ -170,15 +160,18 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   const handleOutput = useCallback((data: string, offset: number) => {
+    watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
-    terminalRef.current?.write(processOutput(data), () => {
+    terminalRef.current?.write(stripScrollbackClear(data), () => {
+      watchdogRef.current?.onWriteComplete();
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
     markSaveManagerDirty(sessionId, workerId);
-  }, [sessionId, workerId, updateScrollButtonVisibility, processOutput]);
+  }, [sessionId, workerId, updateScrollButtonVisibility]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
+    watchdogRef.current?.onHistoryReceived(data.length, offset);
     offsetRef.current = offset;
 
     const terminal = terminalRef.current;
@@ -187,24 +180,27 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
-        terminal.write(processOutput(data), () => {
+        terminal.write(stripScrollbackClear(data), () => {
+          watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
       } else {
+        watchdogRef.current?.onHistoryWriteComplete();
         saveCurrentTerminalState();
       }
     } else {
       // No cache — full history
       if (!data) return;
-      writeFullHistory(terminal, processOutput(data))
+      writeFullHistory(terminal, stripScrollbackClear(data))
         .then(() => {
+          watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         })
         .catch((e) => logger.error('[Terminal] Failed to write history:', e));
     }
-  }, [updateScrollButtonVisibility, saveCurrentTerminalState, processOutput]);
+  }, [updateScrollButtonVisibility, saveCurrentTerminalState]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');
@@ -358,6 +354,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     fitAddonRef.current = fitAddon;
     serializeAddonRef.current = serializeAddon;
 
+    // Create render diagnostics watchdog (no-op when diagnostics disabled)
+    const watchdog = createRenderWatchdog(sessionId, workerId, terminal);
+    watchdogRef.current = watchdog;
+    watchdog.start();
+
     // Mark as mounted for conditional rendering support
     stateRef.current.isMounted = true;
     // Store current worker ID for race condition detection
@@ -418,7 +419,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const currentTerminal = terminalRef.current;
         if (cached && cached.data && currentTerminal) {
           // Restore cached terminal state
-          currentTerminal.write(processOutputRef.current(cached.data), () => {
+          currentTerminal.write(stripScrollbackClear(cached.data), () => {
             updateScrollButtonVisibility();
           });
           offsetRef.current = cached.offset;
@@ -602,6 +603,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
+      // Dispose render diagnostics watchdog
+      watchdog.dispose();
+      watchdogRef.current = null;
+
       // Abort any in-flight cache load to prevent stale data from being written to terminal
       abortController.abort();
 

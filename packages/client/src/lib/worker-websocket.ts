@@ -27,6 +27,7 @@ import { getWorkerWsUrl } from './websocket-url.js';
 import { clearTerminalState, setCurrentServerPid } from './terminal-state-cache.js';
 import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
 import { logger } from './logger.js';
+import { diagLog } from './render-diagnostics.js';
 
 const MAX_RETRY_COUNT = 100;
 
@@ -220,6 +221,12 @@ function handleTerminalMessage(
   workerId: string
 ): void {
   const key = getConnectionKey(sessionId, workerId);
+
+  diagLog('WorkerWS', `message:${msg.type}`, {
+    ...(msg.type === 'output' ? { dataLen: msg.data.length, offset: msg.offset } : {}),
+    sessionId,
+    workerId,
+  });
 
   switch (msg.type) {
     case 'output':
