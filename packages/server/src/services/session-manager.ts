@@ -355,7 +355,7 @@ export class SessionManager {
     // Inject message into target worker's PTY
     // Send each part with delays so TUI agents can process input sequentially
     const parts: string[] = [];
-    if (content) parts.push(content);
+    if (content) parts.push(content.replace(/\r?\n/g, '\r'));
     if (filePaths && filePaths.length > 0) {
       parts.push(...filePaths);
     }
