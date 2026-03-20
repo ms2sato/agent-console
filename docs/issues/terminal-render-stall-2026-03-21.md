@@ -150,26 +150,47 @@ terminal.write(data)
 
 ## Verification on User's Browser
 
-Confirmed the same stall mechanism on the user's regular browser (not just MCP browser):
-- Injected `/tmp/xterm-stall-detector.js` into the browser console
-- `[AUTO-FIX]` logs appeared, confirming `_renderDebouncer._animationFrame` was `undefined`
-- `debouncer.refresh()` successfully restored rendering
+Used the NO_REFRESH stall detector script (v4) which hooks `terminal.write()` and `debouncer.refresh()` to detect when writes happen without corresponding refresh calls. Auto-recovers via `debouncer.refresh()`.
 
-Note: The stall was difficult to reproduce on the MCP headless browser (6000+ writes without occurrence), but reproduced naturally on the user's regular browser. This suggests the trigger may involve user interaction patterns or browser-specific behavior.
+### Stall log data (4 stalls captured in ~15 minutes)
+
+| # | Time | Interval | newW | viewportY | af |
+|---|------|----------|------|-----------|-----|
+| 1 | 23:07 | - | 2 | 993 | undef |
+| 2 | 23:09 | 2 min | 16 | 0 | undef |
+| 3 | 23:19 | 10 min | 22 | 0 | undef |
+| 4 | 23:21 | 1 min | 21 | 898 | undef |
+
+### Key findings
+
+- **Frequency:** ~4 times in 15 minutes (more frequent than initially perceived as "every 30 minutes" — user simply didn't notice stalls shorter than ~2 seconds)
+- **Common pattern:** All stalls show `af: "undef"` (no rAF scheduled) and `newW > 0` (writes happened without refresh)
+- **viewportY varies:** 993, 0, 0, 898 — no consistent position, but `viewportY: 0` appeared twice, suggesting occasional viewport reset to top
+- **Auto-recovery works:** `debouncer.refresh()` recovers the display within the 2-second check interval. User reported no visible stalls while the script was active.
+- **MCP headless browser:** 6000+ writes without occurrence. Stall only reproduced on the user's regular browser, suggesting the trigger involves user interaction patterns or browser-specific behavior.
+- **Agent workers only:** Stall only occurs with Agent workers (Claude Code TUI), never with plain Terminal workers. Claude Code uses alternate screen buffer and complex ANSI escape sequences.
+
+### Hypothesis: alternate screen buffer switching
+
+Claude Code uses `\x1b[?1049h` / `\x1b[?1049l` to switch between alternate and normal screen buffers. When the buffer switches back to normal:
+1. `viewportY` resets to the normal buffer's position (possibly 0)
+2. `debouncer.refresh()` may not be called for subsequent writes
+3. Display freezes until something (resize, manual refresh) restarts the render pipeline
+
+This is consistent with the `viewportY: 0` observations and the fact that only Agent workers (TUI applications) are affected.
 
 ## Environment
 
 - **xterm.js:** v5.5.0
 - **Renderer:** DOM (not Canvas/WebGL)
 - **Browser:** Chrome (via Chrome DevTools MCP)
-- **Occurrence:** Intermittent, no specific trigger identified
-- **Recovery:** Browser resize, or manual `debouncer.refresh()` call
+- **Occurrence:** ~4 times per 15 minutes during active Agent output. Agent workers only.
+- **Recovery:** Browser resize, or `debouncer.refresh()` call (confirmed effective)
 
 ## Next Steps
 
-1. **Hook the RenderService's event listeners** to identify which event stops firing (buffer `onScroll`, `onUpdate`, etc.)
-2. **Check xterm.js issue tracker** for known render stall bugs in v5.5.0
-3. **Consider workaround:** Periodic check for stalled debouncer + auto-recovery via `debouncer.refresh()` — this would be a targeted fix (not a generic periodic refresh) since we now know the exact mechanism
+1. **Implement auto-recovery in Terminal.tsx:** Periodic check (every 2 seconds) that detects writes without refresh and calls `debouncer.refresh()`. This is a targeted fix using xterm.js internals, not a blind periodic refresh. Verified effective — user could not perceive any stalls with the script running.
+2. **Root cause (future):** Investigate why `debouncer.refresh()` stops being called. Likely related to alternate screen buffer switching in Claude Code's TUI output. Consider filing an xterm.js issue if reproducible outside this application.
 
 ## Diagnostic Scripts
 
