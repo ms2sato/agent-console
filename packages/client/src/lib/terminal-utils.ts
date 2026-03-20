@@ -34,13 +34,18 @@ export function isScrolledToBottom(terminal: TerminalScrollInfo): boolean {
 }
 
 /**
- * Strip CSI 3J (Erase Scrollback) escape sequence from terminal output.
+ * Strip/replace scrollback-clearing escape sequences from terminal output.
  *
- * TUI programs like Claude Code send \x1b[3J as part of screen redraws,
- * which clears the xterm.js scrollback buffer and resets scroll position to top.
+ * Performs two transformations:
+ *   1. CSI 3J (Erase Scrollback) — removed entirely
+ *   2. CSI 2J (Erase Display) — replaced with CSI H + CSI J
+ *      (cursor home + erase from cursor to end of display),
+ *      which clears the visible screen without pushing content into scrollback
+ *
+ * TUI programs like Claude Code send these sequences as part of screen redraws.
  * In a browser-based terminal manager, preserving scrollback is more valuable
  * than honoring scrollback-clear requests.
  */
 export function stripScrollbackClear(data: string): string {
-  return data.replaceAll('\x1b[3J', '');
+  return data.replaceAll('\x1b[3J', '').replaceAll('\x1b[2J', '\x1b[H\x1b[J');
 }

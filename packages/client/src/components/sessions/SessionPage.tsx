@@ -17,6 +17,7 @@ import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
+import { useAgents } from '../AgentSelector';
 import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';
@@ -82,6 +83,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const { errorDialogProps, showError } = useErrorDialog();
+  const { agents } = useAgents();
   const messagePanelRef = useRef<MessagePanelHandle>(null);
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
@@ -360,6 +362,12 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const repositoryId = getRepositoryId(session);
 
   const activeTab = tabs.find(t => t.id === activeTabId);
+
+  // Determine if active worker's agent has stripScrollbackClear enabled
+  const activeWorker = session.workers.find(w => w.id === activeTabId);
+  const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
+  const activeAgent = activeAgentId ? agents.find(a => a.id === activeAgentId) : undefined;
+  const shouldStripScrollback = activeAgent?.stripScrollbackClear ?? false;
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
@@ -439,6 +447,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             onResumeSession={handleResumeSession}
             onFilesReceived={(files) => messagePanelRef.current?.addFiles(files)}
             hideStatusBar
+            stripScrollbackClear={shouldStripScrollback}
           />
         )}
       </ErrorBoundary>

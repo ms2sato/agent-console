@@ -113,9 +113,14 @@ describe('terminal-utils', () => {
       expect(stripScrollbackClear(input)).toBe('helloworld');
     });
 
-    it('should preserve CSI 2J (screen clear) and other sequences', () => {
+    it('should replace CSI 2J with CSI H + CSI J', () => {
+      const input = 'hello\x1b[2Jworld';
+      expect(stripScrollbackClear(input)).toBe('hello\x1b[H\x1b[Jworld');
+    });
+
+    it('should replace CSI 2J alongside other sequences', () => {
       const input = '\x1b[2J\x1b[H\x1b[0m';
-      expect(stripScrollbackClear(input)).toBe('\x1b[2J\x1b[H\x1b[0m');
+      expect(stripScrollbackClear(input)).toBe('\x1b[H\x1b[J\x1b[H\x1b[0m');
     });
 
     it('should handle multiple occurrences', () => {
@@ -130,6 +135,16 @@ describe('terminal-utils', () => {
     it('should return string without the sequence unchanged', () => {
       const input = 'no escape sequences here';
       expect(stripScrollbackClear(input)).toBe(input);
+    });
+
+    it('should handle both CSI 2J and CSI 3J in same string', () => {
+      const input = '\x1b[2J\x1b[3Jfoo';
+      expect(stripScrollbackClear(input)).toBe('\x1b[H\x1b[Jfoo');
+    });
+
+    it('should handle multiple CSI 2J occurrences', () => {
+      const input = '\x1b[2Jfoo\x1b[2Jbar';
+      expect(stripScrollbackClear(input)).toBe('\x1b[H\x1b[Jfoo\x1b[H\x1b[Jbar');
     });
   });
 });
