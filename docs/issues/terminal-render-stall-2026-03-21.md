@@ -148,6 +148,15 @@ terminal.write(data)
 
 **The break occurs between "Buffer emits change events" and "_renderDebouncer.refresh()".**
 
+## Verification on User's Browser
+
+Confirmed the same stall mechanism on the user's regular browser (not just MCP browser):
+- Injected `/tmp/xterm-stall-detector.js` into the browser console
+- `[AUTO-FIX]` logs appeared, confirming `_renderDebouncer._animationFrame` was `undefined`
+- `debouncer.refresh()` successfully restored rendering
+
+Note: The stall was difficult to reproduce on the MCP headless browser (6000+ writes without occurrence), but reproduced naturally on the user's regular browser. This suggests the trigger may involve user interaction patterns or browser-specific behavior.
+
 ## Environment
 
 - **xterm.js:** v5.5.0
