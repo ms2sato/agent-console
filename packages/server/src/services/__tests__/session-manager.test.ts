@@ -429,6 +429,44 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances[0].writtenData).toContain('hello world');
     });
 
+    it('should convert newlines to carriage returns in multi-line content', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'line1\nline2\nline3');
+      expect(message).not.toBeNull();
+      // Content stored in message should retain original newlines
+      expect(message!.content).toBe('line1\nline2\nline3');
+      // PTY input should use carriage returns instead of newlines
+      const pty = ptyFactory.instances[0];
+      expect(pty.writtenData).toContain('line1\rline2\rline3');
+      expect(pty.writtenData).not.toContain('line1\nline2\nline3');
+    });
+
+    it('should handle CRLF line endings from form submissions', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Browser form submissions normalize line endings to \r\n
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'line1\r\nline2\r\nline3');
+      expect(message).not.toBeNull();
+      expect(message!.content).toBe('line1\r\nline2\r\nline3');
+      const pty = ptyFactory.instances[0];
+      // \r\n should become single \r, not \r\r
+      expect(pty.writtenData).toContain('line1\rline2\rline3');
+      expect(pty.writtenData).not.toContain('\r\r');
+    });
+
     it('should inject content with file paths when files provided', async () => {
       const manager = await getSessionManager();
       const session = await manager.createSession({
