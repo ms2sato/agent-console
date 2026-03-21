@@ -95,6 +95,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const watchdogRef = useRef<RenderWatchdog | null>(null);
+  const userWantsBottomRef = useRef(true);
 
   // Mutation for deleting session on error recovery
   const deleteSessionMutation = useMutation({
@@ -168,6 +169,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleScrollToBottom = useCallback(() => {
     terminalRef.current?.scrollToBottom();
+    userWantsBottomRef.current = true;
     setShowScrollButton(false);
   }, []);
 
@@ -175,22 +177,16 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    // Capture scroll position before write to detect auto-scroll failures.
-    // xterm.js normally auto-scrolls when at bottom, but alternate screen buffer
-    // transitions can desync viewportY, causing scroll position to jump.
-    const wasAtBottom = isScrolledToBottom(terminal);
-
     watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
     terminal.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
 
-      // Defensive auto-scroll: correct viewportY desync after alternate
-      // screen buffer transitions. Without this, the viewport can jump
-      // to an old position (e.g., viewportY=0) when xterm.js's built-in
-      // auto-scroll fails to track the bottom after buffer switches.
-      const nowAtBottom = isScrolledToBottom(terminal);
-      if (wasAtBottom && !nowAtBottom) {
+      // Auto-scroll based on user intent. We cannot use isScrolledToBottom()
+      // here because viewportY may be desynchronized by alternate screen buffer
+      // transitions or render stalls (observed as viewportY=0 while baseY=1000).
+      // Instead, track intent via wheel events and scroll-to-bottom button.
+      if (userWantsBottomRef.current && !isScrolledToBottom(terminal)) {
         const buf = terminal.buffer.active;
         const entry = { source: 'handleOutput', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
         ((window as any).__scrollFixLog ??= []).push(entry);
@@ -214,11 +210,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
-        const wasAtBottom = isScrolledToBottom(terminal);
         terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
-          const nowAtBottom = isScrolledToBottom(terminal);
-          if (wasAtBottom && !nowAtBottom) {
+          if (userWantsBottomRef.current && !isScrolledToBottom(terminal)) {
             const buf = terminal.buffer.active;
             const entry = { source: 'handleHistory', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows, dataLen: data.length };
             ((window as any).__scrollFixLog ??= []).push(entry);
@@ -416,10 +410,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       let refreshCount = 0;
       let lastWriteCount = 0;
       let lastRefreshCount = 0;
-      // Track scroll position during non-stall cycles so that stall recovery
-      // can restore it. We cannot read viewportY during a stall because alternate
-      // screen buffer transitions may have desynchronized it (e.g., viewportY=0).
-      let lastKnownAtBottom = true;
 
       // Hook terminal.write to count writes
       const origWrite = terminal.write.bind(terminal);
@@ -443,22 +433,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const newRefreshes = refreshCount - lastRefreshCount;
         if (newWrites > 0 && newRefreshes === 0) {
           // Stall detected: writes happened but refreshRows was not called.
-          // lastKnownAtBottom was captured during the previous non-stall cycle,
-          // reflecting the user's scroll position before the stall began.
           const buf = terminal.buffer.active;
           const currentlyAtBottom = isScrolledToBottom(terminal);
-          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, lastKnownAtBottom, currentlyAtBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
+          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, userWantsBottom: userWantsBottomRef.current, currentlyAtBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
           ((window as any).__scrollFixLog ??= []).push(entry);
           console.warn('[SCROLL-FIX]', entry);
           terminal.refresh(0, terminal.rows - 1);
-          if (lastKnownAtBottom) {
+          if (userWantsBottomRef.current) {
             terminal.scrollToBottom();
           }
-        } else {
-          // No stall — record current scroll position for future stall recovery.
-          // Only update during non-stall cycles to avoid reading a desynchronized
-          // viewportY that was corrupted by alternate screen buffer transitions.
-          lastKnownAtBottom = isScrolledToBottom(terminal);
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
@@ -670,6 +653,24 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       onFilesReceivedRef.current(Array.from(files));
     };
 
+    // Track user scroll intent via wheel events.
+    // Wheel events are always user-initiated, unlike scroll events which also
+    // fire from programmatic changes (terminal.write, scrollToBottom, etc.).
+    const handleWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        // User scrolling UP — they want to look at history
+        userWantsBottomRef.current = false;
+      } else if (e.deltaY > 0) {
+        // User scrolling DOWN — check if they've reached the bottom
+        requestAnimationFrame(() => {
+          if (terminalRef.current && isScrolledToBottom(terminalRef.current)) {
+            userWantsBottomRef.current = true;
+          }
+        });
+      }
+    };
+    container.addEventListener('wheel', handleWheel);
+
     container.addEventListener('paste', handlePaste);
     container.addEventListener('dragenter', handleDragEnter);
     container.addEventListener('dragover', handleDragOver);
@@ -749,6 +750,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
+      container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('paste', handlePaste);
       container.removeEventListener('dragenter', handleDragEnter);
       container.removeEventListener('dragover', handleDragOver);
