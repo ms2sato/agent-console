@@ -21,6 +21,7 @@ import { deleteSession } from '../lib/api.js';
 import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { logger } from '../lib/logger';
+import { createRenderWatchdog, type RenderWatchdog } from '../lib/render-diagnostics.js';
 import { ChevronDownIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
@@ -93,6 +94,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [restartNotification, setRestartNotification] = useState<string | null>(null);
   const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const watchdogRef = useRef<RenderWatchdog | null>(null);
 
   // Mutation for deleting session on error recovery
   const deleteSessionMutation = useMutation({
@@ -170,8 +172,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   const handleOutput = useCallback((data: string, offset: number) => {
+    watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
     terminalRef.current?.write(processOutput(data), () => {
+      watchdogRef.current?.onWriteComplete();
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
@@ -179,6 +183,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [sessionId, workerId, updateScrollButtonVisibility, processOutput]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
+    watchdogRef.current?.onHistoryReceived(data.length, offset);
     offsetRef.current = offset;
 
     const terminal = terminalRef.current;
@@ -188,10 +193,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // Had cache — append diff
       if (data) {
         terminal.write(processOutput(data), () => {
+          watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
       } else {
+        watchdogRef.current?.onHistoryWriteComplete();
         saveCurrentTerminalState();
       }
     } else {
@@ -199,6 +206,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (!data) return;
       writeFullHistory(terminal, processOutput(data))
         .then(() => {
+          watchdogRef.current?.onHistoryWriteComplete();
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         })
@@ -357,6 +365,65 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     serializeAddonRef.current = serializeAddon;
+
+    // Create render diagnostics watchdog (no-op when diagnostics disabled)
+    const watchdog = createRenderWatchdog(sessionId, workerId, terminal);
+    watchdogRef.current = watchdog;
+    watchdog.start();
+
+    // WORKAROUND: xterm.js render stall auto-recovery
+    // xterm.js occasionally stops calling _renderDebouncer.refresh() for writes,
+    // causing the terminal display to freeze while data continues to arrive.
+    // This is a temporary patch — the root cause has not been fully identified.
+    // See: docs/issues/terminal-render-stall-2026-03-21.md
+    //
+    // Detection: hook terminal.write() and terminal.refresh() (via RenderService.refreshRows).
+    // If writes happen without corresponding refreshRows calls within 2 seconds,
+    // call terminal.refresh() to restart the render pipeline.
+    const renderStallRecovery = (() => {
+      let writeCount = 0;
+      let refreshCount = 0;
+      let lastWriteCount = 0;
+      let lastRefreshCount = 0;
+
+      // Hook terminal.write to count writes
+      const origWrite = terminal.write.bind(terminal);
+      terminal.write = function(data: string | Uint8Array, callback?: () => void) {
+        writeCount++;
+        return origWrite(data, callback);
+      };
+
+      // Hook RenderService.refreshRows to count refresh calls
+      const renderService = (terminal as any)._core?._renderService;
+      const origRefreshRows = renderService?.refreshRows?.bind(renderService);
+      if (renderService && origRefreshRows) {
+        renderService.refreshRows = function(start: number, end: number, isRedraw?: boolean) {
+          refreshCount++;
+          return origRefreshRows(start, end, isRedraw);
+        };
+      }
+
+      const intervalId = setInterval(() => {
+        const newWrites = writeCount - lastWriteCount;
+        const newRefreshes = refreshCount - lastRefreshCount;
+        // Stall detected: writes happened but refreshRows was not called
+        if (newWrites > 0 && newRefreshes === 0) {
+          terminal.refresh(0, terminal.rows - 1);
+        }
+        lastWriteCount = writeCount;
+        lastRefreshCount = refreshCount;
+      }, 2000);
+
+      return {
+        dispose() {
+          clearInterval(intervalId);
+          terminal.write = origWrite;
+          if (renderService && origRefreshRows) {
+            renderService.refreshRows = origRefreshRows;
+          }
+        },
+      };
+    })();
 
     // Mark as mounted for conditional rendering support
     stateRef.current.isMounted = true;
@@ -602,6 +669,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     });
 
     return () => {
+      // Dispose render stall auto-recovery before watchdog
+      renderStallRecovery.dispose();
+
+      // Dispose render diagnostics watchdog
+      watchdog.dispose();
+      watchdogRef.current = null;
+
       // Abort any in-flight cache load to prevent stale data from being written to terminal
       abortController.abort();
 
