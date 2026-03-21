@@ -52,6 +52,24 @@ export interface TerminalProps {
   stripScrollbackClear?: boolean;
 }
 
+/** Restore scroll position when viewportY is corrupted by alternate screen
+ * buffer transitions or render stalls. Uses distanceFromBottom (saved via
+ * wheel events) which is stable across buffer trimming. */
+function restoreScrollPosition(
+  terminal: XTerm,
+  savedScroll: { distanceFromBottom: number }
+): void {
+  if (isScrolledToBottom(terminal)) return;
+  if (savedScroll.distanceFromBottom === 0) {
+    terminal.scrollToBottom();
+  } else {
+    const targetY = terminal.buffer.active.baseY - savedScroll.distanceFromBottom;
+    if (terminal.buffer.active.viewportY !== targetY) {
+      terminal.scrollLines(targetY - terminal.buffer.active.viewportY);
+    }
+  }
+}
+
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar, stripScrollbackClear }: TerminalProps) {
   const navigate = useNavigate();
 
@@ -183,29 +201,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     offsetRef.current = offset;
     terminal.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
-
-      // Restore scroll position when viewportY is corrupted by alternate screen
-      // buffer transitions or render stalls. Uses distanceFromBottom (saved via
-      // wheel events) which is stable across buffer trimming.
-      if (!isScrolledToBottom(terminal)) {
-        const saved = savedScrollRef.current;
-        const buf = terminal.buffer.active;
-        if (saved.distanceFromBottom === 0) {
-          const entry = { source: 'handleOutput', time: new Date().toISOString(), action: 'scrollToBottom', viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
-          ((window as any).__scrollFixLog ??= []).push(entry);
-          console.warn('[SCROLL-FIX]', entry);
-          terminal.scrollToBottom();
-        } else {
-          const targetY = buf.baseY - saved.distanceFromBottom;
-          if (buf.viewportY !== targetY) {
-            const entry = { source: 'handleOutput', time: new Date().toISOString(), action: 'restorePosition', distanceFromBottom: saved.distanceFromBottom, targetY, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
-            ((window as any).__scrollFixLog ??= []).push(entry);
-            console.warn('[SCROLL-FIX]', entry);
-            terminal.scrollLines(targetY - buf.viewportY);
-          }
-        }
-      }
-
+      restoreScrollPosition(terminal, savedScrollRef.current);
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
@@ -224,24 +220,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (data) {
         terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
-          if (!isScrolledToBottom(terminal)) {
-            const saved = savedScrollRef.current;
-            const buf = terminal.buffer.active;
-            if (saved.distanceFromBottom === 0) {
-              const entry = { source: 'handleHistory', time: new Date().toISOString(), action: 'scrollToBottom', viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows, dataLen: data.length };
-              ((window as any).__scrollFixLog ??= []).push(entry);
-              console.warn('[SCROLL-FIX]', entry);
-              terminal.scrollToBottom();
-            } else {
-              const targetY = buf.baseY - saved.distanceFromBottom;
-              if (buf.viewportY !== targetY) {
-                const entry = { source: 'handleHistory', time: new Date().toISOString(), action: 'restorePosition', distanceFromBottom: saved.distanceFromBottom, targetY, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows, dataLen: data.length };
-                ((window as any).__scrollFixLog ??= []).push(entry);
-                console.warn('[SCROLL-FIX]', entry);
-                terminal.scrollLines(targetY - buf.viewportY);
-              }
-            }
-          }
+          restoreScrollPosition(terminal, savedScrollRef.current);
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
@@ -456,21 +435,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const newRefreshes = refreshCount - lastRefreshCount;
         if (newWrites > 0 && newRefreshes === 0) {
           // Stall detected: writes happened but refreshRows was not called.
-          const buf = terminal.buffer.active;
-          const currentlyAtBottom = isScrolledToBottom(terminal);
-          const saved = savedScrollRef.current;
-          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, currentlyAtBottom, distanceFromBottom: saved.distanceFromBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
-          ((window as any).__scrollFixLog ??= []).push(entry);
-          console.warn('[SCROLL-FIX]', entry);
           terminal.refresh(0, terminal.rows - 1);
-          if (saved.distanceFromBottom === 0) {
-            terminal.scrollToBottom();
-          } else {
-            const targetY = buf.baseY - saved.distanceFromBottom;
-            if (buf.viewportY !== targetY) {
-              terminal.scrollLines(targetY - buf.viewportY);
-            }
-          }
+          restoreScrollPosition(terminal, savedScrollRef.current);
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
@@ -692,7 +658,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         savedScrollRef.current.distanceFromBottom = t.buffer.active.baseY - t.buffer.active.viewportY;
       });
     };
-    container.addEventListener('wheel', handleWheel);
+    container.addEventListener('wheel', handleWheel, { passive: true });
 
     container.addEventListener('paste', handlePaste);
     container.addEventListener('dragenter', handleDragEnter);
