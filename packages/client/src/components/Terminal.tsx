@@ -52,11 +52,26 @@ export interface TerminalProps {
   stripScrollbackClear?: boolean;
 }
 
+/** Minimal terminal interface needed for scroll position restoration.
+ * Allows testing without depending on the full xterm.js Terminal type. */
+export interface ScrollableTerminal {
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+    };
+  };
+  rows: number;
+  scrollToBottom: () => void;
+  scrollLines: (amount: number) => void;
+}
+
 /** Restore scroll position when viewportY is corrupted by alternate screen
  * buffer transitions or render stalls. Uses distanceFromBottom (saved via
  * wheel events) which is stable across buffer trimming. */
-function restoreScrollPosition(
-  terminal: XTerm,
+export function restoreScrollPosition(
+  terminal: ScrollableTerminal,
   savedScroll: { distanceFromBottom: number }
 ): void {
   if (isScrolledToBottom(terminal)) return;

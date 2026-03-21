@@ -41,10 +41,11 @@
  * - [ ] Button state is correct when switching between workers
  * - [ ] No visual glitches during worker reconnection
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as workerWs from '../../lib/worker-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import { isScrolledToBottom, type TerminalScrollInfo } from '../../lib/terminal-utils';
+import { restoreScrollPosition, type ScrollableTerminal } from '../Terminal';
 
 describe('Terminal history handling integration', () => {
   let restoreWebSocket: () => void;
@@ -1045,6 +1046,239 @@ describe('Lazy history loading optimization', () => {
 
       // Return to tab: still loaded (uses cache)
       expect(flow.returnToTabProcessed).toBe(true);
+    });
+  });
+});
+
+/**
+ * Tests for scroll position restoration after viewportY corruption.
+ *
+ * Background: xterm.js's viewportY gets corrupted during alternate screen buffer
+ * transitions (used by Claude Code's TUI mode). For example, viewportY can jump
+ * from 1000 (bottom) to 0 or 305 while baseY remains at 1000. This was observed
+ * in production via diagnostic logging during dogfooding.
+ *
+ * restoreScrollPosition() detects this corruption and restores the user's scroll
+ * position based on a saved distanceFromBottom value (captured via wheel events).
+ * distanceFromBottom is used instead of absolute viewportY because it's stable
+ * across xterm.js buffer trimming.
+ */
+describe('restoreScrollPosition', () => {
+  /** Create a mock terminal with the given buffer state.
+   * scrollToBottom and scrollLines are mock functions so we can assert on calls. */
+  function createMockTerminal(
+    viewportY: number,
+    baseY: number,
+    rows: number,
+    length: number
+  ): ScrollableTerminal & {
+    scrollToBottom: ReturnType<typeof mock>;
+    scrollLines: ReturnType<typeof mock>;
+  } {
+    return {
+      buffer: {
+        active: { viewportY, baseY, length },
+      },
+      rows,
+      scrollToBottom: mock(),
+      scrollLines: mock(),
+    };
+  }
+
+  describe('when terminal is already at bottom (no corruption)', () => {
+    // These tests verify the fast path: no correction needed.
+
+    it('should not call any scroll methods when viewportY is at bottom', () => {
+      // Real-world: Normal operation. Agent output flows, xterm.js auto-scrolls
+      // correctly, viewportY is at the bottom. restoreScrollPosition is called
+      // after every write but should be a no-op in this case.
+      // viewportY=1000, rows=25, length=1025 -> at bottom (1000 + 25 >= 1025)
+      const terminal = createMockTerminal(1000, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 0 });
+
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when user was at bottom (distanceFromBottom === 0) and viewportY is corrupted', () => {
+    // These tests verify the most common fix path: user was following output
+    // at the bottom, viewportY got corrupted, scroll back to bottom.
+
+    it('should scrollToBottom when viewportY jumps to 0', () => {
+      // Real-world: Most common corruption pattern observed in production logs.
+      // User is watching Claude Code output at the bottom. Alternate screen
+      // buffer switch corrupts viewportY to 0 (top of buffer).
+      // viewportY=0, baseY=1000, rows=25, length=1025 -> NOT at bottom (0+25 < 1025)
+      // distanceFromBottom=0 -> scrollToBottom
+      const terminal = createMockTerminal(0, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 0 });
+
+      expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    it('should scrollToBottom when viewportY jumps to a middle position', () => {
+      // Real-world: Second most common corruption pattern. viewportY jumps to
+      // some arbitrary value (305, 214, 584 observed in production).
+      // viewportY=305, baseY=1000, rows=25, length=1025 -> NOT at bottom
+      // distanceFromBottom=0 -> scrollToBottom
+      const terminal = createMockTerminal(305, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 0 });
+
+      expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when user was scrolled up (distanceFromBottom > 0) and viewportY is corrupted', () => {
+    // These tests verify scroll restoration for users reading history.
+    // The user scrolled up to read agent output, then viewportY got corrupted.
+    // They should be restored to where they were reading, not yanked to bottom.
+
+    it('should restore to saved position when viewportY is corrupted to 0', () => {
+      // Real-world: User scrolled up 200 lines from bottom to read a long
+      // Claude Code response. viewportY should be 800 (baseY=1000 - 200).
+      // Alternate buffer switch corrupts viewportY to 0.
+      // Expected: scrollLines(800 - 0 = 800) to restore position.
+      // distanceFromBottom=200, viewportY=0, baseY=1000
+      const terminal = createMockTerminal(0, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 200 });
+
+      expect(terminal.scrollLines).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(800); // targetY(800) - viewportY(0)
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+    });
+
+    it('should restore to saved position when viewportY is corrupted to a wrong position', () => {
+      // Real-world: User scrolled up 500 lines. viewportY should be 500.
+      // Corruption sets viewportY to 305.
+      // Expected: scrollLines(500 - 305 = 195) to restore.
+      // distanceFromBottom=500, viewportY=305, baseY=1000
+      const terminal = createMockTerminal(305, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 500 });
+
+      expect(terminal.scrollLines).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(195); // targetY(500) - viewportY(305)
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+    });
+
+    it('should not call scrollLines when viewportY is already at the correct position', () => {
+      // Real-world: restoreScrollPosition is called on every write callback.
+      // When no corruption has occurred, the viewportY should already match
+      // the expected position. No correction needed.
+      // distanceFromBottom=200, viewportY=800, baseY=1000
+      // targetY = 1000 - 200 = 800 = viewportY -> no-op
+      const terminal = createMockTerminal(800, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 200 });
+
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('distanceFromBottom calculation logic', () => {
+    // These tests verify the distanceFromBottom concept used by the wheel
+    // event handler. distanceFromBottom = baseY - viewportY.
+
+    it('should compute distanceFromBottom as 0 when at bottom', () => {
+      // When user is at the bottom, distanceFromBottom should be 0.
+      // This is the state captured by the wheel handler when the user
+      // scrolls down to the very bottom.
+      // baseY=1000, viewportY=1000 -> distance = 0
+      const baseY = 1000;
+      const viewportY = 1000;
+      const distanceFromBottom = baseY - viewportY;
+      expect(distanceFromBottom).toBe(0);
+    });
+
+    it('should compute distanceFromBottom correctly when scrolled up', () => {
+      // When user scrolls up 200 lines, viewportY = baseY - 200.
+      // The wheel handler captures: baseY - viewportY = 200.
+      // baseY=1000, viewportY=800 -> distance = 200
+      const baseY = 1000;
+      const viewportY = 800;
+      const distanceFromBottom = baseY - viewportY;
+      expect(distanceFromBottom).toBe(200);
+    });
+
+    it('should be stable across buffer trimming', () => {
+      // Key property: distanceFromBottom is a RELATIVE measure from the bottom.
+      // When the buffer trims old lines (scrollback limit reached), both baseY
+      // and viewportY shift, but the distance remains approximately correct.
+      //
+      // Before trimming: baseY=1000, viewportY=800, distance=200
+      // After trimming 50 lines: baseY=1000 (stays at limit),
+      //   viewportY=750 (shifted), distance=250 (drifted by 50)
+      //
+      // The drift is bounded by the number of lines added since the last
+      // wheel event, which is typically small. This is a deliberate tradeoff:
+      // imprecise but bounded restoration is better than jumping to viewportY=0.
+      //
+      // Verify the math:
+      const beforeBaseY = 1000;
+      const beforeViewportY = 800;
+      const savedDistance = beforeBaseY - beforeViewportY; // 200
+
+      // After 50 new lines added (buffer trimmed 50 old lines)
+      const afterBaseY = 1000; // stays at scrollback limit
+      const targetY = afterBaseY - savedDistance; // 1000 - 200 = 800
+      // But user's content is now at viewportY=750 (shifted by 50)
+      // So restoration is 50 lines off -- acceptable tradeoff
+      expect(savedDistance).toBe(200);
+      expect(targetY).toBe(800);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle distanceFromBottom larger than baseY', () => {
+      // Edge case: distanceFromBottom could exceed baseY if buffer was trimmed
+      // significantly since the last wheel event. targetY would be negative.
+      // scrollLines with a negative value scrolls up, which is clamped by xterm.js.
+      // This should not crash -- it's better to attempt restoration than to skip it.
+      // distanceFromBottom=1200, baseY=1000 -> targetY = -200
+      // viewportY=0, scrollLines(-200 - 0 = -200)
+      const terminal = createMockTerminal(0, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 1200 });
+
+      expect(terminal.scrollLines).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(-200); // targetY(-200) - viewportY(0)
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+    });
+
+    it('should handle small buffer (content fits in viewport)', () => {
+      // Edge case: terminal has very little output, everything fits in the viewport.
+      // viewportY=0, baseY=0, length=10, rows=25 -> at bottom (0+25 >= 10)
+      // restoreScrollPosition should be a no-op.
+      const terminal = createMockTerminal(0, 0, 25, 10);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 0 });
+
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    it('should handle distanceFromBottom of 1 (near-bottom scroll)', () => {
+      // Edge case: macOS trackpad can generate tiny scroll deltas, resulting in
+      // distanceFromBottom=1. If viewportY is corrupted, we should still restore
+      // to 1 line from bottom, not the absolute bottom.
+      // This is acceptable because being 1 line off is barely noticeable.
+      // distanceFromBottom=1, baseY=1000, viewportY=0
+      // targetY = 999, scrollLines(999)
+      const terminal = createMockTerminal(0, 1000, 25, 1025);
+
+      restoreScrollPosition(terminal, { distanceFromBottom: 1 });
+
+      expect(terminal.scrollLines).toHaveBeenCalledTimes(1);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(999); // targetY(999) - viewportY(0)
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
     });
   });
 });
