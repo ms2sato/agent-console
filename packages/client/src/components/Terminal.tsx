@@ -95,7 +95,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const watchdogRef = useRef<RenderWatchdog | null>(null);
-  const userWantsBottomRef = useRef(true);
 
   // Mutation for deleting session on error recovery
   const deleteSessionMutation = useMutation({
@@ -169,7 +168,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleScrollToBottom = useCallback(() => {
     terminalRef.current?.scrollToBottom();
-    userWantsBottomRef.current = true;
     setShowScrollButton(false);
   }, []);
 
@@ -182,11 +180,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     terminal.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
 
-      // Auto-scroll based on user intent. We cannot use isScrolledToBottom()
-      // here because viewportY may be desynchronized by alternate screen buffer
-      // transitions or render stalls (observed as viewportY=0 while baseY=1000).
-      // Instead, track intent via wheel events and scroll-to-bottom button.
-      if (userWantsBottomRef.current && !isScrolledToBottom(terminal)) {
+      // Defensive auto-scroll: viewportY can be desynchronized by alternate
+      // screen buffer transitions or render stalls (observed as viewportY=0
+      // while baseY=1000). Always scroll to bottom after writes to correct this.
+      if (!isScrolledToBottom(terminal)) {
         const buf = terminal.buffer.active;
         const entry = { source: 'handleOutput', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
         ((window as any).__scrollFixLog ??= []).push(entry);
@@ -212,7 +209,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (data) {
         terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
-          if (userWantsBottomRef.current && !isScrolledToBottom(terminal)) {
+          if (!isScrolledToBottom(terminal)) {
             const buf = terminal.buffer.active;
             const entry = { source: 'handleHistory', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows, dataLen: data.length };
             ((window as any).__scrollFixLog ??= []).push(entry);
@@ -435,13 +432,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           // Stall detected: writes happened but refreshRows was not called.
           const buf = terminal.buffer.active;
           const currentlyAtBottom = isScrolledToBottom(terminal);
-          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, userWantsBottom: userWantsBottomRef.current, currentlyAtBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
+          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, currentlyAtBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
           ((window as any).__scrollFixLog ??= []).push(entry);
           console.warn('[SCROLL-FIX]', entry);
           terminal.refresh(0, terminal.rows - 1);
-          if (userWantsBottomRef.current) {
-            terminal.scrollToBottom();
-          }
+          terminal.scrollToBottom();
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
@@ -653,24 +648,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       onFilesReceivedRef.current(Array.from(files));
     };
 
-    // Track user scroll intent via wheel events.
-    // Wheel events are always user-initiated, unlike scroll events which also
-    // fire from programmatic changes (terminal.write, scrollToBottom, etc.).
-    const handleWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) {
-        // User scrolling UP — they want to look at history
-        userWantsBottomRef.current = false;
-      } else if (e.deltaY > 0) {
-        // User scrolling DOWN — check if they've reached the bottom
-        requestAnimationFrame(() => {
-          if (terminalRef.current && isScrolledToBottom(terminalRef.current)) {
-            userWantsBottomRef.current = true;
-          }
-        });
-      }
-    };
-    container.addEventListener('wheel', handleWheel);
-
     container.addEventListener('paste', handlePaste);
     container.addEventListener('dragenter', handleDragEnter);
     container.addEventListener('dragover', handleDragOver);
@@ -750,7 +727,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
-      container.removeEventListener('wheel', handleWheel);
+
       container.removeEventListener('paste', handlePaste);
       container.removeEventListener('dragenter', handleDragEnter);
       container.removeEventListener('dragover', handleDragOver);
