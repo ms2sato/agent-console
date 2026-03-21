@@ -172,10 +172,32 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   const handleOutput = useCallback((data: string, offset: number) => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
+    // Capture scroll position before write to detect auto-scroll failures.
+    // xterm.js normally auto-scrolls when at bottom, but alternate screen buffer
+    // transitions can desync viewportY, causing scroll position to jump.
+    const wasAtBottom = isScrolledToBottom(terminal);
+
     watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
-    terminalRef.current?.write(processOutput(data), () => {
+    terminal.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
+
+      // Defensive auto-scroll: correct viewportY desync after alternate
+      // screen buffer transitions. Without this, the viewport can jump
+      // to an old position (e.g., viewportY=0) when xterm.js's built-in
+      // auto-scroll fails to track the bottom after buffer switches.
+      const nowAtBottom = isScrolledToBottom(terminal);
+      if (wasAtBottom && !nowAtBottom) {
+        const buf = terminal.buffer.active;
+        const entry = { source: 'handleOutput', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
+        ((window as any).__scrollFixLog ??= []).push(entry);
+        console.warn('[SCROLL-FIX]', entry);
+        terminal.scrollToBottom();
+      }
+
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
@@ -192,8 +214,17 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
+        const wasAtBottom = isScrolledToBottom(terminal);
         terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
+          const nowAtBottom = isScrolledToBottom(terminal);
+          if (wasAtBottom && !nowAtBottom) {
+            const buf = terminal.buffer.active;
+            const entry = { source: 'handleHistory', time: new Date().toISOString(), viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows, dataLen: data.length };
+            ((window as any).__scrollFixLog ??= []).push(entry);
+            console.warn('[SCROLL-FIX]', entry);
+            terminal.scrollToBottom();
+          }
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
@@ -385,6 +416,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       let refreshCount = 0;
       let lastWriteCount = 0;
       let lastRefreshCount = 0;
+      // Track scroll position during non-stall cycles so that stall recovery
+      // can restore it. We cannot read viewportY during a stall because alternate
+      // screen buffer transitions may have desynchronized it (e.g., viewportY=0).
+      let lastKnownAtBottom = true;
 
       // Hook terminal.write to count writes
       const origWrite = terminal.write.bind(terminal);
@@ -406,9 +441,24 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const intervalId = setInterval(() => {
         const newWrites = writeCount - lastWriteCount;
         const newRefreshes = refreshCount - lastRefreshCount;
-        // Stall detected: writes happened but refreshRows was not called
         if (newWrites > 0 && newRefreshes === 0) {
+          // Stall detected: writes happened but refreshRows was not called.
+          // lastKnownAtBottom was captured during the previous non-stall cycle,
+          // reflecting the user's scroll position before the stall began.
+          const buf = terminal.buffer.active;
+          const currentlyAtBottom = isScrolledToBottom(terminal);
+          const entry = { source: 'renderStallRecovery', time: new Date().toISOString(), newWrites, lastKnownAtBottom, currentlyAtBottom, viewportY: buf.viewportY, baseY: buf.baseY, length: buf.length, rows: terminal.rows };
+          ((window as any).__scrollFixLog ??= []).push(entry);
+          console.warn('[SCROLL-FIX]', entry);
           terminal.refresh(0, terminal.rows - 1);
+          if (lastKnownAtBottom) {
+            terminal.scrollToBottom();
+          }
+        } else {
+          // No stall — record current scroll position for future stall recovery.
+          // Only update during non-stall cycles to avoid reading a desynchronized
+          // viewportY that was corrupted by alternate screen buffer transitions.
+          lastKnownAtBottom = isScrolledToBottom(terminal);
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
