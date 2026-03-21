@@ -23,7 +23,7 @@ Terminal display stops updating mid-session while the agent continues working. D
 
 Initially suspected a "half-open" WebSocket connection (silent TCP death). However, the user reported:
 
-> "ブラウザのサイズを変えると続きが取れたりします" (Resizing the browser window can restore the continuation)
+> "Resizing the browser window can restore the continuation"
 
 This ruled out WebSocket disconnection — if the connection were dead, resizing wouldn't help. Data must be reaching the client.
 
@@ -55,7 +55,7 @@ window.__xtermTerminal = val;
 
 Compared the last 3 rows of `.xterm-rows` DOM content with `terminal.buffer.active.getLine()`:
 
-```
+```text
 domMatchesBuffer: false
 ```
 
@@ -96,7 +96,7 @@ Manually called `debouncer.refresh(0, terminal.rows - 1)`:
 
 **Display immediately recovered.** Screenshot confirmed the latest content appeared.
 
-Note: `terminal.refresh(0, rows - 1)` did NOT work. Only `debouncer.refresh()` (which schedules a rAF) fixed it.
+Note: During initial MCP testing, `terminal.refresh(0, rows - 1)` appeared not to work, but later analysis confirmed it calls `RenderService.refreshRows()` → `_renderDebouncer.refresh()` internally. The initial failure was likely due to timing or state interference from other monitoring hooks. The final implementation uses `terminal.refresh()` (public API) for auto-recovery.
 
 #### Step 5: Monitor `debouncer.refresh()` calls
 
@@ -135,7 +135,7 @@ debouncer.refresh = function(rowStart, rowEnd) {
 
 ### xterm.js render pipeline (normal flow)
 
-```
+```text
 terminal.write(data)
   → WriteBuffer processes data
   → Parser updates Buffer

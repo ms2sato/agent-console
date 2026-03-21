@@ -21,6 +21,7 @@ export class BufferedWebSocketSender {
   private lastOffset = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  private highWaterMarkLogged = false;
 
   constructor(
     private readonly ws: WSContext,
@@ -77,6 +78,7 @@ export class BufferedWebSocketSender {
       // Socket is not open; discard buffer (data preserved server-side)
       this.outputBuffer = '';
       this.outputBufferBytes = 0;
+      this.highWaterMarkLogged = false;
       return;
     }
 
@@ -89,11 +91,13 @@ export class BufferedWebSocketSender {
       this.ws.send(JSON.stringify({ type: 'output', data: this.outputBuffer, offset: this.lastOffset }));
       this.outputBuffer = '';
       this.outputBufferBytes = 0;
+      this.highWaterMarkLogged = false;
     } catch (error) {
       this.logger.warn({ workerId: this.workerId, err: error }, 'Error flushing output buffer to worker');
       // Discard buffer on failure (data preserved server-side for recovery)
       this.outputBuffer = '';
       this.outputBufferBytes = 0;
+      this.highWaterMarkLogged = false;
     }
   }
 
@@ -130,8 +134,9 @@ export class BufferedWebSocketSender {
     this.outputBufferBytes += Buffer.byteLength(data, 'utf-8');
     this.lastOffset = offset;
 
-    // Log when buffer exceeds 50% of threshold
-    if (this.outputBufferBytes >= this.flushThreshold * 0.5) {
+    // Log once when buffer exceeds 50% of threshold
+    if (this.outputBufferBytes >= this.flushThreshold * 0.5 && !this.highWaterMarkLogged) {
+      this.highWaterMarkLogged = true;
       this.logger.debug(
         { workerId: this.workerId, bufferBytes: this.outputBufferBytes, threshold: this.flushThreshold },
         'Output buffer exceeds 50% of flush threshold',
