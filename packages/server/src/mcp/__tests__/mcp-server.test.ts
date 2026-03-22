@@ -1201,7 +1201,7 @@ describe('MCP Server Tools', () => {
       expect(statusData.title).toBe('Dark Mode Feature');
     });
 
-    it('should handle useRemote flag by calling fetchRemote', async () => {
+    it('should call fetchRemote by default when useRemote is omitted', async () => {
       await setupDelegateEnvironment('feat/remote-branch');
 
       // fetchRemote is already mocked by mock-git-helper (resolves successfully)
@@ -1210,13 +1210,29 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Work on remote-based feature',
         branch: 'feat/remote-branch',
-        useRemote: true,
+        // useRemote is intentionally omitted — should default to true
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
 
       // Verify fetchRemote was called (the baseBranch defaults to 'main')
       expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', TEST_REPO_PATH);
+    });
+
+    it('should skip fetchRemote when useRemote is explicitly false', async () => {
+      await setupDelegateEnvironment('feat/local-branch');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Work on local-only feature',
+        branch: 'feat/local-branch',
+        useRemote: false,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      // Verify fetchRemote was NOT called
+      expect(mockGit.fetchRemote).not.toHaveBeenCalled();
     });
 
     it('should return error when worktree creation fails', async () => {

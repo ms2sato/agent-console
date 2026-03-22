@@ -111,7 +111,7 @@ const worktrees = new Hono<AppBindings>()
         let branchNameFallback: BranchNameFallback | undefined;
 
         // Extract useRemote flag (only available for 'prompt' and 'custom' modes)
-        const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote === true;
+        const useRemote = (mode === 'prompt' || mode === 'custom') && body.useRemote !== false;
 
         switch (mode) {
           case 'prompt': {
