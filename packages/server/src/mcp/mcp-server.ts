@@ -441,7 +441,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       useRemote: z
         .boolean()
         .optional()
-        .describe('If true, branch from origin/<baseBranch> instead of local branch'),
+        .describe('Branch from origin/<baseBranch> instead of local branch. Defaults to true when omitted.'),
       parentSessionId: z
         .string()
         .min(1, 'parentSessionId must be non-empty')
@@ -537,7 +537,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'main';
 
         // Handle useRemote flag
-        if (useRemote && effectiveBaseBranch) {
+        if (useRemote !== false && effectiveBaseBranch) {
           try {
             await fetchRemote(effectiveBaseBranch, repo.path);
             effectiveBaseBranch = `origin/${effectiveBaseBranch}`;

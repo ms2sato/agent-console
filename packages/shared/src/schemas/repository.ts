@@ -65,7 +65,7 @@ export const CreateWorktreePromptRequestSchema = v.object({
     v.minLength(1, 'Initial prompt is required for prompt mode')
   ),
   baseBranch: OptionalBranchSchema,
-  useRemote: v.optional(v.boolean()), // If true, branch from origin/<base> instead of local <base>
+  useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
 });
 
 /**
@@ -76,7 +76,7 @@ export const CreateWorktreeCustomRequestSchema = v.object({
   mode: v.literal('custom'),
   branch: RequiredBranchSchema,
   baseBranch: OptionalBranchSchema,
-  useRemote: v.optional(v.boolean()), // If true, branch from origin/<base> instead of local <base>
+  useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
 });
 
 /**
