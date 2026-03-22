@@ -798,6 +798,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
               { err: deleteErr, sessionId, worktreePath },
               'Failed to delete session after worktree removal',
             );
+            return errorResult(
+              `Worktree was removed but session cleanup failed: ${sessionId}`,
+            );
           }
 
           logger.info(

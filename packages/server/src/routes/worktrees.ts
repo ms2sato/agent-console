@@ -361,19 +361,22 @@ const worktrees = new Hono<AppBindings>()
       return c.json({ error: 'Pull is in progress for this worktree' }, 409);
     }
 
-    // Guard against concurrent deletion of the same worktree
-    if (isDeletionInProgress(worktreePath)) {
+    // Guard against concurrent deletion — markDeletionInProgress is the single
+    // atomic gate so no await can sneak in between a read-check and a write.
+    if (!markDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
     // Validate path is within managed directory and belongs to this repository
-    const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
-    if (validationError) {
-      throw new ValidationError(validationError);
+    try {
+      const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+      if (validationError) {
+        throw new ValidationError(validationError);
+      }
+    } catch (error) {
+      clearDeletionInProgress(worktreePath);
+      throw error;
     }
-
-    // Add to guard immediately before any async operations to prevent race conditions
-    markDeletionInProgress(worktreePath);
 
     // Check for force flag and taskId in query
     const force = c.req.query('force') === 'true';

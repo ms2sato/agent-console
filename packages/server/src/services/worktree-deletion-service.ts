@@ -49,8 +49,8 @@ export async function validateWorktreePath(
   // Canonicalize path to prevent path traversal attacks
   const canonicalPath = resolvePath(worktreePath);
 
-  // SECURITY: Explicit boundary check
-  const repositoriesDir = getRepositoriesDir();
+  // SECURITY: Explicit boundary check — resolve both sides to absolute paths
+  const repositoriesDir = resolvePath(getRepositoriesDir());
   if (!canonicalPath.startsWith(repositoriesDir + pathSep)) {
     return 'Worktree path is outside managed directory';
   }
