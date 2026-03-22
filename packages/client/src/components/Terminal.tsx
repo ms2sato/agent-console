@@ -52,6 +52,39 @@ export interface TerminalProps {
   stripScrollbackClear?: boolean;
 }
 
+/** Minimal terminal interface needed for scroll position restoration.
+ * Allows testing without depending on the full xterm.js Terminal type. */
+export interface ScrollableTerminal {
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+    };
+  };
+  rows: number;
+  scrollToBottom: () => void;
+  scrollLines: (amount: number) => void;
+}
+
+/** Restore scroll position when viewportY is corrupted by alternate screen
+ * buffer transitions or render stalls. Uses distanceFromBottom (saved via
+ * wheel events) which is stable across buffer trimming. */
+export function restoreScrollPosition(
+  terminal: ScrollableTerminal,
+  savedScroll: { distanceFromBottom: number }
+): void {
+  if (isScrolledToBottom(terminal)) return;
+  if (savedScroll.distanceFromBottom === 0) {
+    terminal.scrollToBottom();
+  } else {
+    const targetY = terminal.buffer.active.baseY - savedScroll.distanceFromBottom;
+    if (terminal.buffer.active.viewportY !== targetY) {
+      terminal.scrollLines(targetY - terminal.buffer.active.viewportY);
+    }
+  }
+}
+
 export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange, onRequestRestart, onResumeSession, onFilesReceived, hideStatusBar, stripScrollbackClear }: TerminalProps) {
   const navigate = useNavigate();
 
@@ -95,6 +128,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const restartNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const watchdogRef = useRef<RenderWatchdog | null>(null);
+  // User's scroll position saved via wheel events for corruption recovery.
+  // distanceFromBottom is stable across buffer trimming (unlike absolute viewportY).
+  const savedScrollRef = useRef({ distanceFromBottom: 0 });
 
   // Mutation for deleting session on error recovery
   const deleteSessionMutation = useMutation({
@@ -168,14 +204,19 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   const handleScrollToBottom = useCallback(() => {
     terminalRef.current?.scrollToBottom();
+    savedScrollRef.current.distanceFromBottom = 0;
     setShowScrollButton(false);
   }, []);
 
   const handleOutput = useCallback((data: string, offset: number) => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
     watchdogRef.current?.onWriteStart(data.length, offset);
     offsetRef.current = offset;
-    terminalRef.current?.write(processOutput(data), () => {
+    terminal.write(processOutput(data), () => {
       watchdogRef.current?.onWriteComplete();
+      restoreScrollPosition(terminal, savedScrollRef.current);
       updateScrollButtonVisibility();
     });
     // Mark as dirty for idle-based save (replaces fire-and-forget saves)
@@ -194,6 +235,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       if (data) {
         terminal.write(processOutput(data), () => {
           watchdogRef.current?.onHistoryWriteComplete();
+          restoreScrollPosition(terminal, savedScrollRef.current);
           updateScrollButtonVisibility();
           saveCurrentTerminalState();
         });
@@ -406,9 +448,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const intervalId = setInterval(() => {
         const newWrites = writeCount - lastWriteCount;
         const newRefreshes = refreshCount - lastRefreshCount;
-        // Stall detected: writes happened but refreshRows was not called
         if (newWrites > 0 && newRefreshes === 0) {
+          // Stall detected: writes happened but refreshRows was not called.
           terminal.refresh(0, terminal.rows - 1);
+          restoreScrollPosition(terminal, savedScrollRef.current);
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
@@ -620,6 +663,18 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       onFilesReceivedRef.current(Array.from(files));
     };
 
+    // Save user's scroll position via wheel events for corruption recovery.
+    // Captures distanceFromBottom which is stable across buffer trimming
+    // (unlike absolute viewportY which shifts when old lines are removed).
+    const handleWheel = () => {
+      requestAnimationFrame(() => {
+        const t = terminalRef.current;
+        if (!t) return;
+        savedScrollRef.current.distanceFromBottom = t.buffer.active.baseY - t.buffer.active.viewportY;
+      });
+    };
+    container.addEventListener('wheel', handleWheel, { passive: true });
+
     container.addEventListener('paste', handlePaste);
     container.addEventListener('dragenter', handleDragEnter);
     container.addEventListener('dragover', handleDragOver);
@@ -699,6 +754,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
+
+      container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('paste', handlePaste);
       container.removeEventListener('dragenter', handleDragEnter);
       container.removeEventListener('dragover', handleDragOver);
