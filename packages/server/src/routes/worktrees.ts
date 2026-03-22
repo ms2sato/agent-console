@@ -17,16 +17,18 @@ import { vValidator } from '../middleware/validation.js';
 import { fetchRemote, getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { broadcastToApp } from '../websocket/routes.js';
+import {
+  _getDeletionsInProgress,
+  isDeletionInProgress,
+  markDeletionInProgress,
+  clearDeletionInProgress,
+  validateWorktreePath,
+  executeCleanupCommandIfConfigured,
+} from '../services/worktree-deletion-service.js';
+
+export { _getDeletionsInProgress };
 
 const logger = createLogger('api:worktrees');
-
-// Guard against concurrent deletion of the same worktree
-const deletionsInProgress = new Set<string>();
-
-/** Get the deletion guard set. Exported for testing only. */
-export function _getDeletionsInProgress(): Set<string> {
-  return deletionsInProgress;
-}
 
 // Guard against concurrent pull of the same worktree
 const pullsInProgress = new Set<string>();
@@ -34,36 +36,6 @@ const pullsInProgress = new Set<string>();
 /** Get the pull guard set. Exported for testing only. */
 export function _getPullsInProgress(): Set<string> {
   return pullsInProgress;
-}
-
-/**
- * Execute the repository's cleanup command if configured.
- * Looks up the worktree in git listing to resolve template variables.
- *
- * @returns The cleanup command result, or undefined if no cleanup command is configured.
- */
-async function executeCleanupCommandIfConfigured(
-  repo: { path: string; name: string; cleanupCommand?: string | null },
-  repoId: string,
-  worktreePath: string
-): Promise<HookCommandResult | undefined> {
-  if (!repo.cleanupCommand) return undefined;
-
-  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
-  const targetWorktree = worktrees.find(wt => wt.path === worktreePath);
-  if (!targetWorktree || targetWorktree.index === undefined) {
-    return { success: false, error: 'Cleanup command skipped: worktree not found in git listing' };
-  }
-
-  return worktreeService.executeHookCommand(
-    repo.cleanupCommand,
-    worktreePath,
-    {
-      worktreeNum: targetWorktree.index,
-      branch: targetWorktree.branch,
-      repo: repo.name,
-    }
-  );
 }
 
 const worktrees = new Hono<AppBindings>()
@@ -291,7 +263,7 @@ const worktrees = new Hono<AppBindings>()
     }
 
     // Reject pull if the worktree is currently being deleted
-    if (deletionsInProgress.has(worktreePath)) {
+    if (isDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Worktree is being deleted' }, 409);
     }
 
@@ -384,36 +356,24 @@ const worktrees = new Hono<AppBindings>()
     // Canonicalize path to prevent path traversal attacks
     const worktreePath = resolvePath(rawWorktreePath);
 
-    // SECURITY: Explicit boundary check - worktree path must be within the managed repositories directory
-    // This prevents deletion of arbitrary directories even if isWorktreeOf has a bug
-    const repositoriesDir = getRepositoriesDir();
-    if (!worktreePath.startsWith(repositoriesDir + pathSep)) {
-      throw new ValidationError('Worktree path is outside managed directory');
-    }
-
     // Reject deletion while pull is in progress
     if (pullsInProgress.has(worktreePath)) {
       return c.json({ error: 'Pull is in progress for this worktree' }, 409);
     }
 
     // Guard against concurrent deletion of the same worktree
-    if (deletionsInProgress.has(worktreePath)) {
+    if (isDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
-    // Add to guard immediately before any async operations to prevent race conditions
-    deletionsInProgress.add(worktreePath);
-
-    // Verify this is actually a worktree of this repository
-    try {
-      if (!await worktreeService.isWorktreeOf(repo.path, worktreePath, repoId)) {
-        deletionsInProgress.delete(worktreePath);
-        throw new ValidationError('Invalid worktree path for this repository');
-      }
-    } catch (error) {
-      deletionsInProgress.delete(worktreePath);
-      throw error;
+    // Validate path is within managed directory and belongs to this repository
+    const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+    if (validationError) {
+      throw new ValidationError(validationError);
     }
+
+    // Add to guard immediately before any async operations to prevent race conditions
+    markDeletionInProgress(worktreePath);
 
     // Check for force flag and taskId in query
     const force = c.req.query('force') === 'true';
@@ -504,7 +464,7 @@ const worktrees = new Hono<AppBindings>()
             // If broadcast fails, we've already logged the error above
           }
         } finally {
-          deletionsInProgress.delete(worktreePath);
+          clearDeletionInProgress(worktreePath);
         }
       })();
 
@@ -542,7 +502,7 @@ const worktrees = new Hono<AppBindings>()
 
       return c.json({ success: true, cleanupCommandResult });
     } finally {
-      deletionsInProgress.delete(worktreePath);
+      clearDeletionInProgress(worktreePath);
     }
   });
 

@@ -30,6 +30,19 @@ mock.module('../../services/session-metadata-suggester.js', () => ({
   suggestSessionMetadata: mockSuggestSessionMetadata,
 }));
 
+// Mock worktree-deletion-service
+const mockValidateWorktreePath = mock(async () => null as string | null);
+const mockMarkDeletionInProgress = mock(() => true);
+const mockClearDeletionInProgress = mock(() => {});
+const mockExecuteCleanupCommandIfConfigured = mock(async () => undefined);
+mock.module('../../services/worktree-deletion-service.js', () => ({
+  isDeletionInProgress: mock(() => false),
+  markDeletionInProgress: mockMarkDeletionInProgress,
+  clearDeletionInProgress: mockClearDeletionInProgress,
+  validateWorktreePath: mockValidateWorktreePath,
+  executeCleanupCommandIfConfigured: mockExecuteCleanupCommandIfConfigured,
+}));
+
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -180,6 +193,15 @@ describe('MCP Server Tools', () => {
       branch: 'feat/auto-generated-branch',
       title: 'Auto-Generated Title',
     }));
+
+    // Reset worktree-deletion-service mocks
+    mockValidateWorktreePath.mockReset();
+    mockValidateWorktreePath.mockImplementation(async () => null);
+    mockMarkDeletionInProgress.mockReset();
+    mockMarkDeletionInProgress.mockImplementation(() => true);
+    mockClearDeletionInProgress.mockReset();
+    mockExecuteCleanupCommandIfConfigured.mockReset();
+    mockExecuteCleanupCommandIfConfigured.mockImplementation(async () => undefined);
 
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
@@ -1830,6 +1852,279 @@ describe('MCP Server Tools', () => {
       expect(env.AGENT_CONSOLE_BASE_URL).toMatch(/^http:\/\/localhost:\d+$/);
       expect(env.AGENT_CONSOLE_SESSION_ID).toBe(data.sessionId);
       expect(env.AGENT_CONSOLE_WORKER_ID).toBe(data.workerId);
+    });
+  });
+
+  // ===========================================================================
+  // close_session
+  // ===========================================================================
+
+  describe('close_session', () => {
+    it('should close an existing session', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'close_session', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { sessionId: string; deleted: boolean };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.sessionId).toBe(session.id);
+      expect(data.deleted).toBe(true);
+
+      // Verify session is actually gone
+      expect(sessionManager.getSession(session.id)).toBeUndefined();
+    });
+
+    it('should return error for non-existent session', async () => {
+      const response = await callTool(app, mcpSessionId, 'close_session', {
+        sessionId: 'non-existent',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Session not found');
+    });
+  });
+
+  // ===========================================================================
+  // remove_worktree
+  // ===========================================================================
+
+  describe('remove_worktree', () => {
+    /**
+     * Helper to set up a RepositoryManager with a test repository
+     * and re-mount the MCP app.
+     * Ensures repo paths exist in memfs so RepositoryManager.initialize() loads them.
+     */
+    async function setupRepoManager(repos: Array<{
+      id: string;
+      name: string;
+      path: string;
+    }> = []): Promise<void> {
+      // Ensure repo paths exist in memfs
+      const fsEntries: Record<string, string> = {
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+      };
+      for (const repo of repos) {
+        fsEntries[`${repo.path}/.git/HEAD`] = 'ref: refs/heads/main';
+      }
+      setupMemfs(fsEntries);
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+      const db = getDatabase();
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      for (const repo of repos) {
+        await sqliteRepoRepo.save({
+          ...repo,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
+        repository: sqliteRepoRepo,
+      });
+
+      // Wire repository callbacks so isMainWorktree resolves correctly
+      sessionManager.setRepositoryCallbacks({
+        getRepository: (repoId) => repositoryManager.getRepository(repoId),
+        isInitialized: () => true,
+        getWorktreeIndexNumber: async () => 0,
+      });
+
+      await remountMcpApp();
+    }
+
+    it('should return error for non-existent session', async () => {
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: 'non-existent',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Session not found');
+    });
+
+    it('should return error for non-worktree session', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('not a worktree session');
+    });
+
+    it('should return error for main worktree session', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      // locationPath === repo.path makes isMainWorktree true
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH,
+        repositoryId: 'test-repo',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Cannot remove the main worktree');
+    });
+
+    it('should return error when repository is not found', async () => {
+      // Create a worktree session referencing a non-existent repository
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'non-existent-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Repository not found');
+    });
+
+    it('should return error when path validation fails', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      mockValidateWorktreePath.mockImplementation(async () => 'Worktree path is outside managed directory');
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('outside managed directory');
+    });
+
+    it('should return error when deletion is already in progress', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      mockMarkDeletionInProgress.mockImplementation(() => false);
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('already in progress');
+    });
+
+    it('should successfully remove worktree and delete session', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Mock successful worktree removal
+      mockGit.removeWorktree.mockImplementation(async () => {});
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        sessionId: string;
+        worktreePath: string;
+        removed: boolean;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.sessionId).toBe(session.id);
+      expect(data.worktreePath).toBe('/test/worktree-path');
+      expect(data.removed).toBe(true);
+
+      // Session should be deleted
+      expect(sessionManager.getSession(session.id)).toBeUndefined();
+    });
+
+    it('should preserve session when worktree removal fails', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      // Mock failed worktree removal
+      mockGit.removeWorktree.mockImplementation(async () => {
+        throw new Error('Worktree has uncommitted changes');
+      });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+
+      // Session should be preserved for retry
+      expect(sessionManager.getSession(session.id)).toBeDefined();
     });
   });
 
