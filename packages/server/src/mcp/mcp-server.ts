@@ -16,6 +16,12 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
+import {
+  markDeletionInProgress,
+  clearDeletionInProgress,
+  validateWorktreePath,
+  executeCleanupCommandIfConfigured,
+} from '../services/worktree-deletion-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
@@ -662,6 +668,158 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, repositoryId }, 'delegate_to_worktree failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: close_session ----------
+
+  mcpServer.tool(
+    'close_session',
+    'Close a session and clean up its workers. ' +
+      'For worktree sessions, this only closes the session — the worktree directory remains on disk. ' +
+      'Use remove_worktree to also remove the worktree.',
+    {
+      sessionId: z.string().describe('The session ID to close'),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        const deleted = await sessionManager.deleteSession(sessionId);
+        if (!deleted) {
+          return errorResult(`Failed to delete session: ${sessionId}`);
+        }
+
+        logger.info({ sessionId }, 'Session closed via MCP');
+
+        return textResult({ sessionId, deleted: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'close_session failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: remove_worktree ----------
+
+  mcpServer.tool(
+    'remove_worktree',
+    'Remove a git worktree and its associated session. ' +
+      'This runs the repository cleanup command (if configured), kills PTY processes, ' +
+      'removes the worktree via git, and deletes the session. ' +
+      'If worktree removal fails, the session is preserved for retry.',
+    {
+      sessionId: z.string().describe(
+        'The session ID of the worktree session to remove. ' +
+          'Use list_sessions to discover session IDs.',
+      ),
+      force: z
+        .boolean()
+        .optional()
+        .describe('Force-remove the worktree even if it has uncommitted changes (default false)'),
+    },
+    async ({ sessionId, force }) => {
+      try {
+        // 1. Validate session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        if (session.type !== 'worktree') {
+          return errorResult(
+            `Session ${sessionId} is not a worktree session. Use close_session instead.`,
+          );
+        }
+
+        if (session.isMainWorktree) {
+          return errorResult(
+            `Cannot remove the main worktree for session ${sessionId}. Only added worktrees can be removed.`,
+          );
+        }
+
+        // 2. Validate repository
+        const repo = repositoryManager.getRepository(session.repositoryId);
+        if (!repo) {
+          return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        const worktreePath = session.locationPath;
+
+        // 3. Security validation
+        const validationError = await validateWorktreePath(
+          repo.path,
+          worktreePath,
+          session.repositoryId,
+        );
+        if (validationError) {
+          return errorResult(validationError);
+        }
+
+        // 4. Concurrency guard
+        if (!markDeletionInProgress(worktreePath)) {
+          return errorResult('Deletion already in progress for this worktree');
+        }
+
+        try {
+          // 5. Execute cleanup command if configured
+          const cleanupCommandResult = await executeCleanupCommandIfConfigured(
+            repo,
+            session.repositoryId,
+            worktreePath,
+          );
+
+          // 6. Kill PTY processes to release directory handles
+          sessionManager.killSessionWorkers(sessionId);
+
+          // 7. Remove worktree
+          const result = await worktreeService.removeWorktree(
+            repo.path,
+            worktreePath,
+            force ?? false,
+          );
+
+          if (!result.success) {
+            // Do NOT delete session — preserve for retry
+            return errorResult(result.error || 'Failed to remove worktree');
+          }
+
+          // 8. Delete session after successful worktree removal
+          try {
+            await sessionManager.deleteSession(sessionId);
+          } catch (deleteErr) {
+            logger.error(
+              { err: deleteErr, sessionId, worktreePath },
+              'Failed to delete session after worktree removal',
+            );
+            return errorResult(
+              `Worktree was removed but session cleanup failed: ${sessionId}`,
+            );
+          }
+
+          logger.info(
+            { sessionId, worktreePath },
+            'Worktree and session removed via MCP',
+          );
+
+          return textResult({
+            sessionId,
+            worktreePath,
+            removed: true,
+            cleanupCommandResult,
+          });
+        } finally {
+          clearDeletionInProgress(worktreePath);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'remove_worktree failed');
         return errorResult(message);
       }
     },
