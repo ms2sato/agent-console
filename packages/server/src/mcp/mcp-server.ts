@@ -137,6 +137,16 @@ When to send a message:
    - content: Clearly describe the question or concern, the options you've considered, and what you recommend (if applicable). Then wait for a response before proceeding.`;
 }
 
+/**
+ * Build concise reply instructions appended to PTY notifications,
+ * so the receiving agent knows how to respond via send_session_message.
+ */
+function buildReplyInstructions(senderSessionId: string): string {
+  return `\n[Reply Instructions] To reply, use the send_session_message MCP tool with:
+- toSessionId: "${senderSessionId}"
+- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable`;
+}
+
 // ---------- Dependencies ----------
 
 export interface McpDependencies {
@@ -378,6 +388,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           const senderTitle =
             sessionManager.getSession(fromSessionId)?.title ?? fromSessionId;
 
+          const writeInput = (data: string) =>
+            sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
+
           writePtyNotification({
             kind: 'internal-message',
             tag: 'internal:message',
@@ -388,8 +401,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
               path: result.path,
             },
             intent: 'triage',
-            writeInput: (data) => sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data),
+            writeInput,
           });
+
+          // Append reply instructions so the receiving agent knows how to respond
+          writeInput(buildReplyInstructions(fromSessionId));
         } catch (notifyErr) {
           logger.warn(
             { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },

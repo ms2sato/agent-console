@@ -841,22 +841,47 @@ describe('MCP Server Tools', () => {
           fromSessionId: 'sender-abc',
         }, nextId++);
 
-        // Before the timer fires, only the notification text should be written
-        expect(mockPty.writtenData).toHaveLength(1);
+        // Before the timer fires, notification text + reply instructions should be written
+        expect(mockPty.writtenData).toHaveLength(2);
         expect(mockPty.writtenData[0]).toContain('[internal:message]');
         expect(mockPty.writtenData[0]).not.toContain('\r');
         // The notification text should NOT end with \n (no trailing newline)
         expect(mockPty.writtenData[0].endsWith('\n')).toBe(false);
+        expect(mockPty.writtenData[1]).toContain('[Reply Instructions]');
+        expect(mockPty.writtenData[1]).toContain('sender-abc');
 
         // Advance past the 150ms delay
         jest.advanceTimersByTime(150);
 
-        // Now the Enter keystroke should have been sent as a second write
-        expect(mockPty.writtenData).toHaveLength(2);
-        expect(mockPty.writtenData[1]).toBe('\r');
+        // Now the Enter keystroke should have been sent as a third write
+        expect(mockPty.writtenData).toHaveLength(3);
+        expect(mockPty.writtenData[2]).toBe('\r');
       } finally {
         jest.useRealTimers();
       }
+    });
+
+    it('should include reply instructions in PTY notification', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const mockPty = ptyFactory.instances[0];
+      expect(mockPty).toBeDefined();
+
+      await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        content: 'need your help',
+        fromSessionId: 'requester-session-456',
+      }, nextId++);
+
+      // Reply instructions are the second write (index 1), after the notification (index 0)
+      const replyInstructions = mockPty.writtenData[1];
+      expect(replyInstructions).toContain('[Reply Instructions]');
+      expect(replyInstructions).toContain('toSessionId: "requester-session-456"');
+      expect(replyInstructions).toContain('AGENT_CONSOLE_SESSION_ID');
     });
 
     it('should include sender session title in notification summary', async () => {
