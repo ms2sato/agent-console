@@ -187,9 +187,31 @@ This is consistent with the `viewportY: 0` observations and the fact that only A
 - **Occurrence:** ~4 times per 15 minutes during active Agent output. Agent workers only.
 - **Recovery:** Browser resize, or `debouncer.refresh()` call (confirmed effective)
 
+## Auto-Recovery Implementation
+
+### v1 (initial): Hook refreshRows
+Hooked `renderService.refreshRows` to count refresh calls. If writes happened without refreshes within 2 seconds, called `terminal.refresh()`.
+
+**Limitation discovered (2026-03-22):** This approach had a blind spot. `RenderService.refreshRows()` short-circuits when `_isPaused` is true (set by IntersectionObserver), returning before calling `_renderDebouncer.refresh()`. However, the hook counted the call at entry, so the stall detector saw `newRefreshes > 0` and did not fire recovery. Result: stalls caused by stuck `_isPaused` were invisible to the detector.
+
+### v2 (current): Hook _renderDebouncer.refresh
+Hooks `_renderDebouncer.refresh` instead of `refreshRows`. This counts only actual render scheduling, correctly detecting stalls regardless of `_isPaused` state.
+
+Additional improvements:
+- **Stuck `_isPaused` reset:** When a stall is detected and `_isPaused` is true, resets it to false before calling `terminal.refresh()`.
+- **Visibility gate:** Only recovers when `document.visibilityState === 'visible'`.
+- **Diagnostic logging:** Logs stall detection with `isPaused`, `needsFullRefresh`, and write count via `logger.warn`.
+
+### Two known stall scenarios
+
+1. **Debouncer disconnect:** The event chain from buffer update to `_renderDebouncer.refresh()` breaks (original issue). `refreshRows` is not called at all.
+2. **Stuck `_isPaused`:** `IntersectionObserver` incorrectly reports the terminal as not visible, causing `refreshRows()` to short-circuit before reaching the debouncer.
+
+Both are now detected by hooking the debouncer directly.
+
 ## Next Steps
 
-1. **Implement auto-recovery in Terminal.tsx:** Periodic check (every 2 seconds) that detects writes without refresh and calls `debouncer.refresh()`. This is a targeted fix using xterm.js internals, not a blind periodic refresh. Verified effective — user could not perceive any stalls with the script running.
+1. **Monitor stall logs:** With diagnostic logging in place, observe whether stalls are caused by scenario 1 (debouncer disconnect) or scenario 2 (stuck `_isPaused`). The `isPaused` field in the log will distinguish them.
 2. **Root cause (future):** Investigate why `debouncer.refresh()` stops being called. Likely related to alternate screen buffer switching in Claude Code's TUI output. Consider filing an xterm.js issue if reproducible outside this application.
 
 ## Diagnostic Scripts

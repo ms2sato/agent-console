@@ -414,14 +414,21 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     watchdog.start();
 
     // WORKAROUND: xterm.js render stall auto-recovery
-    // xterm.js occasionally stops calling _renderDebouncer.refresh() for writes,
+    // xterm.js occasionally stops scheduling renders after terminal.write() completes,
     // causing the terminal display to freeze while data continues to arrive.
-    // This is a temporary patch — the root cause has not been fully identified.
     // See: docs/issues/terminal-render-stall-2026-03-21.md
     //
-    // Detection: hook terminal.write() and terminal.refresh() (via RenderService.refreshRows).
-    // If writes happen without corresponding refreshRows calls within 2 seconds,
-    // call terminal.refresh() to restart the render pipeline.
+    // Two known stall scenarios:
+    // 1. The event chain from buffer update to _renderDebouncer.refresh() breaks
+    //    (original issue — debouncer.refresh() simply stops being called)
+    // 2. RenderService._isPaused gets stuck as true (IntersectionObserver reports
+    //    the terminal as not visible), causing refreshRows() to short-circuit
+    //    before reaching the debouncer
+    //
+    // Detection: hook terminal.write() and _renderDebouncer.refresh().
+    // If writes happen without corresponding debouncer refresh calls within 2 seconds,
+    // force a render. Hooking the debouncer (not refreshRows) correctly detects
+    // stalls regardless of _isPaused state.
     const renderStallRecovery = (() => {
       let writeCount = 0;
       let refreshCount = 0;
@@ -435,13 +442,16 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         return origWrite(data, callback);
       };
 
-      // Hook RenderService.refreshRows to count refresh calls
+      // Hook _renderDebouncer.refresh to count actual render scheduling.
+      // Unlike refreshRows (which short-circuits when _isPaused is true),
+      // this counts only calls that actually reach the render debouncer.
       const renderService = (terminal as any)._core?._renderService;
-      const origRefreshRows = renderService?.refreshRows?.bind(renderService);
-      if (renderService && origRefreshRows) {
-        renderService.refreshRows = function(start: number, end: number, isRedraw?: boolean) {
+      const debouncer = renderService?._renderDebouncer;
+      const origDebouncerRefresh = debouncer?.refresh?.bind(debouncer);
+      if (debouncer && origDebouncerRefresh) {
+        debouncer.refresh = function(start: number, end: number, rowCount: number) {
           refreshCount++;
-          return origRefreshRows(start, end, isRedraw);
+          return origDebouncerRefresh(start, end, rowCount);
         };
       }
 
@@ -449,9 +459,23 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         const newWrites = writeCount - lastWriteCount;
         const newRefreshes = refreshCount - lastRefreshCount;
         if (newWrites > 0 && newRefreshes === 0) {
-          // Stall detected: writes happened but refreshRows was not called.
-          terminal.refresh(0, terminal.rows - 1);
-          restoreScrollPosition(terminal, savedScrollRef.current);
+          // Only recover when the page is visible
+          if (document.visibilityState === 'visible') {
+            const isPaused = renderService?._isPaused;
+            logger.warn('[Terminal] Render stall detected', {
+              sessionId,
+              workerId,
+              writes: newWrites,
+              isPaused,
+              needsFullRefresh: renderService?._needsFullRefresh,
+            });
+            // If _isPaused is stuck, reset it so terminal.refresh() can work
+            if (isPaused) {
+              renderService._isPaused = false;
+            }
+            terminal.refresh(0, terminal.rows - 1);
+            restoreScrollPosition(terminal, savedScrollRef.current);
+          }
         }
         lastWriteCount = writeCount;
         lastRefreshCount = refreshCount;
@@ -461,8 +485,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         dispose() {
           clearInterval(intervalId);
           terminal.write = origWrite;
-          if (renderService && origRefreshRows) {
-            renderService.refreshRows = origRefreshRows;
+          if (debouncer && origDebouncerRefresh) {
+            debouncer.refresh = origDebouncerRefresh;
           }
         },
       };
