@@ -2,8 +2,8 @@
 
 **Date:** 2026-03-21
 **Branch:** debug/terminal-render-stall-diagnostics
-**PR:** #360
-**Status:** Root cause narrowed down, fix pending
+**PRs:** #360 (diagnostics), #369 (auto-recovery v2)
+**Status:** Auto-recovery implemented (v2), root cause monitoring in progress
 
 ## Summary
 

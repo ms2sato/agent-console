@@ -458,8 +458,8 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const intervalId = setInterval(() => {
         const newWrites = writeCount - lastWriteCount;
         const newRefreshes = refreshCount - lastRefreshCount;
-        if (newWrites > 0 && newRefreshes === 0) {
-          // Only recover when the page is visible
+        const stallDetected = newWrites > 0 && newRefreshes === 0;
+        if (stallDetected) {
           if (document.visibilityState === 'visible') {
             const isPaused = renderService?._isPaused;
             logger.warn('[Terminal] Render stall detected', {
@@ -475,6 +475,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             }
             terminal.refresh(0, terminal.rows - 1);
             restoreScrollPosition(terminal, savedScrollRef.current);
+          } else {
+            // Stall detected while hidden — do NOT advance baselines.
+            // The stall will be recovered on the next visible interval.
+            return;
           }
         }
         lastWriteCount = writeCount;
