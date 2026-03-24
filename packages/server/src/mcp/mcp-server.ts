@@ -142,8 +142,9 @@ When to send a message:
  * so the receiving agent knows how to respond via send_session_message.
  */
 function buildReplyInstructions(senderSessionId: string): string {
+  const safeId = JSON.stringify(senderSessionId);
   return `\n[Reply Instructions] To reply, use the send_session_message MCP tool with:
-- toSessionId: "${senderSessionId}"
+- toSessionId: ${safeId}
 - fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable`;
 }
 
