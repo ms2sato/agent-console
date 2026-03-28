@@ -39,7 +39,7 @@ mock.module('../../lib/logger.js', () => ({
 
 // Import after mocks are set up
 const {
-  orchestrateWorktreeDeletion,
+  deleteWorktreeWithSession,
   _getDeletionsInProgress,
 } = await import('../worktree-deletion-service.js');
 
@@ -66,7 +66,7 @@ const DEFAULT_PARAMS = {
   force: false,
 };
 
-describe('orchestrateWorktreeDeletion', () => {
+describe('deleteWorktreeWithSession', () => {
   beforeEach(() => {
     // Clear concurrency guard
     _getDeletionsInProgress().clear();
@@ -95,7 +95,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
   it('happy path: runs cleanup, kills workers, removes worktree, deletes session', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, cleanupCommand: 'echo cleanup', sessionIds: ['sess-1'] },
       sm,
     );
@@ -110,7 +110,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
   it('happy path without session: skips kill and delete', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, cleanupCommand: 'echo cleanup' },
       sm,
     );
@@ -122,7 +122,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
   it('happy path without cleanup command: skips cleanup execution', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -136,7 +136,7 @@ describe('orchestrateWorktreeDeletion', () => {
     _getDeletionsInProgress().add(DEFAULT_PARAMS.worktreePath);
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -148,7 +148,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
   it('clears concurrency guard after successful deletion', async () => {
     const sm = createMockSessionManager();
-    await orchestrateWorktreeDeletion(
+    await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -162,7 +162,7 @@ describe('orchestrateWorktreeDeletion', () => {
     );
 
     const sm = createMockSessionManager();
-    await orchestrateWorktreeDeletion(
+    await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -176,7 +176,7 @@ describe('orchestrateWorktreeDeletion', () => {
     );
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -196,7 +196,7 @@ describe('orchestrateWorktreeDeletion', () => {
     );
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -209,7 +209,7 @@ describe('orchestrateWorktreeDeletion', () => {
     const sm = createMockSessionManager();
     sm.deleteSession.mockImplementation(() => Promise.reject(new Error('DB error')));
 
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
@@ -222,7 +222,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
   it('kills workers and deletes all sessions when multiple sessionIds are provided', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1', 'sess-2'] },
       sm,
     );
@@ -241,7 +241,7 @@ describe('orchestrateWorktreeDeletion', () => {
       return Promise.resolve(true);
     });
 
-    const result = await orchestrateWorktreeDeletion(
+    const result = await deleteWorktreeWithSession(
       { ...DEFAULT_PARAMS, sessionIds: ['sess-1', 'sess-2'] },
       sm,
     );

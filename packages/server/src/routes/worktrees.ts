@@ -19,9 +19,9 @@ import {
   _getDeletionsInProgress,
   isDeletionInProgress,
   validateWorktreePath,
-  orchestrateWorktreeDeletion,
+  deleteWorktreeWithSession,
 } from '../services/worktree-deletion-service.js';
-import { orchestrateWorktreeCreation } from '../services/worktree-creation-service.js';
+import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
 
 export { _getDeletionsInProgress };
@@ -121,7 +121,7 @@ const worktrees = new Hono<AppBindings>()
           }
         }
 
-        const result = await orchestrateWorktreeCreation({
+        const result = await createWorktreeWithSession({
           repoPath: repo.path,
           repoId,
           repoName: repo.name,
@@ -368,7 +368,7 @@ const worktrees = new Hono<AppBindings>()
       // Execute deletion in background (fire-and-forget)
       (async () => {
         try {
-          const result = await orchestrateWorktreeDeletion({
+          const result = await deleteWorktreeWithSession({
             repoPath: repo.path,
             repoId,
             repoName: repo.name,
@@ -424,7 +424,7 @@ const worktrees = new Hono<AppBindings>()
       session => session.locationPath === worktreePath,
     );
 
-    const result = await orchestrateWorktreeDeletion({
+    const result = await deleteWorktreeWithSession({
       repoPath: repo.path,
       repoId,
       repoName: repo.name,

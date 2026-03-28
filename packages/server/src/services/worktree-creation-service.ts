@@ -50,7 +50,7 @@ export interface CreateWorktreeResult {
  *
  * On failure after worktree creation, rolls back by force-removing the created worktree.
  */
-export async function orchestrateWorktreeCreation(
+export async function createWorktreeWithSession(
   params: CreateWorktreeParams,
   sessionManager: SessionManager,
 ): Promise<CreateWorktreeResult> {

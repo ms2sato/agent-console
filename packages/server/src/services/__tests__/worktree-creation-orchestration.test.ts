@@ -47,7 +47,7 @@ mock.module('../../lib/logger.js', () => ({
 }));
 
 // Import after mocks
-const { orchestrateWorktreeCreation } = await import('../worktree-creation-service.js');
+const { createWorktreeWithSession } = await import('../worktree-creation-service.js');
 
 // --- Helpers ---
 
@@ -96,7 +96,7 @@ const DEFAULT_PARAMS = {
   agentId: 'claude',
 };
 
-describe('orchestrateWorktreeCreation', () => {
+describe('createWorktreeWithSession', () => {
   beforeEach(() => {
     mockListWorktrees.mockReset();
     mockCreateWorktree.mockReset();
@@ -118,7 +118,7 @@ describe('orchestrateWorktreeCreation', () => {
 
   it('happy path: fetch, create worktree, setup command, create session', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(
+    const result = await createWorktreeWithSession(
       { ...DEFAULT_PARAMS, setupCommand: 'npm install' },
       sm,
     );
@@ -139,7 +139,7 @@ describe('orchestrateWorktreeCreation', () => {
 
   it('skips fetch when useRemote is false', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(
+    const result = await createWorktreeWithSession(
       { ...DEFAULT_PARAMS, useRemote: false },
       sm,
     );
@@ -154,7 +154,7 @@ describe('orchestrateWorktreeCreation', () => {
 
   it('skips setup command when not configured', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(true);
     expect(result.setupCommandResult).toBeUndefined();
@@ -165,7 +165,7 @@ describe('orchestrateWorktreeCreation', () => {
     mockFetchRemote.mockImplementation(() => Promise.reject(new Error('network error')));
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(true);
     expect(result.fetchFailed).toBe(true);
@@ -182,7 +182,7 @@ describe('orchestrateWorktreeCreation', () => {
     );
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('branch already exists');
@@ -194,7 +194,7 @@ describe('orchestrateWorktreeCreation', () => {
     mockListWorktrees.mockImplementation(() => Promise.resolve([]));
 
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Worktree was created but could not be found in the list');
@@ -207,7 +207,7 @@ describe('orchestrateWorktreeCreation', () => {
     const sm = createMockSessionManager();
     sm.createSession.mockImplementation(() => Promise.reject(new Error('DB connection lost')));
 
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('DB connection lost');
@@ -218,7 +218,7 @@ describe('orchestrateWorktreeCreation', () => {
 
   it('skips session creation when autoStartSession is false', async () => {
     const sm = createMockSessionManager();
-    const result = await orchestrateWorktreeCreation(
+    const result = await createWorktreeWithSession(
       { ...DEFAULT_PARAMS, autoStartSession: false },
       sm,
     );
@@ -235,7 +235,7 @@ describe('orchestrateWorktreeCreation', () => {
     mockRemoveWorktree.mockImplementation(() => Promise.reject(new Error('rollback failed')));
 
     // The original error should be returned, not the rollback error
-    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm);
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('original error');

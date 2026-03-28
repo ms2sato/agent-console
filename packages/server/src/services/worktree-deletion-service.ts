@@ -124,7 +124,7 @@ export interface DeleteWorktreeResult {
  * Acquires the concurrency guard internally. The caller should NOT call
  * markDeletionInProgress/clearDeletionInProgress — this function handles both.
  */
-export async function orchestrateWorktreeDeletion(
+export async function deleteWorktreeWithSession(
   params: DeleteWorktreeParams,
   sessionManager: SessionManager,
 ): Promise<DeleteWorktreeResult> {

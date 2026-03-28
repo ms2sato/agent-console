@@ -19,9 +19,9 @@ import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import {
   validateWorktreePath,
-  orchestrateWorktreeDeletion,
+  deleteWorktreeWithSession,
 } from '../services/worktree-deletion-service.js';
-import { orchestrateWorktreeCreation } from '../services/worktree-creation-service.js';
+import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
@@ -566,7 +566,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           ? sessionManager.getSession(parentSessionId)?.createdBy
           : undefined;
 
-        const result = await orchestrateWorktreeCreation({
+        const result = await createWorktreeWithSession({
           repoPath: repo.path,
           repoId: repositoryId,
           repoName: repo.name,
@@ -771,7 +771,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // 4. Orchestrate deletion (concurrency guard, cleanup, kill, remove, session delete)
-        const result = await orchestrateWorktreeDeletion({
+        const result = await deleteWorktreeWithSession({
           repoPath: repo.path,
           repoId: session.repositoryId,
           repoName: repo.name,

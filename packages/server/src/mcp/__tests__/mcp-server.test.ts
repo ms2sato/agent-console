@@ -33,7 +33,7 @@ mock.module('../../services/session-metadata-suggester.js', () => ({
 
 // Mock worktree-deletion-service
 // NOTE: We spread the real module and overlay only the functions the MCP handler
-// uses for pre-validation. orchestrateWorktreeDeletion is NOT mocked — it runs
+// uses for pre-validation. deleteWorktreeWithSession is NOT mocked — it runs
 // the real implementation which calls mocked git operations (via mock-git-helper).
 // This avoids mock.module interference with orchestration unit tests.
 const mockValidateWorktreePath = mock(async () => null as string | null);
@@ -44,7 +44,7 @@ mock.module('../../services/worktree-deletion-service.js', () => ({
 
 // Mock worktree-creation-service
 // Like worktree-deletion-service above, we spread the real module to preserve
-// the real orchestrateWorktreeCreation for tests. This prevents mock.module
+// the real createWorktreeWithSession for tests. This prevents mock.module
 // interference with worktree-creation-orchestration.test.ts.
 mock.module('../../services/worktree-creation-service.js', () => ({
   ...require('../../services/worktree-creation-service.js'),
@@ -2159,7 +2159,7 @@ describe('MCP Server Tools', () => {
       expect(data.worktreePath).toBe('/test/worktree-path');
       expect(data.removed).toBe(true);
 
-      // Session should be deleted by orchestrateWorktreeDeletion
+      // Session should be deleted by deleteWorktreeWithSession
       expect(sessionManager.getSession(session.id)).toBeUndefined();
     });
 
@@ -2178,7 +2178,7 @@ describe('MCP Server Tools', () => {
         agentId: 'claude-code',
       });
 
-      // Make git removeWorktree fail so orchestrateWorktreeDeletion returns failure
+      // Make git removeWorktree fail so deleteWorktreeWithSession returns failure
       mockGit.removeWorktree.mockImplementation(async () => {
         throw new Error('Worktree has uncommitted changes');
       });
