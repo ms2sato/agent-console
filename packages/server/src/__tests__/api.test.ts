@@ -56,6 +56,14 @@ mock.module('../services/session-metadata-suggester.js', () => ({
   suggestSessionMetadata: mockSuggestSessionMetadata,
 }));
 
+// Mock github-pr-service to avoid spawning real gh processes in tests.
+// findOpenPullRequest returns null (no open PR) by default so deletion proceeds normally.
+const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
+mock.module('../services/github-pr-service.js', () => ({
+  findOpenPullRequest: mockFindOpenPullRequest,
+  fetchPullRequestUrl: mock(async () => null),
+}));
+
 // =============================================================================
 // Bun.spawn mock for hook command tests (executeHookCommand in worktree-service)
 // =============================================================================
@@ -219,6 +227,10 @@ describe('API Routes Integration', () => {
       branch: 'suggested-branch',
       title: 'Suggested Title',
     }));
+
+    // Reset github-pr-service mock (default: no open PR)
+    mockFindOpenPullRequest.mockReset();
+    mockFindOpenPullRequest.mockImplementation(async () => null);
 
     // Spy on broadcastToApp to capture calls from async route handlers
     spyOn(wsRoutes, 'broadcastToApp');
@@ -1719,6 +1731,15 @@ describe('API Routes Integration', () => {
         // The worktree path must be within the managed repositories directory
         const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
 
+        // Insert worktree record so validateWorktreePath passes
+        const db = getDatabase();
+        await db.insertInto('worktrees').values({
+          id: 'wt-concurrent-test',
+          repository_id: repo.id,
+          path: worktreePath,
+          index_number: 1,
+        }).execute();
+
         // Pre-populate the deletion guard to simulate an in-progress deletion
         const { _getDeletionsInProgress } = await import('../routes/worktrees.js');
         const deletionsInProgress = _getDeletionsInProgress();
@@ -2174,6 +2195,73 @@ describe('API Routes Integration', () => {
         const sessions = testSessionManager!.getAllSessions();
         const sessionStillExists = sessions.some(s => s.locationPath === worktreePath);
         expect(sessionStillExists).toBe(true);
+      });
+
+      it('should block deletion when branch has an open PR (sync path)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // getCurrentBranch returns the branch name for the worktree
+        mockGit.getCurrentBranch.mockImplementation(async () => 'feature-1');
+
+        // findOpenPullRequest returns an open PR
+        mockFindOpenPullRequest.mockImplementation(async () => ({ number: 42, title: 'My PR' }));
+
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}`,
+          { method: 'DELETE' }
+        );
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('open PR #42');
+        expect(body.error).toContain('feature-1');
+      });
+
+      it('should allow deletion with force=true even when branch has an open PR', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        mockGit.getCurrentBranch.mockImplementation(async () => 'feature-1');
+        mockFindOpenPullRequest.mockImplementation(async () => ({ number: 99, title: 'Force PR' }));
+
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?force=true`,
+          { method: 'DELETE' }
+        );
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { success: boolean };
+        expect(body.success).toBe(true);
+        expect(mockFindOpenPullRequest).not.toHaveBeenCalled();
+      });
+
+      it('should block deletion when PR check fails (fail-closed)', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        mockGit.getCurrentBranch.mockImplementation(async () => 'feature-1');
+
+        // findOpenPullRequest throws an error (e.g., network failure)
+        mockFindOpenPullRequest.mockImplementation(async () => {
+          throw new Error('gh: command not found');
+        });
+
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}`,
+          { method: 'DELETE' }
+        );
+
+        // Deletion should be blocked (fail-closed)
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Failed to check for open PRs');
       });
     });
 

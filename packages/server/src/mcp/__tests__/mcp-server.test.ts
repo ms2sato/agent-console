@@ -44,6 +44,13 @@ mock.module('../../services/worktree-deletion-service.js', () => ({
   executeCleanupCommandIfConfigured: mockExecuteCleanupCommandIfConfigured,
 }));
 
+// Mock github-pr-service
+const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
+mock.module('../../services/github-pr-service.js', () => ({
+  findOpenPullRequest: mockFindOpenPullRequest,
+  fetchPullRequestUrl: mock(async () => null),
+}));
+
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -204,6 +211,10 @@ describe('MCP Server Tools', () => {
     mockClearDeletionInProgress.mockReset();
     mockExecuteCleanupCommandIfConfigured.mockReset();
     mockExecuteCleanupCommandIfConfigured.mockImplementation(async () => undefined);
+
+    // Reset github-pr-service mocks
+    mockFindOpenPullRequest.mockReset();
+    mockFindOpenPullRequest.mockImplementation(async () => null);
 
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
@@ -2155,6 +2166,109 @@ describe('MCP Server Tools', () => {
       expect(response.result?.isError).toBe(true);
 
       // Session should be preserved for retry
+      expect(sessionManager.getSession(session.id)).toBeDefined();
+    });
+
+    it('should block deletion when branch has an open PR', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      mockFindOpenPullRequest.mockImplementation(async () => ({
+        number: 123,
+        title: 'Add new feature',
+      }));
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('WARNING: Cannot remove worktree.');
+      expect(data.error).toContain('open PR #123');
+      expect(data.error).toContain('feature-branch');
+      expect(data.error).toContain('Merge or close the PR first, then retry.');
+
+      // Session should be preserved
+      expect(sessionManager.getSession(session.id)).toBeDefined();
+    });
+
+    it('should allow deletion with force=true even when branch has an open PR', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      mockFindOpenPullRequest.mockImplementation(async () => ({
+        number: 456,
+        title: 'Important PR',
+      }));
+
+      // Mock successful worktree removal
+      mockGit.removeWorktree.mockImplementation(async () => {});
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+        force: true,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        sessionId: string;
+        removed: boolean;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.removed).toBe(true);
+      expect(mockFindOpenPullRequest).not.toHaveBeenCalled();
+    });
+
+    it('should block deletion when PR check fails (fail-closed)', async () => {
+      await setupRepoManager([{
+        id: 'test-repo',
+        name: 'Test Repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/worktree-path',
+        repositoryId: 'test-repo',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      mockFindOpenPullRequest.mockImplementation(async () => {
+        throw new Error('gh: command not found');
+      });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Failed to check for open PRs');
+
+      // Session should be preserved
       expect(sessionManager.getSession(session.id)).toBeDefined();
     });
   });

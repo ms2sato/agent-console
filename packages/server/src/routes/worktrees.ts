@@ -25,6 +25,7 @@ import {
   validateWorktreePath,
   executeCleanupCommandIfConfigured,
 } from '../services/worktree-deletion-service.js';
+import { findOpenPullRequest } from '../services/github-pr-service.js';
 
 export { _getDeletionsInProgress };
 
@@ -361,26 +362,48 @@ const worktrees = new Hono<AppBindings>()
       return c.json({ error: 'Pull is in progress for this worktree' }, 409);
     }
 
+    // Check for force flag and taskId in query (needed by PR check message)
+    const force = c.req.query('force') === 'true';
+    const taskId = c.req.query('taskId');
+
+    // Validate path is within managed directory and belongs to this repository.
+    // This MUST run before any git operations (getCurrentBranch, findOpenPullRequest)
+    // to prevent arbitrary paths from reaching git commands.
+    const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+    if (validationError) {
+      throw new ValidationError(validationError);
+    }
+
+    // Check for open PRs on the branch before acquiring concurrency guard.
+    // This avoids holding the guard during a potentially slow network call.
+    // Skip the check when force=true to allow forced deletion regardless of PR state.
+    if (!force) {
+      const branchForPrCheck = await getCurrentBranch(worktreePath);
+      if (branchForPrCheck && branchForPrCheck !== '(detached)' && branchForPrCheck !== '(unknown)') {
+        try {
+          const openPr = await findOpenPullRequest(branchForPrCheck, repo.path);
+          if (openPr) {
+            throw new ValidationError(
+              `WARNING: Cannot remove worktree. Branch '${branchForPrCheck}' has open PR #${openPr.number}. Merge or close the PR first, then retry.`,
+            );
+          }
+        } catch (error) {
+          if (error instanceof ValidationError) {
+            throw error;
+          }
+          // findOpenPullRequest threw — fail-closed: block deletion
+          throw new ValidationError(
+            `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
+          );
+        }
+      }
+    }
+
     // Guard against concurrent deletion — markDeletionInProgress is the single
     // atomic gate so no await can sneak in between a read-check and a write.
     if (!markDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
-
-    // Validate path is within managed directory and belongs to this repository
-    try {
-      const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
-      if (validationError) {
-        throw new ValidationError(validationError);
-      }
-    } catch (error) {
-      clearDeletionInProgress(worktreePath);
-      throw error;
-    }
-
-    // Check for force flag and taskId in query
-    const force = c.req.query('force') === 'true';
-    const taskId = c.req.query('taskId');
 
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {

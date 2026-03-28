@@ -23,6 +23,7 @@ import {
   validateWorktreePath,
   executeCleanupCommandIfConfigured,
 } from '../services/worktree-deletion-service.js';
+import { findOpenPullRequest } from '../services/github-pr-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
@@ -793,6 +794,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
         const repo = repositoryManager.getRepository(session.repositoryId);
         if (!repo) {
           return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        // 2.5. Check for open PRs on the branch (skip when force=true)
+        if (!force) {
+          try {
+            const openPr = await findOpenPullRequest(session.worktreeId, repo.path);
+            if (openPr) {
+              return errorResult(
+                `WARNING: Cannot remove worktree. Branch '${session.worktreeId}' has open PR #${openPr.number}. Merge or close the PR first, then retry.`,
+              );
+            }
+          } catch (error) {
+            return errorResult(
+              `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
+            );
+          }
         }
 
         const worktreePath = session.locationPath;
