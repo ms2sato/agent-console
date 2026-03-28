@@ -230,6 +230,24 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const terminal = terminalRef.current;
     if (!terminal) return;
 
+    // Detect server-side truncation: response offset is lower than requested offset.
+    // This means the file was truncated and the client's cached state is stale.
+    // Reset terminal and treat as full history load.
+    const truncationDetected = stateRef.current.requestedWithOffset > 0
+      && offset < stateRef.current.requestedWithOffset;
+    if (truncationDetected) {
+      logger.warn('[Terminal] History offset regression detected (file truncated), resetting terminal', {
+        requestedOffset: stateRef.current.requestedWithOffset,
+        receivedOffset: offset,
+      });
+      // Clear stale cache
+      clearTerminalState(sessionId, workerId).catch((e) =>
+        logger.warn('[Terminal] Failed to clear terminal cache on truncation resync:', e)
+      );
+      // Reset to full history mode
+      stateRef.current.requestedWithOffset = 0;
+    }
+
     if (stateRef.current.requestedWithOffset > 0) {
       // Had cache — append diff
       if (data) {
@@ -254,7 +272,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         })
         .catch((e) => logger.error('[Terminal] Failed to write history:', e));
     }
-  }, [updateScrollButtonVisibility, saveCurrentTerminalState, processOutput]);
+  }, [sessionId, workerId, updateScrollButtonVisibility, saveCurrentTerminalState, processOutput]);
 
   const handleExit = useCallback((exitCode: number, signal: string | null) => {
     setStatus('exited');

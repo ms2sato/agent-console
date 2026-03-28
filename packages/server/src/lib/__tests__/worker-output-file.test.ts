@@ -170,15 +170,16 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.offset).toBe(11);
     });
 
-    it('should return empty data when offset exceeds file size', async () => {
+    it('should return full history when offset exceeds file size (truncation resync)', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
       vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
+      // Client has offset 100 but file is only 11 bytes — file was truncated
       const result = await manager.readHistoryWithOffset('session-1', 'worker-1', 100);
 
       expect(result).not.toBeNull();
-      expect(result!.data).toBe('');
+      expect(result!.data).toBe('hello world');
       expect(result!.offset).toBe(11);
     });
 
@@ -530,6 +531,21 @@ describe('WorkerOutputFileManager', () => {
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('');
+      expect(result!.offset).toBe(10);
+    });
+
+    it('should return full history when offset exceeds total size (file + pending) after truncation', async () => {
+      const filePath = manager.getOutputFilePath('session-total-exceed', 'worker-1');
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-total-exceed`, { recursive: true });
+      vol.writeFileSync(filePath, 'file'); // 4 bytes
+
+      manager.bufferOutput('session-total-exceed', 'worker-1', 'buffer'); // 6 bytes
+
+      // Client has offset 50 but total is only 10 bytes — file was truncated
+      const result = await manager.readHistoryWithOffset('session-total-exceed', 'worker-1', 50);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toBe('filebuffer');
       expect(result!.offset).toBe(10);
     });
 
