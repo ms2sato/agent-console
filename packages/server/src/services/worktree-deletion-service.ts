@@ -1,7 +1,12 @@
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
+import { $ } from 'bun';
 import type { HookCommandResult } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
+import { createLogger } from '../lib/logger.js';
 import { worktreeService } from './worktree-service.js';
+import type { SessionManager } from './session-manager.js';
+
+const logger = createLogger('worktree-deletion-service');
 
 // Guard against concurrent deletion of the same worktree
 const deletionsInProgress = new Set<string>();
@@ -91,4 +96,98 @@ export async function executeCleanupCommandIfConfigured(
       repo: repo.name,
     },
   );
+}
+
+// ---------- Orchestration ----------
+
+export interface DeleteWorktreeParams {
+  repoPath: string;
+  repoId: string;
+  repoName: string;
+  cleanupCommand?: string | null;
+  worktreePath: string;
+  sessionIds?: string[];  // If provided, session workers are killed and sessions are deleted on success
+  force: boolean;
+}
+
+export interface DeleteWorktreeResult {
+  success: boolean;
+  error?: string;
+  gitStatus?: string;  // Diagnostic info captured on worktree removal failure
+  cleanupCommandResult?: HookCommandResult;
+  sessionDeleteError?: string;  // Captured error(s) from session deletion (worktree was removed successfully)
+}
+
+/**
+ * Orchestrate worktree deletion: cleanup command, kill workers, remove worktree, delete session.
+ *
+ * Acquires the concurrency guard internally. The caller should NOT call
+ * markDeletionInProgress/clearDeletionInProgress — this function handles both.
+ */
+export async function deleteWorktreeWithSession(
+  params: DeleteWorktreeParams,
+  sessionManager: SessionManager,
+): Promise<DeleteWorktreeResult> {
+  const { repoPath, repoId, repoName, cleanupCommand, worktreePath, sessionIds, force } = params;
+
+  if (!markDeletionInProgress(worktreePath)) {
+    return { success: false, error: 'Deletion already in progress' };
+  }
+
+  try {
+    // 1. Execute cleanup command if configured
+    const cleanupCommandResult = await executeCleanupCommandIfConfigured(
+      { path: repoPath, name: repoName, cleanupCommand },
+      repoId,
+      worktreePath,
+    );
+
+    // 2. Kill PTY processes to release directory handles
+    if (sessionIds && sessionIds.length > 0) {
+      for (const sid of sessionIds) {
+        sessionManager.killSessionWorkers(sid);
+      }
+    }
+
+    // 3. Remove worktree via git
+    const result = await worktreeService.removeWorktree(repoPath, worktreePath, force);
+
+    if (!result.success) {
+      // Capture git status for diagnostics
+      let gitStatus: string | undefined;
+      try {
+        const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
+        gitStatus = gitStatusResult.stdout.toString();
+      } catch {
+        // If git status fails, just omit the field
+      }
+
+      logger.error({ repoId, worktreePath, error: result.error }, 'Worktree removal failed');
+      // Do NOT delete sessions — preserve for retry
+      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus };
+    }
+
+    // 4. Delete sessions after successful worktree removal
+    let sessionDeleteError: string | undefined;
+    if (sessionIds && sessionIds.length > 0) {
+      const deleteErrors: string[] = [];
+      for (const sid of sessionIds) {
+        try {
+          await sessionManager.deleteSession(sid);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.error({ repoId, worktreePath, sessionId: sid, error }, 'Failed to delete session after worktree removal');
+          deleteErrors.push(`${sid}: ${msg}`);
+        }
+      }
+      if (deleteErrors.length > 0) {
+        sessionDeleteError = deleteErrors.join('; ');
+      }
+    }
+
+    logger.info({ repoId, worktreePath, sessionIds }, 'Worktree deletion completed');
+    return { success: true, cleanupCommandResult, sessionDeleteError };
+  } finally {
+    clearDeletionInProgress(worktreePath);
+  }
 }

@@ -1,10 +1,8 @@
 import { Hono } from 'hono';
-import { $ } from 'bun';
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import { stat } from 'node:fs/promises';
 import type {
   BranchNameFallback,
-  HookCommandResult,
 } from '@agent-console/shared';
 import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
@@ -14,17 +12,16 @@ import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
-import { fetchRemote, getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
+import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { broadcastToApp } from '../websocket/routes.js';
 import {
   _getDeletionsInProgress,
   isDeletionInProgress,
-  markDeletionInProgress,
-  clearDeletionInProgress,
   validateWorktreePath,
-  executeCleanupCommandIfConfigured,
+  deleteWorktreeWithSession,
 } from '../services/worktree-deletion-service.js';
+import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
 
 export { _getDeletionsInProgress };
@@ -124,91 +121,42 @@ const worktrees = new Hono<AppBindings>()
           }
         }
 
-        // If useRemote is true, fetch the remote branch first to ensure it's up-to-date,
-        // then prefix baseBranch with origin/ to branch from remote
-        let effectiveUseRemote = useRemote;
-        let fetchFailed = false;
-        let fetchError: string | undefined;
-        if (useRemote && baseBranch) {
-          try {
-            // Fetch to ensure origin/<baseBranch> is up-to-date
-            await fetchRemote(baseBranch, repo.path);
-          } catch (error) {
-            // If fetch fails, fall back to local branch
-            logger.warn({ repoId, baseBranch, error: error instanceof Error ? error.message : String(error) },
-              'Failed to fetch remote branch, falling back to local');
-            effectiveUseRemote = false;
-            fetchFailed = true;
-            fetchError = 'Failed to fetch remote branch, created from local branch instead';
-          }
-        }
-        const effectiveBaseBranch = effectiveUseRemote && baseBranch ? `origin/${baseBranch}` : baseBranch;
+        const result = await createWorktreeWithSession({
+          repoPath: repo.path,
+          repoId,
+          repoName: repo.name,
+          setupCommand: repo.setupCommand,
+          branch,
+          baseBranch,
+          useRemote,
+          agentId: selectedAgentId,
+          initialPrompt,
+          title: effectiveTitle,
+          createdBy: authUser.id,
+          autoStartSession,
+        }, sessionManager);
 
-        const result = await worktreeService.createWorktree(repo.path, branch, repoId, effectiveBaseBranch);
-
-        if (result.error) {
-          // Broadcast failure
+        if (!result.success) {
           broadcastToApp({
             type: 'worktree-creation-failed',
             taskId,
-            error: result.error,
+            error: result.error!,
           });
           return;
         }
 
-        // Get the created worktree info
-        const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
-        const worktree = worktrees.find(wt => wt.path === result.worktreePath);
-
-        // Execute setup command if configured
-        let setupCommandResult: HookCommandResult | undefined;
-        if (repo.setupCommand && worktree && result.index !== undefined) {
-          setupCommandResult = await worktreeService.executeHookCommand(
-            repo.setupCommand,
-            result.worktreePath,
-            {
-              worktreeNum: result.index,
-              branch: worktree.branch,
-              repo: repo.name,
-            }
-          );
-        }
-
-        // Optionally start a session
-        let session = null;
-        if (autoStartSession && worktree) {
-          session = await sessionManager.createSession({
-            type: 'worktree',
-            repositoryId: repoId,
-            worktreeId: worktree.branch,
-            locationPath: worktree.path,
-            agentId: agentId ?? CLAUDE_CODE_AGENT_ID,
-            initialPrompt,
-            title: effectiveTitle,
-          }, { createdBy: authUser.id });
-        }
-
-        // Broadcast success
-        if (worktree) {
+        if (result.worktree) {
           broadcastToApp({
             type: 'worktree-creation-completed',
             taskId,
-            worktree,
-            session,
+            worktree: result.worktree,
+            session: result.session ?? null,
             branchNameFallback,
-            setupCommandResult,
-            fetchFailed: fetchFailed || undefined,
-            fetchError,
+            setupCommandResult: result.setupCommandResult,
+            fetchFailed: result.fetchFailed || undefined,
+            fetchError: result.fetchError,
           });
-          logger.info({ taskId, repoId, branch: worktree.branch }, 'Worktree creation completed');
-        } else {
-          // This shouldn't happen, but handle gracefully
-          broadcastToApp({
-            type: 'worktree-creation-failed',
-            taskId,
-            error: 'Worktree created but not found in list',
-          });
-          logger.error({ taskId, repoId, worktreePath: result.worktreePath }, 'Worktree created but not found in list');
+          logger.info({ taskId, repoId, branch: result.worktree.branch }, 'Worktree creation completed');
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree creation';
@@ -399,98 +347,70 @@ const worktrees = new Hono<AppBindings>()
       }
     }
 
-    // Guard against concurrent deletion — markDeletionInProgress is the single
-    // atomic gate so no await can sneak in between a read-check and a write.
-    if (!markDeletionInProgress(worktreePath)) {
+    // Pre-check concurrency guard before branching into async/sync paths.
+    // The service also acquires the guard internally (defense in depth),
+    // but this check preserves the original behavior of returning HTTP 409
+    // for the async path instead of accepting and then broadcasting failure.
+    if (isDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {
-      // Find the associated session before returning accepted
-      const allSessions = sessionManager.getAllSessions();
-      const targetSession = allSessions.find(session => session.locationPath === worktreePath);
-      const sessionId = targetSession?.id;
+      // Find ALL associated sessions before returning accepted
+      const matchingSessions = sessionManager.getAllSessions().filter(
+        session => session.locationPath === worktreePath,
+      );
+      const sessionIds = matchingSessions.map(s => s.id);
+      // Use first match for backward-compatible WebSocket broadcast
+      const broadcastSessionId = sessionIds[0] || '';
 
       // Execute deletion in background (fire-and-forget)
       (async () => {
         try {
-          // Execute cleanup command before deletion if configured
-          const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
-
-          // Kill PTY processes first to release worktree directory handles (cwd)
-          if (sessionId) {
-            sessionManager.killSessionWorkers(sessionId);
-          }
-
-          // Remove worktree after PTY processes are terminated
-          const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+          const result = await deleteWorktreeWithSession({
+            repoPath: repo.path,
+            repoId,
+            repoName: repo.name,
+            cleanupCommand: repo.cleanupCommand,
+            worktreePath,
+            sessionIds,
+            force,
+          }, sessionManager);
 
           if (!result.success) {
-            // Worktree deletion failed - capture git status for diagnostics
-            let gitStatus: string | undefined;
-            try {
-              const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
-              gitStatus = gitStatusResult.stdout.toString();
-            } catch {
-              // If git status fails, just omit the field
-            }
-
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: sessionId || '',
+              sessionId: broadcastSessionId,
               error: result.error || 'Failed to remove worktree',
-              gitStatus,
+              gitStatus: result.gitStatus,
             });
             logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
-            // Do NOT delete session here — preserve it for retry
             return;
-          }
-
-          // Clean up session after successful worktree removal
-          if (sessionId) {
-            try {
-              await sessionManager.deleteSession(sessionId);
-            } catch (error) {
-              logger.error({ taskId, repoId, worktreePath, sessionId, error }, 'Failed to delete session after worktree removal');
-            }
           }
 
           broadcastToApp({
             type: 'worktree-deletion-completed',
             taskId,
-            sessionId: sessionId || '',
-            cleanupCommandResult,
+            sessionId: broadcastSessionId,
+            cleanupCommandResult: result.cleanupCommandResult,
           });
-          logger.info({ taskId, repoId, worktreePath, sessionId }, 'Worktree and session deletion completed');
+          logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
 
-          // Try to broadcast failure
           try {
-            // Capture git status for diagnostics
-            let gitStatus: string | undefined;
-            try {
-              const gitStatusResult = await $`git -C ${worktreePath} status`.quiet();
-              gitStatus = gitStatusResult.stdout.toString();
-            } catch {
-              // If git status fails, just omit the field
-            }
-
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: sessionId || '',
+              sessionId: broadcastSessionId,
               error: errorMessage,
-              gitStatus,
             });
           } catch {
             // If broadcast fails, we've already logged the error above
           }
-        } finally {
-          clearDeletionInProgress(worktreePath);
         }
       })();
 
@@ -499,37 +419,30 @@ const worktrees = new Hono<AppBindings>()
     }
 
     // Synchronous deletion (backward compatible)
-    try {
-      // Execute cleanup command before deletion if configured
-      const cleanupCommandResult = await executeCleanupCommandIfConfigured(repo, repoId, worktreePath);
+    // Find ALL matching sessions for this worktree path
+    const matchingSessions = sessionManager.getAllSessions().filter(
+      session => session.locationPath === worktreePath,
+    );
 
-      // Kill PTY processes first to release worktree directory handles (cwd)
-      const sessions = sessionManager.getAllSessions();
-      const matchingSessions = sessions.filter(session => session.locationPath === worktreePath);
-      for (const session of matchingSessions) {
-        sessionManager.killSessionWorkers(session.id);
+    const result = await deleteWorktreeWithSession({
+      repoPath: repo.path,
+      repoId,
+      repoName: repo.name,
+      cleanupCommand: repo.cleanupCommand,
+      worktreePath,
+      sessionIds: matchingSessions.map(s => s.id),
+      force,
+    }, sessionManager);
+
+    if (!result.success) {
+      // Concurrency guard failure should return 409, not 400
+      if (result.error === 'Deletion already in progress') {
+        return c.json({ error: result.error }, 409);
       }
-
-      // Remove worktree after PTY processes are terminated
-      const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
-
-      if (!result.success) {
-        throw new ValidationError(result.error || 'Failed to remove worktree');
-      }
-
-      // Clean up sessions after successful worktree removal
-      for (const session of matchingSessions) {
-        try {
-          await sessionManager.deleteSession(session.id);
-        } catch (error) {
-          logger.error({ repoId, worktreePath, sessionId: session.id, error }, 'Failed to delete session after worktree removal');
-        }
-      }
-
-      return c.json({ success: true, cleanupCommandResult });
-    } finally {
-      clearDeletionInProgress(worktreePath);
+      throw new ValidationError(result.error || 'Failed to remove worktree');
     }
+
+    return c.json({ success: true, cleanupCommandResult: result.cleanupCommandResult });
   });
 
 export { worktrees };
