@@ -72,6 +72,10 @@
 }
 
 /* Markdown styling for memo panel */
+.memo-content {
+  overflow-wrap: break-word;
+}
+
 .memo-content h1, .memo-content h2, .memo-content h3, .memo-content h4, .memo-content h5, .memo-content h6 {
   font-weight: 600;
   margin-top: 0.75em;
