@@ -119,6 +119,55 @@ describe('ActivityDetector', () => {
       });
     });
 
+    it('should detect asking state from permission prompt with space-padded TUI output', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // Simulate Claude Code TUI output where each line is padded to terminal width (120 cols)
+        const pad = (text: string) => text.padEnd(120);
+        const lines = [
+          pad(' Bash command'),
+          pad(''),
+          pad('   pnpm build 2>&1'),
+          pad('   Build all packages'),
+          pad(''),
+          pad(' This command requires approval'),
+          pad(''),
+          pad(' Do you want to proceed?'),
+          pad(' ❯ 1. Yes'),
+          pad('   2. Yes, and don\'t ask again for: pnpm build:*'),
+          pad('   3. No'),
+          pad(''),
+          pad(' Esc to cancel · Tab to amend · ctrl+e to explain'),
+        ];
+        detector.processOutput(lines.join('\n'));
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
+    it('should detect asking state from TUI cursor-positioned text (no spaces)', () => {
+      travel(new Date('2025-01-01T00:00:00Z'), (c) => {
+        // TUI renders text via ANSI cursor positioning, so after ANSI stripping
+        // spaces between words are lost. This simulates the actual buffer content
+        // observed from real Claude Code permission prompts.
+        detector.processOutput(
+          'Createfiletest123.txt\n' +
+          '1test\n' +
+          'Doyouwanttocreatetest123.txt?\n' +
+          '❯1.Yes\n' +
+          '2.Yes,allowalleditsduringthissession(shift+tab)\n' +
+          '3.No\n' +
+          '\n' +
+          'Esctocancel·Tabtoamend\n'
+        );
+
+        c.tick(TEST_TIMEOUTS.debounceMs + 50);
+
+        expect(detector.getState()).toBe('asking');
+      });
+    });
+
     it('should detect asking state from Yes/No selection pattern', () => {
       travel(new Date('2025-01-01T00:00:00Z'), (c) => {
         detector.processOutput('[y] Yes  [n] No');
