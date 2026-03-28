@@ -376,6 +376,10 @@ export async function setupWebSocketRoutes(
         logger.error({ sessionId, workerId, err }, 'Failed to update diff base commit via WebSocket');
       });
     },
+    onMemoUpdated: (sessionId, content) => {
+      logger.debug({ sessionId }, 'Broadcasting memo-updated');
+      broadcastToApp({ type: 'memo-updated', sessionId, content });
+    },
   });
   completedSteps.add('setSessionLifecycleCallbacks');
 

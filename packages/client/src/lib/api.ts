@@ -645,6 +645,19 @@ export async function generateRepositoryDescription(
 }
 
 // ===========================================================================
+// Session Memo
+// ===========================================================================
+
+export async function fetchSessionMemo(sessionId: string): Promise<string | null> {
+  const res = await api.sessions[':id'].memo.$get({ param: { id: sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch session memo');
+  }
+  const data = await res.json() as { content: string | null };
+  return data.content;
+}
+
+// ===========================================================================
 // Session PR Link
 // ===========================================================================
 

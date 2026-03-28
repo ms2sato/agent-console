@@ -45,6 +45,7 @@ import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
+import { memoService } from './memo-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
@@ -638,6 +639,13 @@ export class SessionManager {
         logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
       }
 
+      // 2d. Clean up memo file
+      try {
+        await memoService.deleteMemo(id);
+      } catch (err) {
+        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+      }
+
       // 3. Remove from in-memory map
       this.sessions.delete(id);
 
@@ -1161,6 +1169,30 @@ export class SessionManager {
    */
   async getBranchForPath(locationPath: string): Promise<string> {
     return gitGetCurrentBranch(locationPath);
+  }
+
+  /**
+   * Write a memo for a session. Validates the session exists, writes to disk,
+   * and fires the onMemoUpdated lifecycle callback for WebSocket broadcast.
+   *
+   * @returns The absolute file path of the written memo.
+   */
+  async writeMemo(sessionId: string, content: string): Promise<string> {
+    if (!this.sessions.has(sessionId)) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const filePath = await memoService.writeMemo(sessionId, content);
+    this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, content);
+    return filePath;
+  }
+
+  /**
+   * Read a memo for a session.
+   *
+   * @returns The memo content, or null if no memo exists.
+   */
+  async readMemo(sessionId: string): Promise<string | null> {
+    return memoService.readMemo(sessionId);
   }
 
   /**

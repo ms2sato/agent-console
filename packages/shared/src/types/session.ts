@@ -163,6 +163,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worker-restarted': 23,
   'worktree-pull-completed': 24,
   'worktree-pull-failed': 25,
+  'memo-updated': 26,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -195,7 +196,8 @@ export type AppServerMessage =
   | ({ type: 'worktree-pull-failed' } & WorktreePullFailedPayload)
   | { type: 'worker-message'; message: WorkerMessage }
   | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
-  | { type: 'worker-restarted'; sessionId: string; workerId: string };
+  | { type: 'worker-restarted'; sessionId: string; workerId: string }
+  | { type: 'memo-updated'; sessionId: string; content: string };
 
 /**
  * Valid message types for AppClientMessage.

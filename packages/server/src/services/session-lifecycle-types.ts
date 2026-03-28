@@ -16,4 +16,5 @@ export interface SessionLifecycleCallbacks {
   onSessionPaused?: (sessionId: string, pausedAt: string) => void;
   onSessionResumed?: (session: Session) => void;
   onDiffBaseCommitChanged?: (sessionId: string, workerId: string, newBaseCommit: string) => void;
+  onMemoUpdated?: (sessionId: string, content: string) => void;
 }
