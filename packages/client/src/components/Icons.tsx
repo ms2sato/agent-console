@@ -308,3 +308,14 @@ export function LayoutListIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+
+export function GitForkIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <circle cx="12" cy="18" r="3" strokeWidth={2} />
+      <circle cx="6" cy="6" r="3" strokeWidth={2} />
+      <circle cx="18" cy="6" r="3" strokeWidth={2} />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9v3a3 3 0 003 3h6a3 3 0 003-3V9" />
+    </svg>
+  );
+}

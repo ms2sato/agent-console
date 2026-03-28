@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchSessionBranches } from '../../lib/api';
 import { sessionKeys } from '../../lib/query-keys';
-import { EditIcon } from '../Icons';
+import { EditIcon, GitForkIcon } from '../Icons';
 
 interface BaseCommitSelectorProps {
   sessionId: string;
@@ -10,6 +10,8 @@ interface BaseCommitSelectorProps {
   onBaseCommitChange: (ref: string) => void;
   disabled?: boolean;
 }
+
+const MERGE_BASE_SEARCH_TERMS = ['merge', 'fork', 'base', 'merge-base'];
 
 export function BaseCommitSelector({
   sessionId,
@@ -34,15 +36,47 @@ export function BaseCommitSelector({
   // Format display value - show commit hash clearly
   const shortCommit = currentBaseCommit ? currentBaseCommit.substring(0, 7) : null;
 
-  // Filter branches based on input
-  const filteredBranches = branchesData
-    ? [
-        ...branchesData.local.filter(b => b.toLowerCase().includes(inputValue.toLowerCase())),
-        ...branchesData.remote
-          .filter(b => b.toLowerCase().includes(inputValue.toLowerCase()))
-          .filter(b => !branchesData.local.includes(b.replace(/^origin\//, ''))),
-      ].slice(0, 10)
-    : [];
+  const defaultBranch = branchesData?.defaultBranch ?? null;
+  const mergeBaseRef = defaultBranch ? `merge-base:${defaultBranch}` : null;
+
+  // Build dropdown items based on search state
+  const { mergeBaseVisible, filteredLocal, filteredRemote, hasItems } = useMemo(() => {
+    if (!branchesData) {
+      return { mergeBaseVisible: false, filteredLocal: [], filteredRemote: [], hasItems: false };
+    }
+
+    const query = inputValue.toLowerCase();
+
+    // Merge-base is visible when no search, or when search matches relevant terms
+    const mbVisible = defaultBranch != null && (
+      !inputValue ||
+      MERGE_BASE_SEARCH_TERMS.some(term => term.includes(query)) ||
+      defaultBranch.toLowerCase().includes(query)
+    );
+
+    // When not searching, exclude defaultBranch from regular lists (it appears in "Default branch" section)
+    const localBranches = branchesData.local.filter(b => {
+      if (!b.toLowerCase().includes(query)) return false;
+      if (!inputValue && b === defaultBranch) return false;
+      return true;
+    });
+
+    const remoteBranches = branchesData.remote.filter(b => {
+      if (!b.toLowerCase().includes(query)) return false;
+      if (!inputValue && b === `origin/${defaultBranch}`) return false;
+      return true;
+    });
+
+    const total = (mbVisible ? 1 : 0) + localBranches.length + remoteBranches.length +
+      (defaultBranch && !inputValue ? 2 : 0); // origin/default + local default
+
+    return {
+      mergeBaseVisible: mbVisible,
+      filteredLocal: localBranches.slice(0, 10),
+      filteredRemote: remoteBranches.slice(0, 10),
+      hasItems: total > 0 || !!inputValue,
+    };
+  }, [branchesData, inputValue, defaultBranch]);
 
   const handleStartEdit = useCallback(() => {
     if (disabled) return;
@@ -133,46 +167,93 @@ export function BaseCommitSelector({
         </div>
 
         {/* Dropdown */}
-        {showDropdown && filteredBranches.length > 0 && (
+        {showDropdown && hasItems && (
           <div
             ref={dropdownRef}
-            className="absolute top-full left-0 mt-1 w-64 max-h-60 overflow-y-auto bg-slate-800 border border-slate-600 rounded shadow-lg z-50"
+            className="absolute top-full left-0 mt-1 w-72 max-h-60 overflow-y-auto bg-slate-800 border border-slate-600 rounded shadow-lg z-50"
           >
-            {branchesData?.defaultBranch && !inputValue && (
-              <div className="px-2 py-1 text-xs text-gray-500 border-b border-slate-700">
-                Default branch
-              </div>
+            {/* No search: show structured sections */}
+            {!inputValue && defaultBranch && (
+              <>
+                {/* Recommended section */}
+                {mergeBaseVisible && mergeBaseRef && (
+                  <>
+                    <SectionHeader label="Recommended" />
+                    <button
+                      type="button"
+                      onClick={() => handleSelectBranch(mergeBaseRef)}
+                      className="w-full px-3 py-1.5 text-left text-sm text-blue-300 hover:bg-slate-700 flex items-center gap-2"
+                    >
+                      <GitForkIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                      <span>Fork point from {defaultBranch}</span>
+                      <span className="text-xs text-gray-500 ml-auto">(merge-base)</span>
+                    </button>
+                  </>
+                )}
+
+                {/* Default branch section */}
+                <SectionHeader label="Default branch" />
+                <button
+                  type="button"
+                  onClick={() => handleSelectBranch(`origin/${defaultBranch}`)}
+                  className="w-full px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-slate-700"
+                >
+                  origin/{defaultBranch}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectBranch(defaultBranch)}
+                  className="w-full px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-slate-700"
+                >
+                  {defaultBranch}
+                </button>
+              </>
             )}
-            {branchesData?.defaultBranch && !inputValue && (
+
+            {/* Searching: show merge-base if it matches */}
+            {inputValue && mergeBaseVisible && mergeBaseRef && defaultBranch && (
               <button
                 type="button"
-                onClick={() => handleSelectBranch(branchesData.defaultBranch!)}
-                className="w-full px-3 py-1.5 text-left text-sm text-blue-400 hover:bg-slate-700 flex items-center gap-2"
+                onClick={() => handleSelectBranch(mergeBaseRef)}
+                className="w-full px-3 py-1.5 text-left text-sm text-blue-300 hover:bg-slate-700 flex items-center gap-2"
               >
-                <span>{branchesData.defaultBranch}</span>
-                <span className="text-xs text-gray-500">(default)</span>
+                <GitForkIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <span>Fork point from {defaultBranch}</span>
+                <span className="text-xs text-gray-500 ml-auto">(merge-base)</span>
               </button>
             )}
-            {filteredBranches.length > 0 && (
-              <div className="px-2 py-1 text-xs text-gray-500 border-b border-slate-700">
-                {inputValue ? 'Matching branches' : 'Local branches'}
-              </div>
+
+            {/* Branches section */}
+            {(filteredLocal.length > 0 || filteredRemote.length > 0) && (
+              <>
+                <SectionHeader label={inputValue ? 'Matching branches' : 'Branches'} />
+                {filteredLocal.map((branch) => (
+                  <button
+                    key={branch}
+                    type="button"
+                    onClick={() => handleSelectBranch(branch)}
+                    className="w-full px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-slate-700"
+                  >
+                    {branch}
+                  </button>
+                ))}
+                {filteredRemote.map((branch) => (
+                  <button
+                    key={branch}
+                    type="button"
+                    onClick={() => handleSelectBranch(branch)}
+                    className="w-full px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-slate-700"
+                  >
+                    {branch}
+                  </button>
+                ))}
+              </>
             )}
-            {filteredBranches.map((branch) => (
-              <button
-                key={branch}
-                type="button"
-                onClick={() => handleSelectBranch(branch)}
-                className="w-full px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-slate-700"
-              >
-                {branch}
-              </button>
-            ))}
+
+            {/* Custom ref section */}
             {inputValue && (
               <>
-                <div className="px-2 py-1 text-xs text-gray-500 border-t border-slate-700">
-                  Use custom ref
-                </div>
+                <SectionHeader label="Use custom ref" />
                 <button
                   type="button"
                   onClick={() => handleSubmit(inputValue)}
@@ -199,5 +280,13 @@ export function BaseCommitSelector({
       <span className="text-blue-400">{shortCommit || 'N/A'}</span>
       <EditIcon className="w-3 h-3 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
     </button>
+  );
+}
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div className="px-2 py-1 text-xs text-gray-500 border-b border-slate-700">
+      {label}
+    </div>
   );
 }

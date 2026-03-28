@@ -7,6 +7,7 @@ import {
   startWatching as startWatchingImpl,
   stopWatching as stopWatchingImpl,
 } from '../services/git-diff-service.js';
+import { getMergeBaseSafe as getMergeBaseSafeImpl } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('git-diff-handler');
@@ -18,6 +19,7 @@ const log = createLogger('git-diff-handler');
 export interface GitDiffHandlerDependencies {
   getDiffData: (repoPath: string, baseCommit: string, targetRef?: GitDiffTarget) => Promise<GitDiffData>;
   resolveRef: (ref: string, repoPath: string) => Promise<string | null>;
+  getMergeBase: (ref1: string, ref2: string, repoPath: string) => Promise<string | null>;
   startWatching: (repoPath: string, onChange: () => void) => void;
   stopWatching: (repoPath: string) => void;
   getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget) => Promise<string[]>;
@@ -27,6 +29,7 @@ export interface GitDiffHandlerDependencies {
 const defaultDependencies: GitDiffHandlerDependencies = {
   getDiffData: getDiffDataImpl,
   resolveRef: resolveRefImpl,
+  getMergeBase: getMergeBaseSafeImpl,
   startWatching: startWatchingImpl,
   stopWatching: stopWatchingImpl,
   getFileLines: getFileLinesImpl,
@@ -51,7 +54,7 @@ const activeConnections = new Map<string, ConnectionState>();
 // ============================================================
 
 export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = defaultDependencies) {
-  const { getDiffData, resolveRef, startWatching, stopWatching, getFileLines } = deps;
+  const { getDiffData, resolveRef, getMergeBase, startWatching, stopWatching, getFileLines } = deps;
 
   /**
    * Send diff data to the client.
@@ -166,8 +169,18 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
           break;
 
         case 'set-base-commit': {
-          // Resolve the ref to a commit hash
-          const resolved = await resolveRef(parsed.ref, locationPath);
+          const MERGE_BASE_PREFIX = 'merge-base:';
+          let resolved: string | null;
+
+          if (parsed.ref.startsWith(MERGE_BASE_PREFIX)) {
+            // Resolve via git merge-base <branch> HEAD
+            const branchName = parsed.ref.slice(MERGE_BASE_PREFIX.length);
+            resolved = await getMergeBase(branchName, 'HEAD', locationPath);
+          } else {
+            // Resolve via git rev-parse
+            resolved = await resolveRef(parsed.ref, locationPath);
+          }
+
           if (resolved) {
             state.baseCommit = resolved;
             await sendDiffData(ws, locationPath, resolved, currentTargetRef);

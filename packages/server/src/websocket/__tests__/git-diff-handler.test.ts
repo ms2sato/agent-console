@@ -9,6 +9,7 @@ describe('GitDiffHandler', () => {
   let sentMessages: string[];
   let mockGetDiffData: ReturnType<typeof mock>;
   let mockResolveRef: ReturnType<typeof mock>;
+  let mockGetMergeBase: ReturnType<typeof mock>;
   let mockStartWatching: ReturnType<typeof mock>;
   let mockStopWatching: ReturnType<typeof mock>;
   let handlers: ReturnType<typeof createGitDiffHandlers>;
@@ -45,12 +46,19 @@ describe('GitDiffHandler', () => {
       }
       return null;
     });
+    mockGetMergeBase = mock(async (ref1: string, _ref2: string) => {
+      if (ref1 === 'main' || ref1 === 'master') {
+        return 'merge-base-commit-hash';
+      }
+      return null;
+    });
     mockStartWatching = mock(() => {});
     mockStopWatching = mock(() => {});
 
     const deps: GitDiffHandlerDependencies = {
       getDiffData: mockGetDiffData,
       resolveRef: mockResolveRef,
+      getMergeBase: mockGetMergeBase,
       startWatching: mockStartWatching,
       stopWatching: mockStopWatching,
       getFileLines: mock(() => Promise.resolve([])),
@@ -208,6 +216,33 @@ describe('GitDiffHandler', () => {
         expect(sentMsg.type).toBe('diff-error');
         expect((sentMsg as { error: string }).error).toContain('Invalid ref');
       });
+
+      it('should call getMergeBase and send diff data for merge-base: prefix', async () => {
+        await connectWorker('old-base');
+
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'merge-base:main' }));
+
+        expect(mockGetMergeBase).toHaveBeenCalledWith('main', 'HEAD', '/repo/path');
+        expect(mockResolveRef).not.toHaveBeenCalled();
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'merge-base-commit-hash', 'working-dir');
+
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('diff-data');
+      });
+
+      it('should send error when getMergeBase returns null for merge-base: prefix', async () => {
+        await connectWorker('old-base');
+
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'merge-base:nonexistent-branch' }));
+
+        expect(mockGetMergeBase).toHaveBeenCalledWith('nonexistent-branch', 'HEAD', '/repo/path');
+        expect(mockResolveRef).not.toHaveBeenCalled();
+        expect(mockGetDiffData).not.toHaveBeenCalled();
+
+        const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(sentMsg.type).toBe('diff-error');
+        expect((sentMsg as { error: string }).error).toContain('Invalid ref');
+      });
     });
 
     describe('refresh after set-base-commit', () => {
@@ -257,6 +292,7 @@ describe('GitDiffHandler', () => {
         const deps = {
           getDiffData: mockGetDiffData,
           resolveRef: mockResolveRef,
+          getMergeBase: mockGetMergeBase,
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.resolve(['line1', 'line2', 'line3'])),
@@ -301,6 +337,7 @@ describe('GitDiffHandler', () => {
         const deps: GitDiffHandlerDependencies = {
           getDiffData: mockGetDiffData,
           resolveRef: mockResolveRef,
+          getMergeBase: mockGetMergeBase,
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('Invalid file path: ../etc/passwd'))),
@@ -342,6 +379,7 @@ describe('GitDiffHandler', () => {
         const deps: GitDiffHandlerDependencies = {
           getDiffData: mockGetDiffData,
           resolveRef: mockResolveRef,
+          getMergeBase: mockGetMergeBase,
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('File not found'))),
