@@ -42,7 +42,12 @@ export function BaseCommitSelector({
   // Build dropdown items based on search state
   const { mergeBaseVisible, filteredLocal, filteredRemote, hasItems } = useMemo(() => {
     if (!branchesData) {
-      return { mergeBaseVisible: false, filteredLocal: [], filteredRemote: [], hasItems: false };
+      return {
+        mergeBaseVisible: false,
+        filteredLocal: [],
+        filteredRemote: [],
+        hasItems: inputValue.trim().length > 0,
+      };
     }
 
     const query = inputValue.toLowerCase();
