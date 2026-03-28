@@ -302,6 +302,12 @@ export class WorkerOutputFileManager {
   /**
    * Read output history from file.
    * Supports legacy .log.gz files for backward compatibility.
+   *
+   * When `fromOffset` exceeds the total available data (file size + pending buffer),
+   * this indicates the file was truncated (e.g., size-based rotation) and the client
+   * holds a stale offset. In this case, the full history is returned so the client
+   * can resync its terminal state.
+   *
    * @param sessionId Session ID
    * @param workerId Worker ID
    * @param fromOffset If specified, read only data after this offset (for incremental sync)
@@ -345,8 +351,17 @@ export class WorkerOutputFileManager {
 
       // Handle offset-based reads (incremental sync)
       if (fromOffset !== undefined && fromOffset > 0) {
-        if (fromOffset >= totalOffset) {
-          // Offset equals or exceeds total size, no new data
+        if (fromOffset > totalOffset) {
+          // Client's offset exceeds file size — file was likely truncated
+          // or offset tracking diverged. Return full history so client can resync.
+          logger.warn(
+            { sessionId, workerId, fromOffset, totalOffset },
+            'History request offset exceeds file size, returning full history for resync'
+          );
+          return { data: buffer.toString('utf-8') + pendingBuffer, offset: totalOffset };
+        }
+        if (fromOffset === totalOffset) {
+          // Client is up to date, no new data
           return { data: '', offset: totalOffset };
         }
 
