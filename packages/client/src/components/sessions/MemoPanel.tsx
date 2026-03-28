@@ -65,7 +65,7 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
         </button>
       </div>
       {/* Content */}
-      <div className="memo-content flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-300">
+      <div className="memo-content min-w-0 flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-300">
         <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
       </div>
     </div>
