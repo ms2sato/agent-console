@@ -352,6 +352,7 @@ export async function setupWebSocketRoutes(
     },
     onSessionDeleted: (sessionId) => {
       logger.debug({ sessionId }, 'Broadcasting session-deleted');
+      appContext.timerManager.deleteTimersBySession(sessionId);
       broadcastToApp({ type: 'session-deleted', sessionId });
     },
     onWorkerActivated: (sessionId, workerId) => {

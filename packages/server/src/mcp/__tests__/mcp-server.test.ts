@@ -19,6 +19,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
+import { TimerManager } from '../../services/timer-manager.js';
 import { createMcpApp } from '../mcp-server.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
@@ -144,6 +145,7 @@ describe('MCP Server Tools', () => {
   let sessionManager: SessionManager;
   let agentManager: AgentManager;
   let repositoryManager: RepositoryManager;
+  let timerManager: TimerManager;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
@@ -155,7 +157,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -221,6 +223,9 @@ describe('MCP Server Tools', () => {
 
     // Create RepositoryManager (initially empty)
     repositoryManager = await RepositoryManager.create({ jobQueue: testJobQueue });
+
+    // Create TimerManager (no-op callback for tests)
+    timerManager = new TimerManager(() => {});
 
     // Create MCP app with injected dependencies and initialize MCP session
     await remountMcpApp();

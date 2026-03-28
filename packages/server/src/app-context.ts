@@ -18,6 +18,7 @@ import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
+import type { TimerManager } from './services/timer-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
@@ -40,6 +41,8 @@ import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { bunPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
+import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
+import { writePtyNotification } from './lib/pty-notification.js';
 import { worktreeService } from './services/worktree-service.js';
 
 const logger = createLogger('app-context');
@@ -77,6 +80,9 @@ export interface AppContext {
 
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
+
+  /** Periodic timer management (in-memory, volatile) */
+  timerManager: TimerManager;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -161,6 +167,30 @@ export async function createAppContext(
     jobQueue,
   });
 
+  // 6.5. Create timer manager (in-memory, volatile)
+  const timerManager = new TimerManagerClass((timer) => {
+    try {
+      const writeInput = (data: string) =>
+        sessionManager.writeWorkerInput(timer.sessionId, timer.workerId, data);
+      writePtyNotification({
+        kind: 'internal-timer',
+        tag: 'internal:timer',
+        fields: {
+          timerId: timer.id,
+          action: timer.action,
+          fireCount: String(timer.fireCount),
+        },
+        intent: 'inform',
+        writeInput,
+      });
+    } catch (err) {
+      logger.warn(
+        { timerId: timer.id, sessionId: timer.sessionId, err },
+        'Failed to deliver timer notification',
+      );
+    }
+  });
+
   // 7. Wire cross-dependencies between managers
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
@@ -202,6 +232,7 @@ export async function createAppContext(
     systemCapabilities,
     agentManager,
     userMode,
+    timerManager,
     inboundIntegration,
   };
 }
@@ -299,6 +330,9 @@ export async function createTestContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
+  // Create timer manager (no-op callback for tests)
+  const timerManager = new TimerManagerClass(() => {});
+
   // Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
     jobQueue,
@@ -326,6 +360,7 @@ export async function createTestContext(
     systemCapabilities,
     agentManager,
     userMode,
+    timerManager,
     inboundIntegration,
   };
 }
@@ -340,6 +375,9 @@ export async function createTestContext(
 export async function shutdownAppContext(
   context: AppContext,
 ): Promise<void> {
+  // Dispose timer manager
+  context.timerManager.disposeAll();
+
   // Stop job queue
   await context.jobQueue.stop();
 
