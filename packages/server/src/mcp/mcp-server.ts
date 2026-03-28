@@ -18,17 +18,16 @@ import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import {
-  markDeletionInProgress,
-  clearDeletionInProgress,
   validateWorktreePath,
-  executeCleanupCommandIfConfigured,
+  orchestrateWorktreeDeletion,
 } from '../services/worktree-deletion-service.js';
+import { orchestrateWorktreeCreation } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
-import { fetchRemote, getRemoteUrl, GitError } from '../lib/git.js';
+import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
@@ -557,130 +556,76 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // Determine base branch
-        let effectiveBaseBranch =
+        const effectiveBaseBranch =
           baseBranch ??
           (await worktreeService.getDefaultBranch(repo.path)) ??
           'main';
 
-        // Handle useRemote flag
-        if (useRemote !== false && effectiveBaseBranch) {
-          try {
-            await fetchRemote(effectiveBaseBranch, repo.path);
-            effectiveBaseBranch = `origin/${effectiveBaseBranch}`;
-          } catch (fetchErr) {
-            logger.warn(
-              {
-                repositoryId,
-                baseBranch: effectiveBaseBranch,
-                err: fetchErr,
-              },
-              'Failed to fetch remote branch, falling back to local',
-            );
-            // Keep local baseBranch as-is
-          }
+        // Inherit createdBy from parent session (if delegated)
+        const parentCreatedBy = parentSessionId
+          ? sessionManager.getSession(parentSessionId)?.createdBy
+          : undefined;
+
+        const result = await orchestrateWorktreeCreation({
+          repoPath: repo.path,
+          repoId: repositoryId,
+          repoName: repo.name,
+          setupCommand: repo.setupCommand,
+          branch: effectiveBranch,
+          baseBranch: effectiveBaseBranch,
+          useRemote: useRemote !== false,
+          agentId: selectedAgentId,
+          initialPrompt: effectivePrompt,
+          title: effectiveTitle,
+          parentSessionId,
+          parentWorkerId,
+          createdBy: parentCreatedBy,
+        }, sessionManager);
+
+        if (!result.success) {
+          return errorResult(`Worktree creation failed: ${result.error}`);
         }
 
-        // Create worktree
-        const wtResult = await worktreeService.createWorktree(
-          repo.path,
-          effectiveBranch,
-          repositoryId,
-          effectiveBaseBranch,
-        );
-
-        if (wtResult.error) {
-          return errorResult(`Worktree creation failed: ${wtResult.error}`);
-        }
-
-        // Track that worktree was created for rollback on subsequent failures
-        const createdWorktreePath = wtResult.worktreePath;
-
-        try {
-          // Find created worktree info
-          const worktrees = await worktreeService.listWorktrees(repo.path, repositoryId);
-          const worktree = worktrees.find((wt) => wt.path === createdWorktreePath);
-
-          if (!worktree) {
-            throw new Error('Worktree was created but could not be found in the list');
-          }
-
-          // Execute setup command if configured
-          if (repo.setupCommand && wtResult.index !== undefined) {
-            await worktreeService.executeHookCommand(
-              repo.setupCommand,
-              createdWorktreePath,
-              {
-                worktreeNum: wtResult.index,
-                branch: worktree.branch,
-                repo: repo.name,
-              },
-            );
-          }
-
-          // Inherit createdBy from parent session (if delegated)
-          const parentCreatedBy = parentSessionId
-            ? sessionManager.getSession(parentSessionId)?.createdBy
-            : undefined;
-
-          // Create session with agent worker
-          const session = await sessionManager.createSession({
-            type: 'worktree',
-            repositoryId,
-            worktreeId: worktree.branch,
-            locationPath: worktree.path,
-            agentId: selectedAgentId,
-            initialPrompt: effectivePrompt,
-            title: effectiveTitle,
-            parentSessionId,
-            parentWorkerId,
-          }, { createdBy: parentCreatedBy });
-
-          // Re-check session still exists after async gap.
-          // Session may have been deleted concurrently during createSession.
-          const currentSession = sessionManager.getSession(session.id);
-          if (!currentSession) {
-            logger.warn(
-              { sessionId: session.id, repositoryId },
-              'Session deleted during delegate_to_worktree, rolling back worktree',
-            );
-            throw new Error('Session was deleted before delegation could complete');
-          }
-
-          // Find the agent worker ID from the created session
-          const agentWorker = currentSession.workers.find((w) => w.type === 'agent');
-          if (!agentWorker) {
-            return errorResult('Session created but no agent worker was found');
-          }
-
-          const result: DelegateResult = {
-            sessionId: session.id,
-            workerId: agentWorker.id,
-            worktreePath: worktree.path,
-            branch: worktree.branch,
-          };
-
-          logger.info(
-            { sessionId: session.id, branch: worktree.branch, repositoryId },
-            'Worktree delegation completed via MCP',
-          );
-
-          return textResult(result);
-        } catch (postWorktreeErr) {
-          // Rollback: remove the worktree that was created before the failure
+        // Re-check session still exists after async gap.
+        // Session may have been deleted concurrently during creation.
+        const session = result.session!;
+        const currentSession = sessionManager.getSession(session.id);
+        if (!currentSession) {
           logger.warn(
-            { worktreePath: createdWorktreePath, err: postWorktreeErr },
-            'Post-worktree step failed, rolling back worktree',
+            { sessionId: session.id, repositoryId },
+            'Session deleted during delegate_to_worktree, rolling back worktree',
           );
+          // Rollback the created worktree since the session no longer exists
           try {
-            await worktreeService.removeWorktree(repo.path, createdWorktreePath, true);
+            await worktreeService.removeWorktree(repo.path, result.worktree!.path, true);
           } catch (cleanupErr) {
             logger.warn(
-              { worktreePath: createdWorktreePath, err: cleanupErr },
+              { worktreePath: result.worktree!.path, err: cleanupErr },
               'Failed to clean up worktree during rollback',
             );
           }
-          throw postWorktreeErr;
+          return errorResult('Session was deleted before delegation could complete');
         }
+
+        // Find the agent worker ID from the created session
+        const agentWorker = currentSession.workers.find((w) => w.type === 'agent');
+        if (!agentWorker) {
+          return errorResult('Session created but no agent worker was found');
+        }
+
+        const delegateResult: DelegateResult = {
+          sessionId: session.id,
+          workerId: agentWorker.id,
+          worktreePath: result.worktree!.path,
+          branch: result.worktree!.branch,
+        };
+
+        logger.info(
+          { sessionId: session.id, branch: result.worktree!.branch, repositoryId },
+          'Worktree delegation completed via MCP',
+        );
+
+        return textResult(delegateResult);
       } catch (err) {
         if (err instanceof GitError) {
           logger.error({ err, repositoryId }, 'delegate_to_worktree failed (git error)');
@@ -824,61 +769,32 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(validationError);
         }
 
-        // 4. Concurrency guard
-        if (!markDeletionInProgress(worktreePath)) {
-          return errorResult('Deletion already in progress for this worktree');
+        // 4. Orchestrate deletion (concurrency guard, cleanup, kill, remove, session delete)
+        const result = await orchestrateWorktreeDeletion({
+          repoPath: repo.path,
+          repoId: session.repositoryId,
+          repoName: repo.name,
+          cleanupCommand: repo.cleanupCommand,
+          worktreePath,
+          sessionId,
+          force: force ?? false,
+        }, sessionManager);
+
+        if (!result.success) {
+          return errorResult(result.error || 'Failed to remove worktree');
         }
 
-        try {
-          // 5. Execute cleanup command if configured
-          const cleanupCommandResult = await executeCleanupCommandIfConfigured(
-            repo,
-            session.repositoryId,
-            worktreePath,
-          );
+        logger.info(
+          { sessionId, worktreePath },
+          'Worktree and session removed via MCP',
+        );
 
-          // 6. Kill PTY processes to release directory handles
-          sessionManager.killSessionWorkers(sessionId);
-
-          // 7. Remove worktree
-          const result = await worktreeService.removeWorktree(
-            repo.path,
-            worktreePath,
-            force ?? false,
-          );
-
-          if (!result.success) {
-            // Do NOT delete session — preserve for retry
-            return errorResult(result.error || 'Failed to remove worktree');
-          }
-
-          // 8. Delete session after successful worktree removal
-          try {
-            await sessionManager.deleteSession(sessionId);
-          } catch (deleteErr) {
-            logger.error(
-              { err: deleteErr, sessionId, worktreePath },
-              'Failed to delete session after worktree removal',
-            );
-            return errorResult(
-              `Worktree was removed but session cleanup failed: ${sessionId}`,
-            );
-          }
-
-          logger.info(
-            { sessionId, worktreePath },
-            'Worktree and session removed via MCP',
-          );
-
-          return textResult({
-            sessionId,
-            worktreePath,
-            removed: true,
-            cleanupCommandResult,
-          });
-        } finally {
-          clearDeletionInProgress(worktreePath);
-        }
+        return textResult({
+          sessionId,
+          worktreePath,
+          removed: true,
+          cleanupCommandResult: result.cleanupCommandResult,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'remove_worktree failed');

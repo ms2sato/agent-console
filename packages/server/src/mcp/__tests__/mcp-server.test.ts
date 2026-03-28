@@ -32,16 +32,22 @@ mock.module('../../services/session-metadata-suggester.js', () => ({
 }));
 
 // Mock worktree-deletion-service
+// NOTE: We spread the real module and overlay only the functions the MCP handler
+// uses for pre-validation. orchestrateWorktreeDeletion is NOT mocked — it runs
+// the real implementation which calls mocked git operations (via mock-git-helper).
+// This avoids mock.module interference with orchestration unit tests.
 const mockValidateWorktreePath = mock(async () => null as string | null);
-const mockMarkDeletionInProgress = mock(() => true);
-const mockClearDeletionInProgress = mock(() => {});
-const mockExecuteCleanupCommandIfConfigured = mock(async () => undefined);
 mock.module('../../services/worktree-deletion-service.js', () => ({
-  isDeletionInProgress: mock(() => false),
-  markDeletionInProgress: mockMarkDeletionInProgress,
-  clearDeletionInProgress: mockClearDeletionInProgress,
+  ...require('../../services/worktree-deletion-service.js'),
   validateWorktreePath: mockValidateWorktreePath,
-  executeCleanupCommandIfConfigured: mockExecuteCleanupCommandIfConfigured,
+}));
+
+// Mock worktree-creation-service
+// Like worktree-deletion-service above, we spread the real module to preserve
+// the real orchestrateWorktreeCreation for tests. This prevents mock.module
+// interference with worktree-creation-orchestration.test.ts.
+mock.module('../../services/worktree-creation-service.js', () => ({
+  ...require('../../services/worktree-creation-service.js'),
 }));
 
 // Mock github-pr-service
@@ -50,6 +56,11 @@ mock.module('../../services/github-pr-service.js', () => ({
   findOpenPullRequest: mockFindOpenPullRequest,
   fetchPullRequestUrl: mock(async () => null),
 }));
+
+// Import the real deletion service's concurrency guard (for tests that need
+// to pre-populate it). The mock.module above spreads the real module exports,
+// so this import returns the real _getDeletionsInProgress function.
+const { _getDeletionsInProgress } = await import('../../services/worktree-deletion-service.js');
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -206,11 +217,7 @@ describe('MCP Server Tools', () => {
     // Reset worktree-deletion-service mocks
     mockValidateWorktreePath.mockReset();
     mockValidateWorktreePath.mockImplementation(async () => null);
-    mockMarkDeletionInProgress.mockReset();
-    mockMarkDeletionInProgress.mockImplementation(() => true);
-    mockClearDeletionInProgress.mockReset();
-    mockExecuteCleanupCommandIfConfigured.mockReset();
-    mockExecuteCleanupCommandIfConfigured.mockImplementation(async () => undefined);
+    _getDeletionsInProgress().clear();
 
     // Reset github-pr-service mocks
     mockFindOpenPullRequest.mockReset();
@@ -1150,6 +1157,7 @@ describe('MCP Server Tools', () => {
     it('should successfully create worktree, session, and start agent worker', async () => {
       await setupDelegateEnvironment('feat/my-feature');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement feature X',
@@ -1205,6 +1213,7 @@ describe('MCP Server Tools', () => {
 
       await setupDelegateEnvironment('feat/auto-generated-branch');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement automatic branch generation',
@@ -1227,6 +1236,7 @@ describe('MCP Server Tools', () => {
     it('should use explicit branch name when provided', async () => {
       await setupDelegateEnvironment('my-explicit-branch');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Do some work',
@@ -1244,6 +1254,7 @@ describe('MCP Server Tools', () => {
 
     it('should pass custom title through to the created session', async () => {
       await setupDelegateEnvironment('feat/titled-task');
+
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1366,8 +1377,6 @@ describe('MCP Server Tools', () => {
         branch: 'feat/ghost-worktree',
       }, nextId++);
 
-      // The worktree is found via the DB record (as an orphaned entry),
-      // so the delegate succeeds instead of rolling back
       expect(response.result?.isError).toBeUndefined();
 
       const data = parseToolResult(response) as {
@@ -1419,6 +1428,7 @@ describe('MCP Server Tools', () => {
         defaultAgentId: registered.id,
       });
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test repo default agent selection',
@@ -1432,6 +1442,7 @@ describe('MCP Server Tools', () => {
 
     it('should fall back to claude-code-builtin when agentId is not provided and repository has no defaultAgentId', async () => {
       await setupDelegateEnvironment('feat/no-default');
+
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1459,6 +1470,7 @@ describe('MCP Server Tools', () => {
       await setupDelegateEnvironment('feat/explicit-override', {
         defaultAgentId: repoDefault.id,
       });
+
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1521,6 +1533,7 @@ describe('MCP Server Tools', () => {
     it('should append callback instructions to prompt when parent IDs are provided', async () => {
       await setupDelegateEnvironment('feat/callback-test');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement callback feature',
@@ -1575,6 +1588,7 @@ describe('MCP Server Tools', () => {
 
     it('should NOT append callback instructions when skipMessageCallbackPrompt is true', async () => {
       await setupDelegateEnvironment('feat/skip-callback');
+
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1631,6 +1645,7 @@ describe('MCP Server Tools', () => {
     it('should NOT include callback instructions when parent IDs are not provided', async () => {
       await setupDelegateEnvironment('feat/no-caller');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Normal delegation without caller IDs',
@@ -1650,6 +1665,7 @@ describe('MCP Server Tools', () => {
 
     it('should inherit createdBy from parent session', async () => {
       await setupDelegateEnvironment('feat/inherit-created-by');
+
 
       // Create a parent session with a known createdBy
       const parentSession = await sessionManager.createSession({
@@ -1727,6 +1743,7 @@ describe('MCP Server Tools', () => {
     it('should persist parentSessionId and parentWorkerId when delegate_to_worktree is called with them', async () => {
       await setupParentMetadataEnvironment('feat/persist-parent');
 
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test parent metadata persistence',
@@ -1754,6 +1771,7 @@ describe('MCP Server Tools', () => {
 
     it('should return parentSessionId and parentWorkerId in list_sessions response', async () => {
       await setupParentMetadataEnvironment('feat/list-parent');
+
 
       const delegateResponse = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1785,6 +1803,7 @@ describe('MCP Server Tools', () => {
 
     it('should not include parentSessionId/parentWorkerId when not provided', async () => {
       await setupParentMetadataEnvironment('feat/no-parent-meta');
+
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
@@ -1857,6 +1876,7 @@ describe('MCP Server Tools', () => {
 
     it('should spawn agent worker PTY with AGENT_CONSOLE env vars', async () => {
       await setupDelegateEnvironmentForEnv();
+
 
       // Record how many PTY instances existed before this call
       const ptyCountBefore = ptyFactory.instances.length;
@@ -2092,7 +2112,8 @@ describe('MCP Server Tools', () => {
         agentId: 'claude-code',
       });
 
-      mockMarkDeletionInProgress.mockImplementation(() => false);
+      // Pre-populate the concurrency guard to simulate an in-progress deletion
+      _getDeletionsInProgress().add('/test/worktree-path');
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
         sessionId: session.id,
@@ -2101,6 +2122,9 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBe(true);
       expect(data.error).toContain('already in progress');
+
+      // Clean up the concurrency guard
+      _getDeletionsInProgress().delete('/test/worktree-path');
     });
 
     it('should successfully remove worktree and delete session', async () => {
@@ -2118,7 +2142,7 @@ describe('MCP Server Tools', () => {
         agentId: 'claude-code',
       });
 
-      // Mock successful worktree removal
+      // Mock successful worktree removal via git
       mockGit.removeWorktree.mockImplementation(async () => {});
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
@@ -2135,7 +2159,7 @@ describe('MCP Server Tools', () => {
       expect(data.worktreePath).toBe('/test/worktree-path');
       expect(data.removed).toBe(true);
 
-      // Session should be deleted
+      // Session should be deleted by orchestrateWorktreeDeletion
       expect(sessionManager.getSession(session.id)).toBeUndefined();
     });
 
@@ -2154,7 +2178,7 @@ describe('MCP Server Tools', () => {
         agentId: 'claude-code',
       });
 
-      // Mock failed worktree removal
+      // Make git removeWorktree fail so orchestrateWorktreeDeletion returns failure
       mockGit.removeWorktree.mockImplementation(async () => {
         throw new Error('Worktree has uncommitted changes');
       });
@@ -2165,7 +2189,7 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBe(true);
 
-      // Session should be preserved for retry
+      // Session should be preserved for retry (the mock doesn't delete it)
       expect(sessionManager.getSession(session.id)).toBeDefined();
     });
 
@@ -2224,7 +2248,7 @@ describe('MCP Server Tools', () => {
         title: 'Important PR',
       }));
 
-      // Mock successful worktree removal
+      // Mock successful worktree removal via git
       mockGit.removeWorktree.mockImplementation(async () => {});
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
