@@ -43,6 +43,13 @@ describe('MemoService', () => {
       expect(content).toBe('second version');
     });
 
+    it('should reject content exceeding 256KB', async () => {
+      const oversized = 'x'.repeat(256 * 1024 + 1);
+      await expect(service.writeMemo('session-1', oversized)).rejects.toThrow(
+        /exceeds maximum size/,
+      );
+    });
+
     it('should handle multiple sessions independently', async () => {
       await service.writeMemo('session-a', 'memo A');
       await service.writeMemo('session-b', 'memo B');
@@ -82,6 +89,20 @@ describe('MemoService', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/memos`, { recursive: true });
 
       await expect(service.deleteMemo('nonexistent')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('sessionId validation', () => {
+    it('should reject sessionId with path traversal (..)', async () => {
+      await expect(service.writeMemo('../etc/passwd', 'hack')).rejects.toThrow(/Invalid sessionId/);
+      await expect(service.readMemo('../etc/passwd')).rejects.toThrow(/Invalid sessionId/);
+      await expect(service.deleteMemo('../etc/passwd')).rejects.toThrow(/Invalid sessionId/);
+    });
+
+    it('should reject sessionId with slashes', async () => {
+      await expect(service.writeMemo('foo/bar', 'hack')).rejects.toThrow(/Invalid sessionId/);
+      await expect(service.readMemo('foo/bar')).rejects.toThrow(/Invalid sessionId/);
+      await expect(service.deleteMemo('foo/bar')).rejects.toThrow(/Invalid sessionId/);
     });
   });
 });

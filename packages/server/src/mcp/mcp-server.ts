@@ -731,7 +731,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to leave notes, status updates, or summaries that the user can see at a glance without scrolling through conversation history.',
     {
       sessionId: z.string().describe('The session ID to write the memo for'),
-      content: z.string().max(256 * 1024).describe('Markdown content for the memo'),
+      content: z.string().refine(
+        (s) => Buffer.byteLength(s, 'utf-8') <= 256 * 1024,
+        { message: 'Memo content must not exceed 256KB' },
+      ).describe('Markdown content for the memo'),
     },
     async ({ sessionId, content }) => {
       try {

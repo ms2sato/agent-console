@@ -51,6 +51,8 @@ export const sessionKeys = {
   prLink: (sessionId: string) => ['sessionPrLink', sessionId] as const,
   /** Branches for a session */
   branches: (sessionId: string) => ['sessionBranches', sessionId] as const,
+  /** Memo content for a session */
+  memo: (sessionId: string) => ['session-memo', sessionId] as const,
 } as const;
 
 export const worktreeKeys = {

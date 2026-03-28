@@ -1192,6 +1192,9 @@ export class SessionManager {
    * @returns The memo content, or null if no memo exists.
    */
   async readMemo(sessionId: string): Promise<string | null> {
+    if (!this.sessions.has(sessionId)) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
     return memoService.readMemo(sessionId);
   }
 

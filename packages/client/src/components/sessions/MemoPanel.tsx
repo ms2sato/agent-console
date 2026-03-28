@@ -1,50 +1,34 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import Markdown from 'react-markdown';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSessionMemo } from '../../lib/api';
 import { useAppWsEvent } from '../../hooks/useAppWs';
-import { logger } from '../../lib/logger';
+import { sessionKeys } from '../../lib/query-keys';
 
 interface MemoPanelProps {
   sessionId: string;
 }
 
 export function MemoPanel({ sessionId }: MemoPanelProps) {
-  const [content, setContent] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
 
-  // Fetch memo on mount
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
-    setContent(null);
-    fetchSessionMemo(sessionId)
-      .then((memo) => {
-        if (!cancelled) {
-          setContent(memo);
-          setIsLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          logger.error('Failed to fetch memo:', err);
-          setIsLoading(false);
-        }
-      });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+  const { data: content, isPending } = useQuery({
+    queryKey: sessionKeys.memo(sessionId),
+    queryFn: () => fetchSessionMemo(sessionId),
+  });
 
   // Listen for real-time updates via WebSocket
   useAppWsEvent({
     onMemoUpdated: useCallback((sid: string, newContent: string) => {
       if (sid === sessionId) {
-        setContent(newContent);
+        queryClient.setQueryData(sessionKeys.memo(sessionId), newContent);
       }
-    }, [sessionId]),
+    }, [sessionId, queryClient]),
   });
 
   // Don't render anything if no memo exists or still loading
-  if (isLoading || content === null) {
+  if (isPending || content == null) {
     return null;
   }
 
