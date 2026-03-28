@@ -1,4 +1,5 @@
 import type { WSContext } from 'hono/ws';
+import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
 import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
 import {
   getDiffData as getDiffDataImpl,
@@ -169,23 +170,27 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
           break;
 
         case 'set-base-commit': {
-          const MERGE_BASE_PREFIX = 'merge-base:';
           let resolved: string | null;
 
-          if (parsed.ref.startsWith(MERGE_BASE_PREFIX)) {
+          if (parsed.ref.startsWith(MERGE_BASE_REF_PREFIX)) {
             // Resolve via git merge-base <branch> HEAD
-            const branchName = parsed.ref.slice(MERGE_BASE_PREFIX.length);
+            const branchName = parsed.ref.slice(MERGE_BASE_REF_PREFIX.length);
             resolved = await getMergeBase(branchName, 'HEAD', locationPath);
+            if (resolved) {
+              state.baseCommit = resolved;
+              await sendDiffData(ws, locationPath, resolved, currentTargetRef);
+            } else {
+              sendError(ws, `Could not find fork point from '${branchName}'`);
+            }
           } else {
             // Resolve via git rev-parse
             resolved = await resolveRef(parsed.ref, locationPath);
-          }
-
-          if (resolved) {
-            state.baseCommit = resolved;
-            await sendDiffData(ws, locationPath, resolved, currentTargetRef);
-          } else {
-            sendError(ws, `Invalid ref: ${parsed.ref}`);
+            if (resolved) {
+              state.baseCommit = resolved;
+              await sendDiffData(ws, locationPath, resolved, currentTargetRef);
+            } else {
+              sendError(ws, `Invalid ref: ${parsed.ref}`);
+            }
           }
           break;
         }

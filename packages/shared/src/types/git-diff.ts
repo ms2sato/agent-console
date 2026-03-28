@@ -80,6 +80,17 @@ export interface ExpandedLineChunk {
 }
 
 // ============================================================
+// Constants
+// ============================================================
+
+/**
+ * Prefix for merge-base ref resolution in set-base-commit messages.
+ * When the client sends a ref starting with this prefix (e.g., "merge-base:main"),
+ * the server resolves it via `git merge-base <branch> HEAD` instead of `git rev-parse`.
+ */
+export const MERGE_BASE_REF_PREFIX = 'merge-base:';
+
+// ============================================================
 // WebSocket Messages for GitDiffWorker
 // ============================================================
 

@@ -241,7 +241,7 @@ describe('GitDiffHandler', () => {
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-error');
-        expect((sentMsg as { error: string }).error).toContain('Invalid ref');
+        expect((sentMsg as { error: string }).error).toContain("Could not find fork point from 'nonexistent-branch'");
       });
     });
 
