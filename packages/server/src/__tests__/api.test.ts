@@ -1731,6 +1731,15 @@ describe('API Routes Integration', () => {
         // The worktree path must be within the managed repositories directory
         const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
 
+        // Insert worktree record so validateWorktreePath passes
+        const db = getDatabase();
+        await db.insertInto('worktrees').values({
+          id: 'wt-concurrent-test',
+          repository_id: repo.id,
+          path: worktreePath,
+          index_number: 1,
+        }).execute();
+
         // Pre-populate the deletion guard to simulate an in-progress deletion
         const { _getDeletionsInProgress } = await import('../routes/worktrees.js');
         const deletionsInProgress = _getDeletionsInProgress();

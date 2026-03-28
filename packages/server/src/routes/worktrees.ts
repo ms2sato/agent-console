@@ -366,6 +366,14 @@ const worktrees = new Hono<AppBindings>()
     const force = c.req.query('force') === 'true';
     const taskId = c.req.query('taskId');
 
+    // Validate path is within managed directory and belongs to this repository.
+    // This MUST run before any git operations (getCurrentBranch, findOpenPullRequest)
+    // to prevent arbitrary paths from reaching git commands.
+    const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+    if (validationError) {
+      throw new ValidationError(validationError);
+    }
+
     // Check for open PRs on the branch before acquiring concurrency guard.
     // This avoids holding the guard during a potentially slow network call.
     // Skip the check when force=true to allow forced deletion regardless of PR state.
@@ -395,17 +403,6 @@ const worktrees = new Hono<AppBindings>()
     // atomic gate so no await can sneak in between a read-check and a write.
     if (!markDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
-    }
-
-    // Validate path is within managed directory and belongs to this repository
-    try {
-      const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
-      if (validationError) {
-        throw new ValidationError(validationError);
-      }
-    } catch (error) {
-      clearDeletionInProgress(worktreePath);
-      throw error;
     }
 
     // If taskId is provided, handle deletion asynchronously

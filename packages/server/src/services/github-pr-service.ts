@@ -16,6 +16,12 @@ export interface OpenPrInfo {
   title: string;
 }
 
+function isOpenPrInfo(value: unknown): value is OpenPrInfo {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.number === 'number' && typeof record.title === 'string';
+}
+
 function createTimeoutPromise(timeoutMs: number): { promise: Promise<never>; cleanup: () => void } {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -123,14 +129,18 @@ export async function findOpenPullRequest(
 
     const stdout = await new Response(proc.stdout).text();
 
-    let prs: OpenPrInfo[];
+    let parsed: unknown;
     try {
-      prs = JSON.parse(stdout.trim()) as OpenPrInfo[];
+      parsed = JSON.parse(stdout.trim());
     } catch {
       throw new Error(`Failed to parse gh pr list output: ${stdout.trim()}`);
     }
 
-    return prs.length > 0 ? prs[0] : null;
+    if (!Array.isArray(parsed) || !parsed.every(isOpenPrInfo)) {
+      throw new Error(`Unexpected gh pr list output shape: ${stdout.trim()}`);
+    }
+
+    return parsed.length > 0 ? parsed[0] : null;
   } catch (error) {
     if (error instanceof Error && error.message.includes('timed out')) {
       try {

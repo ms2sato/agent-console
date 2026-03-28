@@ -284,6 +284,28 @@ describe('findOpenPullRequest', () => {
     await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow();
   });
 
+  it('throws when output has unexpected shape (fail-closed)', async () => {
+    mockSpawnResult = {
+      exited: Promise.resolve(0),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('[{"unexpected":"fields"}]'));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    const { findOpenPullRequest } = await getModule();
+
+    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow('Unexpected gh pr list output shape');
+  });
+
   it('throws on timeout (fail-closed)', async () => {
     mockSpawnResult = {
       exited: new Promise(() => {}), // Never resolves
