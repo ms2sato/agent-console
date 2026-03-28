@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSessionMemo } from '../../lib/api';
 import { useAppWsEvent } from '../../hooks/useAppWs';
@@ -65,7 +66,7 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
       </div>
       {/* Content */}
       <div className="memo-content flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-300">
-        <Markdown>{content}</Markdown>
+        <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
       </div>
     </div>
   );
