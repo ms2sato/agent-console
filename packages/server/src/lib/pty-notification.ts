@@ -89,7 +89,7 @@ export type WritePtyNotificationParams =
  */
 export function writePtyNotification(params: WritePtyNotificationParams): string {
   const { tag, fields, writeInput, intent } = params;
-  const allFields: Record<string, string> = { ...fields, intent };
+  const allFields: Record<string, string> = { timestamp: new Date().toISOString(), ...fields, intent };
 
   const fieldString = Object.entries(allFields)
     .map(([key, value]) => `${key}=${formatFieldValue(value)}`)

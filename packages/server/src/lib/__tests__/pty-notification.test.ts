@@ -91,7 +91,15 @@ describe('writePtyNotification', () => {
       writeInput,
     });
 
-    expect(result).toBe('\n[inbound:ci:failed] type=ci:failed source=github repo=owner/repo branch=main url=https://example.com summary="Build failed" intent=triage');
+    // Timestamp is dynamic, so verify structure rather than exact match
+    expect(result).toMatch(/^\n\[inbound:ci:failed\] timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    expect(result).toContain('type=ci:failed');
+    expect(result).toContain('source=github');
+    expect(result).toContain('repo=owner/repo');
+    expect(result).toContain('branch=main');
+    expect(result).toContain('url=https://example.com');
+    expect(result).toContain('summary="Build failed"');
+    expect(result).toContain('intent=triage');
     expect(written[0]).toBe(result);
   });
 
@@ -166,5 +174,62 @@ describe('writePtyNotification', () => {
     });
 
     expect(written[0]).toContain('intent=inform');
+  });
+
+  it('includes timestamp in ISO 8601 format for inbound-event notifications', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'inbound-event',
+      tag: 'inbound:ci:failed',
+      fields: { type: 'ci:failed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'Build failed' },
+      intent: 'triage',
+      writeInput: (data) => { written.push(data); },
+    });
+
+    expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  });
+
+  it('includes timestamp in ISO 8601 format for internal-message notifications', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'internal-message',
+      tag: 'internal:message',
+      fields: { source: 'session', from: 'sender-1', summary: 'Test message', path: '/tmp/msg' },
+      intent: 'inform',
+      writeInput: (data) => { written.push(data); },
+    });
+
+    expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  });
+
+  it('includes timestamp in ISO 8601 format for internal-timer notifications', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+      intent: 'inform',
+      writeInput: (data) => { written.push(data); },
+    });
+
+    expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  });
+
+  it('places timestamp as the first field in the notification', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+      intent: 'inform',
+      writeInput: (data) => { written.push(data); },
+    });
+
+    // After the tag, timestamp should be the first key=value pair
+    expect(written[0]).toMatch(/^\n\[internal:timer\] timestamp=/);
   });
 });
