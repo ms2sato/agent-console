@@ -111,6 +111,25 @@
   margin: 0.5em 0;
   color: #94a3b8;
 }
+.memo-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.8125rem;
+}
+.memo-content th, .memo-content td {
+  border: 1px solid #475569;
+  padding: 0.375em 0.625em;
+  text-align: left;
+}
+.memo-content th {
+  background-color: #1e293b;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.memo-content tr:nth-child(even) {
+  background-color: rgba(30, 41, 59, 0.5);
+}
 
 /* Utility to hide scrollbar while maintaining scroll functionality */
 .scrollbar-hide {
