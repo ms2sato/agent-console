@@ -170,3 +170,138 @@ describe('github-pr-service', () => {
     expect(result).toBeNull();
   });
 });
+
+describe('findOpenPullRequest', () => {
+  beforeEach(() => {
+    spawnCalls = [];
+
+    mockSpawnResult = {
+      exited: Promise.resolve(0),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('[{"number":42,"title":"Add feature X"}]'));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+      spawnCalls.push({ args, options: options || {} });
+      return mockSpawnResult;
+    }) as typeof Bun.spawn;
+  });
+
+  afterAll(() => {
+    (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+  });
+
+  async function getModule() {
+    return import(`../github-pr-service.js?v=${++importCounter}`);
+  }
+
+  it('returns PR info when an open PR exists', async () => {
+    const { findOpenPullRequest } = await getModule();
+    const result = await findOpenPullRequest('feat/my-feature', '/repo');
+
+    expect(result).toEqual({ number: 42, title: 'Add feature X' });
+    expect(spawnCalls[0]?.args).toEqual([
+      'gh', 'pr', 'list', '--head', 'feat/my-feature',
+      '--state', 'open', '--json', 'number,title', '--limit', '1',
+    ]);
+    expect(spawnCalls[0]?.options.cwd).toBe('/repo');
+  });
+
+  it('returns null when no open PRs exist', async () => {
+    mockSpawnResult = {
+      exited: Promise.resolve(0),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('[]'));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    const { findOpenPullRequest } = await getModule();
+    const result = await findOpenPullRequest('feat/no-pr', '/repo');
+
+    expect(result).toBeNull();
+  });
+
+  it('throws when gh command fails (fail-closed)', async () => {
+    mockSpawnResult = {
+      exited: Promise.resolve(1),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('gh: command failed'));
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    const { findOpenPullRequest } = await getModule();
+
+    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow();
+  });
+
+  it('throws when JSON parsing fails (fail-closed)', async () => {
+    mockSpawnResult = {
+      exited: Promise.resolve(0),
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('not valid json'));
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    const { findOpenPullRequest } = await getModule();
+
+    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow();
+  });
+
+  it('throws on timeout (fail-closed)', async () => {
+    mockSpawnResult = {
+      exited: new Promise(() => {}), // Never resolves
+      stdout: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      kill: () => {},
+    };
+
+    const { findOpenPullRequest } = await getModule();
+
+    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow('timed out');
+  }, 10000);
+});

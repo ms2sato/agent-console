@@ -11,6 +11,11 @@ interface PullRequestInfo {
   url: string;
 }
 
+export interface OpenPrInfo {
+  number: number;
+  title: string;
+}
+
 function createTimeoutPromise(timeoutMs: number): { promise: Promise<never>; cleanup: () => void } {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -79,6 +84,62 @@ export async function fetchPullRequestUrl(branch: string, cwd: string): Promise<
     }
     // For any error (timeout, network issues, etc.), return null
     return null;
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * Check if a branch has any open pull requests.
+ * Uses `gh pr list --head <branch>` to query GitHub.
+ *
+ * Fail-closed design: throws an error if the check fails (gh not installed,
+ * network issues, timeout, invalid output, etc.) so that callers block the
+ * operation rather than proceeding without a PR check.
+ *
+ * @param branch - The branch name to check
+ * @param cwd - The working directory (must be inside a git repository)
+ * @returns The first open PR info if found, null when no open PRs exist
+ * @throws Error if the gh CLI fails, times out, or returns invalid output
+ */
+export async function findOpenPullRequest(
+  branch: string,
+  cwd: string,
+): Promise<OpenPrInfo | null> {
+  const proc = Bun.spawn(
+    ['gh', 'pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,title', '--limit', '1'],
+    { cwd, stdout: 'pipe', stderr: 'pipe' },
+  );
+
+  const { promise: timeoutPromise, cleanup } = createTimeoutPromise(DEFAULT_GH_TIMEOUT_MS);
+
+  try {
+    const exitCode = await Promise.race([proc.exited, timeoutPromise]);
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`gh pr list failed with exit code ${exitCode}: ${stderr.trim()}`);
+    }
+
+    const stdout = await new Response(proc.stdout).text();
+
+    let prs: OpenPrInfo[];
+    try {
+      prs = JSON.parse(stdout.trim()) as OpenPrInfo[];
+    } catch {
+      throw new Error(`Failed to parse gh pr list output: ${stdout.trim()}`);
+    }
+
+    return prs.length > 0 ? prs[0] : null;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('timed out')) {
+      try {
+        proc.kill();
+      } catch {
+        // Ignore kill errors (process may have already exited)
+      }
+    }
+    throw error;
   } finally {
     cleanup();
   }
