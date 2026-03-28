@@ -725,6 +725,32 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: write_memo ----------
+
+  mcpServer.tool(
+    'write_memo',
+    'Write a Markdown memo for the current session. The memo is displayed in the UI and persists across conversations. ' +
+      'Use this to leave notes, status updates, or summaries that the user can see at a glance without scrolling through conversation history.',
+    {
+      sessionId: z.string().describe('The session ID to write the memo for'),
+      content: z.string().refine(
+        (s) => Buffer.byteLength(s, 'utf-8') <= 256 * 1024,
+        { message: 'Memo content must not exceed 256KB' },
+      ).describe('Markdown content for the memo'),
+    },
+    async ({ sessionId, content }) => {
+      try {
+        const filePath = await sessionManager.writeMemo(sessionId, content);
+        logger.info({ sessionId }, 'Memo written via MCP');
+        return textResult({ success: true, sessionId, filePath });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'write_memo failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Tool: remove_worktree ----------
 
   mcpServer.tool(

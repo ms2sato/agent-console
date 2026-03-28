@@ -17,6 +17,7 @@ import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
+import { MemoPanel } from './MemoPanel';
 import { useAgents } from '../AgentSelector';
 import { logger } from '../../lib/logger';
 
@@ -504,9 +505,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         </div>
       </div>
 
-      {/* Worker panel - render only active tab (conditional rendering) */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
-        {activeTabContent}
+      {/* Worker panel + Memo sidebar */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+        {/* Worker content */}
+        <div className="flex-1 min-w-0 relative">
+          {activeTabContent}
+        </div>
+        {/* Memo sidebar */}
+        <MemoPanel sessionId={sessionId} />
       </div>
 
       {/* Message panel - only shown for agent workers */}

@@ -69,6 +69,8 @@ interface UseAppWsEventOptions {
   onWorkerMessage?: (message: WorkerMessage) => void;
   /** Called when an inbound integration event is received */
   onInboundEvent?: (sessionId: string, event: InboundEventSummary) => void;
+  /** Called when a session memo is updated */
+  onMemoUpdated?: (sessionId: string, content: string) => void;
 }
 
 /**
@@ -202,6 +204,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'inbound-event':
           logger.debug(`[WebSocket] inbound-event: ${msg.event.type}`);
           optionsRef.current.onInboundEvent?.(msg.sessionId, msg.event);
+          break;
+        case 'memo-updated':
+          logger.debug(`[WebSocket] memo-updated: ${msg.sessionId}`);
+          optionsRef.current.onMemoUpdated?.(msg.sessionId, msg.content);
           break;
         default: {
           const _exhaustive: never = msg;

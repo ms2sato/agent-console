@@ -44,6 +44,14 @@ export function getMessagesDir(): string {
 }
 
 /**
+ * Get the directory for memo files.
+ * Structure: ~/.agent-console/memos/
+ */
+export function getMemosDir(): string {
+  return path.join(getConfigDir(), 'memos');
+}
+
+/**
  * Get the current server's PID for session ownership tracking.
  */
 export function getServerPid(): number {

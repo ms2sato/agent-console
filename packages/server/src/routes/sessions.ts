@@ -72,6 +72,19 @@ const sessions = new Hono<AppBindings>()
 
     return c.json({ session }, 201);
   })
+  // Get memo for a session
+  .get('/:id/memo', async (c) => {
+    const sessionId = c.req.param('id');
+    const { sessionManager } = c.get('appContext');
+
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    const content = await sessionManager.readMemo(sessionId);
+    return c.json({ content });
+  })
   // Delete a session (synchronous)
   // For worktree sessions with async deletion, use the worktree deletion endpoint instead.
   .delete('/:id', async (c) => {
