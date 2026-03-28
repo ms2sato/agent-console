@@ -1021,6 +1021,12 @@ export class SessionManager {
         );
       }
       await this.sessionRepository.delete(id);
+      // Clean up memo file
+      try {
+        await memoService.deleteMemo(id);
+      } catch (err) {
+        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+      }
       // Broadcast deletion to connected clients
       this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
       logger.info({ sessionId: id }, 'Orphaned session deleted from persistence');
@@ -1182,6 +1188,11 @@ export class SessionManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
     const filePath = await memoService.writeMemo(sessionId, content);
+    // Re-check after async write: session may have been deleted during the write
+    if (!this.sessions.has(sessionId)) {
+      await memoService.deleteMemo(sessionId).catch(() => {});
+      throw new Error(`Session deleted during memo write: ${sessionId}`);
+    }
     this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, content);
     return filePath;
   }
