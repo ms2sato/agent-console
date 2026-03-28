@@ -70,7 +70,7 @@ export class TimerManager {
       'Timer created'
     );
 
-    return info;
+    return { ...info };
   }
 
   deleteTimer(timerId: string): boolean {
@@ -86,11 +86,12 @@ export class TimerManager {
   }
 
   getTimer(timerId: string): TimerInfo | undefined {
-    return this.timers.get(timerId)?.info;
+    const stored = this.timers.get(timerId);
+    return stored ? { ...stored.info } : undefined;
   }
 
   listTimers(sessionId?: string): TimerInfo[] {
-    const all = Array.from(this.timers.values(), (stored) => stored.info);
+    const all = Array.from(this.timers.values(), (stored) => ({ ...stored.info }));
     if (sessionId === undefined) {
       return all;
     }

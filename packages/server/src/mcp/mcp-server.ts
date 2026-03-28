@@ -875,6 +875,21 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
     async ({ sessionId, workerId, intervalSeconds, action }) => {
       try {
+        // Validate session and worker exist
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session ${sessionId} not found`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type === 'git-diff') {
+          return errorResult(
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+          );
+        }
+
         const timer = timerManager.createTimer({
           sessionId,
           workerId,

@@ -233,6 +233,7 @@ describe('MCP Server Tools', () => {
   });
 
   afterEach(async () => {
+    timerManager.disposeAll();
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
