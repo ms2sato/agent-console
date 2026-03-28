@@ -17,6 +17,7 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
+    setContent(null);
     fetchSessionMemo(sessionId)
       .then((memo) => {
         if (!cancelled) {

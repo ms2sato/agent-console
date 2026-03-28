@@ -76,6 +76,12 @@ const sessions = new Hono<AppBindings>()
   .get('/:id/memo', async (c) => {
     const sessionId = c.req.param('id');
     const { sessionManager } = c.get('appContext');
+
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
     const content = await sessionManager.readMemo(sessionId);
     return c.json({ content });
   })

@@ -14,6 +14,8 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('memo-service');
 
+const MAX_MEMO_SIZE_BYTES = 256 * 1024; // 256KB
+
 export class MemoService {
   /**
    * Write a memo for a session. Creates the memos directory if needed
@@ -22,6 +24,11 @@ export class MemoService {
    * @returns The absolute file path of the written memo.
    */
   async writeMemo(sessionId: string, content: string): Promise<string> {
+    const contentSize = Buffer.byteLength(content, 'utf-8');
+    if (contentSize > MAX_MEMO_SIZE_BYTES) {
+      throw new Error(`Memo content exceeds maximum size of ${MAX_MEMO_SIZE_BYTES} bytes (got ${contentSize})`);
+    }
+
     const memosDir = getMemosDir();
     await fs.mkdir(memosDir, { recursive: true });
 

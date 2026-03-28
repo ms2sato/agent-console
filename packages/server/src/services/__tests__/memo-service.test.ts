@@ -4,6 +4,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { MemoService } from '../memo-service.js';
 
 const TEST_CONFIG_DIR = '/test/config';
+const ORIGINAL_AGENT_CONSOLE_HOME = process.env.AGENT_CONSOLE_HOME;
 
 describe('MemoService', () => {
   let service: MemoService;
@@ -16,6 +17,11 @@ describe('MemoService', () => {
 
   afterEach(() => {
     cleanupMemfs();
+    if (ORIGINAL_AGENT_CONSOLE_HOME === undefined) {
+      delete process.env.AGENT_CONSOLE_HOME;
+    } else {
+      process.env.AGENT_CONSOLE_HOME = ORIGINAL_AGENT_CONSOLE_HOME;
+    }
   });
 
   describe('writeMemo', () => {
