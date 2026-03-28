@@ -580,6 +580,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           parentSessionId,
           parentWorkerId,
           createdBy: parentCreatedBy,
+          autoStartSession: true,
         }, sessionManager);
 
         if (!result.success) {
@@ -776,12 +777,16 @@ export function createMcpApp(deps: McpDependencies): Hono {
           repoName: repo.name,
           cleanupCommand: repo.cleanupCommand,
           worktreePath,
-          sessionId,
+          sessionIds: [sessionId],
           force: force ?? false,
         }, sessionManager);
 
         if (!result.success) {
           return errorResult(result.error || 'Failed to remove worktree');
+        }
+
+        if (result.sessionDeleteError) {
+          return errorResult(`Worktree was removed but session cleanup failed: ${result.sessionDeleteError}`);
         }
 
         logger.info(

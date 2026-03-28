@@ -106,7 +106,7 @@ export interface DeleteWorktreeParams {
   repoName: string;
   cleanupCommand?: string | null;
   worktreePath: string;
-  sessionId?: string;  // If provided, session workers are killed and session is deleted on success
+  sessionIds?: string[];  // If provided, session workers are killed and sessions are deleted on success
   force: boolean;
 }
 
@@ -115,6 +115,7 @@ export interface DeleteWorktreeResult {
   error?: string;
   gitStatus?: string;  // Diagnostic info captured on worktree removal failure
   cleanupCommandResult?: HookCommandResult;
+  sessionDeleteError?: string;  // Captured error(s) from session deletion (worktree was removed successfully)
 }
 
 /**
@@ -127,7 +128,7 @@ export async function orchestrateWorktreeDeletion(
   params: DeleteWorktreeParams,
   sessionManager: SessionManager,
 ): Promise<DeleteWorktreeResult> {
-  const { repoPath, repoId, repoName, cleanupCommand, worktreePath, sessionId, force } = params;
+  const { repoPath, repoId, repoName, cleanupCommand, worktreePath, sessionIds, force } = params;
 
   if (!markDeletionInProgress(worktreePath)) {
     return { success: false, error: 'Deletion already in progress' };
@@ -142,8 +143,10 @@ export async function orchestrateWorktreeDeletion(
     );
 
     // 2. Kill PTY processes to release directory handles
-    if (sessionId) {
-      sessionManager.killSessionWorkers(sessionId);
+    if (sessionIds && sessionIds.length > 0) {
+      for (const sid of sessionIds) {
+        sessionManager.killSessionWorkers(sid);
+      }
     }
 
     // 3. Remove worktree via git
@@ -160,22 +163,30 @@ export async function orchestrateWorktreeDeletion(
       }
 
       logger.error({ repoId, worktreePath, error: result.error }, 'Worktree removal failed');
-      // Do NOT delete session — preserve for retry
+      // Do NOT delete sessions — preserve for retry
       return { success: false, error: result.error || 'Failed to remove worktree', gitStatus };
     }
 
-    // 4. Delete session after successful worktree removal
-    if (sessionId) {
-      try {
-        await sessionManager.deleteSession(sessionId);
-      } catch (error) {
-        logger.error({ repoId, worktreePath, sessionId, error }, 'Failed to delete session after worktree removal');
-        // Session cleanup failure is non-fatal — worktree was removed successfully
+    // 4. Delete sessions after successful worktree removal
+    let sessionDeleteError: string | undefined;
+    if (sessionIds && sessionIds.length > 0) {
+      const deleteErrors: string[] = [];
+      for (const sid of sessionIds) {
+        try {
+          await sessionManager.deleteSession(sid);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.error({ repoId, worktreePath, sessionId: sid, error }, 'Failed to delete session after worktree removal');
+          deleteErrors.push(`${sid}: ${msg}`);
+        }
+      }
+      if (deleteErrors.length > 0) {
+        sessionDeleteError = deleteErrors.join('; ');
       }
     }
 
-    logger.info({ repoId, worktreePath, sessionId }, 'Worktree deletion completed');
-    return { success: true, cleanupCommandResult };
+    logger.info({ repoId, worktreePath, sessionIds }, 'Worktree deletion completed');
+    return { success: true, cleanupCommandResult, sessionDeleteError };
   } finally {
     clearDeletionInProgress(worktreePath);
   }

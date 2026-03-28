@@ -96,7 +96,7 @@ describe('orchestrateWorktreeDeletion', () => {
   it('happy path: runs cleanup, kills workers, removes worktree, deletes session', async () => {
     const sm = createMockSessionManager();
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, cleanupCommand: 'echo cleanup', sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, cleanupCommand: 'echo cleanup', sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -123,7 +123,7 @@ describe('orchestrateWorktreeDeletion', () => {
   it('happy path without cleanup command: skips cleanup execution', async () => {
     const sm = createMockSessionManager();
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -137,7 +137,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
     const sm = createMockSessionManager();
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -149,7 +149,7 @@ describe('orchestrateWorktreeDeletion', () => {
   it('clears concurrency guard after successful deletion', async () => {
     const sm = createMockSessionManager();
     await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -163,7 +163,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
     const sm = createMockSessionManager();
     await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -177,7 +177,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
     const sm = createMockSessionManager();
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -197,7 +197,7 @@ describe('orchestrateWorktreeDeletion', () => {
 
     const sm = createMockSessionManager();
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
@@ -205,17 +205,51 @@ describe('orchestrateWorktreeDeletion', () => {
     expect(result.error).toBe('Failed to remove worktree');
   });
 
-  it('returns success even when deleteSession throws', async () => {
+  it('returns success with sessionDeleteError when deleteSession throws', async () => {
     const sm = createMockSessionManager();
     sm.deleteSession.mockImplementation(() => Promise.reject(new Error('DB error')));
 
     const result = await orchestrateWorktreeDeletion(
-      { ...DEFAULT_PARAMS, sessionId: 'sess-1' },
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1'] },
       sm,
     );
 
     // Worktree was removed successfully, so overall result is success
     expect(result.success).toBe(true);
+    expect(result.sessionDeleteError).toBe('sess-1: DB error');
     expect(sm.deleteSession).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('kills workers and deletes all sessions when multiple sessionIds are provided', async () => {
+    const sm = createMockSessionManager();
+    const result = await orchestrateWorktreeDeletion(
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1', 'sess-2'] },
+      sm,
+    );
+
+    expect(result.success).toBe(true);
+    expect(sm.killSessionWorkers).toHaveBeenCalledWith('sess-1');
+    expect(sm.killSessionWorkers).toHaveBeenCalledWith('sess-2');
+    expect(sm.deleteSession).toHaveBeenCalledWith('sess-1');
+    expect(sm.deleteSession).toHaveBeenCalledWith('sess-2');
+  });
+
+  it('captures errors from multiple session deletions', async () => {
+    const sm = createMockSessionManager();
+    sm.deleteSession.mockImplementation((id: string) => {
+      if (id === 'sess-2') return Promise.reject(new Error('DB error'));
+      return Promise.resolve(true);
+    });
+
+    const result = await orchestrateWorktreeDeletion(
+      { ...DEFAULT_PARAMS, sessionIds: ['sess-1', 'sess-2'] },
+      sm,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sessionDeleteError).toBe('sess-2: DB error');
+    // sess-1 was deleted successfully
+    expect(sm.deleteSession).toHaveBeenCalledWith('sess-1');
+    expect(sm.deleteSession).toHaveBeenCalledWith('sess-2');
   });
 });

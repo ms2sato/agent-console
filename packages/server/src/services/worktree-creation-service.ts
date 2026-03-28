@@ -7,6 +7,17 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worktree-creation-service');
 
+async function rollbackWorktree(repoPath: string, worktreePath: string): Promise<void> {
+  try {
+    await worktreeService.removeWorktree(repoPath, worktreePath, true);
+  } catch (cleanupErr) {
+    logger.warn(
+      { worktreePath, err: cleanupErr },
+      'Failed to clean up worktree during rollback',
+    );
+  }
+}
+
 export interface CreateWorktreeParams {
   repoPath: string;
   repoId: string;
@@ -85,17 +96,18 @@ export async function orchestrateWorktreeCreation(
     const worktree = worktrees.find(wt => wt.path === createdWorktreePath);
 
     if (!worktree) {
-      throw new Error('Worktree was created but could not be found in the list');
+      await rollbackWorktree(repoPath, createdWorktreePath);
+      return { success: false, error: 'Worktree was created but could not be found in the list' };
     }
 
     // 4. Execute setup command if configured
     let setupCommandResult: HookCommandResult | undefined;
-    if (setupCommand && worktree.index !== undefined) {
+    if (setupCommand && wtResult.index !== undefined) {
       setupCommandResult = await worktreeService.executeHookCommand(
         setupCommand,
         createdWorktreePath,
         {
-          worktreeNum: worktree.index,
+          worktreeNum: wtResult.index,
           branch: worktree.branch,
           repo: repoName,
         },
@@ -134,14 +146,8 @@ export async function orchestrateWorktreeCreation(
       { worktreePath: createdWorktreePath, err: postWorktreeErr },
       'Post-worktree step failed, rolling back worktree',
     );
-    try {
-      await worktreeService.removeWorktree(repoPath, createdWorktreePath, true);
-    } catch (cleanupErr) {
-      logger.warn(
-        { worktreePath: createdWorktreePath, err: cleanupErr },
-        'Failed to clean up worktree during rollback',
-      );
-    }
-    throw postWorktreeErr;
+    await rollbackWorktree(repoPath, createdWorktreePath);
+    const errorMsg = postWorktreeErr instanceof Error ? postWorktreeErr.message : 'Unknown error during worktree creation';
+    return { success: false, error: errorMsg };
   }
 }

@@ -357,10 +357,13 @@ const worktrees = new Hono<AppBindings>()
 
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {
-      // Find the associated session before returning accepted
-      const allSessions = sessionManager.getAllSessions();
-      const targetSession = allSessions.find(session => session.locationPath === worktreePath);
-      const sessionId = targetSession?.id;
+      // Find ALL associated sessions before returning accepted
+      const matchingSessions = sessionManager.getAllSessions().filter(
+        session => session.locationPath === worktreePath,
+      );
+      const sessionIds = matchingSessions.map(s => s.id);
+      // Use first match for backward-compatible WebSocket broadcast
+      const broadcastSessionId = sessionIds[0] || '';
 
       // Execute deletion in background (fire-and-forget)
       (async () => {
@@ -371,7 +374,7 @@ const worktrees = new Hono<AppBindings>()
             repoName: repo.name,
             cleanupCommand: repo.cleanupCommand,
             worktreePath,
-            sessionId,
+            sessionIds,
             force,
           }, sessionManager);
 
@@ -379,7 +382,7 @@ const worktrees = new Hono<AppBindings>()
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: sessionId || '',
+              sessionId: broadcastSessionId,
               error: result.error || 'Failed to remove worktree',
               gitStatus: result.gitStatus,
             });
@@ -390,10 +393,10 @@ const worktrees = new Hono<AppBindings>()
           broadcastToApp({
             type: 'worktree-deletion-completed',
             taskId,
-            sessionId: sessionId || '',
+            sessionId: broadcastSessionId,
             cleanupCommandResult: result.cleanupCommandResult,
           });
-          logger.info({ taskId, repoId, worktreePath, sessionId }, 'Worktree and session deletion completed');
+          logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
@@ -402,7 +405,7 @@ const worktrees = new Hono<AppBindings>()
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: sessionId || '',
+              sessionId: broadcastSessionId,
               error: errorMessage,
             });
           } catch {
@@ -416,8 +419,8 @@ const worktrees = new Hono<AppBindings>()
     }
 
     // Synchronous deletion (backward compatible)
-    // Find the first matching session for this worktree path
-    const matchingSession = sessionManager.getAllSessions().find(
+    // Find ALL matching sessions for this worktree path
+    const matchingSessions = sessionManager.getAllSessions().filter(
       session => session.locationPath === worktreePath,
     );
 
@@ -427,7 +430,7 @@ const worktrees = new Hono<AppBindings>()
       repoName: repo.name,
       cleanupCommand: repo.cleanupCommand,
       worktreePath,
-      sessionId: matchingSession?.id,
+      sessionIds: matchingSessions.map(s => s.id),
       force,
     }, sessionManager);
 

@@ -107,7 +107,7 @@ describe('orchestrateWorktreeCreation', () => {
     // Default implementations
     mockFetchRemote.mockImplementation(() => Promise.resolve());
     mockCreateWorktree.mockImplementation(() =>
-      Promise.resolve({ worktreePath: CREATED_PATH }),
+      Promise.resolve({ worktreePath: CREATED_PATH, index: 2 }),
     );
     mockListWorktrees.mockImplementation(() => Promise.resolve([WORKTREE]));
     mockRemoveWorktree.mockImplementation(() => Promise.resolve({ success: true }));
@@ -189,26 +189,28 @@ describe('orchestrateWorktreeCreation', () => {
     expect(sm.createSession).not.toHaveBeenCalled();
   });
 
-  it('rolls back worktree and throws when worktree not found after creation', async () => {
+  it('rolls back worktree and returns failure when worktree not found after creation', async () => {
     // listWorktrees returns empty — the created worktree is not found
     mockListWorktrees.mockImplementation(() => Promise.resolve([]));
 
     const sm = createMockSessionManager();
-    await expect(
-      orchestrateWorktreeCreation(DEFAULT_PARAMS, sm),
-    ).rejects.toThrow('Worktree was created but could not be found in the list');
+    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Worktree was created but could not be found in the list');
 
     // Rollback should have been called
     expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
   });
 
-  it('rolls back worktree and rethrows when session creation fails', async () => {
+  it('rolls back worktree and returns failure when session creation fails', async () => {
     const sm = createMockSessionManager();
     sm.createSession.mockImplementation(() => Promise.reject(new Error('DB connection lost')));
 
-    await expect(
-      orchestrateWorktreeCreation(DEFAULT_PARAMS, sm),
-    ).rejects.toThrow('DB connection lost');
+    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('DB connection lost');
 
     // Rollback should have been called
     expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
@@ -227,14 +229,15 @@ describe('orchestrateWorktreeCreation', () => {
     expect(sm.createSession).not.toHaveBeenCalled();
   });
 
-  it('propagates original error even when rollback fails', async () => {
+  it('returns original error even when rollback fails', async () => {
     const sm = createMockSessionManager();
     sm.createSession.mockImplementation(() => Promise.reject(new Error('original error')));
     mockRemoveWorktree.mockImplementation(() => Promise.reject(new Error('rollback failed')));
 
-    // The original error should propagate, not the rollback error
-    await expect(
-      orchestrateWorktreeCreation(DEFAULT_PARAMS, sm),
-    ).rejects.toThrow('original error');
+    // The original error should be returned, not the rollback error
+    const result = await orchestrateWorktreeCreation(DEFAULT_PARAMS, sm);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('original error');
   });
 });
