@@ -62,9 +62,21 @@ export interface InternalMessagePtyNotification extends BasePtyNotificationParam
   intent: PtyNotificationIntent;
 }
 
+export interface InternalTimerPtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-timer';
+  tag: 'internal:timer';
+  fields: {
+    timerId: string;
+    action: string;
+    fireCount: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
-  | InternalMessagePtyNotification;
+  | InternalMessagePtyNotification
+  | InternalTimerPtyNotification;
 
 /**
  * Build and send a structured notification to a PTY process.

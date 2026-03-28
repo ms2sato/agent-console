@@ -123,6 +123,7 @@ export class SessionManager {
   private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private notificationManager: NotificationManager | null = null;
+  private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
    * Create a SessionManager instance with async initialization.
@@ -433,6 +434,15 @@ export class SessionManager {
   }
 
   /**
+   * Set a callback to clean up timers when a session is deleted.
+   * Wired in app-context to connect SessionManager with TimerManager
+   * without creating a direct dependency.
+   */
+  setTimerCleanupCallback(callback: (sessionId: string) => void): void {
+    this.timerCleanupCallback = callback;
+  }
+
+  /**
    * Kill orphan processes from previous server run and remove orphan sessions.
    * Sessions that have been loaded into this.sessions (by initializeSessions) are preserved.
    * Only sessions from OTHER dead servers are considered orphans.
@@ -627,6 +637,9 @@ export class SessionManager {
 
       // 2. Clean up notification state (throttle timers, debounce timers)
       this.notificationManager?.cleanupSession(id);
+
+      // 2a. Clean up periodic timers associated with this session
+      this.timerCleanupCallback?.(id);
 
       // 2b. Clean up inter-worker message history
       this.messageService.clearSession(id);

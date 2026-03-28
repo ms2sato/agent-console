@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
+import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import {
   markDeletionInProgress,
@@ -154,6 +155,7 @@ export interface McpDependencies {
   sessionManager: SessionManager;
   repositoryManager: RepositoryManager;
   agentManager: AgentManager;
+  timerManager: TimerManager;
 }
 
 // ---------- Factory ----------
@@ -164,7 +166,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -837,6 +839,117 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'remove_worktree failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: create_timer ----------
+
+  mcpServer.tool(
+    'create_timer',
+    'Create a periodic timer that sends notifications to a worker at specified intervals. ' +
+      'Use this to set up recurring callbacks for monitoring tasks, checking CI status, etc. ' +
+      'The timer fires a [internal:timer] PTY notification on each tick. ' +
+      'Timers are volatile and will not survive server restarts.',
+    {
+      sessionId: z.string().describe(
+        'The session to receive timer notifications. ' +
+          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+      ),
+      workerId: z.string().describe(
+        'The worker to receive timer notifications. ' +
+          'Use AGENT_CONSOLE_WORKER_ID environment variable for your own worker.',
+      ),
+      intervalSeconds: z
+        .number()
+        .int()
+        .min(10, 'Minimum interval is 10 seconds')
+        .max(86400, 'Maximum interval is 86400 seconds (24 hours)')
+        .describe('Interval between ticks in seconds (min 10, max 86400)'),
+      action: z
+        .string()
+        .min(1, 'Action is required')
+        .max(500, 'Action must be under 500 characters')
+        .describe('Description of what to do on each tick (included in the notification)'),
+    },
+    async ({ sessionId, workerId, intervalSeconds, action }) => {
+      try {
+        // Validate session and worker exist
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session ${sessionId} not found`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type === 'git-diff') {
+          return errorResult(
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+          );
+        }
+
+        const timer = timerManager.createTimer({
+          sessionId,
+          workerId,
+          intervalSeconds,
+          action,
+        });
+
+        return textResult({
+          timerId: timer.id,
+          sessionId: timer.sessionId,
+          workerId: timer.workerId,
+          intervalSeconds: timer.intervalSeconds,
+          action: timer.action,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'create_timer failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: delete_timer ----------
+
+  mcpServer.tool(
+    'delete_timer',
+    'Delete a periodic timer. The timer stops firing immediately.',
+    {
+      timerId: z.string().describe('The timer ID returned by create_timer'),
+    },
+    async ({ timerId }) => {
+      try {
+        const deleted = timerManager.deleteTimer(timerId);
+        if (!deleted) {
+          return errorResult(`Timer not found: ${timerId}`);
+        }
+        return textResult({ deleted: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, timerId }, 'delete_timer failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: list_timers ----------
+
+  mcpServer.tool(
+    'list_timers',
+    'List active periodic timers. Optionally filter by session ID.',
+    {
+      sessionId: z.string().optional().describe('Filter timers by session ID'),
+    },
+    async ({ sessionId }) => {
+      try {
+        const timers = timerManager.listTimers(sessionId);
+        return textResult({ timers });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err }, 'list_timers failed');
         return errorResult(message);
       }
     },
