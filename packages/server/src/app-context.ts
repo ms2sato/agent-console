@@ -191,6 +191,11 @@ export async function createAppContext(
     }
   });
 
+  // 6.6. Wire timer cleanup into session lifecycle
+  sessionManager.setTimerCleanupCallback((sessionId) => {
+    timerManager.deleteTimersBySession(sessionId);
+  });
+
   // 7. Wire cross-dependencies between managers
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
@@ -332,6 +337,11 @@ export async function createTestContext(
 
   // Create timer manager (no-op callback for tests)
   const timerManager = new TimerManagerClass(() => {});
+
+  // Wire timer cleanup into session lifecycle
+  sessionManager.setTimerCleanupCallback((sessionId) => {
+    timerManager.deleteTimersBySession(sessionId);
+  });
 
   // Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({

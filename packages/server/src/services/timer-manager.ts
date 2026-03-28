@@ -61,7 +61,7 @@ export class TimerManager {
       info.lastFiredAt = new Date().toISOString();
       info.fireCount += 1;
       logger.debug({ timerId: id, fireCount: info.fireCount }, 'Timer fired');
-      this.onTick(info);
+      this.onTick({ ...info });
     }, intervalSeconds * 1000);
 
     this.timers.set(id, { info, handle });

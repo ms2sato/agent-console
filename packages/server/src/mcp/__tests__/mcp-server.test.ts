@@ -2160,6 +2160,193 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // Timer tools (create_timer, list_timers, delete_timer)
+  // ===========================================================================
+
+  describe('timer tools', () => {
+    // Helper: create a session with an agent worker and return both IDs
+    async function createSessionWithWorker(): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      return { sessionId: session.id, workerId };
+    }
+
+    describe('create_timer', () => {
+      it('should create a timer and return timer details', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId,
+          workerId,
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        const data = parseToolResult(response) as {
+          timerId: string;
+          sessionId: string;
+          workerId: string;
+          intervalSeconds: number;
+          action: string;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.timerId).toBeDefined();
+        expect(typeof data.timerId).toBe('string');
+        expect(data.sessionId).toBe(sessionId);
+        expect(data.workerId).toBe(workerId);
+        expect(data.intervalSeconds).toBe(60);
+        expect(data.action).toBe('Check CI status');
+      });
+
+      it('should return error for non-existent session', async () => {
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: 'non-existent-session',
+          workerId: 'some-worker',
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Session non-existent-session not found');
+      });
+
+      it('should return error for non-existent worker', async () => {
+        const { sessionId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId,
+          workerId: 'non-existent-worker',
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Worker non-existent-worker not found');
+      });
+
+      it('should return error when interval is below minimum', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId,
+          workerId,
+          intervalSeconds: 5,
+          action: 'Too frequent',
+        }, nextId++);
+
+        // The zod schema enforces min(10), so this may be caught at validation level
+        // or by the TimerManager. Either way it should be an error.
+        if (response.error) {
+          expect(response.error).toBeDefined();
+        } else {
+          expect(response.result?.isError).toBe(true);
+        }
+      });
+    });
+
+    describe('list_timers', () => {
+      it('should return empty array when no timers exist', async () => {
+        const response = await callTool(app, mcpSessionId, 'list_timers', {}, nextId++);
+        const data = parseToolResult(response) as { timers: unknown[] };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.timers).toEqual([]);
+      });
+
+      it('should list created timers', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        // Create two timers
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'Action A',
+        }, nextId++);
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 120, action: 'Action B',
+        }, nextId++);
+
+        const response = await callTool(app, mcpSessionId, 'list_timers', {}, nextId++);
+        const data = parseToolResult(response) as {
+          timers: Array<{ sessionId: string; action: string }>;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.timers).toHaveLength(2);
+      });
+
+      it('should filter timers by sessionId', async () => {
+        const s1 = await createSessionWithWorker();
+        const s2 = await createSessionWithWorker();
+
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: s1.sessionId, workerId: s1.workerId, intervalSeconds: 60, action: 'Session 1 timer',
+        }, nextId++);
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: s2.sessionId, workerId: s2.workerId, intervalSeconds: 60, action: 'Session 2 timer',
+        }, nextId++);
+
+        // Filter by session 1
+        const response = await callTool(app, mcpSessionId, 'list_timers', {
+          sessionId: s1.sessionId,
+        }, nextId++);
+        const data = parseToolResult(response) as {
+          timers: Array<{ sessionId: string; action: string }>;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.timers).toHaveLength(1);
+        expect(data.timers[0].sessionId).toBe(s1.sessionId);
+        expect(data.timers[0].action).toBe('Session 1 timer');
+      });
+    });
+
+    describe('delete_timer', () => {
+      it('should delete an existing timer', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        // Create a timer
+        const createResponse = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'To be deleted',
+        }, nextId++);
+        const created = parseToolResult(createResponse) as { timerId: string };
+
+        // Delete it
+        const deleteResponse = await callTool(app, mcpSessionId, 'delete_timer', {
+          timerId: created.timerId,
+        }, nextId++);
+        const data = parseToolResult(deleteResponse) as { deleted: boolean };
+
+        expect(deleteResponse.result?.isError).toBeUndefined();
+        expect(data.deleted).toBe(true);
+
+        // Verify it no longer appears in list
+        const listResponse = await callTool(app, mcpSessionId, 'list_timers', {}, nextId++);
+        const listData = parseToolResult(listResponse) as { timers: unknown[] };
+        expect(listData.timers).toHaveLength(0);
+      });
+
+      it('should return error for non-existent timer', async () => {
+        const response = await callTool(app, mcpSessionId, 'delete_timer', {
+          timerId: 'non-existent-timer-id',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Timer not found');
+      });
+    });
+  });
+
+  // ===========================================================================
   // MCP protocol validation
   // ===========================================================================
 

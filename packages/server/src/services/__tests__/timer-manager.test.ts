@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, jest } from 'bun:test';
 import {
   TimerManager,
   MIN_INTERVAL_SECONDS,
@@ -306,6 +306,97 @@ describe('TimerManager', () => {
 
       expect(manager.listTimers()).toHaveLength(0);
       expect(manager.listTimers('session-1')).toHaveLength(0);
+    });
+  });
+
+  describe('timer firing behavior', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    it('should call onTick after interval elapses', () => {
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'check status',
+      });
+
+      expect(onTick).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(60000);
+
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('should increment fireCount on each tick', () => {
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'check status',
+      });
+
+      jest.advanceTimersByTime(60000);
+      jest.advanceTimersByTime(60000);
+      jest.advanceTimersByTime(60000);
+
+      expect(onTick).toHaveBeenCalledTimes(3);
+      const lastCall = onTick.mock.calls[2][0];
+      expect(lastCall.fireCount).toBe(3);
+    });
+
+    it('should update lastFiredAt on each tick', () => {
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'check status',
+      });
+
+      jest.advanceTimersByTime(60000);
+
+      const callArg = onTick.mock.calls[0][0];
+      expect(callArg.lastFiredAt).toBeString();
+    });
+
+    it('should stop firing after deleteTimer', () => {
+      const timer = manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'check status',
+      });
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+
+      manager.deleteTimer(timer.id);
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('should stop firing after disposeAll', () => {
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'check status',
+      });
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+
+      manager.disposeAll();
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
     });
   });
 });
