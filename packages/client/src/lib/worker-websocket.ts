@@ -22,6 +22,7 @@ import {
   type GitDiffTarget,
   type WorkerErrorCode,
   type ExpandedLineChunk,
+  type ReviewAnnotationSet,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
 import { clearTerminalState, setCurrentServerPid } from './terminal-state-cache.js';
@@ -61,6 +62,7 @@ export interface WorkerConnectionState {
   diffError?: string | null;
   diffLoading?: boolean;
   expandedLines?: Map<string, ExpandedLineChunk[]>;
+  annotationSet?: ReviewAnnotationSet | null;
 }
 
 // Internal connection data
@@ -339,6 +341,10 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
       updateState(key, { expandedLines: newMap });
       break;
     }
+    case 'annotations-updated': {
+      updateState(key, { annotationSet: msg.annotations });
+      break;
+    }
     default: {
       // Exhaustive check: TypeScript will error if a new message type is added
       // but not handled in this switch statement
@@ -592,6 +598,10 @@ export function requestHistory(sessionId: string, workerId: string, fromOffset?:
 // Convenience methods for git-diff workers
 export function refreshDiff(sessionId: string, workerId: string): boolean {
   return sendGitDiffMessage(sessionId, workerId, { type: 'refresh' });
+}
+
+export function requestAnnotations(sessionId: string, workerId: string): boolean {
+  return sendGitDiffMessage(sessionId, workerId, { type: 'get-annotations' });
 }
 
 export function setBaseCommit(sessionId: string, workerId: string, ref: string): boolean {

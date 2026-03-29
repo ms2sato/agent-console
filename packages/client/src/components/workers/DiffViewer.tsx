@@ -1,7 +1,7 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { parsePatch } from 'diff';
 import { Highlight, themes, type Language } from 'prism-react-renderer';
-import type { GitDiffFile, ExpandedLineChunk } from '@agent-console/shared';
+import type { GitDiffFile, ExpandedLineChunk, ReviewAnnotationSet, ReviewAnnotation } from '@agent-console/shared';
 
 // Import additional language support (ruby, bash, css, scss, less, typescript, javascript, sql)
 import '../../lib/prism-languages';
@@ -62,6 +62,8 @@ interface DiffViewerProps {
   onFileVisible?: (filePath: string) => void;
   expandedLines?: Map<string, ExpandedLineChunk[]>;
   onRequestExpand?: (path: string, startLine: number, endLine: number) => void;
+  annotationSet?: ReviewAnnotationSet | null;
+  showFullDiff?: boolean;
 }
 
 /**
@@ -135,7 +137,35 @@ function sortFilesAsTree(files: GitDiffFile[]): GitDiffFile[] {
   return result;
 }
 
-export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expandedLines, onRequestExpand }: DiffViewerProps) {
+/**
+ * Get annotations for a specific file from the annotation set.
+ */
+function getFileAnnotations(annotationSet: ReviewAnnotationSet | null | undefined, filePath: string): ReviewAnnotation[] {
+  if (!annotationSet) return [];
+  return annotationSet.annotations.filter((a) => a.file === filePath);
+}
+
+/**
+ * Check if a hunk overlaps with any annotation.
+ * A hunk's new-line range is [newStart, newStart + newLines - 1].
+ * An annotation overlaps if annotation.startLine <= hunkEnd && annotation.endLine >= hunkStart.
+ */
+function hunkOverlapsAnnotation(hunk: { newStart: number; newLines: number }, annotations: ReviewAnnotation[]): boolean {
+  const hunkStart = hunk.newStart;
+  const hunkEnd = hunk.newStart + hunk.newLines - 1;
+  return annotations.some((a) => a.startLine <= hunkEnd && a.endLine >= hunkStart);
+}
+
+/**
+ * Get the annotations that overlap with a specific hunk.
+ */
+function getOverlappingAnnotations(hunk: { newStart: number; newLines: number }, annotations: ReviewAnnotation[]): ReviewAnnotation[] {
+  const hunkStart = hunk.newStart;
+  const hunkEnd = hunk.newStart + hunk.newLines - 1;
+  return annotations.filter((a) => a.startLine <= hunkEnd && a.endLine >= hunkStart);
+}
+
+export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expandedLines, onRequestExpand, annotationSet, showFullDiff }: DiffViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -314,6 +344,37 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
               stripPrefix(f.newFileName) === file.path
           );
 
+          const fileAnnotations = getFileAnnotations(annotationSet, file.path);
+          const hasAnnotations = fileAnnotations.length > 0;
+          const isFilteredView = annotationSet != null && !showFullDiff;
+
+          // In filtered view, non-annotated files show a collapsed placeholder
+          if (isFilteredView && !hasAnnotations) {
+            return (
+              <div
+                key={file.path}
+                ref={(el) => setFileRef(file.path, el)}
+                data-filepath={file.path}
+                className="border-b border-gray-700"
+              >
+                <div className="sticky top-0 z-20 bg-slate-800 px-4 py-2 flex items-center gap-3 border-b border-gray-700 opacity-60">
+                  <FileStatusBadge status={file.status} />
+                  <span className="text-gray-200 font-medium">{file.path}</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/40 text-green-400/70 font-medium ml-2">
+                    Verified
+                  </span>
+                  <div className="flex items-center gap-2 ml-auto text-sm">
+                    <span className="text-green-400">+{file.additions}</span>
+                    <span className="text-red-400">-{file.deletions}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-center py-4 text-gray-500 text-sm">
+                  Verified by orchestrator
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div
               key={file.path}
@@ -325,6 +386,11 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
               <div className="sticky top-0 z-20 bg-slate-800 px-4 py-2 flex items-center gap-3 border-b border-gray-700">
                 <FileStatusBadge status={file.status} />
                 <span className="text-gray-200 font-medium">{file.path}</span>
+                {hasAnnotations && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-amber-800/60 text-amber-300 font-medium ml-2">
+                    Review
+                  </span>
+                )}
                 <div className="flex items-center gap-2 ml-auto text-sm">
                   <span className="text-green-400">+{file.additions}</span>
                   <span className="text-red-400">-{file.deletions}</span>
@@ -342,6 +408,8 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
                   filePath={file.path}
                   expandedChunks={expandedLines?.get(file.path)}
                   onRequestExpand={onRequestExpand ? (startLine, endLine) => onRequestExpand(file.path, startLine, endLine) : undefined}
+                  fileAnnotations={fileAnnotations.length > 0 ? fileAnnotations : undefined}
+                  showFullDiff={showFullDiff}
                 />
               ) : (
                 <div className="flex items-center justify-center py-8 text-gray-500">
@@ -384,6 +452,8 @@ interface FileHunksProps {
   filePath: string;
   expandedChunks?: ExpandedLineChunk[];
   onRequestExpand?: (startLine: number, endLine: number) => void;
+  fileAnnotations?: ReviewAnnotation[];
+  showFullDiff?: boolean;
 }
 
 const MAX_EXPAND_LINES = 20;
@@ -443,13 +513,44 @@ function ExpandedContextLine({ lineNumber, content, language }: { lineNumber: nu
   );
 }
 
-function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand }: FileHunksProps) {
+function AnnotationReasonBanner({ annotations }: { annotations: ReviewAnnotation[] }) {
+  // Deduplicate reasons (multiple annotations may share the same reason)
+  const uniqueReasons = [...new Set(annotations.map((a) => a.reason))];
+  return (
+    <div className="bg-amber-900/30 border-l-2 border-amber-500 px-4 py-2">
+      {uniqueReasons.map((reason, i) => (
+        <div key={i} className="text-sm text-amber-200">
+          {reason}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnotations, showFullDiff }: FileHunksProps) {
   const language = getLanguageFromPath(filePath);
+  const isFilteredView = fileAnnotations != null && fileAnnotations.length > 0 && !showFullDiff;
+  const hasAnnotations = fileAnnotations != null && fileAnnotations.length > 0;
 
   const elements: React.ReactNode[] = [];
 
   for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
     const hunk = hunks[hunkIndex];
+
+    // In filtered view, skip hunks that don't overlap with any annotation
+    if (isFilteredView && !hunkOverlapsAnnotation(hunk, fileAnnotations)) {
+      continue;
+    }
+
+    // Show annotation reason banners for overlapping annotations
+    if (hasAnnotations) {
+      const overlapping = getOverlappingAnnotations(hunk, fileAnnotations);
+      if (overlapping.length > 0) {
+        elements.push(
+          <AnnotationReasonBanner key={`annotation-${hunkIndex}`} annotations={overlapping} />
+        );
+      }
+    }
 
     // Calculate gap before this hunk
     let gapStart: number;
@@ -539,8 +640,11 @@ function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand }: FileHun
     }
 
     // Render the hunk itself
+    const hunkIsAnnotated = hasAnnotations && hunkOverlapsAnnotation(hunk, fileAnnotations);
+    const hunkBorderClass = hunkIsAnnotated && showFullDiff ? 'border-l-2 border-amber-500' : '';
+
     elements.push(
-      <div key={`hunk-${hunkIndex}`}>
+      <div key={`hunk-${hunkIndex}`} className={hunkBorderClass}>
         {/* Hunk header */}
         <div className="bg-blue-900/30 text-blue-300 px-4 py-1">
           @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@

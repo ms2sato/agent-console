@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
-import type { GitDiffData, GitDiffTarget } from '@agent-console/shared';
+import type { GitDiffData, GitDiffTarget, ReviewAnnotationSet } from '@agent-console/shared';
 import * as workerWs from '../../../lib/worker-websocket.js';
 
 // Stable empty Map to avoid infinite re-renders with useSyncExternalStore
@@ -21,6 +21,8 @@ interface UseGitDiffWorkerReturn {
   setTargetCommit: (ref: GitDiffTarget) => void;
   expandedLines: Map<string, { startLine: number; lines: string[] }[]>;
   requestFileLines: (path: string, startLine: number, endLine: number) => void;
+  annotationSet: ReviewAnnotationSet | null;
+  requestAnnotations: () => void;
 }
 
 export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWorkerReturn {
@@ -65,6 +67,17 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
     workerWs.requestFileLines(sessionId, workerId, path, startLine, endLine, ref);
   }, [sessionId, workerId, state.diffData?.summary.targetRef]);
 
+  const requestAnnotations = useCallback(() => {
+    workerWs.requestAnnotations(sessionId, workerId);
+  }, [sessionId, workerId]);
+
+  // Request current annotations when connection is established (or re-established)
+  useEffect(() => {
+    if (state.connected) {
+      workerWs.requestAnnotations(sessionId, workerId);
+    }
+  }, [state.connected, sessionId, workerId]);
+
   return {
     diffData: state.diffData ?? null,
     error: state.diffError ?? null,
@@ -75,5 +88,7 @@ export function useGitDiffWorker(options: UseGitDiffWorkerOptions): UseGitDiffWo
     setTargetCommit,
     expandedLines: state.expandedLines ?? EMPTY_EXPANDED_LINES,
     requestFileLines,
+    annotationSet: state.annotationSet ?? null,
+    requestAnnotations,
   };
 }

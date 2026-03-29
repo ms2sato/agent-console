@@ -17,6 +17,8 @@ import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
+import { annotationService } from '../services/annotation-service.js';
+import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
 import {
   validateWorktreePath,
   deleteWorktreeWithSession,
@@ -914,6 +916,117 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err }, 'list_timers failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: write_review_annotations ----------
+
+  mcpServer.tool(
+    'write_review_annotations',
+    'Write review annotations for a git-diff worker. ' +
+      'Marks specific sections of a diff as "needs review" so the user can focus on important changes. ' +
+      'Annotations are pushed to the connected client in real-time via WebSocket.',
+    {
+      workerId: z.string().describe('The git-diff worker ID to annotate'),
+      sessionId: z.string().describe('The session ID containing the worker'),
+      annotations: z.array(z.object({
+        file: z.string().min(1, 'File path is required'),
+        startLine: z.number().int().min(1, 'startLine must be >= 1'),
+        endLine: z.number().int().min(1, 'endLine must be >= 1'),
+        reason: z.string().min(1, 'Reason is required'),
+      })).describe('Array of review annotations'),
+      summary: z.object({
+        totalFiles: z.number().int().min(0),
+        reviewFiles: z.number().int().min(0),
+        mechanicalFiles: z.number().int().min(0),
+        confidence: z.enum(['high', 'medium', 'low']),
+      }).describe('Summary of the review analysis'),
+    },
+    async ({ workerId, sessionId, annotations, summary }) => {
+      try {
+        // Validate session exists
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        // Validate worker exists and is a git-diff worker
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type !== 'git-diff') {
+          return errorResult(
+            `Worker ${workerId} is not a git-diff worker (type: ${worker.type})`,
+          );
+        }
+
+        // Store annotations (validation happens inside the service)
+        const annotationSet = annotationService.setAnnotations(workerId, { annotations, summary });
+
+        // Push to connected client
+        sendAnnotationsToClient(workerId, annotationSet);
+
+        logger.info(
+          { sessionId, workerId, annotationCount: annotations.length },
+          'Review annotations written via MCP',
+        );
+
+        return textResult({
+          workerId,
+          annotationCount: annotationSet.annotations.length,
+          createdAt: annotationSet.createdAt,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'write_review_annotations failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: clear_review_annotations ----------
+
+  mcpServer.tool(
+    'clear_review_annotations',
+    'Clear all review annotations for a git-diff worker. ' +
+      'The client is notified immediately via WebSocket.',
+    {
+      workerId: z.string().describe('The git-diff worker ID to clear annotations for'),
+      sessionId: z.string().describe('The session ID containing the worker'),
+    },
+    async ({ workerId, sessionId }) => {
+      try {
+        // Validate session exists
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        // Validate worker exists and is a git-diff worker
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type !== 'git-diff') {
+          return errorResult(
+            `Worker ${workerId} is not a git-diff worker (type: ${worker.type})`,
+          );
+        }
+
+        annotationService.clearAnnotations(workerId);
+
+        // Push null to connected client
+        sendAnnotationsToClient(workerId, null);
+
+        logger.info({ sessionId, workerId }, 'Review annotations cleared via MCP');
+
+        return textResult({ cleared: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'clear_review_annotations failed');
         return errorResult(message);
       }
     },

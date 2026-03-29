@@ -80,6 +80,42 @@ export interface ExpandedLineChunk {
 }
 
 // ============================================================
+// Review Annotations
+// ============================================================
+
+/** A single review annotation marking a section of code that needs review */
+export interface ReviewAnnotation {
+  file: string;        // File path as shown in the diff
+  startLine: number;   // Start line in the NEW file (1-based, inclusive)
+  endLine: number;     // End line in the NEW file (1-based, inclusive)
+  reason: string;      // Why this section needs review
+}
+
+/** Complete set of annotations for a worker */
+export interface ReviewAnnotationSet {
+  workerId: string;
+  annotations: ReviewAnnotation[];
+  summary: {
+    totalFiles: number;
+    reviewFiles: number;
+    mechanicalFiles: number;
+    confidence: 'high' | 'medium' | 'low';
+  };
+  createdAt: string;  // ISO timestamp
+}
+
+/** Input for creating annotations (no workerId or createdAt - those are added by the service) */
+export interface ReviewAnnotationInput {
+  annotations: ReviewAnnotation[];
+  summary: {
+    totalFiles: number;
+    reviewFiles: number;
+    mechanicalFiles: number;
+    confidence: 'high' | 'medium' | 'low';
+  };
+}
+
+// ============================================================
 // Constants
 // ============================================================
 
@@ -102,6 +138,7 @@ export const GIT_DIFF_SERVER_MESSAGE_TYPES = {
   'diff-data': 1,
   'diff-error': 2,
   'file-lines': 3,
+  'annotations-updated': 4,
 } as const;
 
 export type GitDiffServerMessageType = keyof typeof GIT_DIFF_SERVER_MESSAGE_TYPES;
@@ -110,11 +147,13 @@ export type GitDiffServerMessageType = keyof typeof GIT_DIFF_SERVER_MESSAGE_TYPE
 export type GitDiffServerMessage =
   | { type: 'diff-data'; data: GitDiffData }
   | { type: 'diff-error'; error: string }
-  | { type: 'file-lines'; path: string; startLine: number; lines: string[] };
+  | { type: 'file-lines'; path: string; startLine: number; lines: string[] }
+  | { type: 'annotations-updated'; annotations: ReviewAnnotationSet | null };
 
 /** Client → Server messages */
 export type GitDiffClientMessage =
   | { type: 'refresh' }
   | { type: 'set-base-commit'; ref: string }
   | { type: 'set-target-commit'; ref: GitDiffTarget }  // 'working-dir' or commit/branch ref
-  | { type: 'get-file-lines'; path: string; startLine: number; endLine: number; ref: GitDiffTarget };
+  | { type: 'get-file-lines'; path: string; startLine: number; endLine: number; ref: GitDiffTarget }
+  | { type: 'get-annotations' };
