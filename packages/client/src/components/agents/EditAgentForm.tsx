@@ -44,12 +44,14 @@ export function EditAgentForm({ agentId, initialData, onSuccess, onCancel }: Edi
       headlessTemplate: data.headlessTemplate || null,
       description: data.description || undefined,
       activityPatterns: askingPatterns ? { askingPatterns } : null,
+      baseAgentId: data.baseAgentId || null,
     });
   };
 
   return (
     <AgentForm
       mode="edit"
+      agentId={agentId}
       initialData={initialData}
       onSubmit={handleSubmit}
       onCancel={onCancel}

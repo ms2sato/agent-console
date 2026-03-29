@@ -236,6 +236,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 14) {
     await migrateToV14(database);
   }
+
+  if (currentVersion < 15) {
+    await migrateToV15(database);
+  }
 }
 
 /**
@@ -734,6 +738,28 @@ async function migrateToV14(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 14`.execute(database);
 
   logger.info('Migration to v14 completed');
+}
+
+/**
+ * Migration v15: Add base_agent_id column to agents table.
+ * Supports agent presets that inherit properties from a base agent.
+ */
+async function migrateToV15(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v15: Adding base_agent_id to agents');
+
+  try {
+    await database.schema
+      .alterTable('agents')
+      .addColumn('base_agent_id', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column base_agent_id already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 15`.execute(database);
+
+  logger.info('Migration to v15 completed');
 }
 
 /**

@@ -322,6 +322,7 @@ export function toAgentRow(agent: AgentDefinition): NewAgent {
     created_at: agent.createdAt,
     updated_at: now,
     activity_patterns: agent.activityPatterns ? JSON.stringify(agent.activityPatterns) : null,
+    base_agent_id: agent.baseAgentId ?? null,
   };
 }
 
@@ -353,6 +354,7 @@ export function toAgentDefinition(row: AgentRow): AgentDefinition {
     isBuiltIn: row.is_built_in === 1,
     createdAt: row.created_at ?? new Date().toISOString(),
     activityPatterns,
+    baseAgentId: row.base_agent_id ?? undefined,
   };
 
   return {

@@ -19,6 +19,12 @@ export interface AgentDefinition {
   isBuiltIn: boolean;
   createdAt: string;
 
+  /**
+   * If set, this agent is a preset that inherits properties from the base agent.
+   * Unset fields are inherited from the base; set fields override the base.
+   */
+  baseAgentId?: string;
+
   // === Templates ===
 
   /**

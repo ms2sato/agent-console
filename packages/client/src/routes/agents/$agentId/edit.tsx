@@ -101,6 +101,7 @@ function AgentEditPage() {
           continueTemplate: agent.continueTemplate || '',
           headlessTemplate: agent.headlessTemplate || '',
           askingPatternsInput: agent.activityPatterns?.askingPatterns?.join('\n') || '',
+          baseAgentId: agent.baseAgentId ?? '',
         }}
         onSuccess={navigateToDetail}
         onCancel={navigateToDetail}

@@ -42,6 +42,7 @@ export class SqliteAgentRepository implements AgentRepository {
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: row.updated_at,
           activity_patterns: row.activity_patterns,
+          base_agent_id: row.base_agent_id,
         })
       )
       .execute();

@@ -416,6 +416,103 @@ describe('AgentManager', () => {
     });
   });
 
+  describe('preset resolution', () => {
+    it('should resolve preset by merging with base agent', async () => {
+      const { manager } = await getAgentManager();
+
+      // Register a base agent
+      const base = await manager.registerAgent({
+        name: 'Base Agent',
+        commandTemplate: 'base-cmd {{prompt}}',
+        continueTemplate: 'base-cmd --continue',
+        headlessTemplate: 'base-cmd -p {{prompt}}',
+        activityPatterns: { askingPatterns: ['pattern1'] },
+      });
+
+      // Register a preset that overrides only commandTemplate
+      const preset = await manager.registerAgent({
+        name: 'Preset Agent',
+        commandTemplate: 'base-cmd --model sonnet {{prompt}}',
+        baseAgentId: base.id,
+      });
+
+      // Preset should inherit base properties
+      const resolved = manager.getAgent(preset.id);
+      expect(resolved?.commandTemplate).toBe('base-cmd --model sonnet {{prompt}}');
+      expect(resolved?.continueTemplate).toBe('base-cmd --continue');
+      expect(resolved?.headlessTemplate).toBe('base-cmd -p {{prompt}}');
+      expect(resolved?.activityPatterns?.askingPatterns).toEqual(['pattern1']);
+      expect(resolved?.capabilities.supportsContinue).toBe(true);
+      expect(resolved?.capabilities.supportsHeadlessMode).toBe(true);
+      expect(resolved?.baseAgentId).toBe(base.id);
+    });
+
+    it('should return preset as standalone when base agent is deleted', async () => {
+      const { manager } = await getAgentManager();
+
+      const base = await manager.registerAgent({
+        name: 'Base',
+        commandTemplate: 'base {{prompt}}',
+        continueTemplate: 'base --continue',
+      });
+
+      const preset = await manager.registerAgent({
+        name: 'Preset',
+        commandTemplate: 'preset {{prompt}}',
+        baseAgentId: base.id,
+      });
+
+      // Delete the base
+      await manager.unregisterAgent(base.id);
+
+      // Preset should still work but without inherited properties
+      const resolved = manager.getAgent(preset.id);
+      expect(resolved).toBeDefined();
+      expect(resolved?.commandTemplate).toBe('preset {{prompt}}');
+      expect(resolved?.continueTemplate).toBeUndefined(); // Was inherited, base gone
+      expect(resolved?.baseAgentId).toBe(base.id);
+    });
+
+    it('should resolve presets in getAllAgents()', async () => {
+      const { manager } = await getAgentManager();
+
+      const base = await manager.registerAgent({
+        name: 'Base',
+        commandTemplate: 'base {{prompt}}',
+        continueTemplate: 'base --continue',
+      });
+
+      await manager.registerAgent({
+        name: 'Preset',
+        commandTemplate: 'preset {{prompt}}',
+        baseAgentId: base.id,
+      });
+
+      const all = manager.getAllAgents();
+      const preset = all.find((a: AgentDefinition) => a.name === 'Preset');
+      expect(preset?.continueTemplate).toBe('base --continue');
+    });
+
+    it('should allow clearing baseAgentId via update', async () => {
+      const { manager } = await getAgentManager();
+
+      const base = await manager.registerAgent({
+        name: 'Base',
+        commandTemplate: 'base {{prompt}}',
+      });
+
+      const preset = await manager.registerAgent({
+        name: 'Preset',
+        commandTemplate: 'preset {{prompt}}',
+        baseAgentId: base.id,
+      });
+
+      // Clear baseAgentId
+      const updated = await manager.updateAgent(preset.id, { baseAgentId: null });
+      expect(updated?.baseAgentId).toBeUndefined();
+    });
+  });
+
   describe('unregisterAgent', () => {
     it('should unregister a custom agent', async () => {
       const { manager } = await getAgentManager();
