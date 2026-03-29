@@ -60,6 +60,8 @@ export class ActivityDetector {
 
   // Pattern-based detection: compiled regex patterns from agent definition
   private askingPatterns: RegExp[] = [];
+  // Spaceless variants for TUI cursor-positioned text (ANSI stripping loses spaces)
+  private spacelessAskingPatterns: RegExp[] = [];
 
   constructor(options: ActivityDetectorOptions = {}) {
     this.bufferSize = options.bufferSize ?? 1000;
@@ -75,6 +77,12 @@ export class ActivityDetector {
       this.askingPatterns = options.activityPatterns.askingPatterns.map(
         pattern => new RegExp(pattern, 'i')
       );
+      // Also compile spaceless variants: TUI renders text via ANSI cursor positioning,
+      // so after ANSI stripping, spaces between words are lost (e.g., "Do you want" → "Doyouwant").
+      // Remove literal spaces from patterns to match this concatenated text.
+      this.spacelessAskingPatterns = options.activityPatterns.askingPatterns.map(
+        pattern => new RegExp(pattern.replace(/ /g, ''), 'i')
+      );
     }
   }
 
@@ -88,13 +96,18 @@ export class ActivityDetector {
     // Strip ANSI escape sequences for clean character count
     const cleanData = data.replace(ANSI_REGEX, '');
 
+    // Compress consecutive spaces/tabs to single space for buffer efficiency
+    // TUI output often pads lines with spaces to fill terminal width,
+    // which wastes buffer space and can push asking patterns out of the analysis window
+    const compressedData = cleanData.replace(/[^\S\n]{2,}/g, ' ');
+
     // Debug: Log all incoming output
     if (cleanData.length > 0) {
       logger.trace({ charCount: cleanData.length, data: cleanData }, 'Received output');
     }
 
-    // Add to buffer for pattern analysis (use clean data to prevent ANSI overflow)
-    this.buffer += cleanData;
+    // Add to buffer for pattern analysis (use compressed data to prevent overflow)
+    this.buffer += compressedData;
     if (this.buffer.length > this.bufferSize) {
       this.buffer = this.buffer.slice(-this.bufferSize);
     }
@@ -164,6 +177,11 @@ export class ActivityDetector {
   /**
    * Check if any asking pattern matches the buffer
    * Returns false if no patterns are configured (rate-based detection only)
+   *
+   * Tests both original patterns and spaceless variants because TUI applications
+   * render text via ANSI cursor positioning. After ANSI stripping, spaces between
+   * words are lost (e.g., "Do you want to" → "Doyouwantto"), so patterns must
+   * also be tested without spaces.
    */
   private hasAskingPattern(text: string): boolean {
     // Skip pattern-based detection if no patterns configured
@@ -171,11 +189,22 @@ export class ActivityDetector {
       return false;
     }
 
+    // Test original patterns against original text
     for (const pattern of this.askingPatterns) {
       if (pattern.test(text)) {
         return true;
       }
     }
+
+    // Test spaceless patterns against spaceless text
+    // TUI cursor positioning causes spaces to be lost after ANSI stripping
+    const spacelessText = text.replace(/ /g, '');
+    for (const pattern of this.spacelessAskingPatterns) {
+      if (pattern.test(spacelessText)) {
+        return true;
+      }
+    }
+
     return false;
   }
 
