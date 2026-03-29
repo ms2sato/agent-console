@@ -91,17 +91,15 @@ function findTestFiles(changedFiles) {
     }
   }
 
-  // For each production file, check if a corresponding test exists in the PR
+  // For each production file, check if the conventionally-named test exists in the PR
   const testCoverage = [];
   for (const prodFile of productionFiles) {
     const baseName = prodFile.replace(/\.(ts|tsx|js|jsx)$/, '');
-    const hasTest = testFiles.some(
-      (tf) =>
-        tf.includes(baseName + '.test.') ||
-        tf.includes(baseName + '.spec.') ||
-        tf.includes(baseName.split('/').pop() + '.test.')
-    );
-    testCoverage.push({ file: prodFile, hasTest });
+    const dir = baseName.substring(0, baseName.lastIndexOf('/'));
+    const fileName = baseName.substring(baseName.lastIndexOf('/') + 1);
+    const expectedTestPath = dir + '/__tests__/' + fileName + '.test.';
+    const hasTest = testFiles.some(tf => tf.startsWith(expectedTestPath));
+    testCoverage.push({ file: prodFile, hasTest, expectedTestPath: dir + '/__tests__/' + fileName + '.test.ts' });
   }
 
   return { testFiles, productionFiles, testCoverage };
@@ -248,9 +246,12 @@ function printAutoDetection(autoDetection) {
   if (testCoverage.length === 0) {
     console.log('  (no production code files)');
   } else {
-    for (const { file, hasTest } of testCoverage) {
-      const status = hasTest ? 'covered' : 'NO TEST';
-      console.log(`  ${status === 'covered' ? '  ' : '! '}${file} -> ${status}`);
+    for (const { file, hasTest, expectedTestPath } of testCoverage) {
+      if (hasTest) {
+        console.log(`    ${file} -> covered`);
+      } else {
+        console.log(`  ! ${file} -> NO TEST (expected: ${expectedTestPath})`);
+      }
     }
   }
   console.log();
