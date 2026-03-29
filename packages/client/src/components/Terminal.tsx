@@ -721,11 +721,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     };
     container.addEventListener('wheel', handleWheel, { passive: true });
 
-    container.addEventListener('paste', handlePaste);
-    container.addEventListener('dragenter', handleDragEnter);
-    container.addEventListener('dragover', handleDragOver);
-    container.addEventListener('dragleave', handleDragLeave);
-    container.addEventListener('drop', handleDrop);
+    // Use capture phase so our handlers fire before xterm.js calls stopPropagation()
+    // on paste events (xterm's handlePasteEvent stops propagation in the bubble phase).
+    // DnD handlers also use capture for consistency and reliability.
+    container.addEventListener('paste', handlePaste, { capture: true });
+    container.addEventListener('dragenter', handleDragEnter, { capture: true });
+    container.addEventListener('dragover', handleDragOver, { capture: true });
+    container.addEventListener('dragleave', handleDragLeave, { capture: true });
+    container.addEventListener('drop', handleDrop, { capture: true });
     window.addEventListener('resize', handleResize);
 
     // Listen for scroll events to update scroll-to-bottom button visibility
@@ -802,11 +805,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       viewportObserver.disconnect();
 
       container.removeEventListener('wheel', handleWheel);
-      container.removeEventListener('paste', handlePaste);
-      container.removeEventListener('dragenter', handleDragEnter);
-      container.removeEventListener('dragover', handleDragOver);
-      container.removeEventListener('dragleave', handleDragLeave);
-      container.removeEventListener('drop', handleDrop);
+      container.removeEventListener('paste', handlePaste, { capture: true });
+      container.removeEventListener('dragenter', handleDragEnter, { capture: true });
+      container.removeEventListener('dragover', handleDragOver, { capture: true });
+      container.removeEventListener('dragleave', handleDragLeave, { capture: true });
+      container.removeEventListener('drop', handleDrop, { capture: true });
       dragCounterRef.current = 0;
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('scroll', handleDOMScroll, { capture: true });
