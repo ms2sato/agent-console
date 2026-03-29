@@ -18,8 +18,7 @@ import { broadcastToApp } from '../websocket/routes.js';
 import {
   _getDeletionsInProgress,
   isDeletionInProgress,
-  validateWorktreePath,
-  deleteWorktreeWithSession,
+  deleteWorktree,
 } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
@@ -287,11 +286,6 @@ const worktrees = new Hono<AppBindings>()
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager } = c.get('appContext');
-    const repo = repositoryManager.getRepository(repoId);
-
-    if (!repo) {
-      throw new NotFoundError('Repository');
-    }
 
     // Get worktree path from URL (everything after /worktrees/)
     const url = new URL(c.req.url);
@@ -302,50 +296,16 @@ const worktrees = new Hono<AppBindings>()
       throw new ValidationError('worktree path is required');
     }
 
-    // Canonicalize path to prevent path traversal attacks
+    // Canonicalize path (transport-specific: raw URL path parsing)
     const worktreePath = resolvePath(rawWorktreePath);
 
-    // Reject deletion while pull is in progress
+    // Reject deletion while pull is in progress (transport-specific: REST-only concern)
     if (pullsInProgress.has(worktreePath)) {
       return c.json({ error: 'Pull is in progress for this worktree' }, 409);
     }
 
-    // Check for force flag and taskId in query (needed by PR check message)
     const force = c.req.query('force') === 'true';
     const taskId = c.req.query('taskId');
-
-    // Validate path is within managed directory and belongs to this repository.
-    // This MUST run before any git operations (getCurrentBranch, findOpenPullRequest)
-    // to prevent arbitrary paths from reaching git commands.
-    const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
-    if (validationError) {
-      throw new ValidationError(validationError);
-    }
-
-    // Check for open PRs on the branch before acquiring concurrency guard.
-    // This avoids holding the guard during a potentially slow network call.
-    // Skip the check when force=true to allow forced deletion regardless of PR state.
-    if (!force) {
-      const branchForPrCheck = await getCurrentBranch(worktreePath);
-      if (branchForPrCheck && branchForPrCheck !== '(detached)' && branchForPrCheck !== '(unknown)') {
-        try {
-          const openPr = await findOpenPullRequest(branchForPrCheck, repo.path);
-          if (openPr) {
-            throw new ValidationError(
-              `WARNING: Cannot remove worktree. Branch '${branchForPrCheck}' has open PR #${openPr.number}. Merge or close the PR first, then retry.`,
-            );
-          }
-        } catch (error) {
-          if (error instanceof ValidationError) {
-            throw error;
-          }
-          // findOpenPullRequest threw — fail-closed: block deletion
-          throw new ValidationError(
-            `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
-          );
-        }
-      }
-    }
 
     // Pre-check concurrency guard before branching into async/sync paths.
     // The service also acquires the guard internally (defense in depth),
@@ -355,28 +315,17 @@ const worktrees = new Hono<AppBindings>()
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
+    const deletionDeps = { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
+
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {
-      // Find ALL associated sessions before returning accepted
-      const matchingSessions = sessionManager.getAllSessions().filter(
-        session => session.locationPath === worktreePath,
-      );
-      const sessionIds = matchingSessions.map(s => s.id);
-      // Use first match for backward-compatible WebSocket broadcast
-      const broadcastSessionId = sessionIds[0] || '';
-
       // Execute deletion in background (fire-and-forget)
       (async () => {
         try {
-          const result = await deleteWorktreeWithSession({
-            repoPath: repo.path,
-            repoId,
-            repoName: repo.name,
-            cleanupCommand: repo.cleanupCommand,
-            worktreePath,
-            sessionIds,
-            force,
-          }, sessionManager);
+          const result = await deleteWorktree({ repoId, worktreePath, force }, deletionDeps);
+
+          // Use first session ID for backward-compatible WebSocket broadcast
+          const broadcastSessionId = result.sessionIds?.[0] || '';
 
           if (!result.success) {
             broadcastToApp({
@@ -396,7 +345,7 @@ const worktrees = new Hono<AppBindings>()
             sessionId: broadcastSessionId,
             cleanupCommandResult: result.cleanupCommandResult,
           });
-          logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
+          logger.info({ taskId, repoId, worktreePath, sessionIds: result.sessionIds }, 'Worktree and session deletion completed');
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
@@ -405,7 +354,7 @@ const worktrees = new Hono<AppBindings>()
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: broadcastSessionId,
+              sessionId: '',
               error: errorMessage,
             });
           } catch {
@@ -419,25 +368,15 @@ const worktrees = new Hono<AppBindings>()
     }
 
     // Synchronous deletion (backward compatible)
-    // Find ALL matching sessions for this worktree path
-    const matchingSessions = sessionManager.getAllSessions().filter(
-      session => session.locationPath === worktreePath,
-    );
-
-    const result = await deleteWorktreeWithSession({
-      repoPath: repo.path,
-      repoId,
-      repoName: repo.name,
-      cleanupCommand: repo.cleanupCommand,
-      worktreePath,
-      sessionIds: matchingSessions.map(s => s.id),
-      force,
-    }, sessionManager);
+    const result = await deleteWorktree({ repoId, worktreePath, force }, deletionDeps);
 
     if (!result.success) {
-      // Concurrency guard failure should return 409, not 400
-      if (result.error === 'Deletion already in progress') {
+      // Map errorType to appropriate HTTP status
+      if (result.errorType === 'conflict' || result.errorType === 'open-pr') {
         return c.json({ error: result.error }, 409);
+      }
+      if (result.errorType === 'not-found') {
+        throw new NotFoundError(result.error || 'Repository');
       }
       throw new ValidationError(result.error || 'Failed to remove worktree');
     }

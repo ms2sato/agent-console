@@ -19,12 +19,10 @@ import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { annotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
-import {
-  validateWorktreePath,
-  deleteWorktreeWithSession,
-} from '../services/worktree-deletion-service.js';
+import { deleteWorktree } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
+import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
@@ -720,7 +718,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
     async ({ sessionId, force }) => {
       try {
-        // 1. Validate session
+        // 1. Resolve session to get repoId and worktreePath (MCP-specific: receives sessionId)
         const session = sessionManager.getSession(sessionId);
         if (!session) {
           return errorResult(`Session not found: ${sessionId}`);
@@ -732,56 +730,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
-        if (session.isMainWorktree) {
-          return errorResult(
-            `Cannot remove the main worktree for session ${sessionId}. Only added worktrees can be removed.`,
-          );
-        }
-
-        // 2. Validate repository
-        const repo = repositoryManager.getRepository(session.repositoryId);
-        if (!repo) {
-          return errorResult(`Repository not found: ${session.repositoryId}`);
-        }
-
-        // 2.5. Check for open PRs on the branch (skip when force=true)
-        if (!force) {
-          try {
-            const openPr = await findOpenPullRequest(session.worktreeId, repo.path);
-            if (openPr) {
-              return errorResult(
-                `WARNING: Cannot remove worktree. Branch '${session.worktreeId}' has open PR #${openPr.number}. Merge or close the PR first, then retry.`,
-              );
-            }
-          } catch (error) {
-            return errorResult(
-              `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
-            );
-          }
-        }
-
-        const worktreePath = session.locationPath;
-
-        // 3. Security validation
-        const validationError = await validateWorktreePath(
-          repo.path,
-          worktreePath,
-          session.repositoryId,
+        // 2. Delegate all domain logic to service
+        const result = await deleteWorktree(
+          {
+            repoId: session.repositoryId,
+            worktreePath: session.locationPath,
+            force: force ?? false,
+          },
+          { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );
-        if (validationError) {
-          return errorResult(validationError);
-        }
-
-        // 4. Orchestrate deletion (concurrency guard, cleanup, kill, remove, session delete)
-        const result = await deleteWorktreeWithSession({
-          repoPath: repo.path,
-          repoId: session.repositoryId,
-          repoName: repo.name,
-          cleanupCommand: repo.cleanupCommand,
-          worktreePath,
-          sessionIds: [sessionId],
-          force: force ?? false,
-        }, sessionManager);
 
         if (!result.success) {
           return errorResult(result.error || 'Failed to remove worktree');
@@ -792,13 +749,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         logger.info(
-          { sessionId, worktreePath },
+          { sessionId, worktreePath: session.locationPath },
           'Worktree and session removed via MCP',
         );
 
         return textResult({
           sessionId,
-          worktreePath,
+          worktreePath: session.locationPath,
           removed: true,
           cleanupCommandResult: result.cleanupCommandResult,
         });

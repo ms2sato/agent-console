@@ -1,6 +1,6 @@
 import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import { $ } from 'bun';
-import type { HookCommandResult } from '@agent-console/shared';
+import type { HookCommandResult, Session } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import { worktreeService } from './worktree-service.js';
@@ -23,22 +23,17 @@ export function isDeletionInProgress(worktreePath: string): boolean {
   return deletionsInProgress.has(worktreePath);
 }
 
-/**
- * Mark a worktree as having a deletion in progress.
- * Returns false if already in progress (caller should abort).
- */
-export function markDeletionInProgress(worktreePath: string): boolean {
+function markDeletionInProgress(worktreePath: string): boolean {
   if (deletionsInProgress.has(worktreePath)) return false;
   deletionsInProgress.add(worktreePath);
   return true;
 }
 
-/**
- * Clear the deletion-in-progress guard for a worktree path.
- */
-export function clearDeletionInProgress(worktreePath: string): void {
+function clearDeletionInProgress(worktreePath: string): void {
   deletionsInProgress.delete(worktreePath);
 }
+
+// ---------- Internal validation ----------
 
 /**
  * Validate that a worktree path is within the managed repositories directory
@@ -46,12 +41,11 @@ export function clearDeletionInProgress(worktreePath: string): void {
  *
  * @returns null if valid, or an error message string if invalid.
  */
-export async function validateWorktreePath(
+async function validateWorktreePath(
   repoPath: string,
   worktreePath: string,
   repoId: string,
 ): Promise<string | null> {
-  // Canonicalize path to prevent path traversal attacks
   const canonicalPath = resolvePath(worktreePath);
 
   // SECURITY: Explicit boundary check — resolve both sides to absolute paths
@@ -60,7 +54,6 @@ export async function validateWorktreePath(
     return 'Worktree path is outside managed directory';
   }
 
-  // Verify this is actually a worktree of this repository
   if (!await worktreeService.isWorktreeOf(repoPath, canonicalPath, repoId)) {
     return 'Invalid worktree path for this repository';
   }
@@ -71,10 +64,8 @@ export async function validateWorktreePath(
 /**
  * Execute the repository's cleanup command if configured.
  * Looks up the worktree in git listing to resolve template variables.
- *
- * @returns The cleanup command result, or undefined if no cleanup command is configured.
  */
-export async function executeCleanupCommandIfConfigured(
+async function executeCleanupCommandIfConfigured(
   repo: { path: string; name: string; cleanupCommand?: string | null },
   repoId: string,
   worktreePath: string,
@@ -98,59 +89,127 @@ export async function executeCleanupCommandIfConfigured(
   );
 }
 
-// ---------- Orchestration ----------
+// ---------- Dependencies ----------
 
-export interface DeleteWorktreeParams {
-  repoPath: string;
-  repoId: string;
-  repoName: string;
-  cleanupCommand?: string | null;
-  worktreePath: string;
-  sessionIds?: string[];  // If provided, session workers are killed and sessions are deleted on success
-  force: boolean;
+export interface DeleteWorktreeDeps {
+  sessionManager: SessionManager;
+  repositoryManager: {
+    getRepository(id: string): { name: string; path: string; cleanupCommand?: string | null } | undefined;
+  };
+  findOpenPullRequest: (branch: string, cwd: string) => Promise<{ number: number; title: string } | null>;
+  getCurrentBranch: (cwd: string) => Promise<string>;
 }
+
+// ---------- Result ----------
 
 export interface DeleteWorktreeResult {
   success: boolean;
   error?: string;
-  gitStatus?: string;  // Diagnostic info captured on worktree removal failure
+  /** Helps handlers map to appropriate HTTP status codes */
+  errorType?: 'not-found' | 'validation' | 'conflict' | 'open-pr';
+  gitStatus?: string;
   cleanupCommandResult?: HookCommandResult;
-  sessionDeleteError?: string;  // Captured error(s) from session deletion (worktree was removed successfully)
+  sessionDeleteError?: string;
+  /** Session IDs that were cleaned up (for WebSocket broadcast) */
+  sessionIds?: string[];
+}
+
+// ---------- Main entry point ----------
+
+export interface DeleteWorktreeParams {
+  repoId: string;
+  worktreePath: string;
+  force: boolean;
 }
 
 /**
- * Orchestrate worktree deletion: cleanup command, kill workers, remove worktree, delete session.
- *
- * Acquires the concurrency guard internally. The caller should NOT call
- * markDeletionInProgress/clearDeletionInProgress — this function handles both.
+ * Orchestrate worktree deletion end-to-end:
+ * 1. Look up repository
+ * 2. Validate worktree path
+ * 3. Find all matching sessions, check main worktree protection
+ * 4. Check for open PRs (unless force)
+ * 5. Acquire concurrency guard
+ * 6. Execute cleanup command, kill workers, remove worktree, delete sessions
  */
-export async function deleteWorktreeWithSession(
+export async function deleteWorktree(
   params: DeleteWorktreeParams,
-  sessionManager: SessionManager,
+  deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
-  const { repoPath, repoId, repoName, cleanupCommand, worktreePath, sessionIds, force } = params;
+  const { repoId, worktreePath, force } = params;
+  const { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
+  // 1. Look up repository
+  const repo = repositoryManager.getRepository(repoId);
+  if (!repo) {
+    return { success: false, error: `Repository not found: ${repoId}`, errorType: 'not-found' };
+  }
+
+  // 2. Validate worktree path
+  const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+  if (validationError) {
+    return { success: false, error: validationError, errorType: 'validation' };
+  }
+
+  // 3. Find all matching sessions
+  const matchingSessions = sessionManager.getAllSessions().filter(
+    (session: Session) => session.locationPath === worktreePath,
+  );
+  const sessionIds = matchingSessions.map(s => s.id);
+
+  // 3a. Main worktree protection: check if any matching session is the main worktree
+  for (const session of matchingSessions) {
+    if (session.type === 'worktree' && session.isMainWorktree) {
+      return {
+        success: false,
+        error: 'Cannot remove the main worktree. Only added worktrees can be removed.',
+        errorType: 'validation',
+      };
+    }
+  }
+
+  // 4. Check for open PRs (unless force)
+  if (!force) {
+    try {
+      const branch = await getCurrentBranch(worktreePath);
+      if (branch && branch !== '(detached)' && branch !== '(unknown)') {
+        const openPr = await findOpenPullRequest(branch, repo.path);
+        if (openPr) {
+          return {
+            success: false,
+            error: `WARNING: Cannot remove worktree. Branch '${branch}' has open PR #${openPr.number}. Merge or close the PR first, then retry.`,
+            errorType: 'open-pr',
+          };
+        }
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
+        errorType: 'open-pr',
+      };
+    }
+  }
+
+  // 5. Acquire concurrency guard
   if (!markDeletionInProgress(worktreePath)) {
-    return { success: false, error: 'Deletion already in progress' };
+    return { success: false, error: 'Deletion already in progress', errorType: 'conflict' };
   }
 
   try {
-    // 1. Execute cleanup command if configured
+    // 6a. Execute cleanup command if configured
     const cleanupCommandResult = await executeCleanupCommandIfConfigured(
-      { path: repoPath, name: repoName, cleanupCommand },
+      { path: repo.path, name: repo.name, cleanupCommand: repo.cleanupCommand },
       repoId,
       worktreePath,
     );
 
-    // 2. Kill PTY processes to release directory handles
-    if (sessionIds && sessionIds.length > 0) {
-      for (const sid of sessionIds) {
-        sessionManager.killSessionWorkers(sid);
-      }
+    // 6b. Kill PTY processes to release directory handles
+    for (const sid of sessionIds) {
+      sessionManager.killSessionWorkers(sid);
     }
 
-    // 3. Remove worktree via git
-    const result = await worktreeService.removeWorktree(repoPath, worktreePath, force);
+    // 6c. Remove worktree via git
+    const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
 
     if (!result.success) {
       // Capture git status for diagnostics
@@ -164,12 +223,12 @@ export async function deleteWorktreeWithSession(
 
       logger.error({ repoId, worktreePath, error: result.error }, 'Worktree removal failed');
       // Do NOT delete sessions — preserve for retry
-      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus };
+      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus, sessionIds };
     }
 
-    // 4. Delete sessions after successful worktree removal
+    // 6d. Delete sessions after successful worktree removal
     let sessionDeleteError: string | undefined;
-    if (sessionIds && sessionIds.length > 0) {
+    if (sessionIds.length > 0) {
       const deleteErrors: string[] = [];
       for (const sid of sessionIds) {
         try {
@@ -186,7 +245,7 @@ export async function deleteWorktreeWithSession(
     }
 
     logger.info({ repoId, worktreePath, sessionIds }, 'Worktree deletion completed');
-    return { success: true, cleanupCommandResult, sessionDeleteError };
+    return { success: true, cleanupCommandResult, sessionDeleteError, sessionIds };
   } finally {
     clearDeletionInProgress(worktreePath);
   }
