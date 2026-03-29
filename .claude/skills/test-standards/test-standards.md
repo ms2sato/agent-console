@@ -131,6 +131,28 @@ Using `mock.module()` or `vi.mock()` instead of fetch-level mocks.
 - `mock.module()` is permanent in bun:test (cannot be reset)
 - Tests pass even when integration is broken
 
+**Bun-specific: `mock.module()` is process-global.** Mocking a module in one test file pollutes ALL test files that run in the same process. This has caused production incidents (e.g., mocking `config.js` in deletion tests broke 26+ unrelated tests).
+
+**Preferred approach: dependency injection over module mocking for cross-cutting concerns.**
+When a service depends on other services or configuration, accept them as parameters (constructor or function args) rather than importing and mocking the module. This was successfully applied in `deleteWorktree(params, deps)` (#383).
+
+```typescript
+// ❌ Fragile: mock.module pollutes other tests
+mock.module('../../lib/config.js', () => ({
+  getRepositoriesDir: () => '/fake/path',
+}));
+
+// ✅ Robust: dependency injection
+export async function deleteWorktree(
+  params: DeleteWorktreeParams,
+  deps: DeleteWorktreeDeps,  // sessionManager, repositoryManager, etc.
+): Promise<DeleteWorktreeResult> { ... }
+
+// In tests: pass mock deps directly
+const deps = createMockDeps({ repo: mockRepo });
+const result = await deleteWorktree(params, deps);
+```
+
 ### 3. Private Method Testing
 
 Attempting to test internal/private methods directly.
