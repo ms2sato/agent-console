@@ -372,7 +372,7 @@ const worktrees = new Hono<AppBindings>()
 
     if (!result.success) {
       // Map errorType to appropriate HTTP status
-      if (result.errorType === 'conflict') {
+      if (result.errorType === 'conflict' || result.errorType === 'open-pr') {
         return c.json({ error: result.error }, 409);
       }
       if (result.errorType === 'not-found') {

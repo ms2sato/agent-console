@@ -2214,7 +2214,7 @@ describe('API Routes Integration', () => {
           { method: 'DELETE' }
         );
 
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(409);
         const body = (await res.json()) as { error: string };
         expect(body.error).toContain('open PR #42');
         expect(body.error).toContain('feature-1');
@@ -2259,7 +2259,7 @@ describe('API Routes Integration', () => {
         );
 
         // Deletion should be blocked (fail-closed)
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(409);
         const body = (await res.json()) as { error: string };
         expect(body.error).toContain('Failed to check for open PRs');
       });
