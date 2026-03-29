@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { GitDiffTarget } from '@agent-console/shared';
+import type { GitDiffTarget, ReviewAnnotationSet } from '@agent-console/shared';
 import { useGitDiffWorker } from './hooks/useGitDiffWorker';
 import { useDiffScrollPosition, getStoredVisibleFile } from './hooks/useDiffScrollPosition';
 import { RefreshIcon } from '../Icons';
@@ -23,10 +23,13 @@ interface GitDiffWorkerViewProps {
 }
 
 export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProps) {
-  const { diffData, error, loading, connected, refresh, setBaseCommit, setTargetCommit, expandedLines, requestFileLines } = useGitDiffWorker({
+  const { diffData, error, loading, connected, refresh, setBaseCommit, setTargetCommit, expandedLines, requestFileLines, annotationSet } = useGitDiffWorker({
     sessionId,
     workerId,
   });
+
+  // Toggle between showing full diff and only annotated sections
+  const [showFullDiff, setShowFullDiff] = useState(false);
 
   // Track scroll position with localStorage persistence
   const {
@@ -250,6 +253,15 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
         currentBaseCommit={baseCommit}
       />
 
+      {/* Annotation summary bar */}
+      {annotationSet && (
+        <AnnotationSummaryBar
+          annotationSet={annotationSet}
+          showFullDiff={showFullDiff}
+          onToggle={() => setShowFullDiff((prev) => !prev)}
+        />
+      )}
+
       {/* Split pane layout */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left: File list */}
@@ -258,6 +270,8 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
             files={files}
             selectedPath={visibleFile}
             onSelectFile={handleFileClick}
+            annotationSet={annotationSet}
+            showFullDiff={showFullDiff}
           />
         </div>
 
@@ -288,6 +302,8 @@ export function GitDiffWorkerView({ sessionId, workerId }: GitDiffWorkerViewProp
               onFileVisible={handleFileVisible}
               expandedLines={expandedLines}
               onRequestExpand={requestFileLines}
+              annotationSet={annotationSet}
+              showFullDiff={showFullDiff}
             />
           </ErrorBoundary>
         </div>
@@ -379,6 +395,41 @@ function Header({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface AnnotationSummaryBarProps {
+  annotationSet: ReviewAnnotationSet;
+  showFullDiff: boolean;
+  onToggle: () => void;
+}
+
+function AnnotationSummaryBar({ annotationSet, showFullDiff, onToggle }: AnnotationSummaryBarProps) {
+  const { totalFiles, reviewFiles, confidence } = annotationSet.summary;
+
+  const confidenceLabel: Record<ReviewAnnotationSet['summary']['confidence'], string> = {
+    high: 'High',
+    medium: 'Medium',
+    low: 'Low',
+  };
+
+  return (
+    <div className="px-4 py-2 bg-amber-900/30 border-b border-amber-700/50 shrink-0 flex items-center justify-between">
+      <div className="flex items-center gap-4 text-sm">
+        <span className="text-amber-200">
+          Orchestrator reviewed {totalFiles} files. {reviewFiles} need your attention.
+        </span>
+        <span className="text-amber-400/70">
+          Confidence: {confidenceLabel[confidence]}
+        </span>
+      </div>
+      <button
+        onClick={onToggle}
+        className="text-xs px-3 py-1 rounded bg-amber-800/50 hover:bg-amber-700/50 text-amber-200 transition-colors"
+      >
+        {showFullDiff ? 'Show annotated only' : 'Show full diff'}
+      </button>
     </div>
   );
 }

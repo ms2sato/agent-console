@@ -1,6 +1,7 @@
 import type { WSContext } from 'hono/ws';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
-import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget } from '@agent-console/shared';
+import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget, ReviewAnnotationSet } from '@agent-console/shared';
+import { annotationService } from '../services/annotation-service.js';
 import {
   getDiffData as getDiffDataImpl,
   getFileLines as getFileLinesImpl,
@@ -232,6 +233,16 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
           break;
         }
 
+        case 'get-annotations': {
+          const annotations = annotationService.getAnnotations(workerId);
+          const msg: GitDiffServerMessage = {
+            type: 'annotations-updated',
+            annotations,
+          };
+          ws.send(JSON.stringify(msg));
+          break;
+        }
+
         default: {
           // Exhaustive check: TypeScript will error if a new message type is added but not handled
           const _exhaustive: never = parsed;
@@ -259,11 +270,29 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
     await sendDiffData(state.ws, state.locationPath, newBaseCommit, state.targetRef);
   }
 
+  /**
+   * Send annotations to the client connected for a given workerId.
+   * Silently returns if no active connection exists.
+   */
+  function sendAnnotationsToClient(workerId: string, annotations: ReviewAnnotationSet | null): void {
+    const state = activeConnections.get(workerId);
+    if (!state) {
+      return;
+    }
+
+    const msg: GitDiffServerMessage = {
+      type: 'annotations-updated',
+      annotations,
+    };
+    state.ws.send(JSON.stringify(msg));
+  }
+
   return {
     handleConnection,
     handleDisconnection,
     handleMessage,
     updateBaseCommit,
+    sendAnnotationsToClient,
   };
 }
 
@@ -277,3 +306,4 @@ export const handleGitDiffConnection = defaultHandlers.handleConnection;
 export const handleGitDiffDisconnection = defaultHandlers.handleDisconnection;
 export const handleGitDiffMessage = defaultHandlers.handleMessage;
 export const updateGitDiffBaseCommit = defaultHandlers.updateBaseCommit;
+export const sendAnnotationsToClient = defaultHandlers.sendAnnotationsToClient;

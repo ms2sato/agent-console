@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { GitDiffFile, GitFileStatus, GitStageState } from '@agent-console/shared';
+import type { GitDiffFile, GitFileStatus, GitStageState, ReviewAnnotationSet } from '@agent-console/shared';
 import { FolderIcon } from '../Icons';
 
 /**
@@ -26,6 +26,8 @@ interface DiffFileListProps {
   files: GitDiffFile[];
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
+  annotationSet?: ReviewAnnotationSet | null;
+  showFullDiff?: boolean;
 }
 
 interface FileTreeNode {
@@ -123,9 +125,11 @@ interface FileTreeItemProps {
   level: number;
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
+  annotatedPaths?: Set<string>;
+  dimNonAnnotated?: boolean;
 }
 
-function FileTreeItem({ node, level, selectedPath, onSelectFile }: FileTreeItemProps) {
+function FileTreeItem({ node, level, selectedPath, onSelectFile, annotatedPaths, dimNonAnnotated }: FileTreeItemProps) {
   const indentPx = level * 12;
 
   // If this is a file node (has file data)
@@ -134,6 +138,8 @@ function FileTreeItem({ node, level, selectedPath, onSelectFile }: FileTreeItemP
     const isSelected = selectedPath === file.path;
     const statusLabel = getStatusLabel(file.status, file.stageState);
     const statusColor = getStatusColor(file.status);
+    const isAnnotated = annotatedPaths?.has(file.path) ?? false;
+    const hasAnnotations = annotatedPaths !== undefined && annotatedPaths.size > 0;
 
     return (
       <div
@@ -141,6 +147,7 @@ function FileTreeItem({ node, level, selectedPath, onSelectFile }: FileTreeItemP
           flex items-center gap-2 px-2 py-1.5 cursor-pointer
           hover:bg-slate-700/50 transition-colors
           ${isSelected ? 'bg-slate-700' : ''}
+          ${hasAnnotations && !isAnnotated && dimNonAnnotated ? 'opacity-60' : ''}
         `}
         style={{ paddingLeft: `${indentPx + 8}px` }}
         onClick={() => onSelectFile(file.path)}
@@ -159,6 +166,19 @@ function FileTreeItem({ node, level, selectedPath, onSelectFile }: FileTreeItemP
             </span>
           )}
         </span>
+
+        {/* Annotation indicator */}
+        {hasAnnotations && (
+          isAnnotated ? (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-800/60 text-amber-300 font-medium shrink-0">
+              Review
+            </span>
+          ) : (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/40 text-green-400/70 font-medium shrink-0">
+              Verified
+            </span>
+          )
+        )}
 
         {/* Stats */}
         {!file.isBinary && (
@@ -212,14 +232,22 @@ function FileTreeItem({ node, level, selectedPath, onSelectFile }: FileTreeItemP
           level={node.name ? level + 1 : level}
           selectedPath={selectedPath}
           onSelectFile={onSelectFile}
+          annotatedPaths={annotatedPaths}
+          dimNonAnnotated={dimNonAnnotated}
         />
       ))}
     </>
   );
 }
 
-export function DiffFileList({ files, selectedPath, onSelectFile }: DiffFileListProps) {
+export function DiffFileList({ files, selectedPath, onSelectFile, annotationSet, showFullDiff }: DiffFileListProps) {
   const fileTree = useMemo(() => buildFileTree(files), [files]);
+
+  // Compute set of file paths that have annotations
+  const annotatedPaths = useMemo(() => {
+    if (!annotationSet) return undefined;
+    return new Set(annotationSet.annotations.map((a) => a.file));
+  }, [annotationSet]);
 
   if (files.length === 0) {
     return (
@@ -237,6 +265,8 @@ export function DiffFileList({ files, selectedPath, onSelectFile }: DiffFileList
           level={0}
           selectedPath={selectedPath}
           onSelectFile={onSelectFile}
+          annotatedPaths={annotatedPaths}
+          dimNonAnnotated={!showFullDiff}
         />
       </div>
     </div>
