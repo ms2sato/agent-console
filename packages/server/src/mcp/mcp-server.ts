@@ -966,8 +966,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // Store annotations (validation happens inside the service)
         const annotationSet = annotationService.setAnnotations(workerId, { annotations, summary });
 
-        // Push to connected client
-        sendAnnotationsToClient(workerId, annotationSet);
+        // Push to connected client (best-effort: annotations are already stored)
+        try {
+          sendAnnotationsToClient(workerId, annotationSet);
+        } catch (notifyErr) {
+          logger.warn(
+            { err: notifyErr, sessionId, workerId },
+            'Failed to push annotations to client (annotations were stored successfully)',
+          );
+        }
 
         logger.info(
           { sessionId, workerId, annotationCount: annotations.length },
@@ -1018,8 +1025,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         annotationService.clearAnnotations(workerId);
 
-        // Push null to connected client
-        sendAnnotationsToClient(workerId, null);
+        // Push null to connected client (best-effort: annotations are already cleared)
+        try {
+          sendAnnotationsToClient(workerId, null);
+        } catch (notifyErr) {
+          logger.warn(
+            { err: notifyErr, sessionId, workerId },
+            'Failed to push annotation clear to client (annotations were cleared successfully)',
+          );
+        }
 
         logger.info({ sessionId, workerId }, 'Review annotations cleared via MCP');
 

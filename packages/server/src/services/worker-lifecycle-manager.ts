@@ -38,6 +38,7 @@ import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
+import { annotationService } from './annotation-service.js';
 import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -259,6 +260,9 @@ export class WorkerLifecycleManager {
 
     // Clean up notification state (debounce timers, previous state)
     this.deps.notificationManager?.cleanupWorker(sessionId, workerId);
+
+    // Clean up review annotations for this worker
+    annotationService.clearAnnotations(workerId);
 
     // Clean up inter-session message files for this worker
     try {
