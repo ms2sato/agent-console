@@ -379,11 +379,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // 3. Write message file
+        const repositoryName = targetSession.type === 'worktree' ? targetSession.repositoryName : undefined;
         const result = await interSessionMessageService.sendMessage({
           toSessionId,
           toWorkerId: resolvedWorkerId,
           fromSessionId,
           content,
+          repositoryName,
         });
 
         // 4. PTY notification (best-effort -- message file is already written)

@@ -37,18 +37,35 @@ export function getDbPath(): string {
 
 /**
  * Get the directory for inter-session message files.
- * Structure: ~/.agent-console/messages/
+ * @param repositoryName - org/repo string for worktree sessions, undefined for quick sessions
  */
-export function getMessagesDir(): string {
-  return path.join(getConfigDir(), 'messages');
+export function getMessagesDir(repositoryName?: string): string {
+  if (repositoryName) {
+    return path.join(getRepositoriesDir(), repositoryName, 'messages');
+  }
+  return path.join(getConfigDir(), '_quick', 'messages');
 }
 
 /**
  * Get the directory for memo files.
- * Structure: ~/.agent-console/memos/
+ * @param repositoryName - org/repo string for worktree sessions, undefined for quick sessions
  */
-export function getMemosDir(): string {
-  return path.join(getConfigDir(), 'memos');
+export function getMemosDir(repositoryName?: string): string {
+  if (repositoryName) {
+    return path.join(getRepositoriesDir(), repositoryName, 'memos');
+  }
+  return path.join(getConfigDir(), '_quick', 'memos');
+}
+
+/**
+ * Get the directory for worker output files.
+ * @param repositoryName - org/repo string for worktree sessions, undefined for quick sessions
+ */
+export function getOutputsDir(repositoryName?: string): string {
+  if (repositoryName) {
+    return path.join(getRepositoriesDir(), repositoryName, 'outputs');
+  }
+  return path.join(getConfigDir(), '_quick', 'outputs');
 }
 
 /**

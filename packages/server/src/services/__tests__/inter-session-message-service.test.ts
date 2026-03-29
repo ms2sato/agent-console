@@ -31,7 +31,7 @@ describe('InterSessionMessageService', () => {
         content: 'hello',
       });
 
-      const dirPath = `${TEST_CONFIG_DIR}/messages/session-target/worker-1`;
+      const dirPath = `${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`;
       const dirExists = vol.existsSync(dirPath);
       expect(dirExists).toBe(true);
     });
@@ -71,7 +71,7 @@ describe('InterSessionMessageService', () => {
 
       expect(result.messageId).toBeDefined();
       expect(result.path).toContain(TEST_CONFIG_DIR);
-      expect(result.path).toContain('messages/session-target/worker-1');
+      expect(result.path).toContain('_quick/messages/session-target/worker-1');
       expect(result.path).toEndWith(result.messageId);
     });
 
@@ -83,7 +83,7 @@ describe('InterSessionMessageService', () => {
         content: 'test',
       });
 
-      const dirPath = `${TEST_CONFIG_DIR}/messages/session-target/worker-1`;
+      const dirPath = `${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`;
       const files = vol.readdirSync(dirPath) as string[];
       const tmpFiles = files.filter((f) => f.startsWith('.tmp-'));
       expect(tmpFiles).toHaveLength(0);
@@ -160,11 +160,11 @@ describe('InterSessionMessageService', () => {
       });
 
       // Verify directory exists
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/messages/session-1`)).toBe(true);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1`)).toBe(true);
 
       await service.deleteSessionMessages('session-1');
 
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/messages/session-1`)).toBe(false);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1`)).toBe(false);
     });
 
     it('should not throw when directory does not exist', async () => {
@@ -194,9 +194,9 @@ describe('InterSessionMessageService', () => {
       await service.deleteWorkerMessages('session-1', 'worker-2');
 
       // worker-1 messages should remain
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/messages/session-1/worker-1`)).toBe(true);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1/worker-1`)).toBe(true);
       // worker-2 messages should be gone
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/messages/session-1/worker-2`)).toBe(false);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1/worker-2`)).toBe(false);
     });
 
     it('should not throw when directory does not exist', async () => {
@@ -253,6 +253,48 @@ describe('InterSessionMessageService', () => {
       await expect(
         service.deleteWorkerMessages('valid-session', '../../../etc'),
       ).rejects.toThrow('Invalid workerId');
+    });
+  });
+
+  describe('repository-scoped paths', () => {
+    it('should write to repository-scoped path when repositoryName is provided', async () => {
+      const result = await service.sendMessage({
+        toSessionId: 'session-target',
+        toWorkerId: 'worker-1',
+        fromSessionId: 'session-sender',
+        content: 'hello',
+        repositoryName: 'org/repo',
+      });
+
+      expect(result.path).toContain(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-target/worker-1`);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-target/worker-1`)).toBe(true);
+    });
+
+    it('should delete from repository-scoped path when repositoryName is provided', async () => {
+      await service.sendMessage({
+        toSessionId: 'session-1',
+        toWorkerId: 'worker-1',
+        fromSessionId: 'sender',
+        content: 'msg',
+        repositoryName: 'org/repo',
+      });
+
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-1`)).toBe(true);
+
+      await service.deleteSessionMessages('session-1', 'org/repo');
+
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-1`)).toBe(false);
+    });
+
+    it('should write to _quick fallback path when repositoryName is not provided', async () => {
+      const result = await service.sendMessage({
+        toSessionId: 'session-target',
+        toWorkerId: 'worker-1',
+        fromSessionId: 'session-sender',
+        content: 'hello',
+      });
+
+      expect(result.path).toContain(`${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`);
     });
   });
 

@@ -174,7 +174,7 @@ describe('Worker History File Initialization', () => {
 
       // The history file should exist on disk immediately
       // Check both compressed and uncompressed paths
-      const outputsDir = `${TEST_CONFIG_DIR}/outputs/${session.id}`;
+      const outputsDir = `${TEST_CONFIG_DIR}/_quick/outputs/${session.id}`;
       const uncompressedPath = `${outputsDir}/${agentWorker!.id}.log`;
       const compressedPath = `${outputsDir}/${agentWorker!.id}.log.gz`;
 
