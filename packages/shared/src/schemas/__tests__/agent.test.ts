@@ -8,6 +8,7 @@ import {
   AgentDefinitionSchema,
   isSafeRegex,
   isValidRegex,
+  hasMalformedPlaceholder,
 } from '../agent';
 
 describe('AgentCapabilitiesSchema', () => {
@@ -674,6 +675,83 @@ describe('isValidRegex', () => {
     const result = isValidRegex(longPattern);
     expect(result.valid).toBe(false);
     expect(result.error).toContain('too long');
+  });
+});
+
+describe('hasMalformedPlaceholder with custom template variables', () => {
+  it('should accept {{model:default}} (no spaces, with colon default)', () => {
+    expect(hasMalformedPlaceholder('cli --model {{model:default}} {{prompt}}')).toBe(false);
+  });
+
+  it('should accept {{model}} (no spaces, no default)', () => {
+    expect(hasMalformedPlaceholder('cli --model {{model}} {{prompt}}')).toBe(false);
+  });
+
+  it('should reject {{ model:default }} (spaces inside braces)', () => {
+    expect(hasMalformedPlaceholder('cli --model {{ model:default }} {{prompt}}')).toBe(true);
+  });
+
+  it('should reject {{ model }} (spaces inside braces, no default)', () => {
+    expect(hasMalformedPlaceholder('cli {{ model }}')).toBe(true);
+  });
+
+  it('should reject {{ model:default}} (leading space)', () => {
+    expect(hasMalformedPlaceholder('cli {{ model:default}}')).toBe(true);
+  });
+
+  it('should reject {{model :default}} (space before colon)', () => {
+    // "model " contains a space after the word, making it malformed
+    expect(hasMalformedPlaceholder('cli {{model :default}}')).toBe(true);
+  });
+});
+
+describe('template validation with custom variables', () => {
+  describe('commandTemplate with custom variables', () => {
+    it('should accept commandTemplate with custom variable and default', () => {
+      const result = v.safeParse(CreateAgentRequestSchema, {
+        name: 'Test Agent',
+        commandTemplate: 'cli --model {{model:default}} {{prompt}}',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept commandTemplate with custom variable without default', () => {
+      const result = v.safeParse(CreateAgentRequestSchema, {
+        name: 'Test Agent',
+        commandTemplate: 'cli --model {{model}} {{prompt}}',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept commandTemplate with multiple custom variables', () => {
+      const result = v.safeParse(CreateAgentRequestSchema, {
+        name: 'Test Agent',
+        commandTemplate: 'cli --model {{model:default}} --temp {{temperature:0.7}} {{prompt}}',
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('continueTemplate with custom variables', () => {
+    it('should accept continueTemplate with custom variable', () => {
+      const result = v.safeParse(CreateAgentRequestSchema, {
+        name: 'Test Agent',
+        commandTemplate: 'cli {{prompt}}',
+        continueTemplate: 'cli --model {{model:default}} -c',
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('headlessTemplate with custom variables', () => {
+    it('should accept headlessTemplate with custom variable', () => {
+      const result = v.safeParse(CreateAgentRequestSchema, {
+        name: 'Test Agent',
+        commandTemplate: 'cli {{prompt}}',
+        headlessTemplate: 'cli --model {{model:default}} -p {{prompt}}',
+      });
+      expect(result.success).toBe(true);
+    });
   });
 });
 

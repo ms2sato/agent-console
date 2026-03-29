@@ -33,6 +33,7 @@ export interface CreateWorktreeParams {
   parentWorkerId?: string;
   createdBy?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
+  templateVars?: Record<string, string>;
 }
 
 export interface CreateWorktreeResult {
@@ -59,6 +60,7 @@ export async function createWorktreeWithSession(
     useRemote, agentId, initialPrompt, title,
     parentSessionId, parentWorkerId, createdBy,
     autoStartSession = true,
+    templateVars,
   } = params;
 
   // 1. Handle remote fetch if requested
@@ -127,6 +129,7 @@ export async function createWorktreeWithSession(
         title,
         parentSessionId,
         parentWorkerId,
+        templateVars,
       }, { createdBy });
     }
 

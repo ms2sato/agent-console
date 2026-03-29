@@ -96,7 +96,8 @@ export class WorkerLifecycleManager {
     sessionId: string,
     request: CreateWorkerParams,
     continueConversation: boolean = false,
-    initialPrompt?: string
+    initialPrompt?: string,
+    templateVars?: Record<string, string>
   ): Promise<Worker | null> {
     const session = this.deps.getSession(sessionId);
     if (!session) return null;
@@ -129,6 +130,7 @@ export class WorkerLifecycleManager {
         repositoryId,
         parentSessionId: session.parentSessionId,
         parentWorkerId: session.parentWorkerId,
+        templateVars,
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {

@@ -491,6 +491,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'When true, skip auto-appending callback instructions to the prompt. ' +
             'Use this when you want to include your own custom reporting instructions in the prompt.',
         ),
+      templateVars: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe(
+          'Custom template variable overrides. Keys are variable names (e.g., "model"), values are the replacement strings. ' +
+            'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}).',
+        ),
     },
     async ({
       repositoryId,
@@ -503,6 +510,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       parentSessionId,
       parentWorkerId,
       skipMessageCallbackPrompt,
+      templateVars,
     }) => {
       try {
         // Validate parent IDs: both must be provided together
@@ -581,6 +589,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           parentWorkerId,
           createdBy: parentCreatedBy,
           autoStartSession: true,
+          templateVars,
         }, sessionManager);
 
         if (!result.success) {
