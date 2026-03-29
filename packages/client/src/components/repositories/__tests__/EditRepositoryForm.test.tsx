@@ -19,12 +19,25 @@ function createSlackNotFoundResponse() {
   } as unknown as Response;
 }
 
+// Default mock agents response
+function createAgentsResponse() {
+  return createMockResponse({
+    agents: [
+      { id: 'claude-code', name: 'Claude Code', isBuiltIn: true, createdAt: '2024-01-01T00:00:00Z' },
+      { id: 'custom-agent-1', name: 'My Custom Agent', isBuiltIn: false, createdAt: '2024-01-01T00:00:00Z' },
+    ],
+  });
+}
+
 // Helper to set up mock fetch with Slack integration always returning 404
 function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/integrations/slack')) {
       return Promise.resolve(createSlackNotFoundResponse());
+    }
+    if (url.includes('/api/agents')) {
+      return Promise.resolve(createAgentsResponse());
     }
     if (typeof mainResponse === 'function') {
       return mainResponse();
@@ -75,6 +88,7 @@ function createTestRepository(overrides: Partial<Repository> = {}): Repository {
     setupCommand: null,
     cleanupCommand: null,
     description: null,
+    defaultAgentId: null,
     ...overrides,
   };
 }
@@ -145,7 +159,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -173,7 +187,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -200,7 +214,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '' });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
     });
   });
 
@@ -224,6 +238,9 @@ describe('EditRepositoryForm', () => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('/integrations/slack')) {
           return Promise.resolve(createSlackNotFoundResponse());
+        }
+        if (url.includes('/api/agents')) {
+          return Promise.resolve(createAgentsResponse());
         }
         return new Promise<Response>((resolve) => {
           resolveFetch = resolve;
@@ -400,6 +417,9 @@ describe('EditRepositoryForm', () => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('/integrations/slack')) {
           return Promise.resolve(createSlackNotFoundResponse());
+        }
+        if (url.includes('/api/agents')) {
+          return Promise.resolve(createAgentsResponse());
         }
         return new Promise(() => {});
       });
@@ -695,6 +715,9 @@ describe('EditRepositoryForm', () => {
         if (url.includes('/integrations/slack')) {
           return Promise.resolve(createSlackNotFoundResponse());
         }
+        if (url.includes('/api/agents')) {
+          return Promise.resolve(createAgentsResponse());
+        }
         if (url.includes('/generate-description')) {
           return Promise.resolve(createMockResponse({ description: 'Generated from README' }));
         }
@@ -716,6 +739,105 @@ describe('EditRepositoryForm', () => {
 
       // Success message should appear
       expect(screen.getByText('Description regenerated successfully')).toBeTruthy();
+    });
+  });
+
+  describe('default agent dropdown', () => {
+    it('should render dropdown with agents and "None" option', async () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('None (System default)')).toBeTruthy();
+      });
+
+      expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      expect(screen.getByText('My Custom Agent')).toBeTruthy();
+    });
+
+    it('should show current defaultAgentId as selected', async () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ defaultAgentId: 'custom-agent-1' });
+      renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        const select = screen.getByRole('combobox', { name: /Default Agent/ }) as HTMLSelectElement;
+        expect(select.value).toBe('custom-agent-1');
+      });
+    });
+
+    it('should default to empty string when defaultAgentId is null', async () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ defaultAgentId: null });
+      renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        const select = screen.getByRole('combobox', { name: /Default Agent/ }) as HTMLSelectElement;
+        expect(select.value).toBe('');
+      });
+    });
+
+    it('should include defaultAgentId in submission when agent is selected', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, defaultAgentId: 'claude-code' } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // Wait for agents to load and select an agent
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const select = screen.getByRole('combobox', { name: /Default Agent/ });
+      await user.selectOptions(select, 'claude-code');
+
+      // Submit form
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.defaultAgentId).toBe('claude-code');
+    });
+
+    it('should send null for defaultAgentId when "None" is selected', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository({ defaultAgentId: 'claude-code' });
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, defaultAgentId: null } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('None (System default)')).toBeTruthy();
+      });
+
+      // Select "None"
+      const select = screen.getByRole('combobox', { name: /Default Agent/ });
+      await user.selectOptions(select, '');
+
+      // Submit form
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.defaultAgentId).toBeNull();
     });
   });
 });

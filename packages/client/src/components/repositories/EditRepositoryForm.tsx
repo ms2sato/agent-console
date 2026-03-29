@@ -15,6 +15,7 @@ import {
 import { repositoryKeys, notificationKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
+import { useAgents } from '../AgentSelector';
 
 // Form data schema - all fields are optional and can be empty
 const EditRepositoryFormSchema = v.object({
@@ -287,6 +288,8 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   const [error, setError] = useState<string | null>(null);
   const [regenerateSuccess, setRegenerateSuccess] = useState(false);
   const regenerateTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(repository.defaultAgentId ?? '');
+  const { agents, isLoading: agentsLoading } = useAgents();
 
   useEffect(() => {
     return () => {
@@ -370,6 +373,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',
       envVars: data.envVars?.trim() ?? '',
+      defaultAgentId: selectedAgentId || null,
     });
   };
 
@@ -417,6 +421,30 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               </p>
             )}
           </div>
+
+          <FormField label="Default Agent (optional)">
+            <select
+              id="defaultAgentId"
+              className="input"
+              value={selectedAgentId}
+              onChange={(e) => setSelectedAgentId(e.target.value)}
+              disabled={agentsLoading}
+            >
+              {agentsLoading ? (
+                <option>Loading agents...</option>
+              ) : (
+                <>
+                  <option value="">None (System default)</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                      {agent.isBuiltIn ? ' (built-in)' : ''}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+          </FormField>
 
           <FormField label="Setup Command (optional)" error={errors.setupCommand}>
             <Textarea
