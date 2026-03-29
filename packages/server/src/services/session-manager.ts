@@ -564,7 +564,7 @@ export class SessionManager {
         type: 'agent',
         agentId: effectiveAgentId,
         // name is not specified; generateWorkerName will use the agent's name
-      }, request.continueConversation ?? false, request.initialPrompt),
+      }, request.continueConversation ?? false, request.initialPrompt, request.templateVars),
       this.createWorker(id, {
         type: 'git-diff',
         name: 'Diff',
@@ -1099,9 +1099,10 @@ export class SessionManager {
     sessionId: string,
     request: CreateWorkerParams,
     continueConversation: boolean = false,
-    initialPrompt?: string
+    initialPrompt?: string,
+    templateVars?: Record<string, string>
   ): Promise<Worker | null> {
-    return this.workerLifecycleManager.createWorker(sessionId, request, continueConversation, initialPrompt);
+    return this.workerLifecycleManager.createWorker(sessionId, request, continueConversation, initialPrompt, templateVars);
   }
 
   /** Get a worker by session and worker ID. */

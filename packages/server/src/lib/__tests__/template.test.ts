@@ -214,6 +214,188 @@ describe('getPromptEnvVar', () => {
   });
 });
 
+describe('custom template variables', () => {
+  describe('default value expansion', () => {
+    it('should expand {{model:claude-opus-4-6}} to shell-escaped default when no templateVars provided', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:claude-opus-4-6}} {{prompt}}',
+        prompt: 'do stuff',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe("cli --model 'claude-opus-4-6' \"$__AGENT_PROMPT__\"");
+      expect(result.env.__AGENT_PROMPT__).toBe('do stuff');
+    });
+
+    it('should expand {{model}} (no default) to empty string when no templateVars provided', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model}} {{prompt}}',
+        prompt: 'do stuff',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe('cli --model  "$__AGENT_PROMPT__"');
+    });
+  });
+
+  describe('templateVars override defaults', () => {
+    it('should override default value when templateVars provides a value', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:claude-opus-4-6}} {{prompt}}',
+        prompt: 'do stuff',
+        cwd: '/repo',
+        templateVars: { model: 'gpt-4' },
+      });
+
+      expect(result.command).toBe("cli --model 'gpt-4' \"$__AGENT_PROMPT__\"");
+    });
+
+    it('should override no-default variable when templateVars provides a value', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model}} {{prompt}}',
+        prompt: 'do stuff',
+        cwd: '/repo',
+        templateVars: { model: 'gpt-4' },
+      });
+
+      expect(result.command).toBe("cli --model 'gpt-4' \"$__AGENT_PROMPT__\"");
+    });
+  });
+
+  describe('multiple custom variables', () => {
+    it('should expand multiple custom variables in one template', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:default-model}} --temp {{temperature:0.7}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: 'gpt-4' },
+      });
+
+      // model overridden, temperature uses default
+      expect(result.command).toBe("cli --model 'gpt-4' --temp '0.7' \"$__AGENT_PROMPT__\"");
+    });
+  });
+
+  describe('interaction with reserved variables', () => {
+    it('should work alongside {{prompt}} and {{cwd}}', () => {
+      const result = expandTemplate({
+        template: 'cd {{cwd}} && cli --model {{model:default}} {{prompt}}',
+        prompt: 'my task',
+        cwd: '/workspace',
+        templateVars: { model: 'sonnet' },
+      });
+
+      expect(result.command).toBe("cd '/workspace' && cli --model 'sonnet' \"$__AGENT_PROMPT__\"");
+      expect(result.env.__AGENT_PROMPT__).toBe('my task');
+    });
+
+    it('should NOT allow templateVars to override {{prompt}} expansion', () => {
+      const result = expandTemplate({
+        template: 'cli {{prompt}}',
+        prompt: 'real prompt',
+        cwd: '/repo',
+        templateVars: { prompt: 'hacked' },
+      });
+
+      // {{prompt}} should still expand to env var reference, not the templateVars value
+      expect(result.command).toBe('cli "$__AGENT_PROMPT__"');
+      expect(result.env.__AGENT_PROMPT__).toBe('real prompt');
+    });
+
+    it('should NOT allow templateVars to override {{cwd}} expansion', () => {
+      const result = expandTemplate({
+        template: 'cd {{cwd}} && cli {{prompt}}',
+        prompt: 'test',
+        cwd: '/real/path',
+        templateVars: { cwd: '/hacked/path' },
+      });
+
+      expect(result.command).toBe("cd '/real/path' && cli \"$__AGENT_PROMPT__\"");
+    });
+  });
+
+  describe('continueTemplate (without {{prompt}})', () => {
+    it('should expand custom variables in continueTemplate', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:default-model}} --continue',
+        cwd: '/repo',
+        templateVars: { model: 'sonnet' },
+      });
+
+      expect(result.command).toBe("cli --model 'sonnet' --continue");
+      expect(result.env).toEqual({});
+    });
+
+    it('should use default when no templateVars provided for continueTemplate', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:default-model}} --continue',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe("cli --model 'default-model' --continue");
+    });
+  });
+
+  describe('headlessTemplate (with {{prompt}})', () => {
+    it('should expand custom variables in headlessTemplate alongside {{prompt}}', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model:default-model}} -p {{prompt}}',
+        prompt: 'headless task',
+        cwd: '/repo',
+        templateVars: { model: 'haiku' },
+      });
+
+      expect(result.command).toBe("cli --model 'haiku' -p \"$__AGENT_PROMPT__\"");
+      expect(result.env.__AGENT_PROMPT__).toBe('headless task');
+    });
+  });
+
+  describe('shell escaping of custom variable values', () => {
+    it('should shell-escape values with spaces', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: 'my model name' },
+      });
+
+      expect(result.command).toBe("cli --model 'my model name' \"$__AGENT_PROMPT__\"");
+    });
+
+    it('should shell-escape values with single quotes', () => {
+      const result = expandTemplate({
+        template: 'cli --model {{model}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: "it's-a-model" },
+      });
+
+      expect(result.command).toBe("cli --model 'it'\\''s-a-model' \"$__AGENT_PROMPT__\"");
+    });
+
+    it('should shell-escape values with double quotes and semicolons', () => {
+      const result = expandTemplate({
+        template: 'cli --note {{note}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { note: 'say "hello"; rm -rf /' },
+      });
+
+      expect(result.command).toBe("cli --note 'say \"hello\"; rm -rf /' \"$__AGENT_PROMPT__\"");
+    });
+
+    it('should shell-escape default values with special characters', () => {
+      const result = expandTemplate({
+        template: 'cli --flag {{flag:value with spaces}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe("cli --flag 'value with spaces' \"$__AGENT_PROMPT__\"");
+    });
+  });
+});
+
 describe('TemplateExpansionError', () => {
   it('should be instance of Error', () => {
     const error = new TemplateExpansionError('test message');

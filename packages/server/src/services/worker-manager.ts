@@ -101,6 +101,8 @@ export interface AgentActivationParams extends WorkerContext {
   parentSessionId?: string;
   /** Parent worker ID for delegated sessions */
   parentWorkerId?: string;
+  /** Custom template variable overrides for agent command templates */
+  templateVars?: Record<string, string>;
 }
 
 /**
@@ -280,7 +282,7 @@ export class WorkerManager {
       return;
     }
 
-    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, parentSessionId, parentWorkerId } = params;
+    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, parentSessionId, parentWorkerId, templateVars } = params;
 
     const agentManager = this.agentManager;
     const requestedAgent = agentManager.getAgent(agentId);
@@ -300,6 +302,7 @@ export class WorkerManager {
       template,
       prompt: initialPrompt,
       cwd: locationPath,
+      templateVars,
     });
 
     // Build AgentConsole context so the agent knows its own identity.

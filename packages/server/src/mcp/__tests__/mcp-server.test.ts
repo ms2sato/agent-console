@@ -1690,6 +1690,45 @@ describe('MCP Server Tools', () => {
       expect(childSession).toBeDefined();
       expect(childSession!.createdBy).toBe('parent-user-abc');
     });
+
+    it('should accept optional templateVars parameter and create session successfully', async () => {
+      await setupDelegateEnvironment('feat/template-vars');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test with template variables',
+        branch: 'feat/template-vars',
+        templateVars: { model: 'gpt-4' },
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as {
+        sessionId: string;
+        workerId: string;
+        worktreePath: string;
+        branch: string;
+      };
+
+      // Verify result contains all expected fields
+      expect(data.sessionId).toBeDefined();
+      expect(data.sessionId.length).toBeGreaterThan(0);
+      expect(data.workerId).toBeDefined();
+      expect(data.worktreePath).toBeDefined();
+      expect(data.branch).toBe('feat/template-vars');
+
+      // Verify the session exists via list_sessions
+      const listResponse = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const listData = parseToolResult(listResponse) as {
+        sessions: Array<{
+          id: string;
+          type: string;
+        }>;
+      };
+
+      const delegatedSession = listData.sessions.find((s) => s.id === data.sessionId);
+      expect(delegatedSession).toBeDefined();
+    });
   });
 
   // ===========================================================================

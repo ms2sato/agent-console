@@ -18,6 +18,7 @@ export type ExpandTemplateOptions = {
   template: string;
   prompt?: string;
   cwd: string;
+  templateVars?: Record<string, string>;
 };
 
 export type ExpandTemplateResult = {
@@ -47,7 +48,7 @@ export class TemplateExpansionError extends Error {
  * @throws {TemplateExpansionError} If template is empty or expansion fails
  */
 export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateResult {
-  const { template, prompt, cwd } = options;
+  const { template, prompt, cwd, templateVars } = options;
 
   if (!template || template.trim().length === 0) {
     throw new TemplateExpansionError('Template is empty');
@@ -70,6 +71,21 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
     command = command.replace(/\{\{prompt\}\}/g, `"$${PROMPT_ENV_VAR}"`);
     env[PROMPT_ENV_VAR] = prompt ?? '';
   }
+
+  // Expand custom template variables (after reserved variables are already expanded)
+  const RESERVED_VARS = new Set(['prompt', 'cwd']);
+  command = command.replace(/\{\{(\w+)(?::([^}]*))?\}\}/g, (match, varName: string, defaultValue: string | undefined) => {
+    if (RESERVED_VARS.has(varName)) {
+      return match; // Safety guard: reserved variables should already be expanded
+    }
+    if (templateVars && Object.prototype.hasOwnProperty.call(templateVars, varName)) {
+      return shellEscape(templateVars[varName]);
+    }
+    if (defaultValue !== undefined) {
+      return shellEscape(defaultValue);
+    }
+    return '';
+  });
 
   // Validate result is non-empty
   if (!command.trim()) {

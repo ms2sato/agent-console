@@ -214,6 +214,91 @@ describe('CreateSessionRequestSchema', () => {
   });
 });
 
+describe('templateVars key validation', () => {
+  it('should accept valid alphanumeric keys', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      templateVars: { model: 'gpt-4', temperature_value: '0.7' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should accept templateVars with underscore keys', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+      templateVars: { my_var: 'value', _leading: 'ok' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject keys with special characters', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      templateVars: { 'invalid-key': 'value' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject keys with spaces', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      templateVars: { 'has space': 'value' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject reserved key "prompt"', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      templateVars: { prompt: 'hacked' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject reserved key "cwd"', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+      templateVars: { cwd: '/hacked/path' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept when templateVars is omitted', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should accept empty templateVars object', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      templateVars: {},
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('UpdateSessionRequestSchema', () => {
   it('should validate update with title', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {

@@ -100,7 +100,7 @@ export const isPromptQuoted = (val: string) =>
  * Detect malformed placeholders with spaces (e.g., {{ prompt }}, {{  cwd}})
  */
 export const hasMalformedPlaceholder = (val: string) =>
-  /\{\{\s+\w+\s*\}\}|\{\{\s*\w+\s+\}\}/.test(val);
+  /\{\{\s+\w+[^}]*\}\}|\{\{\w+\s[^}]*\}\}/.test(val);
 
 /**
  * Validation for commandTemplate
