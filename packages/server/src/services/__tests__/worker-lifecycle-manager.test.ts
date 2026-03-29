@@ -97,6 +97,7 @@ describe('WorkerLifecycleManager', () => {
       resolveSpawnUsername: async () => 'testuser',
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
+      getRepositoryName: () => undefined,
       ...overrides,
     };
   }

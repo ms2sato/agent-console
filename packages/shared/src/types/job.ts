@@ -65,6 +65,7 @@ export type JobType = (typeof JOB_TYPES)[keyof typeof JOB_TYPES];
  */
 export interface CleanupSessionOutputsPayload {
   sessionId: string;
+  repositoryName?: string;
 }
 
 /**
@@ -73,6 +74,7 @@ export interface CleanupSessionOutputsPayload {
 export interface CleanupWorkerOutputPayload {
   sessionId: string;
   workerId: string;
+  repositoryName?: string;
 }
 
 /**

@@ -28,8 +28,8 @@ describe('MemoService', () => {
     it('should create the memos directory and write the file', async () => {
       const filePath = await service.writeMemo('session-1', '# My Memo');
 
-      expect(filePath).toBe(`${TEST_CONFIG_DIR}/memos/session-1.md`);
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/memos`)).toBe(true);
+      expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/memos`)).toBe(true);
 
       const content = vol.readFileSync(filePath, 'utf-8');
       expect(content).toBe('# My Memo');
@@ -39,7 +39,7 @@ describe('MemoService', () => {
       await service.writeMemo('session-1', 'first version');
       await service.writeMemo('session-1', 'second version');
 
-      const content = vol.readFileSync(`${TEST_CONFIG_DIR}/memos/session-1.md`, 'utf-8');
+      const content = vol.readFileSync(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`, 'utf-8');
       expect(content).toBe('second version');
     });
 
@@ -54,8 +54,8 @@ describe('MemoService', () => {
       await service.writeMemo('session-a', 'memo A');
       await service.writeMemo('session-b', 'memo B');
 
-      const contentA = vol.readFileSync(`${TEST_CONFIG_DIR}/memos/session-a.md`, 'utf-8');
-      const contentB = vol.readFileSync(`${TEST_CONFIG_DIR}/memos/session-b.md`, 'utf-8');
+      const contentA = vol.readFileSync(`${TEST_CONFIG_DIR}/_quick/memos/session-a.md`, 'utf-8');
+      const contentB = vol.readFileSync(`${TEST_CONFIG_DIR}/_quick/memos/session-b.md`, 'utf-8');
       expect(contentA).toBe('memo A');
       expect(contentB).toBe('memo B');
     });
@@ -78,17 +78,51 @@ describe('MemoService', () => {
   describe('deleteMemo', () => {
     it('should remove an existing memo file', async () => {
       await service.writeMemo('session-1', 'content');
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/memos/session-1.md`)).toBe(true);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`)).toBe(true);
 
       await service.deleteMemo('session-1');
-      expect(vol.existsSync(`${TEST_CONFIG_DIR}/memos/session-1.md`)).toBe(false);
+      expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`)).toBe(false);
     });
 
     it('should not throw when memo does not exist', async () => {
       // Ensure memos dir exists so rm doesn't fail on missing parent
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/memos`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/memos`, { recursive: true });
 
       await expect(service.deleteMemo('nonexistent')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('repository-scoped paths', () => {
+    it('should write memo to repository-scoped path when repositoryName is provided', async () => {
+      const filePath = await service.writeMemo('session-1', '# Repo Memo', 'org/repo');
+
+      expect(filePath).toBe(`${TEST_CONFIG_DIR}/repositories/org/repo/memos/session-1.md`);
+      expect(vol.existsSync(filePath)).toBe(true);
+
+      const content = vol.readFileSync(filePath, 'utf-8');
+      expect(content).toBe('# Repo Memo');
+    });
+
+    it('should read memo from repository-scoped path when repositoryName is provided', async () => {
+      await service.writeMemo('session-1', '# Repo Memo', 'org/repo');
+
+      const content = await service.readMemo('session-1', 'org/repo');
+      expect(content).toBe('# Repo Memo');
+    });
+
+    it('should delete memo from repository-scoped path when repositoryName is provided', async () => {
+      await service.writeMemo('session-1', 'content', 'org/repo');
+      const filePath = `${TEST_CONFIG_DIR}/repositories/org/repo/memos/session-1.md`;
+      expect(vol.existsSync(filePath)).toBe(true);
+
+      await service.deleteMemo('session-1', 'org/repo');
+      expect(vol.existsSync(filePath)).toBe(false);
+    });
+
+    it('should use _quick fallback when repositoryName is not provided', async () => {
+      const filePath = await service.writeMemo('session-1', '# Quick Memo');
+
+      expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`);
     });
   });
 

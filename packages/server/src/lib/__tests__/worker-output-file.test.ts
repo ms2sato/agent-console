@@ -30,12 +30,12 @@ describe('WorkerOutputFileManager', () => {
   describe('getOutputFilePath', () => {
     it('should return correct path structure', () => {
       const path = manager.getOutputFilePath('session-1', 'worker-1');
-      expect(path).toBe(`${TEST_CONFIG_DIR}/outputs/session-1/worker-1.log`);
+      expect(path).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });
 
     it('should handle special characters in IDs', () => {
       const path = manager.getOutputFilePath('session_123', 'worker-abc');
-      expect(path).toBe(`${TEST_CONFIG_DIR}/outputs/session_123/worker-abc.log`);
+      expect(path).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session_123/worker-abc.log`);
     });
   });
 
@@ -135,7 +135,7 @@ describe('WorkerOutputFileManager', () => {
     it('should read full history when no offset specified', async () => {
       // Create file with content
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
       const result = await manager.readHistoryWithOffset('session-1', 'worker-1');
@@ -147,7 +147,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should read history from specific offset', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
       // Read from offset 6 (skip 'hello ')
@@ -160,7 +160,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return empty data when offset equals file size', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
       const result = await manager.readHistoryWithOffset('session-1', 'worker-1', 11);
@@ -172,7 +172,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return full history when offset exceeds file size (truncation resync)', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
       // Client has offset 100 but file is only 11 bytes — file was truncated
@@ -221,7 +221,7 @@ describe('WorkerOutputFileManager', () => {
   describe('getCurrentOffset', () => {
     it('should return file size when file exists', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
       const offset = await manager.getCurrentOffset('session-1', 'worker-1');
@@ -235,7 +235,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should flush pending buffer before returning offset', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello'); // 5 bytes
 
       manager.bufferOutput('session-1', 'worker-1', ' world'); // 6 bytes pending
@@ -298,7 +298,7 @@ describe('WorkerOutputFileManager', () => {
   describe('deleteWorkerOutput', () => {
     it('should delete worker output file', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'content');
 
       await manager.deleteWorkerOutput('session-1', 'worker-1');
@@ -339,7 +339,7 @@ describe('WorkerOutputFileManager', () => {
 
   describe('deleteSessionOutputs', () => {
     it('should delete all output files for a session', async () => {
-      const sessionDir = `${TEST_CONFIG_DIR}/outputs/session-1`;
+      const sessionDir = `${TEST_CONFIG_DIR}/_quick/outputs/session-1`;
       vol.mkdirSync(sessionDir, { recursive: true });
       vol.writeFileSync(`${sessionDir}/worker-1.log`, 'content1');
       vol.writeFileSync(`${sessionDir}/worker-2.log`, 'content2');
@@ -351,8 +351,8 @@ describe('WorkerOutputFileManager', () => {
     });
 
     it('should not affect other sessions', async () => {
-      const session1Dir = `${TEST_CONFIG_DIR}/outputs/session-1`;
-      const session2Dir = `${TEST_CONFIG_DIR}/outputs/session-2`;
+      const session1Dir = `${TEST_CONFIG_DIR}/_quick/outputs/session-1`;
+      const session2Dir = `${TEST_CONFIG_DIR}/_quick/outputs/session-2`;
       vol.mkdirSync(session1Dir, { recursive: true });
       vol.mkdirSync(session2Dir, { recursive: true });
       vol.writeFileSync(`${session1Dir}/worker-1.log`, 'content1');
@@ -470,7 +470,7 @@ describe('WorkerOutputFileManager', () => {
     it('should include pending buffer when reading with file existing', async () => {
       // Write some data to file first
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'existing');
 
       // Buffer more data (not flushed yet)
@@ -488,7 +488,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return only pending buffer when offset equals file size', async () => {
       const filePath = manager.getOutputFilePath('session-offset-eq', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-offset-eq`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-offset-eq`, { recursive: true });
       vol.writeFileSync(filePath, 'existing'); // 8 bytes
 
       // Buffer more data (not flushed yet)
@@ -504,7 +504,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return partial pending buffer when offset is within pending buffer range', async () => {
       const filePath = manager.getOutputFilePath('session-partial', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-partial`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-partial`, { recursive: true });
       vol.writeFileSync(filePath, 'file'); // 4 bytes
 
       // Buffer more data (not flushed yet)
@@ -520,7 +520,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return empty when offset equals total size (file + pending)', async () => {
       const filePath = manager.getOutputFilePath('session-total', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-total`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-total`, { recursive: true });
       vol.writeFileSync(filePath, 'file'); // 4 bytes
 
       // Buffer more data (not flushed yet)
@@ -536,7 +536,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return full history when offset exceeds total size (file + pending) after truncation', async () => {
       const filePath = manager.getOutputFilePath('session-total-exceed', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-total-exceed`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-total-exceed`, { recursive: true });
       vol.writeFileSync(filePath, 'file'); // 4 bytes
 
       manager.bufferOutput('session-total-exceed', 'worker-1', 'buffer'); // 6 bytes
@@ -551,7 +551,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return file data from offset + full pending buffer', async () => {
       const filePath = manager.getOutputFilePath('session-mid', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-mid`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-mid`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world'); // 11 bytes
 
       // Buffer more data (not flushed yet)
@@ -567,7 +567,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should handle multi-byte UTF-8 in pending buffer with offset', async () => {
       const filePath = manager.getOutputFilePath('session-utf8-pending', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-utf8-pending`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-utf8-pending`, { recursive: true });
       vol.writeFileSync(filePath, 'ABC'); // 3 bytes
 
       // Buffer Japanese characters (3 bytes each)
@@ -593,7 +593,7 @@ describe('WorkerOutputFileManager', () => {
     it('should handle concurrent reads and writes', async () => {
       // Write initial data
       const filePath = manager.getOutputFilePath('session-1', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-1`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'initial');
 
       // Perform concurrent operations
@@ -833,7 +833,7 @@ describe('WorkerOutputFileManager', () => {
   describe('readLastNLines', () => {
     it('should return last N lines from file', async () => {
       const filePath = manager.getOutputFilePath('session-lines', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-lines`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-lines`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2\nline3\nline4\nline5');
 
       const result = await manager.readLastNLines('session-lines', 'worker-1', 3);
@@ -846,7 +846,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return all lines if file has fewer than maxLines', async () => {
       const filePath = manager.getOutputFilePath('session-lines-2', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-lines-2`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-lines-2`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2');
 
       const result = await manager.readLastNLines('session-lines-2', 'worker-1', 10);
@@ -857,7 +857,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should handle CRLF line endings', async () => {
       const filePath = manager.getOutputFilePath('session-crlf', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-crlf`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-crlf`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\r\nline2\r\nline3\r\nline4');
 
       const result = await manager.readLastNLines('session-crlf', 'worker-1', 2);
@@ -868,7 +868,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should handle empty lines in count', async () => {
       const filePath = manager.getOutputFilePath('session-empty', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-empty`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-empty`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\n\nline3\nline4');
 
       const result = await manager.readLastNLines('session-empty', 'worker-1', 3);
@@ -897,7 +897,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should return 0 lines when maxLines is 0', async () => {
       const filePath = manager.getOutputFilePath('session-zero', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-zero`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-zero`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2');
 
       const result = await manager.readLastNLines('session-zero', 'worker-1', 0);
@@ -908,7 +908,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should preserve newline at end of content', async () => {
       const filePath = manager.getOutputFilePath('session-trailing', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-trailing`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-trailing`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2\nline3\n');
 
       const result = await manager.readLastNLines('session-trailing', 'worker-1', 2);
@@ -920,7 +920,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should include pending buffer when file exists', async () => {
       const filePath = manager.getOutputFilePath('session-pending-file', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-file`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-pending-file`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2\nline3'); // 17 bytes
 
       // Buffer more data (not flushed yet)
@@ -937,7 +937,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should include pending buffer even when fewer lines requested', async () => {
       const filePath = manager.getOutputFilePath('session-pending-fewer', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-fewer`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-pending-fewer`, { recursive: true });
       vol.writeFileSync(filePath, 'old1\nold2\nold3'); // 14 bytes
 
       // Buffer more data that contains the most recent output (not flushed yet)
@@ -954,7 +954,7 @@ describe('WorkerOutputFileManager', () => {
 
     it('should handle pending buffer with multi-byte UTF-8 characters', async () => {
       const filePath = manager.getOutputFilePath('session-pending-utf8', 'worker-1');
-      vol.mkdirSync(`${TEST_CONFIG_DIR}/outputs/session-pending-utf8`, { recursive: true });
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-pending-utf8`, { recursive: true });
       vol.writeFileSync(filePath, 'hello\n'); // 6 bytes
 
       // Buffer Japanese characters (3 bytes each)
@@ -967,6 +967,47 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.data).toBe('hello\nテスト');
       // Offset should be file size (6) + pending buffer byte length (9)
       expect(result!.offset).toBe(15);
+    });
+  });
+
+  describe('repository-scoped paths', () => {
+    it('should return repository-scoped path when repositoryName is provided', () => {
+      const filePath = manager.getOutputFilePath('session-1', 'worker-1', 'org/repo');
+      expect(filePath).toBe(`${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1/worker-1.log`);
+    });
+
+    it('should initialize worker output under repository path when repositoryName is provided', async () => {
+      await manager.initializeWorkerOutput('session-1', 'worker-1', 'org/repo');
+
+      const filePath = `${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1/worker-1.log`;
+      expect(vol.existsSync(filePath)).toBe(true);
+    });
+
+    it('should flush buffered output to repository-scoped path when repositoryName is provided', async () => {
+      manager.bufferOutput('session-1', 'worker-1', 'repo data', 'org/repo');
+
+      // Wait for flush interval
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      const filePath = `${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1/worker-1.log`;
+      expect(vol.existsSync(filePath)).toBe(true);
+
+      const content = vol.readFileSync(filePath, 'utf-8');
+      expect(content).toBe('repo data');
+    });
+
+    it('should delete session outputs from repository-scoped path when repositoryName is provided', async () => {
+      await manager.initializeWorkerOutput('session-1', 'worker-1', 'org/repo');
+      const sessionDir = `${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1`;
+      expect(vol.existsSync(sessionDir)).toBe(true);
+
+      await manager.deleteSessionOutputs('session-1', 'org/repo');
+      expect(vol.existsSync(sessionDir)).toBe(false);
+    });
+
+    it('should use _quick fallback when repositoryName is not provided', () => {
+      const filePath = manager.getOutputFilePath('session-1', 'worker-1');
+      expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });
   });
 });

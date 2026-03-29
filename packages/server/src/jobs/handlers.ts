@@ -25,9 +25,9 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
   // Handler for deleting all output files for a session
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
-    async ({ sessionId }) => {
-      logger.debug({ sessionId }, 'Executing cleanup:session-outputs job');
-      await workerOutputFileManager.deleteSessionOutputs(sessionId);
+    async ({ sessionId, repositoryName }) => {
+      logger.debug({ sessionId, repositoryName }, 'Executing cleanup:session-outputs job');
+      await workerOutputFileManager.deleteSessionOutputs(sessionId, repositoryName);
       logger.info({ sessionId }, 'Session outputs cleanup completed');
     }
   );
@@ -35,9 +35,9 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
   // Handler for deleting output file for a single worker
   jobQueue.registerHandler<CleanupWorkerOutputPayload>(
     JOB_TYPES.CLEANUP_WORKER_OUTPUT,
-    async ({ sessionId, workerId }) => {
-      logger.debug({ sessionId, workerId }, 'Executing cleanup:worker-output job');
-      await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId);
+    async ({ sessionId, workerId, repositoryName }) => {
+      logger.debug({ sessionId, workerId, repositoryName }, 'Executing cleanup:worker-output job');
+      await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, repositoryName);
       logger.info({ sessionId, workerId }, 'Worker output cleanup completed');
     }
   );

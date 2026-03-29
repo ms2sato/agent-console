@@ -47,6 +47,7 @@ export interface SendMessageParams {
   toWorkerId: string;
   fromSessionId: string;
   content: string;
+  repositoryName?: string;
 }
 
 export interface SendMessageResult {
@@ -66,7 +67,7 @@ export class InterSessionMessageService {
    * 4. Return { messageId, path }
    */
   async sendMessage(params: SendMessageParams): Promise<SendMessageResult> {
-    const { toSessionId, toWorkerId, fromSessionId, content } = params;
+    const { toSessionId, toWorkerId, fromSessionId, content, repositoryName } = params;
 
     validateId(toSessionId, 'toSessionId');
     validateId(toWorkerId, 'toWorkerId');
@@ -79,7 +80,7 @@ export class InterSessionMessageService {
       );
     }
 
-    const messagesDir = getMessagesDir();
+    const messagesDir = getMessagesDir(repositoryName);
     const dir = path.resolve(messagesDir, toSessionId, toWorkerId);
     assertWithinDir(dir, messagesDir);
 
@@ -111,10 +112,10 @@ export class InterSessionMessageService {
    * Remove all message files for a session.
    * Called when a session is deleted.
    */
-  async deleteSessionMessages(sessionId: string): Promise<void> {
+  async deleteSessionMessages(sessionId: string, repositoryName?: string): Promise<void> {
     validateId(sessionId, 'sessionId');
 
-    const messagesDir = getMessagesDir();
+    const messagesDir = getMessagesDir(repositoryName);
     const dir = path.resolve(messagesDir, sessionId);
     assertWithinDir(dir, messagesDir);
 
@@ -127,11 +128,11 @@ export class InterSessionMessageService {
    * Remove all message files for a specific worker within a session.
    * Called when a worker is deleted.
    */
-  async deleteWorkerMessages(sessionId: string, workerId: string): Promise<void> {
+  async deleteWorkerMessages(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
     validateId(sessionId, 'sessionId');
     validateId(workerId, 'workerId');
 
-    const messagesDir = getMessagesDir();
+    const messagesDir = getMessagesDir(repositoryName);
     const dir = path.resolve(messagesDir, sessionId, workerId);
     assertWithinDir(dir, messagesDir);
 

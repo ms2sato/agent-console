@@ -72,6 +72,11 @@ export interface WorkerLifecycleDeps {
    * If createdBy is null (pre-multi-user sessions), returns the server process username.
    */
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
+  /**
+   * Resolve the repository name (org/repo) for a session.
+   * Returns undefined for quick sessions or when repository lookup is unavailable.
+   */
+  getRepositoryName: (session: InternalSession) => string | undefined;
 }
 
 /**
@@ -108,6 +113,7 @@ export class WorkerLifecycleManager {
 
     let worker: InternalWorker;
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
+    const repositoryName = this.deps.getRepositoryName(session);
 
     if (request.type === 'agent') {
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
@@ -123,6 +129,7 @@ export class WorkerLifecycleManager {
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
+        repositoryName,
         agentId: agentWorker.agentId,
         continueConversation,
         initialPrompt,
@@ -144,6 +151,7 @@ export class WorkerLifecycleManager {
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
+        repositoryName,
       });
       worker = terminalWorker;
     } else {
@@ -162,7 +170,8 @@ export class WorkerLifecycleManager {
     // Initialize output file immediately for PTY workers (agent/terminal)
     // This prevents race conditions where WebSocket connects before any output is buffered
     if (request.type === 'agent' || request.type === 'terminal') {
-      await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId);
+      const repositoryName = this.deps.getRepositoryName(session);
+      await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, repositoryName);
     }
 
     await this.deps.persistSession(session);
@@ -208,6 +217,7 @@ export class WorkerLifecycleManager {
 
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
+    const repositoryName = this.deps.getRepositoryName(session);
     const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
     // Activate PTY based on worker type
@@ -218,6 +228,7 @@ export class WorkerLifecycleManager {
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
+        repositoryName,
         agentId: effectiveAgentId,
         continueConversation: true,
         repositoryId,
@@ -230,6 +241,7 @@ export class WorkerLifecycleManager {
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
+        repositoryName,
       });
     }
 
@@ -249,10 +261,12 @@ export class WorkerLifecycleManager {
     const worker = session.workers.get(workerId);
     if (!worker) return false;
 
+    const repositoryName = this.deps.getRepositoryName(session);
+
     // Clean up based on worker type
     if (worker.type === 'agent' || worker.type === 'terminal') {
       this.deps.workerManager.killWorker(worker);
-      await this.cleanupWorkerOutput(sessionId, workerId);
+      await this.cleanupWorkerOutput(sessionId, workerId, repositoryName);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -266,7 +280,7 @@ export class WorkerLifecycleManager {
 
     // Clean up inter-session message files for this worker
     try {
-      await interSessionMessageService.deleteWorkerMessages(sessionId, workerId);
+      await interSessionMessageService.deleteWorkerMessages(sessionId, workerId, repositoryName);
     } catch (err) {
       logger.warn(
         { sessionId, workerId, err },
@@ -351,7 +365,8 @@ export class WorkerLifecycleManager {
     this.deps.workerManager.killWorker(existingWorker);
 
     // Reset the output file to prevent offset mismatch with client cache.
-    await workerOutputFileManager.resetWorkerOutput(sessionId, workerId);
+    const repositoryName = this.deps.getRepositoryName(session);
+    await workerOutputFileManager.resetWorkerOutput(sessionId, workerId, repositoryName);
 
     // Create new worker with same ID, preserving original createdAt for tab order
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
@@ -368,6 +383,7 @@ export class WorkerLifecycleManager {
       locationPath,
       repositoryEnvVars,
       username,
+      repositoryName,
       agentId: workerAgentId,
       continueConversation,
       repositoryId,
@@ -493,6 +509,7 @@ export class WorkerLifecycleManager {
     try {
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
+      const repositoryName = this.deps.getRepositoryName(session);
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
       if (existingWorker.type === 'agent') {
@@ -502,6 +519,7 @@ export class WorkerLifecycleManager {
           locationPath: session.locationPath,
           repositoryEnvVars,
           username,
+          repositoryName,
           agentId: effectiveAgentId,
           continueConversation: true,
           repositoryId,
@@ -514,6 +532,7 @@ export class WorkerLifecycleManager {
           locationPath: session.locationPath,
           repositoryEnvVars,
           username,
+          repositoryName,
         });
       }
     } catch (err) {
@@ -605,15 +624,18 @@ export class WorkerLifecycleManager {
     fromOffset?: number,
     maxLines?: number
   ): Promise<HistoryReadResult | null> {
+    const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return null;
 
+    const repositoryName = session ? this.deps.getRepositoryName(session) : undefined;
+
     // Use line-limited read for initial connection (fromOffset is 0 or undefined)
     if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
-      return workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines);
+      return workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines, repositoryName);
     }
 
-    return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, fromOffset);
+    return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, fromOffset, repositoryName);
   }
 
   /**
@@ -622,10 +644,12 @@ export class WorkerLifecycleManager {
    * @returns Current file offset (0 if file doesn't exist)
    */
   async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
+    const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return 0;
 
-    return workerOutputFileManager.getCurrentOffset(sessionId, workerId);
+    const repositoryName = session ? this.deps.getRepositoryName(session) : undefined;
+    return workerOutputFileManager.getCurrentOffset(sessionId, workerId, repositoryName);
   }
 
   // ========== Private Helpers ==========
@@ -662,12 +686,12 @@ export class WorkerLifecycleManager {
    * Clean up worker output file via job queue.
    * If jobQueue is not available, logs a warning and skips cleanup gracefully.
    */
-  private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
+  private async cleanupWorkerOutput(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
     const jobQueue = this.deps.getJobQueue();
     if (!jobQueue) {
       logger.warn({ sessionId, workerId }, 'JobQueue not available, skipping async output cleanup');
       return;
     }
-    await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId });
+    await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId, repositoryName });
   }
 }
