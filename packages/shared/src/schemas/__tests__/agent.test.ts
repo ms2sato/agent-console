@@ -703,6 +703,10 @@ describe('hasMalformedPlaceholder with custom template variables', () => {
     // "model " contains a space after the word, making it malformed
     expect(hasMalformedPlaceholder('cli {{model :default}}')).toBe(true);
   });
+
+  it('should accept {{model: default}} (space after colon is part of default value)', () => {
+    expect(hasMalformedPlaceholder('cli --model {{model: default}} {{prompt}}')).toBe(false);
+  });
 });
 
 describe('template validation with custom variables', () => {

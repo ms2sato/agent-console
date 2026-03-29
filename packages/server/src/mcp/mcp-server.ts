@@ -494,6 +494,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
       templateVars: z
         .record(z.string(), z.string())
         .optional()
+        .refine(
+          (vars) => !vars || Object.keys(vars).every((key) => /^\w+$/.test(key)),
+          'Template variable keys must be alphanumeric/underscore only'
+        )
+        .refine(
+          (vars) => !vars || Object.keys(vars).every((key) => key !== 'prompt' && key !== 'cwd'),
+          'Cannot override reserved template variables: prompt, cwd'
+        )
         .describe(
           'Custom template variable overrides. Keys are variable names (e.g., "model"), values are the replacement strings. ' +
             'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}).',

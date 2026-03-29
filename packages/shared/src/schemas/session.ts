@@ -26,7 +26,19 @@ export const CreateWorktreeSessionRequestSchema = v.object({
   title: v.optional(v.string()),
   parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  templateVars: v.optional(v.record(v.string(), v.string())),
+  templateVars: v.optional(
+    v.record(
+      v.pipe(
+        v.string(),
+        v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
+        v.check(
+          (key) => key !== 'prompt' && key !== 'cwd',
+          'Cannot override reserved template variables: prompt, cwd'
+        )
+      ),
+      v.string()
+    )
+  ),
 });
 
 /**
@@ -45,7 +57,19 @@ export const CreateQuickSessionRequestSchema = v.object({
   title: v.optional(v.string()),
   parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  templateVars: v.optional(v.record(v.string(), v.string())),
+  templateVars: v.optional(
+    v.record(
+      v.pipe(
+        v.string(),
+        v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
+        v.check(
+          (key) => key !== 'prompt' && key !== 'cwd',
+          'Cannot override reserved template variables: prompt, cwd'
+        )
+      ),
+      v.string()
+    )
+  ),
 });
 
 /**

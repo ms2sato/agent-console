@@ -78,8 +78,13 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
     if (RESERVED_VARS.has(varName)) {
       return match; // Safety guard: reserved variables should already be expanded
     }
-    const value = templateVars?.[varName] ?? defaultValue ?? '';
-    return shellEscape(value);
+    if (templateVars && Object.prototype.hasOwnProperty.call(templateVars, varName)) {
+      return shellEscape(templateVars[varName]);
+    }
+    if (defaultValue !== undefined) {
+      return shellEscape(defaultValue);
+    }
+    return '';
   });
 
   // Validate result is non-empty

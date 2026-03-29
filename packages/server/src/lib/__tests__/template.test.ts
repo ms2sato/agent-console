@@ -234,7 +234,7 @@ describe('custom template variables', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe("cli --model '' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe('cli --model  "$__AGENT_PROMPT__"');
     });
   });
 
