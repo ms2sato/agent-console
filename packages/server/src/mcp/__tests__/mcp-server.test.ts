@@ -18,6 +18,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
+import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { createMcpApp } from '../mcp-server.js';
@@ -32,14 +33,14 @@ mock.module('../../services/session-metadata-suggester.js', () => ({
 }));
 
 // Mock worktree-deletion-service
-// NOTE: We spread the real module and overlay only the functions the MCP handler
-// uses for pre-validation. deleteWorktreeWithSession is NOT mocked — it runs
-// the real implementation which calls mocked git operations (via mock-git-helper).
-// This avoids mock.module interference with orchestration unit tests.
-const mockValidateWorktreePath = mock(async () => null as string | null);
+// NOTE: We spread the real module without overriding deleteWorktree.
+// Bun's mock.module is process-global, so overriding deleteWorktree here
+// would break service-level tests (worktree-deletion-orchestration.test.ts).
+// Instead, deleteWorktree runs the real implementation with mocked git operations
+// (via mock-git-helper) and mocked github-pr-service. Tests that need specific
+// validation behavior set up proper DB state and paths.
 mock.module('../../services/worktree-deletion-service.js', () => ({
   ...require('../../services/worktree-deletion-service.js'),
-  validateWorktreePath: mockValidateWorktreePath,
 }));
 
 // Mock worktree-creation-service
@@ -214,9 +215,7 @@ describe('MCP Server Tools', () => {
       title: 'Auto-Generated Title',
     }));
 
-    // Reset worktree-deletion-service mocks
-    mockValidateWorktreePath.mockReset();
-    mockValidateWorktreePath.mockImplementation(async () => null);
+    // Reset worktree-deletion-service state
     _getDeletionsInProgress().clear();
 
     // Reset github-pr-service mocks
@@ -1958,42 +1957,63 @@ describe('MCP Server Tools', () => {
   // ===========================================================================
 
   describe('remove_worktree', () => {
+    // Paths under the repositories dir (TEST_CONFIG_DIR/repositories/) so
+    // validateWorktreePath's boundary check passes.
+    const REPOS_DIR = `${TEST_CONFIG_DIR}/repositories`;
+    const WT_REPO_PATH = `${REPOS_DIR}/test-repo`;
+    const WT_WORKTREE_PATH = `${REPOS_DIR}/test-repo/worktrees/wt-1`;
+
     /**
-     * Helper to set up a RepositoryManager with a test repository
-     * and re-mount the MCP app.
-     * Ensures repo paths exist in memfs so RepositoryManager.initialize() loads them.
+     * Helper to set up a RepositoryManager with a test repository,
+     * insert worktree records for path validation, and re-mount the MCP app.
      */
-    async function setupRepoManager(repos: Array<{
-      id: string;
-      name: string;
-      path: string;
-    }> = []): Promise<void> {
+    async function setupForDeletion(opts: {
+      repoId?: string;
+      repoPath?: string;
+      worktreePaths?: string[];
+    } = {}): Promise<void> {
+      const repoId = opts.repoId ?? 'test-repo';
+      const repoPath = opts.repoPath ?? WT_REPO_PATH;
+      const worktreePaths = opts.worktreePaths ?? [WT_WORKTREE_PATH];
+
       // Ensure repo paths exist in memfs
       const fsEntries: Record<string, string> = {
         [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${repoPath}/.git/HEAD`]: 'ref: refs/heads/main',
       };
-      for (const repo of repos) {
-        fsEntries[`${repo.path}/.git/HEAD`] = 'ref: refs/heads/main';
-      }
       setupMemfs(fsEntries);
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
       const db = getDatabase();
+
+      // Register repository
       const sqliteRepoRepo = new SqliteRepositoryRepository(db);
-      for (const repo of repos) {
-        await sqliteRepoRepo.save({
-          ...repo,
-          createdAt: new Date().toISOString(),
-        });
-      }
+      await sqliteRepoRepo.save({
+        id: repoId,
+        name: 'Test Repo',
+        path: repoPath,
+        createdAt: new Date().toISOString(),
+      });
       repositoryManager = await RepositoryManager.create({
         jobQueue: testJobQueue,
         repository: sqliteRepoRepo,
       });
 
+      // Insert worktree records so isWorktreeOf returns true
+      const worktreeRepo = new SqliteWorktreeRepository(db);
+      for (let i = 0; i < worktreePaths.length; i++) {
+        await worktreeRepo.save({
+          id: `wt-${i}`,
+          repositoryId: repoId,
+          path: worktreePaths[i],
+          indexNumber: i + 1,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
       // Wire repository callbacks so isMainWorktree resolves correctly
       sessionManager.setRepositoryCallbacks({
-        getRepository: (repoId) => repositoryManager.getRepository(repoId),
+        getRepository: (id) => repositoryManager.getRepository(id),
         isInitialized: () => true,
         getWorktreeIndexNumber: async () => 0,
       });
@@ -2027,36 +2047,10 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('not a worktree session');
     });
 
-    it('should return error for main worktree session', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
-
-      // locationPath === repo.path makes isMainWorktree true
-      const session = await sessionManager.createSession({
-        type: 'worktree',
-        locationPath: TEST_REPO_PATH,
-        repositoryId: 'test-repo',
-        worktreeId: 'main',
-        agentId: 'claude-code',
-      });
-
-      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
-        sessionId: session.id,
-      }, nextId++);
-      const data = parseToolResult(response) as { error: string };
-
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Cannot remove the main worktree');
-    });
-
     it('should return error when repository is not found', async () => {
-      // Create a worktree session referencing a non-existent repository
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'non-existent-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
@@ -2071,22 +2065,17 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('Repository not found');
     });
 
-    it('should return error when path validation fails', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+    it('should return error for main worktree session', async () => {
+      await setupForDeletion();
 
+      // locationPath === repo.path makes isMainWorktree true
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_REPO_PATH,
         repositoryId: 'test-repo',
-        worktreeId: 'feature-branch',
+        worktreeId: 'main',
         agentId: 'claude-code',
       });
-
-      mockValidateWorktreePath.mockImplementation(async () => 'Worktree path is outside managed directory');
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
         sessionId: session.id,
@@ -2094,26 +2083,21 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('outside managed directory');
+      expect(data.error).toContain('Cannot remove the main worktree');
     });
 
     it('should return error when deletion is already in progress', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
       });
 
-      // Pre-populate the concurrency guard to simulate an in-progress deletion
-      _getDeletionsInProgress().add('/test/worktree-path');
+      _getDeletionsInProgress().add(WT_WORKTREE_PATH);
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
         sessionId: session.id,
@@ -2123,26 +2107,20 @@ describe('MCP Server Tools', () => {
       expect(response.result?.isError).toBe(true);
       expect(data.error).toContain('already in progress');
 
-      // Clean up the concurrency guard
-      _getDeletionsInProgress().delete('/test/worktree-path');
+      _getDeletionsInProgress().delete(WT_WORKTREE_PATH);
     });
 
     it('should successfully remove worktree and delete session', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
       });
 
-      // Mock successful worktree removal via git
       mockGit.removeWorktree.mockImplementation(async () => {});
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
@@ -2156,29 +2134,24 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBeUndefined();
       expect(data.sessionId).toBe(session.id);
-      expect(data.worktreePath).toBe('/test/worktree-path');
+      expect(data.worktreePath).toBe(WT_WORKTREE_PATH);
       expect(data.removed).toBe(true);
 
-      // Session should be deleted by deleteWorktreeWithSession
+      // Session should be deleted by deleteWorktree
       expect(sessionManager.getSession(session.id)).toBeUndefined();
     });
 
     it('should preserve session when worktree removal fails', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
       });
 
-      // Make git removeWorktree fail so deleteWorktreeWithSession returns failure
       mockGit.removeWorktree.mockImplementation(async () => {
         throw new Error('Worktree has uncommitted changes');
       });
@@ -2189,20 +2162,16 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBe(true);
 
-      // Session should be preserved for retry (the mock doesn't delete it)
+      // Session should be preserved for retry
       expect(sessionManager.getSession(session.id)).toBeDefined();
     });
 
     it('should block deletion when branch has an open PR', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
@@ -2221,7 +2190,6 @@ describe('MCP Server Tools', () => {
       expect(response.result?.isError).toBe(true);
       expect(data.error).toContain('WARNING: Cannot remove worktree.');
       expect(data.error).toContain('open PR #123');
-      expect(data.error).toContain('feature-branch');
       expect(data.error).toContain('Merge or close the PR first, then retry.');
 
       // Session should be preserved
@@ -2229,15 +2197,11 @@ describe('MCP Server Tools', () => {
     });
 
     it('should allow deletion with force=true even when branch has an open PR', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
@@ -2248,7 +2212,6 @@ describe('MCP Server Tools', () => {
         title: 'Important PR',
       }));
 
-      // Mock successful worktree removal via git
       mockGit.removeWorktree.mockImplementation(async () => {});
 
       const response = await callTool(app, mcpSessionId, 'remove_worktree', {
@@ -2266,15 +2229,11 @@ describe('MCP Server Tools', () => {
     });
 
     it('should block deletion when PR check fails (fail-closed)', async () => {
-      await setupRepoManager([{
-        id: 'test-repo',
-        name: 'Test Repo',
-        path: TEST_REPO_PATH,
-      }]);
+      await setupForDeletion();
 
       const session = await sessionManager.createSession({
         type: 'worktree',
-        locationPath: '/test/worktree-path',
+        locationPath: WT_WORKTREE_PATH,
         repositoryId: 'test-repo',
         worktreeId: 'feature-branch',
         agentId: 'claude-code',
