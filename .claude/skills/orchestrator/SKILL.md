@@ -135,7 +135,17 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> escalate to the owner
   4. If all checks pass -> report to the owner as ready for review (use `write_memo` so the owner sees it)
-- **CodeRabbit Rate Limit handling**: If CodeRabbit cannot review due to rate limiting, note the retry-after time from the error message. Create a timer via `create_timer` for that duration. When the timer fires, post `@coderabbitai review` as a PR comment. Delete the timer after the review is requested.
+- **CodeRabbit Rate Limit handling**: Before requesting a CodeRabbit re-review (`@coderabbitai review`), ALWAYS check the rate limit status first:
+  1. Check recent CodeRabbit comments on the PR and nearby PRs:
+     ```bash
+     gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[] | select(.user.login == "coderabbitai[bot]") | {created_at, body: .body[:300]}'
+     ```
+  2. Look for "Rate limit exceeded" and "wait **XX minutes**" in the comment body
+  3. Calculate when the limit expires: `comment.created_at + wait_minutes`
+  4. Create a timer via `create_timer` for the remaining wait duration
+  5. When the timer fires, post `@coderabbitai review` as a PR comment
+  6. Delete the timer after the review is requested
+  - **Never request re-review immediately** — always check rate limit first.
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 
 ### 7-9. Sprint Lifecycle, Post-Merge Flow, Retrospectives
