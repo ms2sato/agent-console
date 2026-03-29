@@ -424,6 +424,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
           <FormField label="Default Agent (optional)">
             <select
+              id="defaultAgentId"
               className="input"
               value={selectedAgentId}
               onChange={(e) => setSelectedAgentId(e.target.value)}
