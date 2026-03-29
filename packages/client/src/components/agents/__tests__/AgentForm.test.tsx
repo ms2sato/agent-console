@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -13,20 +13,24 @@ import {
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
+globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 beforeEach(() => {
   // Mock fetch to return empty agents list
-  globalThis.fetch = mockFetch.mockImplementation(() =>
+  mockFetch.mockImplementation(() =>
     Promise.resolve(new Response(JSON.stringify({ agents: [] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))
-  ) as unknown as typeof globalThis.fetch;
+  );
+});
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
 });
 
 afterEach(() => {
   cleanup();
-  globalThis.fetch = originalFetch;
   mockFetch.mockReset();
 });
 

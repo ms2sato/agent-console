@@ -228,7 +228,7 @@ export const AgentDefinitionSchema = v.intersect([
     createdAt: v.string(),
     activityPatterns: v.optional(AgentActivityPatternsSchema),
     capabilities: AgentCapabilitiesSchema,
-    baseAgentId: v.optional(v.pipe(v.string(), v.minLength(1))),
+    baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   }),
 ]);
 
