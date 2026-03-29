@@ -108,4 +108,16 @@ After PR merge, report your retrospective in the following format:
 > ### Suggestions for improvement
 `;
 
+const mcpCallExample = `## MCP Call Example
+\`\`\`
+delegate_to_worktree({
+  repositoryId: <your AGENT_CONSOLE_REPOSITORY_ID>,
+  prompt: <the full text above>,
+  parentSessionId: <your AGENT_CONSOLE_SESSION_ID>,
+  parentWorkerId: <your AGENT_CONSOLE_WORKER_ID>,
+})
+\`\`\`
+`;
+
 console.log(output);
+console.log(mcpCallExample);

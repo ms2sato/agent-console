@@ -252,6 +252,13 @@ describe('Client-Server Boundary', () => {
 - **Integration tests**: Verify pipeline connectivity (e.g., parser → job handler → handler) with 1-2 representative events. Exhaustive coverage is the unit test's job — do not duplicate it in integration tests.
 - These responsibilities must not be confused.
 
+## Test File Naming Convention
+
+### Test File Naming Convention
+- Test files MUST be named after the production file they test: `foo-bar.ts` → `__tests__/foo-bar.test.ts`
+- Place test files in the `__tests__/` directory at the same level as the production file
+- The acceptance-check script verifies this convention — misnamed test files will be flagged
+
 ## Pre-Implementation Checklist
 
 Before writing tests, verify:
