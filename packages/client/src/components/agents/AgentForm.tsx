@@ -10,6 +10,7 @@ import {
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
+import { useAgents } from '../AgentSelector';
 
 /**
  * Client-side form schema for agent creation/editing.
@@ -59,6 +60,9 @@ const AgentFormSchema = v.object({
     )
   ),
 
+  // Optional base agent ID for preset agents
+  baseAgentId: v.optional(v.string()),
+
   // Form-specific: string input for asking patterns (converted to array on submit)
   askingPatternsInput: v.optional(
     v.pipe(
@@ -81,6 +85,8 @@ export type AgentFormData = v.InferOutput<typeof AgentFormSchema>;
 
 export interface AgentFormProps {
   mode: 'create' | 'edit';
+  /** The ID of the agent being edited. Used to filter self from base agent list. */
+  agentId?: string;
   initialData?: AgentFormData;
   onSubmit: (data: AgentFormData) => void;
   onCancel: () => void;
@@ -90,6 +96,7 @@ export interface AgentFormProps {
 
 export function AgentForm({
   mode,
+  agentId,
   initialData,
   onSubmit,
   onCancel,
@@ -99,6 +106,13 @@ export function AgentForm({
   const [showAdvanced, setShowAdvanced] = useState(
     // Show advanced settings if any advanced field has a value
     !!(initialData?.headlessTemplate || initialData?.askingPatternsInput)
+  );
+
+  const { agents } = useAgents();
+  // Filter out the agent being edited from the base agent list
+  const availableBaseAgents = useMemo(
+    () => (agentId ? agents.filter((a) => a.id !== agentId) : agents),
+    [agents, agentId]
   );
 
   const {
@@ -114,6 +128,7 @@ export function AgentForm({
       continueTemplate: '',
       headlessTemplate: '',
       description: '',
+      baseAgentId: '',
       askingPatternsInput: '',
     },
     mode: 'onBlur',
@@ -135,6 +150,26 @@ export function AgentForm({
       {mode === 'create' && <h3 className="text-lg font-medium mb-4">{title}</h3>}
       <form onSubmit={handleSubmit(onSubmit)}>
         <fieldset disabled={isPending} className="flex flex-col gap-4">
+          <FormField label="Base Agent (optional)" error={errors.baseAgentId}>
+            <select
+              {...register('baseAgentId')}
+              className="input"
+            >
+              <option value="">None (standalone agent)</option>
+              {availableBaseAgents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                  {agent.isBuiltIn ? ' (built-in)' : ''}
+                </option>
+              ))}
+            </select>
+            {watch('baseAgentId') && (
+              <p className="text-xs text-blue-400 mt-1">
+                This agent is a preset. Unset fields will inherit from the base agent.
+              </p>
+            )}
+          </FormField>
+
           <FormField label="Name" error={errors.name}>
             <Input
               {...register('name')}

@@ -151,6 +151,8 @@ export interface AgentsTable {
   updated_at: Generated<string>;
   /** JSON-serialized activity patterns (optional) */
   activity_patterns: string | null;
+  /** Base agent ID for preset agents (optional, references agents.id) */
+  base_agent_id: string | null;
 }
 
 /** Agent row as returned from SELECT queries */

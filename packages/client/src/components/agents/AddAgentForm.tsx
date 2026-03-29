@@ -40,6 +40,7 @@ export function AddAgentForm({ onSuccess, onCancel }: AddAgentFormProps) {
       headlessTemplate: data.headlessTemplate || undefined,
       description: data.description || undefined,
       activityPatterns: askingPatterns ? { askingPatterns } : undefined,
+      baseAgentId: data.baseAgentId || undefined,
     });
   };
 

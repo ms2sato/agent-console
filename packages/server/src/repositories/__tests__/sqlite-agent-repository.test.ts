@@ -35,6 +35,7 @@ describe('SqliteAgentRepository', () => {
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('activity_patterns', 'text')
+      .addColumn('base_agent_id', 'text')
       .execute();
 
     repository = new SqliteAgentRepository(db);
@@ -58,6 +59,7 @@ describe('SqliteAgentRepository', () => {
       isBuiltIn: overrides.isBuiltIn ?? false,
       createdAt: overrides.createdAt ?? new Date().toISOString(),
       activityPatterns: overrides.activityPatterns,
+      baseAgentId: overrides.baseAgentId,
       capabilities: overrides.capabilities ?? {
         supportsContinue: false,
         supportsHeadlessMode: false,
@@ -353,6 +355,27 @@ describe('SqliteAgentRepository', () => {
       const remaining = await repository.findById('agent-2');
       expect(remaining).not.toBeNull();
       expect(remaining?.name).toBe('Agent Two');
+    });
+  });
+
+  describe('baseAgentId', () => {
+    it('should save and retrieve agent with baseAgentId', async () => {
+      const agent = createAgent({ id: 'preset-1', baseAgentId: 'base-agent-id' });
+      await repository.save(agent);
+
+      const found = await repository.findById('preset-1');
+      expect(found?.baseAgentId).toBe('base-agent-id');
+    });
+
+    it('should update baseAgentId on save', async () => {
+      const agent = createAgent({ id: 'preset-1', baseAgentId: 'old-base' });
+      await repository.save(agent);
+
+      const updated = createAgent({ id: 'preset-1', baseAgentId: 'new-base' });
+      await repository.save(updated);
+
+      const found = await repository.findById('preset-1');
+      expect(found?.baseAgentId).toBe('new-base');
     });
   });
 

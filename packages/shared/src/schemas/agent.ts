@@ -195,6 +195,7 @@ export const CreateAgentRequestSchema = v.intersect([
   AgentFieldsBaseSchema,
   v.object({
     activityPatterns: v.optional(AgentActivityPatternsSchema),
+    baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   }),
 ]);
 
@@ -210,6 +211,8 @@ export const UpdateAgentRequestSchema = v.object({
   // Allow null to explicitly clear activityPatterns (PATCH semantics: null = clear, undefined = no change)
   activityPatterns: v.optional(v.nullable(AgentActivityPatternsSchema)),
   stripScrollbackClear: v.optional(v.nullable(v.boolean())),
+  // Allow null to clear baseAgentId (convert preset to standalone)
+  baseAgentId: v.optional(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1)))),
 });
 
 /**
@@ -225,6 +228,7 @@ export const AgentDefinitionSchema = v.intersect([
     createdAt: v.string(),
     activityPatterns: v.optional(AgentActivityPatternsSchema),
     capabilities: AgentCapabilitiesSchema,
+    baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   }),
 ]);
 

@@ -773,6 +773,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        base_agent_id: null,
       };
 
       const agent = toAgentDefinition(row);
@@ -802,6 +803,7 @@ describe('mappers', () => {
         activity_patterns: JSON.stringify({
           askingPatterns: ['^Ask:', '^Input:'],
         }),
+        base_agent_id: null,
       };
 
       const agent = toAgentDefinition(row);
@@ -823,6 +825,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        base_agent_id: null,
       };
 
       const agentWithBoth = toAgentDefinition(rowWithBoth);
@@ -841,6 +844,7 @@ describe('mappers', () => {
         created_at: '2024-04-01T12:00:00.000Z',
         updated_at: '2024-04-01T12:00:00.000Z',
         activity_patterns: null,
+        base_agent_id: null,
       };
 
       const agentWithout = toAgentDefinition(rowWithout);

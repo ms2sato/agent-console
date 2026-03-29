@@ -75,17 +75,19 @@ export class AgentManager {
   }
 
   /**
-   * Get all registered agents
+   * Get all registered agents, with presets resolved against their base agents.
    */
   getAllAgents(): AgentDefinition[] {
-    return Array.from(this.agents.values());
+    return Array.from(this.agents.values()).map((agent) => this.resolvePreset(agent));
   }
 
   /**
-   * Get agent by ID
+   * Get agent by ID, with preset resolved against its base agent.
    */
   getAgent(id: string): AgentDefinition | undefined {
-    return this.agents.get(id);
+    const agent = this.agents.get(id);
+    if (!agent) return undefined;
+    return this.resolvePreset(agent);
   }
 
   /**
@@ -112,6 +114,7 @@ export class AgentManager {
       isBuiltIn: false,
       createdAt: now,
       activityPatterns: request.activityPatterns,
+      baseAgentId: request.baseAgentId,
     };
 
     const agent: AgentDefinition = {
@@ -172,6 +175,10 @@ export class AgentManager {
         request.stripScrollbackClear === null
           ? undefined
           : (request.stripScrollbackClear ?? existing.stripScrollbackClear),
+      baseAgentId:
+        request.baseAgentId === null
+          ? undefined
+          : (request.baseAgentId ?? existing.baseAgentId),
     };
 
     // Remove the capabilities from agentBase before recomputing
@@ -225,5 +232,40 @@ export class AgentManager {
     this.lifecycleCallbacks?.onAgentDeleted(id);
 
     return true;
+  }
+
+  /**
+   * Resolve a preset agent by merging it with its base agent.
+   * If the agent has a baseAgentId, inherit unset fields from the base.
+   * If the base agent no longer exists, the preset becomes standalone.
+   */
+  private resolvePreset(agent: AgentDefinition): AgentDefinition {
+    if (!agent.baseAgentId) return agent;
+
+    const base = this.agents.get(agent.baseAgentId);
+    if (!base) return agent; // Base deleted, preset becomes standalone
+
+    const merged = {
+      // Preset identity
+      id: agent.id,
+      name: agent.name,
+      description: agent.description ?? base.description,
+      isBuiltIn: agent.isBuiltIn,
+      createdAt: agent.createdAt,
+      baseAgentId: agent.baseAgentId,
+      // Templates: use preset override if set, otherwise inherit from base
+      commandTemplate: agent.commandTemplate,
+      continueTemplate: agent.continueTemplate ?? base.continueTemplate,
+      headlessTemplate: agent.headlessTemplate ?? base.headlessTemplate,
+      // Activity detection: inherit from base if not overridden
+      activityPatterns: agent.activityPatterns ?? base.activityPatterns,
+      // Terminal processing: inherit from base if not overridden
+      stripScrollbackClear: agent.stripScrollbackClear ?? base.stripScrollbackClear,
+    };
+
+    return {
+      ...merged,
+      capabilities: computeCapabilities(merged),
+    };
   }
 }

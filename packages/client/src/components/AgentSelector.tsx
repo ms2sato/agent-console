@@ -67,6 +67,7 @@ export function AgentSelector({
         <option key={agent.id} value={agent.id}>
           {agent.name}
           {agent.isBuiltIn ? ' (built-in)' : ''}
+          {agent.baseAgentId ? ' (preset)' : ''}
         </option>
       ))}
     </select>
