@@ -289,7 +289,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   const [regenerateSuccess, setRegenerateSuccess] = useState(false);
   const regenerateTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(repository.defaultAgentId ?? '');
-  const { agents } = useAgents();
+  const { agents, isLoading: agentsLoading } = useAgents();
 
   useEffect(() => {
     return () => {
@@ -427,14 +427,21 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               className="input"
               value={selectedAgentId}
               onChange={(e) => setSelectedAgentId(e.target.value)}
+              disabled={agentsLoading}
             >
-              <option value="">None (System default)</option>
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                  {agent.isBuiltIn ? ' (built-in)' : ''}
-                </option>
-              ))}
+              {agentsLoading ? (
+                <option>Loading agents...</option>
+              ) : (
+                <>
+                  <option value="">None (System default)</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                      {agent.isBuiltIn ? ' (built-in)' : ''}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </FormField>
 

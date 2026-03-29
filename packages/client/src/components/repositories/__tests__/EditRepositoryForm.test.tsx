@@ -23,8 +23,8 @@ function createSlackNotFoundResponse() {
 function createAgentsResponse() {
   return createMockResponse({
     agents: [
-      { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
-      { id: 'custom-agent-1', name: 'My Custom Agent', isBuiltIn: false },
+      { id: 'claude-code', name: 'Claude Code', isBuiltIn: true, createdAt: '2024-01-01T00:00:00Z' },
+      { id: 'custom-agent-1', name: 'My Custom Agent', isBuiltIn: false, createdAt: '2024-01-01T00:00:00Z' },
     ],
   });
 }
