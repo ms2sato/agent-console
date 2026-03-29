@@ -22,7 +22,7 @@ import { emitSessionDeleted } from '../lib/app-websocket.js';
 import type { AgentActivityState } from '@agent-console/shared';
 import { logger } from '../lib/logger';
 import { createRenderWatchdog, type RenderWatchdog } from '../lib/render-diagnostics.js';
-import { ChevronDownIcon } from './Icons';
+import { ChevronDownIcon, SpinnerIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
 
 /**
@@ -112,6 +112,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     mountGeneration: 0,
   });
   const [cacheProcessed, setCacheProcessed] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const offsetRef = useRef<number>(0);
   const connectedRef = useRef(false);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -224,6 +225,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [sessionId, workerId, updateScrollButtonVisibility, processOutput]);
 
   const handleHistory = useCallback((data: string, offset: number) => {
+    setLoadingHistory(false);
     watchdogRef.current?.onHistoryReceived(data.length, offset);
     offsetRef.current = offset;
 
@@ -286,6 +288,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (!connected) {
       // Reset historyRequested so reconnect will re-request
       stateRef.current.historyRequested = false;
+      setLoadingHistory(false);
     }
   }, []);
 
@@ -851,6 +854,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       const fromOffset = offsetRef.current;
       stateRef.current.historyRequested = true;
       stateRef.current.requestedWithOffset = fromOffset;
+      setLoadingHistory(true);
       requestHistory(sessionId, workerId, fromOffset);
     }
   }, [connected, cacheProcessed, sessionId, workerId]);
@@ -896,6 +900,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           <span className="text-gray-500 text-sm">
             {getStatusText()}
           </span>
+          {loadingHistory && (
+            <span className="text-blue-400 text-xs flex items-center gap-1.5 ml-auto">
+              <SpinnerIcon className="w-3 h-3" />
+              Loading history...
+            </span>
+          )}
         </div>
       )}
       {cacheError && (
