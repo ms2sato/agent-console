@@ -63,7 +63,7 @@ function extractAcceptanceCriteria(body) {
 
 function extractSection(text, sectionName) {
   const pattern = new RegExp(
-    `### ${sectionName}\\s*\\n([\\s\\S]*?)(?=\\n###|\\n##[^#]|$)`
+    `### ${sectionName}[^\\n]*\\n([\\s\\S]*?)(?=\\n###|\\n##[^#]|$)`
   );
   const match = text.match(pattern);
   if (!match) return null;
@@ -83,7 +83,7 @@ function validate(text) {
         '"Affected Files" contains placeholder path (path/to/file.ts)'
       );
     }
-    if (!/`[^`]*\/[^`]*`/.test(affectedFiles)) {
+    if (!/`[^`]+`/.test(affectedFiles)) {
       errors.push(
         '"Affected Files" must include at least one specific file path in backticks'
       );
@@ -108,7 +108,14 @@ function validate(text) {
   return errors;
 }
 
+export { extractSection, validate };
+
 // --- Main ---
+
+// Skip main logic when imported as a module (e.g., from tests)
+if (!import.meta.main) {
+  // noop: only exports are used
+} else {
 
 const issueNumber = process.argv[2];
 if (!issueNumber || !/^\d+$/.test(issueNumber)) {
@@ -203,3 +210,5 @@ console.log(`⚠ IMPORTANT: Fill in ALL sections under "Implementation Guideline
   Required sections: Affected Files, Key Functions/Types, Constraints, Testing Approach
   Each "Affected Files" entry must include a specific file path (not placeholder).
 `);
+
+} // end if (import.meta.main)
