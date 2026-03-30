@@ -680,18 +680,25 @@ export class WorkerManager {
         pty.kill();
 
         // Await exit with timeout to ensure directory handles are released
-        const TIMEOUT_SENTINEL = Symbol('timeout');
-        const result = await Promise.race([
-          exitPromise.then(() => 'exited' as const),
-          new Promise<typeof TIMEOUT_SENTINEL>((resolve) =>
-            setTimeout(() => resolve(TIMEOUT_SENTINEL), PTY_EXIT_TIMEOUT_MS),
-          ),
-        ]);
-        if (result === TIMEOUT_SENTINEL) {
-          logger.warn(
-            { pid: pty.pid },
-            `PTY process did not exit within ${PTY_EXIT_TIMEOUT_MS}ms after kill, proceeding anyway`,
-          );
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const TIMEOUT_SENTINEL = Symbol('timeout');
+          const result = await Promise.race([
+            exitPromise.then(() => 'exited' as const),
+            new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+              timeoutHandle = setTimeout(() => resolve(TIMEOUT_SENTINEL), PTY_EXIT_TIMEOUT_MS);
+            }),
+          ]);
+          if (result === TIMEOUT_SENTINEL) {
+            logger.warn(
+              { pid: pty.pid },
+              `PTY process did not exit within ${PTY_EXIT_TIMEOUT_MS}ms after kill, proceeding anyway`,
+            );
+          }
+        } finally {
+          if (timeoutHandle !== undefined) {
+            clearTimeout(timeoutHandle);
+          }
         }
 
         this.detachPty(worker);

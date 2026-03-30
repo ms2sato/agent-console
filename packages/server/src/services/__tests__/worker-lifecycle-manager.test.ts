@@ -514,10 +514,11 @@ describe('WorkerLifecycleManager', () => {
         return originalSpawnImpl();
       });
 
-      await lifecycleManager.restartAgentWorker(session.id, originalId, true);
-
-      // Restore spawn mock
-      ptyFactory.spawn.mockImplementation(originalSpawnImpl);
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, originalId, true);
+      } finally {
+        ptyFactory.spawn.mockImplementation(originalSpawnImpl);
+      }
 
       expect(operationOrder).toEqual(['old-exited', 'new-spawned']);
     });
