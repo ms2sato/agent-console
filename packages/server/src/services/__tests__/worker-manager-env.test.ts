@@ -8,6 +8,7 @@ import { WorkerManager } from '../worker-manager.js';
 import { SingleUserMode } from '../user-mode.js';
 import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 /**
  * Tests for AgentConsole context environment variable injection.
@@ -95,6 +96,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -113,6 +115,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -129,6 +132,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -145,6 +149,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-456',
@@ -162,6 +167,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         // repositoryId is not provided (quick session)
@@ -179,6 +185,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/worktree/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-all-four',
@@ -199,6 +206,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
       });
@@ -218,6 +226,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'org/repo-name',
@@ -239,6 +248,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           AGENT_CONSOLE_SESSION_ID: 'spoofed-session',
         },
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-1',
@@ -261,6 +271,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         context: { parentSessionId: 'parent-sess-abc' },
@@ -278,6 +289,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         context: { parentWorkerId: 'parent-wkr-xyz' },
@@ -295,6 +307,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         // context is intentionally omitted
@@ -317,6 +330,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           AGENT_CONSOLE_PARENT_WORKER_ID: 'spoofed-parent-worker',
         },
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
         agentId: 'claude-code',
         continueConversation: false,
         context: {
@@ -341,6 +355,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         locationPath: '/test/path',
         repositoryEnvVars: {},
         username: 'testuser',
+        resolver: new SessionDataPathResolver(),
       });
 
       const env = getLastSpawnEnv();

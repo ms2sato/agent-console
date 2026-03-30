@@ -5,7 +5,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { gunzipSync } from 'bun';
-import { getOutputsDir } from './config.js';
+import { SessionDataPathResolver } from './session-data-path-resolver.js';
 import { serverConfig } from './server-config.js';
 import { createLogger } from './logger.js';
 
@@ -45,7 +45,7 @@ export interface HistoryReadResult {
 interface PendingFlush {
   buffer: string;
   timer: ReturnType<typeof setTimeout> | null;
-  repositoryName?: string;
+  resolver: SessionDataPathResolver;
 }
 
 /**
@@ -79,8 +79,8 @@ export class WorkerOutputFileManager {
   /**
    * Get the output file path for a worker.
    */
-  getOutputFilePath(sessionId: string, workerId: string, repositoryName?: string): string {
-    return path.join(getOutputsDir(repositoryName), sessionId, `${workerId}.log`);
+  getOutputFilePath(sessionId: string, workerId: string, resolver: SessionDataPathResolver): string {
+    return resolver.getOutputFilePath(sessionId, workerId);
   }
 
   /**
@@ -102,8 +102,8 @@ export class WorkerOutputFileManager {
    *
    * Note: Legacy .log.gz files are still supported for reading (migration compatibility).
    */
-  private async getActualFilePath(sessionId: string, workerId: string, repositoryName?: string): Promise<{ path: string; isCompressed: boolean } | null> {
-    const outputsDir = getOutputsDir(repositoryName);
+  private async getActualFilePath(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<{ path: string; isCompressed: boolean } | null> {
+    const outputsDir = resolver.getOutputsDir();
     const uncompressedPath = path.join(outputsDir, sessionId, `${workerId}.log`);
     const compressedPath = path.join(outputsDir, sessionId, `${workerId}.log.gz`);
 
@@ -132,15 +132,15 @@ export class WorkerOutputFileManager {
    * Call this immediately when creating a new worker to ensure history file exists.
    * This prevents race conditions where WebSocket connects before any output is buffered.
    */
-  async initializeWorkerOutput(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
-    const filePath = this.getOutputFilePath(sessionId, workerId, repositoryName);
+  async initializeWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
+    const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
       // Check if file already exists (e.g., from previous run)
-      const actualFile = await this.getActualFilePath(sessionId, workerId, repositoryName);
+      const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (actualFile) {
         // File already exists, no need to initialize
         return;
@@ -159,12 +159,12 @@ export class WorkerOutputFileManager {
    * Buffer output data for periodic flushing to file.
    * Flushes immediately if buffer exceeds threshold.
    */
-  bufferOutput(sessionId: string, workerId: string, data: string, repositoryName?: string): void {
+  bufferOutput(sessionId: string, workerId: string, data: string, resolver: SessionDataPathResolver): void {
     const key = this.getKey(sessionId, workerId);
     let pending = this.pendingFlushes.get(key);
 
     if (!pending) {
-      pending = { buffer: '', timer: null, repositoryName };
+      pending = { buffer: '', timer: null, resolver };
       this.pendingFlushes.set(key, pending);
     }
 
@@ -210,15 +210,15 @@ export class WorkerOutputFileManager {
     const dataToWrite = pending.buffer;
     pending.buffer = '';
 
-    const repositoryName = pending.repositoryName;
-    const filePath = this.getOutputFilePath(sessionId, workerId, repositoryName);
+    const resolver = pending.resolver;
+    const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
       // Check if we need to migrate from legacy compressed file
-      const actualFile = await this.getActualFilePath(sessionId, workerId, repositoryName);
+      const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (actualFile?.isCompressed) {
         // Migrate from compressed to uncompressed
         const rawBuffer = await fs.readFile(actualFile.path);
@@ -318,8 +318,8 @@ export class WorkerOutputFileManager {
   async readHistoryWithOffset(
     sessionId: string,
     workerId: string,
+    resolver: SessionDataPathResolver,
     fromOffset?: number,
-    repositoryName?: string
   ): Promise<HistoryReadResult> {
     try {
       // Get pending buffer for this worker
@@ -329,7 +329,7 @@ export class WorkerOutputFileManager {
       const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
 
       // Find the actual file (uncompressed or legacy compressed)
-      const actualFile = await this.getActualFilePath(sessionId, workerId, repositoryName);
+      const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
 
       if (!actualFile) {
         // No file exists, return only pending buffer
@@ -419,7 +419,7 @@ export class WorkerOutputFileManager {
     sessionId: string,
     workerId: string,
     maxLines: number,
-    repositoryName?: string
+    resolver: SessionDataPathResolver,
   ): Promise<HistoryReadResult> {
     try {
       // Get pending buffer for this worker
@@ -429,7 +429,7 @@ export class WorkerOutputFileManager {
       const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
 
       // Find the actual file (uncompressed or legacy compressed)
-      const actualFile = await this.getActualFilePath(sessionId, workerId, repositoryName);
+      const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
 
       if (!actualFile) {
         // No file exists, return only pending buffer
@@ -532,13 +532,13 @@ export class WorkerOutputFileManager {
    * Returns 0 if file doesn't exist.
    * Supports legacy .log.gz files for backward compatibility.
    */
-  async getCurrentOffset(sessionId: string, workerId: string, repositoryName?: string): Promise<number> {
+  async getCurrentOffset(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
     // Flush any pending buffer first to ensure accurate offset
     // This prevents race conditions where offset is read before buffer is flushed
     await this.flushBuffer(sessionId, workerId);
 
     try {
-      const actualFile = await this.getActualFilePath(sessionId, workerId, repositoryName);
+      const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (!actualFile) {
         return 0;
       }
@@ -567,7 +567,7 @@ export class WorkerOutputFileManager {
    * Used when restarting a worker to prevent offset mismatch with client cache.
    * Clears pending buffers and creates an empty file.
    */
-  async resetWorkerOutput(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
+  async resetWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
     // Clear any pending flush
     const key = this.getKey(sessionId, workerId);
     const pending = this.pendingFlushes.get(key);
@@ -578,7 +578,7 @@ export class WorkerOutputFileManager {
       this.pendingFlushes.delete(key);
     }
 
-    const filePath = this.getOutputFilePath(sessionId, workerId, repositoryName);
+    const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
     try {
       // Ensure directory exists
@@ -610,7 +610,7 @@ export class WorkerOutputFileManager {
    * Delete output file for a worker.
    * Also deletes legacy .log.gz files if present.
    */
-  async deleteWorkerOutput(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
+  async deleteWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
     // Clear any pending flush
     const key = this.getKey(sessionId, workerId);
     const pending = this.pendingFlushes.get(key);
@@ -622,7 +622,7 @@ export class WorkerOutputFileManager {
     }
 
     // Delete both possible file formats
-    const outputsDir = getOutputsDir(repositoryName);
+    const outputsDir = resolver.getOutputsDir();
     const compressedPath = path.join(outputsDir, sessionId, `${workerId}.log.gz`);
     const uncompressedPath = path.join(outputsDir, sessionId, `${workerId}.log`);
 
@@ -651,7 +651,7 @@ export class WorkerOutputFileManager {
   /**
    * Delete all output files for a session.
    */
-  async deleteSessionOutputs(sessionId: string, repositoryName?: string): Promise<void> {
+  async deleteSessionOutputs(sessionId: string, resolver: SessionDataPathResolver): Promise<void> {
     // Clear any pending flushes for this session
     const keysToDelete: string[] = [];
     for (const [key, pending] of this.pendingFlushes) {
@@ -666,7 +666,7 @@ export class WorkerOutputFileManager {
       this.pendingFlushes.delete(key);
     }
 
-    const sessionDir = path.join(getOutputsDir(repositoryName), sessionId);
+    const sessionDir = path.join(resolver.getOutputsDir(), sessionId);
 
     try {
       await fs.rm(sessionDir, { recursive: true, force: true });

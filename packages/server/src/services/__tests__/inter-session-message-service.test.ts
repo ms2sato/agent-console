@@ -6,8 +6,11 @@ import {
   validateId,
   MAX_MESSAGE_CONTENT_BYTES,
 } from '../inter-session-message-service.js';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 const TEST_CONFIG_DIR = '/test/config';
+const quickResolver = new SessionDataPathResolver();
+const repoResolver = new SessionDataPathResolver('org/repo');
 
 describe('InterSessionMessageService', () => {
   let service: InterSessionMessageService;
@@ -29,6 +32,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'hello',
+        resolver: quickResolver,
       });
 
       const dirPath = `${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`;
@@ -42,6 +46,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'hello',
+        resolver: quickResolver,
       });
 
       // messageId should match the pattern {timestamp}-{fromSessionId}-{randomHex}.json
@@ -55,6 +60,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content,
+        resolver: quickResolver,
       });
 
       const fileContent = vol.readFileSync(result.path, 'utf-8');
@@ -67,6 +73,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'test',
+        resolver: quickResolver,
       });
 
       expect(result.messageId).toBeDefined();
@@ -81,6 +88,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'test',
+        resolver: quickResolver,
       });
 
       const dirPath = `${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`;
@@ -98,6 +106,7 @@ describe('InterSessionMessageService', () => {
           toWorkerId: 'worker-1',
           fromSessionId: 'session-sender',
           content: oversizedContent,
+          resolver: quickResolver,
         }),
       ).rejects.toThrow('Message content too large');
     });
@@ -110,6 +119,7 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: exactContent,
+        resolver: quickResolver,
       });
 
       expect(result.messageId).toBeDefined();
@@ -123,12 +133,14 @@ describe('InterSessionMessageService', () => {
           toWorkerId: 'worker-1',
           fromSessionId: 'sender-a',
           content: 'message from a',
+          resolver: quickResolver,
         }),
         service.sendMessage({
           toSessionId: 'session-target',
           toWorkerId: 'worker-1',
           fromSessionId: 'sender-b',
           content: 'message from b',
+          resolver: quickResolver,
         }),
       ]);
 
@@ -151,18 +163,20 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'sender',
         content: 'msg1',
+        resolver: quickResolver,
       });
       await service.sendMessage({
         toSessionId: 'session-1',
         toWorkerId: 'worker-2',
         fromSessionId: 'sender',
         content: 'msg2',
+        resolver: quickResolver,
       });
 
       // Verify directory exists
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1`)).toBe(true);
 
-      await service.deleteSessionMessages('session-1');
+      await service.deleteSessionMessages('session-1', quickResolver);
 
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1`)).toBe(false);
     });
@@ -170,7 +184,7 @@ describe('InterSessionMessageService', () => {
     it('should not throw when directory does not exist', async () => {
       // Should complete without error
       await expect(
-        service.deleteSessionMessages('non-existent-session'),
+        service.deleteSessionMessages('non-existent-session', quickResolver),
       ).resolves.toBeUndefined();
     });
   });
@@ -183,15 +197,17 @@ describe('InterSessionMessageService', () => {
         toWorkerId: 'worker-1',
         fromSessionId: 'sender',
         content: 'keep this',
+        resolver: quickResolver,
       });
       await service.sendMessage({
         toSessionId: 'session-1',
         toWorkerId: 'worker-2',
         fromSessionId: 'sender',
         content: 'delete this',
+        resolver: quickResolver,
       });
 
-      await service.deleteWorkerMessages('session-1', 'worker-2');
+      await service.deleteWorkerMessages('session-1', 'worker-2', quickResolver);
 
       // worker-1 messages should remain
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/_quick/messages/session-1/worker-1`)).toBe(true);
@@ -201,7 +217,7 @@ describe('InterSessionMessageService', () => {
 
     it('should not throw when directory does not exist', async () => {
       await expect(
-        service.deleteWorkerMessages('non-existent-session', 'non-existent-worker'),
+        service.deleteWorkerMessages('non-existent-session', 'non-existent-worker', quickResolver),
       ).resolves.toBeUndefined();
     });
   });
@@ -239,59 +255,61 @@ describe('InterSessionMessageService', () => {
           toWorkerId: 'worker-1',
           fromSessionId: '../../../etc',
           content: 'malicious',
+          resolver: quickResolver,
         }),
       ).rejects.toThrow('Invalid fromSessionId');
     });
 
     it('should reject deleteSessionMessages with traversal in sessionId', async () => {
       await expect(
-        service.deleteSessionMessages('../../../etc'),
+        service.deleteSessionMessages('../../../etc', quickResolver),
       ).rejects.toThrow('Invalid sessionId');
     });
 
     it('should reject deleteWorkerMessages with traversal in workerId', async () => {
       await expect(
-        service.deleteWorkerMessages('valid-session', '../../../etc'),
+        service.deleteWorkerMessages('valid-session', '../../../etc', quickResolver),
       ).rejects.toThrow('Invalid workerId');
     });
   });
 
   describe('repository-scoped paths', () => {
-    it('should write to repository-scoped path when repositoryName is provided', async () => {
+    it('should write to repository-scoped path when resolver has repositoryName', async () => {
       const result = await service.sendMessage({
         toSessionId: 'session-target',
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'hello',
-        repositoryName: 'org/repo',
+        resolver: repoResolver,
       });
 
       expect(result.path).toContain(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-target/worker-1`);
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-target/worker-1`)).toBe(true);
     });
 
-    it('should delete from repository-scoped path when repositoryName is provided', async () => {
+    it('should delete from repository-scoped path when resolver has repositoryName', async () => {
       await service.sendMessage({
         toSessionId: 'session-1',
         toWorkerId: 'worker-1',
         fromSessionId: 'sender',
         content: 'msg',
-        repositoryName: 'org/repo',
+        resolver: repoResolver,
       });
 
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-1`)).toBe(true);
 
-      await service.deleteSessionMessages('session-1', 'org/repo');
+      await service.deleteSessionMessages('session-1', repoResolver);
 
       expect(vol.existsSync(`${TEST_CONFIG_DIR}/repositories/org/repo/messages/session-1`)).toBe(false);
     });
 
-    it('should write to _quick fallback path when repositoryName is not provided', async () => {
+    it('should write to _quick fallback path when resolver has no repositoryName', async () => {
       const result = await service.sendMessage({
         toSessionId: 'session-target',
         toWorkerId: 'worker-1',
         fromSessionId: 'session-sender',
         content: 'hello',
+        resolver: quickResolver,
       });
 
       expect(result.path).toContain(`${TEST_CONFIG_DIR}/_quick/messages/session-target/worker-1`);
@@ -306,12 +324,14 @@ describe('InterSessionMessageService', () => {
           toWorkerId: 'worker-1',
           fromSessionId: 'same-sender',
           content: 'message 1',
+          resolver: quickResolver,
         }),
         service.sendMessage({
           toSessionId: 'session-target',
           toWorkerId: 'worker-1',
           fromSessionId: 'same-sender',
           content: 'message 2',
+          resolver: quickResolver,
         }),
       ]);
 

@@ -21,6 +21,7 @@ import type {
 } from '../worker-types.js';
 import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../persistence-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -69,11 +70,14 @@ describe('WorkerManager', () => {
     });
   }
 
+  const defaultResolver = new SessionDataPathResolver();
+
   const defaultAgentActivationParams = {
     sessionId: 'session-1',
     locationPath: '/test/project',
     repositoryEnvVars: {},
     username: 'testuser',
+    resolver: defaultResolver,
     agentId: CLAUDE_CODE_AGENT_ID,
     continueConversation: false,
   };
@@ -83,6 +87,7 @@ describe('WorkerManager', () => {
     locationPath: '/test/project',
     repositoryEnvVars: {},
     username: 'testuser',
+    resolver: defaultResolver,
   };
 
   // ========== Worker Initialization ==========

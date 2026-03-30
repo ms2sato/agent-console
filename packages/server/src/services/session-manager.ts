@@ -34,6 +34,7 @@ import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
+import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { SingleUserMode, type UserMode } from './user-mode.js';
 import { processKill, isProcessAlive } from '../lib/process-utils.js';
@@ -171,7 +172,7 @@ export class SessionManager {
       getJobQueue: () => this.jobQueue,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
-      getRepositoryName: (session) => this.getRepositoryNameForSession(session),
+      getPathResolver: (session) => this.getPathResolverForSession(session),
     });
   }
 
@@ -275,10 +276,10 @@ export class SessionManager {
 
     // Delete orphan sessions (path no longer exists)
     for (const orphan of orphanSessions) {
-      const repositoryName = this.getRepositoryNameForPersistedSession(orphan);
+      const resolver = this.getPathResolverForPersistedSession(orphan);
       // Clean up worker output files
       try {
-        await workerOutputFileManager.deleteSessionOutputs(orphan.id, repositoryName);
+        await workerOutputFileManager.deleteSessionOutputs(orphan.id, resolver);
       } catch (error) {
         logger.error({ sessionId: orphan.id, err: error }, 'Failed to delete worker output files for orphan session');
       }
@@ -510,10 +511,10 @@ export class SessionManager {
         throw new Error('JobQueue not available for orphan session cleanup. Ensure jobQueue is passed to SessionManager.create().');
       }
       for (const orphan of orphanSessions) {
-        const repositoryName = this.getRepositoryNameForPersistedSession(orphan);
+        const resolver = this.getPathResolverForPersistedSession(orphan);
         await this.sessionRepository.delete(orphan.id);
         // Delete output files for orphan session via job queue
-        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: orphan.id, repositoryName });
+        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: orphan.id, repositoryName: resolver.getRepositoryName() });
         logger.info({ sessionId: orphan.id }, 'Removed orphan session from persistence');
       }
     }
@@ -633,14 +634,14 @@ export class SessionManager {
       throw new Error('JobQueue not available for session cleanup. Ensure SessionManager.create() was called with jobQueue.');
     }
 
-    // Resolve repository name before cleanup operations
-    const repositoryName = this.getRepositoryNameForSession(session);
+    // Resolve path resolver before cleanup operations
+    const resolver = this.getPathResolverForSession(session);
 
     // Perform all deletion operations atomically
     // If any fail, restore in-memory state to maintain consistency
     try {
       // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical)
-      await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName });
+      await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
 
       // 2. Clean up notification state (throttle timers, debounce timers)
       this.notificationManager?.cleanupSession(id);
@@ -653,14 +654,14 @@ export class SessionManager {
 
       // 2c. Clean up inter-session message files
       try {
-        await interSessionMessageService.deleteSessionMessages(id, repositoryName);
+        await interSessionMessageService.deleteSessionMessages(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
       }
 
       // 2d. Clean up memo file
       try {
-        await memoService.deleteMemo(id, repositoryName);
+        await memoService.deleteMemo(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
       }
@@ -926,7 +927,7 @@ export class SessionManager {
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = await this.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
-    const repositoryName = this.getRepositoryNameForSession(internalSession);
+    const resolver = this.getPathResolverForSession(internalSession);
     try {
       const username = await resolveSpawnUsername(internalSession.createdBy, this.userRepository);
       for (const worker of workers.values()) {
@@ -936,7 +937,7 @@ export class SessionManager {
             locationPath: persisted.locationPath,
             repositoryEnvVars,
             username,
-            repositoryName,
+            resolver,
             agentId: worker.agentId,
             continueConversation: true,
             repositoryId,
@@ -952,7 +953,7 @@ export class SessionManager {
             locationPath: persisted.locationPath,
             repositoryEnvVars,
             username,
-            repositoryName,
+            resolver,
           });
           activatedWorkers.push(worker);
         }
@@ -1035,10 +1036,10 @@ export class SessionManager {
     // Check persistence for orphaned session
     const persisted = await this.sessionRepository.findById(id);
     if (persisted) {
-      const repositoryName = this.getRepositoryNameForPersistedSession(persisted);
+      const resolver = this.getPathResolverForPersistedSession(persisted);
       // Enqueue cleanup of worker output files (same as deleteSession)
       if (this.jobQueue) {
-        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName });
+        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
       } else {
         logger.warn(
           { sessionId: id, method: 'forceDeleteSession', skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS },
@@ -1048,7 +1049,7 @@ export class SessionManager {
       await this.sessionRepository.delete(id);
       // Clean up memo file
       try {
-        await memoService.deleteMemo(id, repositoryName);
+        await memoService.deleteMemo(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
       }
@@ -1214,11 +1215,11 @@ export class SessionManager {
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
-    const repositoryName = this.getRepositoryNameForSession(session);
-    const filePath = await memoService.writeMemo(sessionId, content, repositoryName);
+    const resolver = this.getPathResolverForSession(session);
+    const filePath = await memoService.writeMemo(sessionId, content, resolver);
     // Re-check after async write: session may have been deleted during the write
     if (!this.sessions.has(sessionId)) {
-      await memoService.deleteMemo(sessionId, repositoryName).catch(() => {});
+      await memoService.deleteMemo(sessionId, resolver).catch(() => {});
       throw new Error(`Session deleted during memo write: ${sessionId}`);
     }
     this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, content);
@@ -1235,8 +1236,8 @@ export class SessionManager {
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
-    const repositoryName = this.getRepositoryNameForSession(session);
-    return memoService.readMemo(sessionId, repositoryName);
+    const resolver = this.getPathResolverForSession(session);
+    return memoService.readMemo(sessionId, resolver);
   }
 
   /**
@@ -1496,23 +1497,24 @@ export class SessionManager {
   }
 
   /**
-   * Resolve the repository name for a session.
-   * Returns the org/repo name for worktree sessions, undefined for quick sessions.
+   * Resolve the session data path resolver for a session.
+   * Returns a resolver scoped to the repository for worktree sessions,
+   * or a quick-session resolver for quick sessions.
    */
-  private getRepositoryNameForSession(session: InternalSession): string | undefined {
-    if (session.type !== 'worktree') return undefined;
-    if (!this.repositoryCallbacks?.isInitialized()) return undefined;
-    return this.repositoryCallbacks.getRepository(session.repositoryId)?.name;
+  private getPathResolverForSession(session: InternalSession): SessionDataPathResolver {
+    if (session.type !== 'worktree') return new SessionDataPathResolver();
+    if (!this.repositoryCallbacks?.isInitialized()) return new SessionDataPathResolver();
+    return new SessionDataPathResolver(this.repositoryCallbacks.getRepository(session.repositoryId)?.name);
   }
 
   /**
-   * Resolve the repository name from a persisted session's repositoryId.
-   * Returns undefined for quick sessions or when repository callbacks are unavailable.
+   * Resolve the session data path resolver from a persisted session's repositoryId.
+   * Returns a quick-session resolver for quick sessions or when repository callbacks are unavailable.
    */
-  private getRepositoryNameForPersistedSession(persisted: PersistedSession): string | undefined {
-    if (persisted.type !== 'worktree') return undefined;
-    if (!this.repositoryCallbacks?.isInitialized()) return undefined;
-    return this.repositoryCallbacks.getRepository(persisted.repositoryId)?.name;
+  private getPathResolverForPersistedSession(persisted: PersistedSession): SessionDataPathResolver {
+    if (persisted.type !== 'worktree') return new SessionDataPathResolver();
+    if (!this.repositoryCallbacks?.isInitialized()) return new SessionDataPathResolver();
+    return new SessionDataPathResolver(this.repositoryCallbacks.getRepository(persisted.repositoryId)?.name);
   }
 
   private toPublicSession(session: InternalSession): Session {

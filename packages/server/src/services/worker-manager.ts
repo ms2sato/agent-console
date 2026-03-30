@@ -35,6 +35,7 @@ import type {
   Disposable,
 } from './worker-types.js';
 import type { SessionCreationContext } from './internal-types.js';
+import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { UserMode, AgentConsoleContext } from './user-mode.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -57,8 +58,8 @@ export interface WorkerContext {
   repositoryEnvVars: Record<string, string>;
   /** OS username for PTY process ownership. Used by MultiUserMode for sudo -u. */
   username: string;
-  /** Repository name (org/repo) for data directory resolution. Undefined for quick sessions. */
-  repositoryName?: string;
+  /** Path resolver for session data directories (messages, memos, outputs). */
+  resolver: SessionDataPathResolver;
 }
 
 /**
@@ -356,7 +357,7 @@ export class WorkerManager {
     worker.activityState = 'idle';
     this.globalActivityCallback?.(sessionId, worker.id, 'idle');
 
-    this.setupWorkerEventHandlers(worker, sessionId, params.repositoryName);
+    this.setupWorkerEventHandlers(worker, sessionId, params.resolver);
   }
 
   /**
@@ -392,14 +393,14 @@ export class WorkerManager {
 
     worker.pty = ptyProcess;
 
-    this.setupWorkerEventHandlers(worker, sessionId, params.repositoryName);
+    this.setupWorkerEventHandlers(worker, sessionId, params.resolver);
   }
 
   /**
    * Setup event handlers for a PTY worker.
    * Stores disposables on the worker for cleanup when worker is killed.
    */
-  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string, repositoryName?: string): void {
+  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string, resolver: SessionDataPathResolver): void {
     if (!sessionId || sessionId.trim() === '') {
       throw new Error(
         `Cannot setup event handlers: sessionId is required (got: ${sessionId === '' ? 'empty string' : String(sessionId)})`
@@ -421,7 +422,7 @@ export class WorkerManager {
 
       worker.outputOffset += Buffer.byteLength(data, 'utf-8');
 
-      workerOutputFileManager.bufferOutput(sessionId, worker.id, data, repositoryName);
+      workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.processOutput(data);

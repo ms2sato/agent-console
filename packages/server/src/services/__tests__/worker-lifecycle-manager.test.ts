@@ -21,6 +21,7 @@ import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker
 import type { InternalSession } from '../internal-types.js';
 import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
 import { JobQueue } from '../../jobs/index.js';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -97,7 +98,7 @@ describe('WorkerLifecycleManager', () => {
       resolveSpawnUsername: async () => 'testuser',
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
-      getRepositoryName: () => undefined,
+      getPathResolver: () => new SessionDataPathResolver(),
       ...overrides,
     };
   }
