@@ -7,17 +7,21 @@
  * based on the Issue number. Structurally prevents omission of required sections
  * (acceptance criteria, retrospective, completion steps).
  *
- * Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number>
+ * Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number> [--validate]
  */
 
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 function usage() {
   console.error(
-    'Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number>'
+    'Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number> [--validate]'
   );
   console.error(
-    'Example: node .claude/skills/orchestrator/delegation-prompt.js 42'
+    '  Generate mode: node .claude/skills/orchestrator/delegation-prompt.js 42'
+  );
+  console.error(
+    '  Validate mode: echo "$PROMPT_TEXT" | node .claude/skills/orchestrator/delegation-prompt.js 42 --validate'
   );
   process.exit(1);
 }
@@ -57,11 +61,80 @@ function extractAcceptanceCriteria(body) {
   return criteria;
 }
 
+function extractSection(text, sectionName) {
+  const pattern = new RegExp(
+    `### ${sectionName}[^\\n]*\\n([\\s\\S]*?)(?=\\n###|\\n##[^#]|$)`
+  );
+  const match = text.match(pattern);
+  if (!match) return null;
+  // Remove HTML comments and trim
+  return match[1].replace(/<!--.*?-->/g, '').trim();
+}
+
+function validate(text) {
+  const errors = [];
+
+  const affectedFiles = extractSection(text, 'Affected Files');
+  if (affectedFiles === null) {
+    errors.push('Missing "### Affected Files" section');
+  } else {
+    if (affectedFiles.includes('path/to/file.ts')) {
+      errors.push(
+        '"Affected Files" contains placeholder path (path/to/file.ts)'
+      );
+    }
+    if (!/`[^`]+`/.test(affectedFiles)) {
+      errors.push(
+        '"Affected Files" must include at least one specific file path in backticks'
+      );
+    }
+  }
+
+  const keyFunctions = extractSection(text, 'Key Functions/Types');
+  if (!keyFunctions) {
+    errors.push('"Key Functions/Types" section is empty or missing');
+  }
+
+  const constraints = extractSection(text, 'Constraints');
+  if (!constraints) {
+    errors.push('"Constraints" section is empty or missing');
+  }
+
+  const testingApproach = extractSection(text, 'Testing Approach');
+  if (!testingApproach) {
+    errors.push('"Testing Approach" section is empty or missing');
+  }
+
+  return errors;
+}
+
+export { extractSection, validate };
+
 // --- Main ---
+
+// Skip main logic when imported as a module (e.g., from tests)
+if (!import.meta.main) {
+  // noop: only exports are used
+} else {
 
 const issueNumber = process.argv[2];
 if (!issueNumber || !/^\d+$/.test(issueNumber)) {
   usage();
+}
+
+const validateMode = process.argv[3] === '--validate';
+
+if (validateMode) {
+  const input = readFileSync('/dev/stdin', 'utf-8');
+  const errors = validate(input);
+  if (errors.length > 0) {
+    for (const error of errors) {
+      console.error(`✗ ${error}`);
+    }
+    process.exit(1);
+  }
+  console.log('✓ Validation passed');
+  process.exit(0);
 }
 
 const issue = getIssue(issueNumber);
@@ -86,7 +159,19 @@ ${
 }
 
 ## Implementation Guidelines
-(Orchestrator to fill in: architectural guidance, relevant files, constraints, etc.)
+
+### Affected Files
+<!-- List each file with: current behavior → required change -->
+- \`path/to/file.ts\`: [current] → [change]
+
+### Key Functions/Types
+<!-- Function signatures or type definitions that will change -->
+
+### Constraints
+<!-- What NOT to change, backward compatibility, scope boundaries -->
+
+### Testing Approach
+<!-- Which test files to update, what new tests to add -->
 
 ## Completion Steps
 1. Determine the appropriate test level based on CLAUDE.md rules and Orchestrator instructions. If your judgment differs from the Orchestrator's instruction, propose with reasoning. (e.g., docs-only changes may skip tests per CLAUDE.md)
@@ -121,3 +206,9 @@ delegate_to_worktree({
 
 console.log(output);
 console.log(mcpCallExample);
+console.log(`⚠ IMPORTANT: Fill in ALL sections under "Implementation Guidelines" before delegating.
+  Required sections: Affected Files, Key Functions/Types, Constraints, Testing Approach
+  Each "Affected Files" entry must include a specific file path (not placeholder).
+`);
+
+} // end if (import.meta.main)
