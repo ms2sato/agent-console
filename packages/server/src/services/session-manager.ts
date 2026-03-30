@@ -544,6 +544,7 @@ export class SessionManager {
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
       createdBy: context?.createdBy,
+      templateVars: request.templateVars ?? context?.templateVars,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -904,6 +905,7 @@ export class SessionManager {
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
       createdBy: persisted.createdBy,
+      templateVars: persisted.templateVars,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'
@@ -944,6 +946,7 @@ export class SessionManager {
             context: {
               parentSessionId: internalSession.parentSessionId,
               parentWorkerId: internalSession.parentWorkerId,
+              templateVars: internalSession.templateVars,
             },
           });
           activatedWorkers.push(worker);
@@ -1489,6 +1492,7 @@ export class SessionManager {
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
+      templateVars: session.templateVars,
     };
 
     return session.type === 'worktree'

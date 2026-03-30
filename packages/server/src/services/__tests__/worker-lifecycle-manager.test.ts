@@ -5,7 +5,7 @@
  * by using a real WorkerManager with mock PTY provider and
  * mocking the session-related dependencies (getSession, persistSession, etc.).
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import type { CreateWorkerParams, Session } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -1671,6 +1671,115 @@ describe('WorkerLifecycleManager', () => {
       ptyFactory.instances[0].simulateExit(0);
 
       expect(onExit).toHaveBeenCalledWith(0, null);
+    });
+  });
+
+  // ========== templateVars propagation ==========
+
+  describe('templateVars propagation', () => {
+    it('should pass session templateVars in context during restartAgentWorker', async () => {
+      const templateVars = { model: 'gpt-4', temperature: '0.7' };
+      const session = createTestSession({ templateVars });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+
+      expect(activateSpy).toHaveBeenCalledTimes(1);
+      const params = activateSpy.mock.calls[0][1];
+      expect(params.context?.templateVars).toEqual(templateVars);
+
+      activateSpy.mockRestore();
+    });
+
+    it('should pass session templateVars in context during restoreWorker', async () => {
+      const templateVars = { branch: 'feature-x' };
+      const session = createTestSession({ templateVars });
+      sessions.set(session.id, session);
+
+      // Create a worker without PTY (simulating persistence restore)
+      const agentWorker: InternalAgentWorker = {
+        id: 'restored-worker-tv',
+        type: 'agent',
+        name: 'Restored Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
+
+      await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+
+      expect(activateSpy).toHaveBeenCalledTimes(1);
+      const params = activateSpy.mock.calls[0][1];
+      expect(params.context?.templateVars).toEqual(templateVars);
+
+      activateSpy.mockRestore();
+    });
+
+    it('should pass session templateVars in context during getAvailableWorker', async () => {
+      const templateVars = { env: 'staging' };
+      const session = createTestSession({ templateVars });
+      sessions.set(session.id, session);
+
+      // Create a worker without PTY (simulating hibernated state)
+      const agentWorker: InternalAgentWorker = {
+        id: 'avail-worker-tv',
+        type: 'agent',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
+
+      await lifecycleManager.getAvailableWorker(session.id, agentWorker.id);
+
+      expect(activateSpy).toHaveBeenCalledTimes(1);
+      const params = activateSpy.mock.calls[0][1];
+      expect(params.context?.templateVars).toEqual(templateVars);
+
+      activateSpy.mockRestore();
+    });
+
+    it('should pass undefined templateVars when session has no templateVars', async () => {
+      const session = createTestSession(); // no templateVars
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+
+      expect(activateSpy).toHaveBeenCalledTimes(1);
+      const params = activateSpy.mock.calls[0][1];
+      expect(params.context?.templateVars).toBeUndefined();
+
+      activateSpy.mockRestore();
     });
   });
 });

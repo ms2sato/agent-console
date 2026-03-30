@@ -37,6 +37,8 @@ export interface InternalSessionBase {
   parentWorkerId?: string;
   /** User UUID (from users table) of the user who created this session */
   createdBy?: string;
+  /** Custom template variable overrides for agent command templates */
+  templateVars?: Record<string, string>;
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {
