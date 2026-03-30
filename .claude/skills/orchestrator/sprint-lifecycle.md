@@ -9,9 +9,9 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
    git log --oneline -3        # show current HEAD
    git log --oneline -3 origin/main  # show origin/main HEAD
    # After owner confirms:
-   git reset --hard origin/main
+   git rebase origin/main
    ```
-   **Why:** The Orchestrator session branch may be behind `origin/main` if other PRs were merged between sprints. Starting from stale code leads to incorrect decisions.
+   **Why:** The Orchestrator session branch may be behind `origin/main` if other PRs were merged between sprints. Starting from stale code leads to incorrect decisions. Using `rebase` instead of `reset --hard` preserves any local commits that haven't been pushed, making it a safer default.
 2. Decide the sprint task list in consultation with the owner (Issue-based)
 3. Create `memory/orchestrator_sprint_context.md`:
    - Sprint goal
