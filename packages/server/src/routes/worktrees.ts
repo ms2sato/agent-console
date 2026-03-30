@@ -323,28 +323,30 @@ const worktrees = new Hono<AppBindings>()
       (async () => {
         try {
           const result = await deleteWorktree({ repoId, worktreePath, force }, deletionDeps);
-
-          // Use first session ID for backward-compatible WebSocket broadcast
-          const broadcastSessionId = result.sessionIds?.[0] || '';
+          const sessionIds = result.sessionIds ?? [];
 
           if (!result.success) {
-            broadcastToApp({
-              type: 'worktree-deletion-failed',
-              taskId,
-              sessionId: broadcastSessionId,
-              error: result.error || 'Failed to remove worktree',
-              gitStatus: result.gitStatus,
-            });
+            for (const sid of sessionIds) {
+              broadcastToApp({
+                type: 'worktree-deletion-failed',
+                taskId,
+                sessionId: sid,
+                error: result.error || 'Failed to remove worktree',
+                gitStatus: result.gitStatus,
+              });
+            }
             logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
             return;
           }
 
-          broadcastToApp({
-            type: 'worktree-deletion-completed',
-            taskId,
-            sessionId: broadcastSessionId,
-            cleanupCommandResult: result.cleanupCommandResult,
-          });
+          for (const sid of sessionIds) {
+            broadcastToApp({
+              type: 'worktree-deletion-completed',
+              taskId,
+              sessionId: sid,
+              cleanupCommandResult: result.cleanupCommandResult,
+            });
+          }
           logger.info({ taskId, repoId, worktreePath, sessionIds: result.sessionIds }, 'Worktree and session deletion completed');
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
