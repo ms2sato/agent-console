@@ -64,7 +64,7 @@ function createMockSessionManager(sessions: Session[] = []): SessionManager & {
   getAllSessions: ReturnType<typeof mock>;
 } {
   return {
-    killSessionWorkers: mock(() => {}),
+    killSessionWorkers: mock(() => Promise.resolve()),
     deleteSession: mock(() => Promise.resolve(true)),
     getAllSessions: mock(() => sessions),
   } as unknown as SessionManager & {

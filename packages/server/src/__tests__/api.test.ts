@@ -1982,9 +1982,9 @@ describe('API Routes Integration', () => {
         const operationOrder: string[] = [];
 
         const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
-        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation(async (id: string) => {
           operationOrder.push('killSessionWorkers');
-          originalKillWorkers(id);
+          await originalKillWorkers(id);
         });
 
         mockGit.removeWorktree.mockImplementation(async () => {
@@ -2033,9 +2033,9 @@ describe('API Routes Integration', () => {
         const operationOrder: string[] = [];
 
         const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
-        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
+        spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation(async (id: string) => {
           operationOrder.push('killSessionWorkers');
-          originalKillWorkers(id);
+          await originalKillWorkers(id);
         });
 
         mockGit.removeWorktree.mockImplementation(async () => {
@@ -2085,8 +2085,8 @@ describe('API Routes Integration', () => {
 
         // Spy on killSessionWorkers to verify it was called
         const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
-        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
-          originalKillWorkers(id);
+        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation(async (id: string) => {
+          await originalKillWorkers(id);
         });
 
         // Make removeWorktree fail with a GitError
@@ -2141,8 +2141,8 @@ describe('API Routes Integration', () => {
 
         // Spy on killSessionWorkers to verify it was called
         const originalKillWorkers = testSessionManager!.killSessionWorkers.bind(testSessionManager!);
-        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation((id: string) => {
-          originalKillWorkers(id);
+        const killSpy = spyOn(testSessionManager!, 'killSessionWorkers').mockImplementation(async (id: string) => {
+          await originalKillWorkers(id);
         });
 
         // Make removeWorktree fail with a GitError

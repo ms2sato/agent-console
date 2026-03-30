@@ -598,17 +598,19 @@ export class SessionManager {
    * Used to release directory handles (e.g., cwd) before worktree deletion
    * while keeping the session recoverable if deletion fails.
    */
-  killSessionWorkers(id: string): void {
+  async killSessionWorkers(id: string): Promise<void> {
     const session = this.sessions.get(id);
     if (!session) return;
 
+    const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         stopWatching(session.locationPath);
       } else {
-        this.workerManager.killWorker(worker);
+        killPromises.push(this.workerManager.killWorker(worker));
       }
     }
+    await Promise.all(killPromises);
   }
 
   async deleteSession(id: string): Promise<boolean> {
@@ -620,15 +622,17 @@ export class SessionManager {
     this.webSocketCallbacks?.notifySessionDeleted(id);
 
     // Kill all workers first (before removing from memory)
+    const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
         stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers
-        this.workerManager.killWorker(worker);
+        killPromises.push(this.workerManager.killWorker(worker));
       }
     }
+    await Promise.all(killPromises);
 
     // Verify jobQueue is available before proceeding
     if (!this.jobQueue) {
@@ -806,19 +810,19 @@ export class SessionManager {
     // This must happen BEFORE killing workers so clients receive the notification
     this.webSocketCallbacks?.notifySessionPaused(id);
 
-    // Kill all PTY workers (preserve output files) and clear PTY references
-    // Clearing PTY references ensures worker PIDs are saved as null in persistence
+    // Kill all PTY workers (preserve output files) and clear PTY references.
+    // killWorker awaits PTY exit and calls detachPty, ensuring PIDs are saved as null.
+    const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
         stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers (don't delete output files)
-        this.workerManager.killWorker(worker);
-        // Clear PTY reference so toPersistedWorker will return pid: null
-        this.workerManager.detachPty(worker);
+        killPromises.push(this.workerManager.killWorker(worker));
       }
     }
+    await Promise.all(killPromises);
 
     // Clean up notification state (throttle timers, debounce timers)
     this.notificationManager?.cleanupSession(id);
@@ -967,9 +971,7 @@ export class SessionManager {
       logger.error({ sessionId: id, err }, 'Failed to activate PTY workers during session resume');
 
       // Kill all workers that were successfully activated
-      for (const worker of activatedWorkers) {
-        this.workerManager.killWorker(worker);
-      }
+      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker)));
 
       // Remove session from memory
       this.sessions.delete(id);
@@ -994,9 +996,7 @@ export class SessionManager {
       logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
 
       // Kill all workers that were successfully activated
-      for (const worker of activatedWorkers) {
-        this.workerManager.killWorker(worker);
-      }
+      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker)));
 
       // Remove session from memory
       this.sessions.delete(id);

@@ -203,10 +203,8 @@ export async function deleteWorktree(
       worktreePath,
     );
 
-    // 6b. Kill PTY processes to release directory handles
-    for (const sid of sessionIds) {
-      sessionManager.killSessionWorkers(sid);
-    }
+    // 6b. Kill PTY processes to release directory handles (await exit before worktree remove)
+    await Promise.all(sessionIds.map((sid) => sessionManager.killSessionWorkers(sid)));
 
     // 6c. Remove worktree via git
     const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);

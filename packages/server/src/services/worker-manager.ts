@@ -48,6 +48,9 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worker-manager');
 
+/** Maximum time to wait for a PTY process to exit after kill signal. */
+const PTY_EXIT_TIMEOUT_MS = 5000;
+
 /**
  * Context passed from SessionManager for worker operations.
  * WorkerManager doesn't know about sessions directly.
@@ -651,22 +654,62 @@ export class WorkerManager {
 
   /**
    * Kill a worker's PTY process and clean up resources.
-   * Disposes PTY event handlers before killing to prevent memory leaks.
+   * Awaits PTY process exit to ensure directory handles are released
+   * before callers proceed (e.g., git worktree remove).
    */
-  killWorker(worker: InternalWorker): void {
+  async killWorker(worker: InternalWorker): Promise<void> {
     if (worker.type === 'agent' || worker.type === 'terminal') {
-      // Dispose PTY event handlers first to prevent memory leaks
-      if (worker.disposables) {
-        for (const disposable of worker.disposables) {
-          disposable.dispose();
-        }
-        worker.disposables = undefined;
-      }
+      const pty = worker.pty;
 
-      // Kill PTY process
-      if (worker.pty) {
-        worker.pty.kill();
+      if (pty) {
+        // Dispose old PTY event handlers first
+        if (worker.disposables) {
+          for (const disposable of worker.disposables) {
+            disposable.dispose();
+          }
+          worker.disposables = undefined;
+        }
+
+        // Register exit promise AFTER disposing old listeners
+        // to avoid any interference from old disposables
+        const exitPromise = new Promise<void>((resolve) => {
+          pty.onExit(() => resolve());
+        });
+
+        // Kill PTY process
+        pty.kill();
+
+        // Await exit with timeout to ensure directory handles are released
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const TIMEOUT_SENTINEL = Symbol('timeout');
+          const result = await Promise.race([
+            exitPromise.then(() => 'exited' as const),
+            new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+              timeoutHandle = setTimeout(() => resolve(TIMEOUT_SENTINEL), PTY_EXIT_TIMEOUT_MS);
+            }),
+          ]);
+          if (result === TIMEOUT_SENTINEL) {
+            logger.warn(
+              { pid: pty.pid },
+              `PTY process did not exit within ${PTY_EXIT_TIMEOUT_MS}ms after kill, proceeding anyway`,
+            );
+          }
+        } finally {
+          if (timeoutHandle !== undefined) {
+            clearTimeout(timeoutHandle);
+          }
+        }
+
         this.detachPty(worker);
+      } else {
+        // No PTY, just clean up disposables
+        if (worker.disposables) {
+          for (const disposable of worker.disposables) {
+            disposable.dispose();
+          }
+          worker.disposables = undefined;
+        }
       }
 
       // Dispose activity detector for agent workers

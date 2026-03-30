@@ -484,6 +484,45 @@ describe('WorkerLifecycleManager', () => {
       expect(session.workers.has(originalId)).toBe(true);
     });
 
+    it('should await old PTY exit before spawning new PTY', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+      const originalId = worker!.id;
+
+      const operationOrder: string[] = [];
+
+      // Track when old PTY exit fires by wrapping the exitCallback
+      const oldMockPty = ptyFactory.instances[0];
+      const originalOnExit = oldMockPty.onExit.bind(oldMockPty);
+      oldMockPty.onExit = (callback: (event: { exitCode: number; signal?: number }) => void) => {
+        const wrappedCallback = (event: { exitCode: number; signal?: number }) => {
+          operationOrder.push('old-exited');
+          callback(event);
+        };
+        return originalOnExit(wrappedCallback);
+      };
+
+      // Track when spawn is called for 2nd PTY
+      const originalSpawnImpl = ptyFactory.spawn.getMockImplementation()!;
+      ptyFactory.spawn.mockImplementation(() => {
+        operationOrder.push('new-spawned');
+        return originalSpawnImpl();
+      });
+
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, originalId, true);
+      } finally {
+        ptyFactory.spawn.mockImplementation(originalSpawnImpl);
+      }
+
+      expect(operationOrder).toEqual(['old-exited', 'new-spawned']);
+    });
+
     it('should persist session after restart', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);

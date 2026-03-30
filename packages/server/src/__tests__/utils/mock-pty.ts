@@ -55,8 +55,18 @@ export class MockPty {
     this.currentRows = rows;
   }
 
-  kill() {
+  kill(signal?: number) {
     this.killed = true;
+    // Simulate async exit like real PTY - fire exit callback via microtask
+    if (this.exitCallback) {
+      const cb = this.exitCallback;
+      queueMicrotask(() => {
+        // Only fire if callback hasn't been replaced or disposed
+        if (this.exitCallback === cb) {
+          cb({ exitCode: 0, signal });
+        }
+      });
+    }
   }
 
   // Test helpers - simulate PTY events

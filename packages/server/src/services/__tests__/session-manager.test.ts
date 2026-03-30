@@ -630,7 +630,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      manager.killSessionWorkers(session.id);
+      await manager.killSessionWorkers(session.id);
 
       // PTY should be killed
       expect(ptyFactory.instances[0].killed).toBe(true);
@@ -650,7 +650,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      manager.killSessionWorkers(session.id);
+      await manager.killSessionWorkers(session.id);
       const result = await manager.deleteSession(session.id);
 
       expect(result).toBe(true);
@@ -660,7 +660,7 @@ describe('SessionManager', () => {
     it('should do nothing for non-existent session', async () => {
       const manager = await getSessionManager();
       // Verifying it does not throw
-      manager.killSessionWorkers('non-existent');
+      await manager.killSessionWorkers('non-existent');
     });
   });
 
