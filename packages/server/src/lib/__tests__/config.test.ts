@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'os';
 import * as path from 'path';
-import { getConfigDir, getRepositoriesDir, getRepositoryDir, getMessagesDir, getOutputsDir, getMemosDir, getServerPid } from '../config.js';
+import { getConfigDir, getRepositoriesDir, getRepositoryDir, getServerPid } from '../config.js';
 
 describe('config', () => {
   const originalEnv = process.env.AGENT_CONSOLE_HOME;
@@ -62,48 +62,6 @@ describe('config', () => {
       process.env.AGENT_CONSOLE_HOME = '/custom/path';
 
       expect(getRepositoriesDir()).toBe('/custom/path/repositories');
-    });
-  });
-
-  describe('getMessagesDir', () => {
-    it('should return _quick/messages when repositoryName is not provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getMessagesDir()).toBe('/custom/path/_quick/messages');
-    });
-
-    it('should return repository-scoped messages dir when repositoryName is provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getMessagesDir('org/repo')).toBe('/custom/path/repositories/org/repo/messages');
-    });
-  });
-
-  describe('getOutputsDir', () => {
-    it('should return _quick/outputs when repositoryName is not provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getOutputsDir()).toBe('/custom/path/_quick/outputs');
-    });
-
-    it('should return repository-scoped outputs dir when repositoryName is provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getOutputsDir('org/repo')).toBe('/custom/path/repositories/org/repo/outputs');
-    });
-  });
-
-  describe('getMemosDir', () => {
-    it('should return _quick/memos when repositoryName is not provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getMemosDir()).toBe('/custom/path/_quick/memos');
-    });
-
-    it('should return repository-scoped memos dir when repositoryName is provided', () => {
-      process.env.AGENT_CONSOLE_HOME = '/custom/path';
-
-      expect(getMemosDir('org/repo')).toBe('/custom/path/repositories/org/repo/memos');
     });
   });
 

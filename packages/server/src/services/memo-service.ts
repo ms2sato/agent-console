@@ -9,7 +9,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getMemosDir } from '../lib/config.js';
+import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('memo-service');
@@ -30,14 +30,14 @@ export class MemoService {
    *
    * @returns The absolute file path of the written memo.
    */
-  async writeMemo(sessionId: string, content: string, repositoryName?: string): Promise<string> {
+  async writeMemo(sessionId: string, content: string, resolver: SessionDataPathResolver): Promise<string> {
     this.validateSessionId(sessionId);
     const contentSize = Buffer.byteLength(content, 'utf-8');
     if (contentSize > MAX_MEMO_SIZE_BYTES) {
       throw new Error(`Memo content exceeds maximum size of ${MAX_MEMO_SIZE_BYTES} bytes (got ${contentSize})`);
     }
 
-    const memosDir = getMemosDir(repositoryName);
+    const memosDir = resolver.getMemosDir();
     await fs.mkdir(memosDir, { recursive: true });
 
     const filePath = path.join(memosDir, `${sessionId}.md`);
@@ -60,9 +60,9 @@ export class MemoService {
    *
    * @returns The memo content, or null if no memo exists.
    */
-  async readMemo(sessionId: string, repositoryName?: string): Promise<string | null> {
+  async readMemo(sessionId: string, resolver: SessionDataPathResolver): Promise<string | null> {
     this.validateSessionId(sessionId);
-    const filePath = path.join(getMemosDir(repositoryName), `${sessionId}.md`);
+    const filePath = resolver.getMemosPath(sessionId);
     try {
       return await fs.readFile(filePath, 'utf-8');
     } catch (err) {
@@ -76,9 +76,9 @@ export class MemoService {
   /**
    * Delete a memo for a session. Does not throw if the file does not exist.
    */
-  async deleteMemo(sessionId: string, repositoryName?: string): Promise<void> {
+  async deleteMemo(sessionId: string, resolver: SessionDataPathResolver): Promise<void> {
     this.validateSessionId(sessionId);
-    const filePath = path.join(getMemosDir(repositoryName), `${sessionId}.md`);
+    const filePath = resolver.getMemosPath(sessionId);
     await fs.rm(filePath, { force: true });
     logger.debug({ sessionId }, 'Memo deleted');
   }

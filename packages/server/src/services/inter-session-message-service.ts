@@ -12,7 +12,7 @@
 import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getMessagesDir } from '../lib/config.js';
+import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('inter-session-message');
@@ -47,7 +47,7 @@ export interface SendMessageParams {
   toWorkerId: string;
   fromSessionId: string;
   content: string;
-  repositoryName?: string;
+  resolver: SessionDataPathResolver;
 }
 
 export interface SendMessageResult {
@@ -67,7 +67,7 @@ export class InterSessionMessageService {
    * 4. Return { messageId, path }
    */
   async sendMessage(params: SendMessageParams): Promise<SendMessageResult> {
-    const { toSessionId, toWorkerId, fromSessionId, content, repositoryName } = params;
+    const { toSessionId, toWorkerId, fromSessionId, content, resolver } = params;
 
     validateId(toSessionId, 'toSessionId');
     validateId(toWorkerId, 'toWorkerId');
@@ -80,7 +80,7 @@ export class InterSessionMessageService {
       );
     }
 
-    const messagesDir = getMessagesDir(repositoryName);
+    const messagesDir = resolver.getMessagesDir();
     const dir = path.resolve(messagesDir, toSessionId, toWorkerId);
     assertWithinDir(dir, messagesDir);
 
@@ -112,10 +112,10 @@ export class InterSessionMessageService {
    * Remove all message files for a session.
    * Called when a session is deleted.
    */
-  async deleteSessionMessages(sessionId: string, repositoryName?: string): Promise<void> {
+  async deleteSessionMessages(sessionId: string, resolver: SessionDataPathResolver): Promise<void> {
     validateId(sessionId, 'sessionId');
 
-    const messagesDir = getMessagesDir(repositoryName);
+    const messagesDir = resolver.getMessagesDir();
     const dir = path.resolve(messagesDir, sessionId);
     assertWithinDir(dir, messagesDir);
 
@@ -128,11 +128,11 @@ export class InterSessionMessageService {
    * Remove all message files for a specific worker within a session.
    * Called when a worker is deleted.
    */
-  async deleteWorkerMessages(sessionId: string, workerId: string, repositoryName?: string): Promise<void> {
+  async deleteWorkerMessages(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
     validateId(sessionId, 'sessionId');
     validateId(workerId, 'workerId');
 
-    const messagesDir = getMessagesDir(repositoryName);
+    const messagesDir = resolver.getMessagesDir();
     const dir = path.resolve(messagesDir, sessionId, workerId);
     assertWithinDir(dir, messagesDir);
 

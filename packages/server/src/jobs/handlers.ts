@@ -13,6 +13,7 @@ import {
   type CleanupRepositoryPayload,
 } from './job-types.js';
 import { workerOutputFileManager } from '../lib/worker-output-file.js';
+import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('job-handlers');
@@ -26,8 +27,9 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
     async ({ sessionId, repositoryName }) => {
+      const resolver = new SessionDataPathResolver(repositoryName);
       logger.debug({ sessionId, repositoryName }, 'Executing cleanup:session-outputs job');
-      await workerOutputFileManager.deleteSessionOutputs(sessionId, repositoryName);
+      await workerOutputFileManager.deleteSessionOutputs(sessionId, resolver);
       logger.info({ sessionId }, 'Session outputs cleanup completed');
     }
   );
@@ -36,8 +38,9 @@ export function registerJobHandlers(jobQueue: JobQueue): void {
   jobQueue.registerHandler<CleanupWorkerOutputPayload>(
     JOB_TYPES.CLEANUP_WORKER_OUTPUT,
     async ({ sessionId, workerId, repositoryName }) => {
+      const resolver = new SessionDataPathResolver(repositoryName);
       logger.debug({ sessionId, workerId, repositoryName }, 'Executing cleanup:worker-output job');
-      await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, repositoryName);
+      await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, resolver);
       logger.info({ sessionId, workerId }, 'Worker output cleanup completed');
     }
   );

@@ -26,6 +26,7 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { interSessionMessageService } from '../services/inter-session-message-service.js';
+import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -379,13 +380,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // 3. Write message file
-        const repositoryName = targetSession.type === 'worktree' ? targetSession.repositoryName : undefined;
+        const resolver = new SessionDataPathResolver(
+          targetSession.type === 'worktree' ? targetSession.repositoryName : undefined,
+        );
         const result = await interSessionMessageService.sendMessage({
           toSessionId,
           toWorkerId: resolvedWorkerId,
           fromSessionId,
           content,
-          repositoryName,
+          resolver,
         });
 
         // 4. PTY notification (best-effort -- message file is already written)
