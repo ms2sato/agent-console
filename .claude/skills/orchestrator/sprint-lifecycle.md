@@ -70,6 +70,13 @@ Coding agents send a retrospective report together with the merge notification a
 ## Sprint End (Retrospective)
 The Orchestrator proposes ending the sprint, and when the owner approves, conducts the retrospective. Order matters — memory write-out is done last so retrospective results are captured in memory.
 
+**Step 0: Generate retrospective checklist**
+- Build a dynamic checklist by combining:
+  1. **Core steps** from this skill definition (Steps 1-5 below)
+  2. **Dynamic items** collected from memory (e.g., cross-project knowledge sharing actions, pending follow-ups from previous sprints)
+- Create the checklist via `TaskCreate` to track progress through the retrospective
+- This prevents omission of project-specific actions that are not part of the static skill definition
+
 **Step 1: Update pending triage list**
 - Reflect issues discovered during the sprint in `memory/project_pending_triage_list.md`
 - Add notes to resolved items
