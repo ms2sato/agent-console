@@ -102,7 +102,7 @@ export class WorkerLifecycleManager {
     request: CreateWorkerParams,
     continueConversation: boolean = false,
     initialPrompt?: string,
-    templateVars?: Record<string, string>
+    templateVars?: Record<string, string>,
   ): Promise<Worker | null> {
     const session = this.deps.getSession(sessionId);
     if (!session) return null;
@@ -135,9 +135,11 @@ export class WorkerLifecycleManager {
         continueConversation,
         initialPrompt,
         repositoryId,
-        parentSessionId: session.parentSessionId,
-        parentWorkerId: session.parentWorkerId,
-        templateVars,
+        context: {
+          parentSessionId: session.parentSessionId,
+          parentWorkerId: session.parentWorkerId,
+          templateVars,
+        },
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
@@ -234,8 +236,10 @@ export class WorkerLifecycleManager {
         agentId: effectiveAgentId,
         continueConversation: true,
         repositoryId,
-        parentSessionId: session.parentSessionId,
-        parentWorkerId: session.parentWorkerId,
+        context: {
+          parentSessionId: session.parentSessionId,
+          parentWorkerId: session.parentWorkerId,
+        },
       });
     } else {
       this.deps.workerManager.activateTerminalWorkerPty(worker, {
@@ -389,8 +393,10 @@ export class WorkerLifecycleManager {
       agentId: workerAgentId,
       continueConversation,
       repositoryId,
-      parentSessionId: session.parentSessionId,
-      parentWorkerId: session.parentWorkerId,
+      context: {
+        parentSessionId: session.parentSessionId,
+        parentWorkerId: session.parentWorkerId,
+      },
     });
 
     // Re-check session still exists after async gap
@@ -525,8 +531,10 @@ export class WorkerLifecycleManager {
           agentId: effectiveAgentId,
           continueConversation: true,
           repositoryId,
-          parentSessionId: session.parentSessionId,
-          parentWorkerId: session.parentWorkerId,
+          context: {
+            parentSessionId: session.parentSessionId,
+            parentWorkerId: session.parentWorkerId,
+          },
         });
       } else {
         this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {

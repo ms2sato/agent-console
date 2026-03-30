@@ -24,7 +24,7 @@ import type {
   InternalTerminalWorker,
   WorkerCallbacks,
 } from './worker-types.js';
-import type { InternalSession } from './internal-types.js';
+import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -528,7 +528,7 @@ export class SessionManager {
 
   // ========== Session Lifecycle ==========
 
-  async createSession(request: CreateSessionRequest, options?: { createdBy?: string }): Promise<Session> {
+  async createSession(request: CreateSessionRequest, context?: SessionCreationContext): Promise<Session> {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
@@ -542,7 +542,7 @@ export class SessionManager {
       title: request.title,
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
-      createdBy: options?.createdBy,
+      createdBy: context?.createdBy,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -567,7 +567,7 @@ export class SessionManager {
         type: 'agent',
         agentId: effectiveAgentId,
         // name is not specified; generateWorkerName will use the agent's name
-      }, request.continueConversation ?? false, request.initialPrompt, request.templateVars),
+      }, request.continueConversation ?? false, request.initialPrompt, request.templateVars ?? context?.templateVars),
       this.createWorker(id, {
         type: 'git-diff',
         name: 'Diff',
@@ -940,8 +940,10 @@ export class SessionManager {
             agentId: worker.agentId,
             continueConversation: true,
             repositoryId,
-            parentSessionId: internalSession.parentSessionId,
-            parentWorkerId: internalSession.parentWorkerId,
+            context: {
+              parentSessionId: internalSession.parentSessionId,
+              parentWorkerId: internalSession.parentWorkerId,
+            },
           });
           activatedWorkers.push(worker);
         } else if (worker.type === 'terminal') {

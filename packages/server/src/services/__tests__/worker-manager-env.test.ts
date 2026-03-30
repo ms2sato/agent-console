@@ -263,7 +263,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
-        parentSessionId: 'parent-sess-abc',
+        context: { parentSessionId: 'parent-sess-abc' },
       });
 
       const env = getLastSpawnEnv();
@@ -280,14 +280,14 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
-        parentWorkerId: 'parent-wkr-xyz',
+        context: { parentWorkerId: 'parent-wkr-xyz' },
       });
 
       const env = getLastSpawnEnv();
       expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('parent-wkr-xyz');
     });
 
-    it('should NOT include parent env vars when parentSessionId/parentWorkerId are not provided', async () => {
+    it('should NOT include parent env vars when context is not provided', async () => {
       const worker = createTestAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
@@ -297,7 +297,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
-        // parentSessionId and parentWorkerId are intentionally omitted
+        // context is intentionally omitted
       });
 
       const env = getLastSpawnEnv();
@@ -319,8 +319,10 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         agentId: 'claude-code',
         continueConversation: false,
-        parentSessionId: 'real-parent-session',
-        parentWorkerId: 'real-parent-worker',
+        context: {
+          parentSessionId: 'real-parent-session',
+          parentWorkerId: 'real-parent-worker',
+        },
       });
 
       const env = getLastSpawnEnv();
