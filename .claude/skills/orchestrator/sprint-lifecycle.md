@@ -83,6 +83,10 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
 - The Orchestrator reports the retrospective and aligns with the owner's perspective
 - **Present improvement proposals together with the merged PR list** (at the start of the retrospective, not the end). Presenting proposals early enables agreement during the owner dialogue and allows smooth transition to parallel execution in Step 4
 - Perspectives: what worked well / what needs improvement / time-consuming blockers
+- **Classify "what worked well" into 3 categories** to convert into actionable improvements:
+  1. **Worked by chance** — systematize by adding to skills/processes so it becomes reliable
+  2. **Worked because owner drove it** — incorporate into Orchestrator skills so the Orchestrator can do it independently
+  3. **Other** — analyze why it worked and consider if the conditions can be reproduced
 - Reach agreement on any skill/process improvement proposals on the spot
 
 **Step 4: Apply skill improvements (parallel execution)**
