@@ -513,6 +513,45 @@ describe('AgentManager', () => {
     });
   });
 
+  describe('getAgentsByName', () => {
+    it('should find agent by exact name', async () => {
+      const { manager } = await getAgentManager();
+      const results = manager.getAgentsByName('Claude Code');
+      expect(results).toHaveLength(1);
+      expect(results[0].name).toBe('Claude Code');
+    });
+
+    it('should return empty array when no agent matches', async () => {
+      const { manager } = await getAgentManager();
+      const results = manager.getAgentsByName('Non-Existent Agent');
+      expect(results).toHaveLength(0);
+    });
+
+    it('should return multiple agents when names match', async () => {
+      const { manager } = await getAgentManager();
+      await manager.registerAgent({
+        name: 'Duplicate Name',
+        commandTemplate: 'cmd1 {{prompt}}',
+      });
+      await manager.registerAgent({
+        name: 'Duplicate Name',
+        commandTemplate: 'cmd2 {{prompt}}',
+      });
+      const results = manager.getAgentsByName('Duplicate Name');
+      expect(results).toHaveLength(2);
+    });
+
+    it('should be case-sensitive', async () => {
+      const { manager } = await getAgentManager();
+      await manager.registerAgent({
+        name: 'My Agent',
+        commandTemplate: 'cmd {{prompt}}',
+      });
+      expect(manager.getAgentsByName('my agent')).toHaveLength(0);
+      expect(manager.getAgentsByName('My Agent')).toHaveLength(1);
+    });
+  });
+
   describe('unregisterAgent', () => {
     it('should unregister a custom agent', async () => {
       const { manager } = await getAgentManager();

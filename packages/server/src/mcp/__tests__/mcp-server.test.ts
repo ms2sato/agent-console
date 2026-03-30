@@ -1511,6 +1511,94 @@ describe('MCP Server Tools', () => {
     });
 
     // -----------------------------------------------------------------------
+    // Agent name resolution (agentName parameter)
+    // -----------------------------------------------------------------------
+
+    it('should resolve agentName to agentId', async () => {
+      await agentManager.registerAgent({
+        name: 'My Custom Agent',
+        commandTemplate: 'my-custom-agent {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/agent-name-test');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test agentName resolution',
+        branch: 'feat/agent-name-test',
+        agentName: 'My Custom Agent',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(findSpawnCallByCommand('my-custom-agent')).toBeDefined();
+    });
+
+    it('should return error when agentName matches no agent', async () => {
+      await setupDelegateEnvironment('feat/no-match');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test non-existent agentName',
+        branch: 'feat/no-match',
+        agentName: 'Non-Existent Agent',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('No agent found with name: Non-Existent Agent');
+    });
+
+    it('should return error when agentName matches multiple agents', async () => {
+      await agentManager.registerAgent({
+        name: 'Ambiguous Agent',
+        commandTemplate: 'ambiguous-1 {{prompt}}',
+      });
+      await agentManager.registerAgent({
+        name: 'Ambiguous Agent',
+        commandTemplate: 'ambiguous-2 {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/ambiguous');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test ambiguous agentName',
+        branch: 'feat/ambiguous',
+        agentName: 'Ambiguous Agent',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Multiple agents match name "Ambiguous Agent"');
+      expect(data.error).toContain('Use agentId to specify');
+    });
+
+    it('should use agentId when both agentId and agentName are provided', async () => {
+      const agentById = await agentManager.registerAgent({
+        name: 'Agent By Id',
+        commandTemplate: 'agent-by-id {{prompt}}',
+      });
+      await agentManager.registerAgent({
+        name: 'Agent By Name',
+        commandTemplate: 'agent-by-name {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/both-params');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test agentId takes precedence over agentName',
+        branch: 'feat/both-params',
+        agentId: agentById.id,
+        agentName: 'Agent By Name',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(findSpawnCallByCommand('agent-by-id')).toBeDefined();
+      expect(findSpawnCallByCommand('agent-by-name')).toBeUndefined();
+    });
+
+    // -----------------------------------------------------------------------
     // Message callback prompt (parentSessionId / parentWorkerId)
     // -----------------------------------------------------------------------
 

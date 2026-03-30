@@ -467,6 +467,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           `Agent to use. If omitted, falls back to the repository's configured default agent, ` +
             `then to ${CLAUDE_CODE_AGENT_ID}.`,
         ),
+      agentName: z
+        .string()
+        .optional()
+        .describe(
+          'Agent name to use. Resolved to agentId by exact match. ' +
+            'Ignored when agentId is also provided. ' +
+            'Errors if zero or multiple agents match the name.',
+        ),
       title: z.string().optional().describe('Human-readable session title'),
       useRemote: z
         .boolean()
@@ -518,6 +526,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       baseBranch,
       branch,
       agentId,
+      agentName,
       title,
       useRemote,
       parentSessionId,
@@ -543,8 +552,25 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Repository not found: ${repositoryId}`);
         }
 
-        // Validate agent
-        const selectedAgentId = agentId ?? repo.defaultAgentId ?? CLAUDE_CODE_AGENT_ID;
+        // Resolve agent: agentId takes precedence over agentName
+        let selectedAgentId: string;
+        if (agentId) {
+          selectedAgentId = agentId;
+        } else if (agentName) {
+          const matches = agentManager.getAgentsByName(agentName);
+          if (matches.length === 0) {
+            return errorResult(`No agent found with name: ${agentName}`);
+          }
+          if (matches.length > 1) {
+            const ids = matches.map((a) => `${a.name} (${a.id})`).join(', ');
+            return errorResult(
+              `Multiple agents match name "${agentName}": ${ids}. Use agentId to specify.`,
+            );
+          }
+          selectedAgentId = matches[0].id;
+        } else {
+          selectedAgentId = repo.defaultAgentId ?? CLAUDE_CODE_AGENT_ID;
+        }
         const agent = agentManager.getAgent(selectedAgentId);
         if (!agent) {
           return errorResult(`Agent not found: ${selectedAgentId}`);
