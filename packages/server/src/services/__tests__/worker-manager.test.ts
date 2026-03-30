@@ -6,7 +6,7 @@
  *
  * Uses mock PTY provider via dependency injection (no mock.module needed).
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
@@ -393,29 +393,42 @@ describe('WorkerManager', () => {
   // ========== killWorker Cleanup ==========
 
   describe('killWorker', () => {
-    it('should kill the PTY process for an agent worker', () => {
+    it('should kill the PTY process for an agent worker', async () => {
       const worker = createTestAgentWorker();
       workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       expect(mockPty.killed).toBe(false);
 
-      workerManager.killWorker(worker);
+      await workerManager.killWorker(worker);
 
       expect(mockPty.killed).toBe(true);
     });
 
-    it('should kill the PTY process for a terminal worker', () => {
+    it('should kill the PTY process for a terminal worker', async () => {
       const worker = createTestTerminalWorker();
       workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
-      workerManager.killWorker(worker);
+      await workerManager.killWorker(worker);
 
       expect(mockPty.killed).toBe(true);
     });
 
-    it('should clean up disposables to prevent memory leaks', () => {
+    it('should await PTY exit before detaching', async () => {
+      const worker = createTestAgentWorker();
+      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      // PTY is set before kill
+      expect(worker.pty).not.toBeNull();
+
+      await workerManager.killWorker(worker);
+
+      // After awaiting, PTY should be detached (null)
+      expect(worker.pty).toBeNull();
+    });
+
+    it('should clean up disposables to prevent memory leaks', async () => {
       const worker = createTestAgentWorker();
       workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
@@ -423,21 +436,47 @@ describe('WorkerManager', () => {
       expect(worker.disposables).toBeDefined();
       expect(worker.disposables!.length).toBeGreaterThan(0);
 
-      workerManager.killWorker(worker);
+      await workerManager.killWorker(worker);
 
       // After kill, disposables should be cleared
       expect(worker.disposables).toBeUndefined();
     });
 
-    it('should be safe to call on a worker with no active PTY', () => {
+    it('should be safe to call on a worker with no active PTY', async () => {
       const worker = createTestAgentWorker();
       // Worker not activated -- pty is null
 
       // Should not throw
-      workerManager.killWorker(worker);
+      await workerManager.killWorker(worker);
     });
 
-    it('should be safe to call on a git-diff worker (no PTY)', () => {
+    it('should resolve with timeout when PTY does not exit', async () => {
+      jest.useFakeTimers();
+      try {
+        const worker = createTestAgentWorker();
+        workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        const mockPty = ptyFactory.instances[0];
+        // Override kill to NOT fire exit callback (simulates hung process)
+        mockPty.kill = function (this: typeof mockPty, _signal?: number) {
+          this.killed = true;
+        };
+
+        const killPromise = workerManager.killWorker(worker);
+
+        // Advance past PTY_EXIT_TIMEOUT_MS (5000ms)
+        jest.advanceTimersByTime(5000);
+
+        await killPromise;
+
+        expect(worker.pty).toBeNull();
+        expect(mockPty.killed).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('should be safe to call on a git-diff worker (no PTY)', async () => {
       const worker: InternalGitDiffWorker = {
         id: 'git-diff-1',
         type: 'git-diff',
@@ -447,7 +486,7 @@ describe('WorkerManager', () => {
       };
 
       // Should not throw
-      workerManager.killWorker(worker);
+      await workerManager.killWorker(worker);
     });
   });
 
