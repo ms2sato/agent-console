@@ -177,8 +177,10 @@ ${
 1. Determine the appropriate test level based on CLAUDE.md rules and Orchestrator instructions. If your judgment differs from the Orchestrator's instruction, propose with reasoning. (e.g., docs-only changes may skip tests per CLAUDE.md)
 2. Run \`/review-loop\` if instructed by the Orchestrator (skip if not instructed)
 3. Create PR (title: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`)
-4. After your PR is merged, please report back to the Orchestrator with your retrospective report and the merge confirmation.
-5. If you resolved an issue by communicating directly with the owner, report the following to the Orchestrator:
+4. Wait for CI to be fully green. Address any CI failures or CodeRabbit review comments. Do NOT report completion until CI is green.
+5. After CI is green, report completion to the Orchestrator with your retrospective report. Include the PR URL and CI status.
+6. After your PR is merged, report back to the Orchestrator with the merge confirmation.
+7. If you resolved an issue by communicating directly with the owner, report the following to the Orchestrator:
    - What was the problem
    - How it was resolved
    - What is needed to prevent the same issue in the future

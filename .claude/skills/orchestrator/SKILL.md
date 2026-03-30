@@ -101,6 +101,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
   - `test-runner` — for running tests and analyzing failures
   - `code-quality-reviewer` — for evaluating design and maintainability
 - **Follow-up timer**: After delegating, create a timer (15-20 min interval) via `create_timer`. On each tick, run `get_session_status` — if the agent is idle/stuck, send a check-in via `send_session_message`. Delete the timer once the agent reports completion. If a timer fires 3+ times with no progress, escalate to the owner via memo.
+- **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
 
 ### 4. First Responder for Dev Agent Questions
 - Receive and triage questions from coding agents
@@ -108,6 +109,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - Escalate to the owner when: business decisions are needed, scope changes are required, or you are uncertain
 
 ### 5. Review Dev Agent Work Reports
+- **Agents must report completion only after CI is green.** Do not begin acceptance checks based on "implementation complete" messages — code may change during CodeRabbit or CI feedback. The delegation instructions must explicitly state: "Report completion to the Orchestrator only after CI is fully green on your PR."
 - When a coding agent reports task completion, review the work:
   - Does the PR follow project conventions (title format, required sections)?
   - Are the changes scoped correctly (no unrelated changes mixed in)?
