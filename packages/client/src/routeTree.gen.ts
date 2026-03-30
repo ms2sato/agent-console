@@ -17,12 +17,14 @@ import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as WorktreeDeletionTasksTaskIdRouteImport } from './routes/worktree-deletion-tasks/$taskId'
 import { Route as WorktreeCreationTasksTaskIdRouteImport } from './routes/worktree-creation-tasks/$taskId'
-import { Route as SettingsRepositoriesRouteImport } from './routes/settings/repositories'
+import { Route as SettingsRepositoriesIndexRouteImport } from './routes/settings/repositories/index'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as JobsJobIdIndexRouteImport } from './routes/jobs/$jobId/index'
 import { Route as AgentsAgentIdIndexRouteImport } from './routes/agents/$agentId/index'
 import { Route as SessionsSessionIdWorkerIdRouteImport } from './routes/sessions/$sessionId/$workerId'
 import { Route as AgentsAgentIdEditRouteImport } from './routes/agents/$agentId/edit'
+import { Route as SettingsRepositoriesRepositoryIdIndexRouteImport } from './routes/settings/repositories/$repositoryId/index'
+import { Route as SettingsRepositoriesRepositoryIdEditRouteImport } from './routes/settings/repositories/$repositoryId/edit'
 
 const MaintenanceRoute = MaintenanceRouteImport.update({
   id: '/maintenance',
@@ -66,11 +68,12 @@ const WorktreeCreationTasksTaskIdRoute =
     path: '/worktree-creation-tasks/$taskId',
     getParentRoute: () => rootRouteImport,
   } as any)
-const SettingsRepositoriesRoute = SettingsRepositoriesRouteImport.update({
-  id: '/settings/repositories',
-  path: '/settings/repositories',
-  getParentRoute: () => rootRouteImport,
-} as any)
+const SettingsRepositoriesIndexRoute =
+  SettingsRepositoriesIndexRouteImport.update({
+    id: '/settings/repositories/',
+    path: '/settings/repositories/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const SessionsSessionIdIndexRoute = SessionsSessionIdIndexRouteImport.update({
   id: '/sessions/$sessionId/',
   path: '/sessions/$sessionId/',
@@ -97,45 +100,23 @@ const AgentsAgentIdEditRoute = AgentsAgentIdEditRouteImport.update({
   path: '/agents/$agentId/edit',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRepositoriesRepositoryIdIndexRoute =
+  SettingsRepositoriesRepositoryIdIndexRouteImport.update({
+    id: '/settings/repositories/$repositoryId/',
+    path: '/settings/repositories/$repositoryId/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const SettingsRepositoriesRepositoryIdEditRoute =
+  SettingsRepositoriesRepositoryIdEditRouteImport.update({
+    id: '/settings/repositories/$repositoryId/edit',
+    path: '/settings/repositories/$repositoryId/edit',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/maintenance': typeof MaintenanceRoute
-  '/settings/repositories': typeof SettingsRepositoriesRoute
-  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
-  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
-  '/agents': typeof AgentsIndexRoute
-  '/jobs': typeof JobsIndexRoute
-  '/settings': typeof SettingsIndexRoute
-  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
-  '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
-  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
-  '/jobs/$jobId': typeof JobsJobIdIndexRoute
-  '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
-}
-export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/login': typeof LoginRoute
-  '/maintenance': typeof MaintenanceRoute
-  '/settings/repositories': typeof SettingsRepositoriesRoute
-  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
-  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
-  '/agents': typeof AgentsIndexRoute
-  '/jobs': typeof JobsIndexRoute
-  '/settings': typeof SettingsIndexRoute
-  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
-  '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
-  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
-  '/jobs/$jobId': typeof JobsJobIdIndexRoute
-  '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
-}
-export interface FileRoutesById {
-  __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/login': typeof LoginRoute
-  '/maintenance': typeof MaintenanceRoute
-  '/settings/repositories': typeof SettingsRepositoriesRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents/': typeof AgentsIndexRoute
@@ -146,6 +127,46 @@ export interface FileRoutesById {
   '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
   '/jobs/$jobId/': typeof JobsJobIdIndexRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
+  '/settings/repositories/': typeof SettingsRepositoriesIndexRoute
+  '/settings/repositories/$repositoryId/edit': typeof SettingsRepositoriesRepositoryIdEditRoute
+  '/settings/repositories/$repositoryId/': typeof SettingsRepositoriesRepositoryIdIndexRoute
+}
+export interface FileRoutesByTo {
+  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/maintenance': typeof MaintenanceRoute
+  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
+  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
+  '/agents': typeof AgentsIndexRoute
+  '/jobs': typeof JobsIndexRoute
+  '/settings': typeof SettingsIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
+  '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
+  '/agents/$agentId': typeof AgentsAgentIdIndexRoute
+  '/jobs/$jobId': typeof JobsJobIdIndexRoute
+  '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
+  '/settings/repositories': typeof SettingsRepositoriesIndexRoute
+  '/settings/repositories/$repositoryId/edit': typeof SettingsRepositoriesRepositoryIdEditRoute
+  '/settings/repositories/$repositoryId': typeof SettingsRepositoriesRepositoryIdIndexRoute
+}
+export interface FileRoutesById {
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/maintenance': typeof MaintenanceRoute
+  '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
+  '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
+  '/agents/': typeof AgentsIndexRoute
+  '/jobs/': typeof JobsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
+  '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
+  '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
+  '/agents/$agentId/': typeof AgentsAgentIdIndexRoute
+  '/jobs/$jobId/': typeof JobsJobIdIndexRoute
+  '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
+  '/settings/repositories/': typeof SettingsRepositoriesIndexRoute
+  '/settings/repositories/$repositoryId/edit': typeof SettingsRepositoriesRepositoryIdEditRoute
+  '/settings/repositories/$repositoryId/': typeof SettingsRepositoriesRepositoryIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -153,39 +174,6 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/maintenance'
-    | '/settings/repositories'
-    | '/worktree-creation-tasks/$taskId'
-    | '/worktree-deletion-tasks/$taskId'
-    | '/agents'
-    | '/jobs'
-    | '/settings'
-    | '/agents/$agentId/edit'
-    | '/sessions/$sessionId/$workerId'
-    | '/agents/$agentId'
-    | '/jobs/$jobId'
-    | '/sessions/$sessionId'
-  fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/login'
-    | '/maintenance'
-    | '/settings/repositories'
-    | '/worktree-creation-tasks/$taskId'
-    | '/worktree-deletion-tasks/$taskId'
-    | '/agents'
-    | '/jobs'
-    | '/settings'
-    | '/agents/$agentId/edit'
-    | '/sessions/$sessionId/$workerId'
-    | '/agents/$agentId'
-    | '/jobs/$jobId'
-    | '/sessions/$sessionId'
-  id:
-    | '__root__'
-    | '/'
-    | '/login'
-    | '/maintenance'
-    | '/settings/repositories'
     | '/worktree-creation-tasks/$taskId'
     | '/worktree-deletion-tasks/$taskId'
     | '/agents/'
@@ -196,13 +184,51 @@ export interface FileRouteTypes {
     | '/agents/$agentId/'
     | '/jobs/$jobId/'
     | '/sessions/$sessionId/'
+    | '/settings/repositories/'
+    | '/settings/repositories/$repositoryId/edit'
+    | '/settings/repositories/$repositoryId/'
+  fileRoutesByTo: FileRoutesByTo
+  to:
+    | '/'
+    | '/login'
+    | '/maintenance'
+    | '/worktree-creation-tasks/$taskId'
+    | '/worktree-deletion-tasks/$taskId'
+    | '/agents'
+    | '/jobs'
+    | '/settings'
+    | '/agents/$agentId/edit'
+    | '/sessions/$sessionId/$workerId'
+    | '/agents/$agentId'
+    | '/jobs/$jobId'
+    | '/sessions/$sessionId'
+    | '/settings/repositories'
+    | '/settings/repositories/$repositoryId/edit'
+    | '/settings/repositories/$repositoryId'
+  id:
+    | '__root__'
+    | '/'
+    | '/login'
+    | '/maintenance'
+    | '/worktree-creation-tasks/$taskId'
+    | '/worktree-deletion-tasks/$taskId'
+    | '/agents/'
+    | '/jobs/'
+    | '/settings/'
+    | '/agents/$agentId/edit'
+    | '/sessions/$sessionId/$workerId'
+    | '/agents/$agentId/'
+    | '/jobs/$jobId/'
+    | '/sessions/$sessionId/'
+    | '/settings/repositories/'
+    | '/settings/repositories/$repositoryId/edit'
+    | '/settings/repositories/$repositoryId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
   MaintenanceRoute: typeof MaintenanceRoute
-  SettingsRepositoriesRoute: typeof SettingsRepositoriesRoute
   WorktreeCreationTasksTaskIdRoute: typeof WorktreeCreationTasksTaskIdRoute
   WorktreeDeletionTasksTaskIdRoute: typeof WorktreeDeletionTasksTaskIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
@@ -213,6 +239,9 @@ export interface RootRouteChildren {
   AgentsAgentIdIndexRoute: typeof AgentsAgentIdIndexRoute
   JobsJobIdIndexRoute: typeof JobsJobIdIndexRoute
   SessionsSessionIdIndexRoute: typeof SessionsSessionIdIndexRoute
+  SettingsRepositoriesIndexRoute: typeof SettingsRepositoriesIndexRoute
+  SettingsRepositoriesRepositoryIdEditRoute: typeof SettingsRepositoriesRepositoryIdEditRoute
+  SettingsRepositoriesRepositoryIdIndexRoute: typeof SettingsRepositoriesRepositoryIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -241,21 +270,21 @@ declare module '@tanstack/react-router' {
     '/settings/': {
       id: '/settings/'
       path: '/settings'
-      fullPath: '/settings'
+      fullPath: '/settings/'
       preLoaderRoute: typeof SettingsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/jobs/': {
       id: '/jobs/'
       path: '/jobs'
-      fullPath: '/jobs'
+      fullPath: '/jobs/'
       preLoaderRoute: typeof JobsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents/': {
       id: '/agents/'
       path: '/agents'
-      fullPath: '/agents'
+      fullPath: '/agents/'
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
@@ -273,31 +302,31 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorktreeCreationTasksTaskIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings/repositories': {
-      id: '/settings/repositories'
+    '/settings/repositories/': {
+      id: '/settings/repositories/'
       path: '/settings/repositories'
-      fullPath: '/settings/repositories'
-      preLoaderRoute: typeof SettingsRepositoriesRouteImport
+      fullPath: '/settings/repositories/'
+      preLoaderRoute: typeof SettingsRepositoriesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sessions/$sessionId/': {
       id: '/sessions/$sessionId/'
       path: '/sessions/$sessionId'
-      fullPath: '/sessions/$sessionId'
+      fullPath: '/sessions/$sessionId/'
       preLoaderRoute: typeof SessionsSessionIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/jobs/$jobId/': {
       id: '/jobs/$jobId/'
       path: '/jobs/$jobId'
-      fullPath: '/jobs/$jobId'
+      fullPath: '/jobs/$jobId/'
       preLoaderRoute: typeof JobsJobIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents/$agentId/': {
       id: '/agents/$agentId/'
       path: '/agents/$agentId'
-      fullPath: '/agents/$agentId'
+      fullPath: '/agents/$agentId/'
       preLoaderRoute: typeof AgentsAgentIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
@@ -315,6 +344,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsAgentIdEditRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/repositories/$repositoryId/': {
+      id: '/settings/repositories/$repositoryId/'
+      path: '/settings/repositories/$repositoryId'
+      fullPath: '/settings/repositories/$repositoryId/'
+      preLoaderRoute: typeof SettingsRepositoriesRepositoryIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/repositories/$repositoryId/edit': {
+      id: '/settings/repositories/$repositoryId/edit'
+      path: '/settings/repositories/$repositoryId/edit'
+      fullPath: '/settings/repositories/$repositoryId/edit'
+      preLoaderRoute: typeof SettingsRepositoriesRepositoryIdEditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -322,7 +365,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
   MaintenanceRoute: MaintenanceRoute,
-  SettingsRepositoriesRoute: SettingsRepositoriesRoute,
   WorktreeCreationTasksTaskIdRoute: WorktreeCreationTasksTaskIdRoute,
   WorktreeDeletionTasksTaskIdRoute: WorktreeDeletionTasksTaskIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
@@ -333,6 +375,11 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsAgentIdIndexRoute: AgentsAgentIdIndexRoute,
   JobsJobIdIndexRoute: JobsJobIdIndexRoute,
   SessionsSessionIdIndexRoute: SessionsSessionIdIndexRoute,
+  SettingsRepositoriesIndexRoute: SettingsRepositoriesIndexRoute,
+  SettingsRepositoriesRepositoryIdEditRoute:
+    SettingsRepositoriesRepositoryIdEditRoute,
+  SettingsRepositoriesRepositoryIdIndexRoute:
+    SettingsRepositoriesRepositoryIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

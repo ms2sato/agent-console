@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { RepositoryList } from '../../components/repositories/RepositoryList';
+import { RepositoryList } from '../../../components/repositories/RepositoryList';
 
-export const Route = createFileRoute('/settings/repositories')({
+export const Route = createFileRoute('/settings/repositories/')({
   component: RepositoriesPage,
 });
 
