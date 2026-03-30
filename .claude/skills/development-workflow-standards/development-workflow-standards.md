@@ -165,6 +165,21 @@ Use conventional commit format: `type: description`
 - `test:` adding or updating tests
 - `docs:` documentation changes
 
+### Skipping CI with `[skip ci]`
+
+Use `[skip ci]` in the commit message for commits that **only** change non-production files:
+
+- `docs/**` — documentation
+- `.claude/skills/**` — skill definitions
+- `.claude/agents/**` — agent definitions
+- `CLAUDE.md` — project instructions
+
+These files do not affect production code, so running the full CI pipeline is unnecessary.
+
+Example: `docs: update orchestrator skill [skip ci]`
+
+**Do not use `[skip ci]`** if the commit includes any production code or test changes alongside documentation.
+
 ## Code Quality
 
 **Avoid over-engineering.** Only make changes that are directly requested or clearly necessary. Keep solutions simple and focused.
