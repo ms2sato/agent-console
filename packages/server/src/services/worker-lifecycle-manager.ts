@@ -240,6 +240,7 @@ export class WorkerLifecycleManager {
         context: {
           parentSessionId: session.parentSessionId,
           parentWorkerId: session.parentWorkerId,
+          templateVars: session.templateVars,
         },
       });
     } else {
@@ -397,6 +398,7 @@ export class WorkerLifecycleManager {
       context: {
         parentSessionId: session.parentSessionId,
         parentWorkerId: session.parentWorkerId,
+        templateVars: session.templateVars,
       },
     });
 
@@ -535,6 +537,7 @@ export class WorkerLifecycleManager {
           context: {
             parentSessionId: session.parentSessionId,
             parentWorkerId: session.parentWorkerId,
+            templateVars: session.templateVars,
           },
         });
       } else {

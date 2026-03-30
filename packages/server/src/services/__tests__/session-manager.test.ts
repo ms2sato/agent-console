@@ -3258,4 +3258,84 @@ describe('SessionManager', () => {
       expect(manager.writeWorkerInput(session2.id, workerId2, 'test')).toBe(true);
     });
   });
+
+  // ========== templateVars persistence ==========
+
+  describe('templateVars persistence', () => {
+    it('should persist templateVars when creating a session with templateVars in request', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+        templateVars: { model: 'gpt-4', temperature: '0.7' },
+      };
+
+      const session = await manager.createSession(request);
+
+      // Verify templateVars is persisted via the repository
+      const repo = manager.getSessionRepository();
+      const persisted = await repo.findById(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.templateVars).toEqual({ model: 'gpt-4', temperature: '0.7' });
+    });
+
+    it('should persist templateVars from SessionCreationContext', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = await manager.createSession(request, {
+        templateVars: { branch: 'feature-x' },
+      });
+
+      const repo = manager.getSessionRepository();
+      const persisted = await repo.findById(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.templateVars).toEqual({ branch: 'feature-x' });
+    });
+
+    it('should restore templateVars when resuming a paused session', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+        templateVars: { env: 'staging' },
+      });
+
+      // Pause the session
+      await manager.pauseSession(session.id);
+
+      // Verify session is removed from memory
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      // PTY count before resume
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      // Resume the session
+      const resumed = await manager.resumeSession(session.id);
+
+      expect(resumed).not.toBeNull();
+      expect(resumed?.id).toBe(session.id);
+
+      // New PTY should be created for the agent worker (proving resume activated PTY)
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+
+      // Verify templateVars is still persisted after resume
+      const repo = manager.getSessionRepository();
+      const persisted = await repo.findById(session.id);
+      expect(persisted!.templateVars).toEqual({ env: 'staging' });
+    });
+  });
 });
