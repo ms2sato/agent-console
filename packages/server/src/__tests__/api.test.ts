@@ -1947,21 +1947,12 @@ describe('API Routes Integration', () => {
           expect(bunSpawnCalls.length).toBe(1);
           expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
 
-          // Verify broadcastToApp was called with deletion-completed and cleanup result
+          // No sessions exist for this worktree, so no broadcast should occur
           const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
-          const completedCall = broadcastSpy.mock.calls.find(
+          const completedCalls = broadcastSpy.mock.calls.filter(
             (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-completed'
           );
-          expect(completedCall).toBeDefined();
-          const msg = completedCall![0] as {
-            type: string;
-            taskId: string;
-            cleanupCommandResult?: HookCommandResult;
-          };
-          expect(msg.taskId).toBe('test-task-id');
-          expect(msg.cleanupCommandResult).toBeDefined();
-          expect(msg.cleanupCommandResult!.success).toBe(true);
-          expect(msg.cleanupCommandResult!.output).toBe('containers stopped');
+          expect(completedCalls.length).toBe(0);
         } finally {
           restoreBunSpawn();
         }
@@ -2195,6 +2186,162 @@ describe('API Routes Integration', () => {
         const sessions = testSessionManager!.getAllSessions();
         const sessionStillExists = sessions.some(s => s.locationPath === worktreePath);
         expect(sessionStillExists).toBe(true);
+      });
+
+      it('should broadcast worktree-deletion-completed for all deleted sessions', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Create worktree directory in memfs so session creation succeeds
+        fs.mkdirSync(worktreePath, { recursive: true });
+
+        // Create TWO sessions with the same locationPath
+        const sessionRes1 = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes1.status).toBe(201);
+        const { session: session1 } = (await sessionRes1.json()) as { session: Session };
+
+        const sessionRes2 = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes2.status).toBe(201);
+        const { session: session2 } = (await sessionRes2.json()) as { session: Session };
+
+        // Delete worktree via async path (with taskId)
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-broadcast-all&force=true`,
+          { method: 'DELETE' }
+        );
+        expect(res.status).toBe(202);
+
+        // Wait for background operation to complete
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Verify broadcastToApp was called with worktree-deletion-completed for EACH session ID
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const completedCalls = broadcastSpy.mock.calls.filter(
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-broadcast-all';
+          }
+        );
+        expect(completedCalls.length).toBe(2);
+
+        const broadcastSessionIds = completedCalls.map(
+          (call: unknown[]) => (call[0] as { sessionId: string }).sessionId
+        );
+        expect(broadcastSessionIds).toContain(session1.id);
+        expect(broadcastSessionIds).toContain(session2.id);
+      });
+
+      it('should not broadcast worktree-deletion-completed when no sessions exist for deleted worktree', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Do NOT create any sessions for this worktree path
+
+        // Delete worktree via async path (with taskId)
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-no-sessions&force=true`,
+          { method: 'DELETE' }
+        );
+        expect(res.status).toBe(202);
+
+        // Wait for background operation to complete
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Verify broadcastToApp was NOT called with worktree-deletion-completed for this taskId
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const completedCalls = broadcastSpy.mock.calls.filter(
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-no-sessions';
+          }
+        );
+        expect(completedCalls.length).toBe(0);
+      });
+
+      it('should broadcast worktree-deletion-failed for all sessions when deletion fails', async () => {
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+
+        // Create worktree directory in memfs so session creation succeeds
+        fs.mkdirSync(worktreePath, { recursive: true });
+
+        // Create TWO sessions with the same locationPath
+        const sessionRes1 = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes1.status).toBe(201);
+        const { session: session1 } = (await sessionRes1.json()) as { session: Session };
+
+        const sessionRes2 = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'quick',
+            locationPath: worktreePath,
+            agentId: CLAUDE_CODE_AGENT_ID,
+          }),
+        });
+        expect(sessionRes2.status).toBe(201);
+        const { session: session2 } = (await sessionRes2.json()) as { session: Session };
+
+        // Make removeWorktree fail with a GitError
+        mockGit.removeWorktree.mockRejectedValue(
+          new GitError('worktree has uncommitted changes', 1, 'worktree has uncommitted changes')
+        );
+
+        // Delete worktree via async path (with taskId)
+        const encodedPath = encodeURIComponent(worktreePath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-fail-broadcast-all&force=true`,
+          { method: 'DELETE' }
+        );
+        expect(res.status).toBe(202);
+
+        // Wait for background operation to complete
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Verify broadcastToApp was called with worktree-deletion-failed for EACH session ID
+        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const failedCalls = broadcastSpy.mock.calls.filter(
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-broadcast-all';
+          }
+        );
+        expect(failedCalls.length).toBe(2);
+
+        const broadcastSessionIds = failedCalls.map(
+          (call: unknown[]) => (call[0] as { sessionId: string }).sessionId
+        );
+        expect(broadcastSessionIds).toContain(session1.id);
+        expect(broadcastSessionIds).toContain(session2.id);
       });
 
       it('should block deletion when branch has an open PR (sync path)', async () => {
