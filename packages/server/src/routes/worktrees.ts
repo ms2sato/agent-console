@@ -131,8 +131,8 @@ const worktrees = new Hono<AppBindings>()
           agentId: selectedAgentId,
           initialPrompt,
           title: effectiveTitle,
-          createdBy: authUser.id,
           autoStartSession,
+          context: { createdBy: authUser.id },
         }, sessionManager);
 
         if (!result.success) {

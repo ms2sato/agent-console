@@ -595,11 +595,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           agentId: selectedAgentId,
           initialPrompt: effectivePrompt,
           title: effectiveTitle,
-          parentSessionId,
-          parentWorkerId,
-          createdBy: parentCreatedBy,
           autoStartSession: true,
-          templateVars,
+          context: {
+            parentSessionId,
+            parentWorkerId,
+            createdBy: parentCreatedBy,
+            templateVars,
+          },
         }, sessionManager);
 
         if (!result.success) {

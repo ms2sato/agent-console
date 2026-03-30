@@ -229,6 +229,30 @@ describe('createWorktreeWithSession', () => {
     expect(sm.createSession).not.toHaveBeenCalled();
   });
 
+  it('passes context object (createdBy, parentSessionId, parentWorkerId, templateVars) to createSession', async () => {
+    const sm = createMockSessionManager();
+    const context = {
+      createdBy: 'user-123',
+      parentSessionId: 'parent-sess-1',
+      parentWorkerId: 'parent-wkr-1',
+      templateVars: { model: 'opus' },
+    };
+
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, initialPrompt: 'do stuff', title: 'My Task', context },
+      sm,
+    );
+
+    expect(sm.createSession).toHaveBeenCalledTimes(1);
+    const [sessionRequest, passedContext] = sm.createSession.mock.calls[0];
+    // Context fields are mapped to the request for schema compatibility
+    expect(sessionRequest.parentSessionId).toBe('parent-sess-1');
+    expect(sessionRequest.parentWorkerId).toBe('parent-wkr-1');
+    expect(sessionRequest.templateVars).toEqual({ model: 'opus' });
+    // createdBy is passed via the context parameter
+    expect(passedContext).toEqual(context);
+  });
+
   it('returns original error even when rollback fails', async () => {
     const sm = createMockSessionManager();
     sm.createSession.mockImplementation(() => Promise.reject(new Error('original error')));

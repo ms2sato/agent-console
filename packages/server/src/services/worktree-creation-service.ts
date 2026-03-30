@@ -1,6 +1,7 @@
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import type { Session } from '@agent-console/shared';
 import type { SessionManager } from './session-manager.js';
+import type { SessionCreationContext } from './internal-types.js';
 import { worktreeService } from './worktree-service.js';
 import { fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -29,11 +30,8 @@ export interface CreateWorktreeParams {
   agentId: string;
   initialPrompt?: string;
   title?: string;
-  parentSessionId?: string;
-  parentWorkerId?: string;
-  createdBy?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
-  templateVars?: Record<string, string>;
+  context?: SessionCreationContext;
 }
 
 export interface CreateWorktreeResult {
@@ -58,9 +56,8 @@ export async function createWorktreeWithSession(
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,
     useRemote, agentId, initialPrompt, title,
-    parentSessionId, parentWorkerId, createdBy,
     autoStartSession = true,
-    templateVars,
+    context,
   } = params;
 
   // 1. Handle remote fetch if requested
@@ -127,10 +124,10 @@ export async function createWorktreeWithSession(
         agentId,
         initialPrompt,
         title,
-        parentSessionId,
-        parentWorkerId,
-        templateVars,
-      }, { createdBy });
+        parentSessionId: context?.parentSessionId,
+        parentWorkerId: context?.parentWorkerId,
+        templateVars: context?.templateVars,
+      }, context);
     }
 
     logger.info({ repoId, worktreePath: worktree.path, branch: worktree.branch }, 'Worktree creation completed');

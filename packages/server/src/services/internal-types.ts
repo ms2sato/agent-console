@@ -7,6 +7,22 @@
 
 import type { InternalWorker } from './worker-types.js';
 
+/**
+ * Context object for session/worker creation chain.
+ * Constructed at entry points (REST/MCP handlers) and passed through:
+ *   worktree-creation-service → session-manager → worker-lifecycle-manager → worker-manager
+ */
+export interface SessionCreationContext {
+  /** User UUID (from users table) of the user who created this session */
+  createdBy?: string;
+  /** Parent session ID that delegated this session */
+  parentSessionId?: string;
+  /** Parent worker ID that delegated this session */
+  parentWorkerId?: string;
+  /** Custom template variable overrides for agent command templates */
+  templateVars?: Record<string, string>;
+}
+
 export interface InternalSessionBase {
   id: string;
   locationPath: string;

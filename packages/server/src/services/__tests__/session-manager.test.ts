@@ -140,6 +140,20 @@ describe('SessionManager', () => {
       expect(session.parentWorkerId).toBe('parent-wkr-456');
     });
 
+    it('should set createdBy from SessionCreationContext', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = await manager.createSession(request, { createdBy: 'user-abc' });
+
+      expect(session.createdBy).toBe('user-abc');
+    });
+
     it('should create a new quick session with correct properties', async () => {
       const manager = await getSessionManager();
 

@@ -34,6 +34,7 @@ import type {
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
+import type { SessionCreationContext } from './internal-types.js';
 import type { UserMode, AgentConsoleContext } from './user-mode.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -99,12 +100,8 @@ export interface AgentActivationParams extends WorkerContext {
   initialPrompt?: string;
   /** Repository ID for worktree sessions. Omit for quick sessions. */
   repositoryId?: string;
-  /** Parent session ID for delegated sessions */
-  parentSessionId?: string;
-  /** Parent worker ID for delegated sessions */
-  parentWorkerId?: string;
-  /** Custom template variable overrides for agent command templates */
-  templateVars?: Record<string, string>;
+  /** Session creation context holding delegation and template information */
+  context?: SessionCreationContext;
 }
 
 /**
@@ -284,7 +281,7 @@ export class WorkerManager {
       return;
     }
 
-    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, parentSessionId, parentWorkerId, templateVars } = params;
+    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, context } = params;
 
     const agentManager = this.agentManager;
     const requestedAgent = agentManager.getAgent(agentId);
@@ -304,7 +301,7 @@ export class WorkerManager {
       template,
       prompt: initialPrompt,
       cwd: locationPath,
-      templateVars,
+      templateVars: context?.templateVars,
     });
 
     // Build AgentConsole context so the agent knows its own identity.
@@ -314,8 +311,8 @@ export class WorkerManager {
       sessionId,
       workerId: worker.id,
       repositoryId,
-      parentSessionId,
-      parentWorkerId,
+      parentSessionId: context?.parentSessionId,
+      parentWorkerId: context?.parentWorkerId,
     };
 
     // additionalEnvVars: repository + template env vars
