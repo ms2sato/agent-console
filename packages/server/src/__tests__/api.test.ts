@@ -852,6 +852,39 @@ describe('API Routes Integration', () => {
       });
     });
 
+    describe('GET /api/repositories/:id', () => {
+      it('should return the repository for a valid ID', async () => {
+        const app = await createApp();
+        const repoPath = createUniqueRepoPath();
+        setupTestGitRepo(repoPath);
+
+        const createRes = await app.request('/api/repositories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: repoPath }),
+        });
+        expect(createRes.status).toBe(201);
+
+        const { repository: created } = (await createRes.json()) as { repository: Repository };
+
+        const res = await app.request(`/api/repositories/${created.id}`);
+        expect(res.status).toBe(200);
+
+        const body = (await res.json()) as { repository: Repository };
+        expect(body.repository).toBeDefined();
+        expect(body.repository.id).toBe(created.id);
+        expect(body.repository.path).toBe(repoPath);
+        expect(body.repository.remoteUrl).toBe('git@github.com:owner/test-repo.git');
+      });
+
+      it('should return 404 for unknown ID', async () => {
+        const app = await createApp();
+
+        const res = await app.request('/api/repositories/nonexistent-id');
+        expect(res.status).toBe(404);
+      });
+    });
+
     describe('POST /api/repositories', () => {
       it('should register a repository', async () => {
         const app = await createApp();

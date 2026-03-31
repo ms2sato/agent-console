@@ -13,6 +13,8 @@ import type { FetchJobsParams } from './api';
 export const repositoryKeys = {
   /** All repositories list */
   all: () => ['repositories'] as const,
+  /** Single repository detail */
+  detail: (repositoryId: string) => ['repository', repositoryId] as const,
   /** Slack integration for a repository */
   slackIntegration: (repositoryId: string) => ['repository-slack-integration', repositoryId] as const,
 } as const;

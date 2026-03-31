@@ -11,6 +11,7 @@ import {
   updateRepositorySlackIntegration,
   testRepositorySlackIntegration,
   fetchNotificationStatus,
+  type RepositoryResponse,
 } from '../../lib/api';
 import { repositoryKeys, notificationKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
@@ -320,11 +321,13 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     onMutate: async (data) => {
       // Cancel any outgoing refetches to prevent overwriting optimistic update
       await queryClient.cancelQueries({ queryKey: repositoryKeys.all() });
+      await queryClient.cancelQueries({ queryKey: repositoryKeys.detail(repository.id) });
 
-      // Snapshot the previous value for rollback
+      // Snapshot the previous values for rollback
       const previousRepositories = queryClient.getQueryData<{ repositories: Repository[] }>(repositoryKeys.all());
+      const previousRepository = queryClient.getQueryData<RepositoryResponse>(repositoryKeys.detail(repository.id));
 
-      // Optimistically update the cache
+      // Optimistically update the list cache
       queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
         if (!old) return old;
         return {
@@ -334,16 +337,37 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
         };
       });
 
-      return { previousRepositories };
+      // Optimistically update the detail cache
+      queryClient.setQueryData<RepositoryResponse | undefined>(
+        repositoryKeys.detail(repository.id),
+        (old) => old ? { repository: { ...old.repository, ...data } } : old
+      );
+
+      return { previousRepositories, previousRepository };
     },
-    onSuccess: () => {
-      // Server WebSocket broadcast will handle cache update, but call onSuccess callback
+    onSuccess: ({ repository: updatedRepository }) => {
+      // Update caches with authoritative server response
+      queryClient.setQueryData<RepositoryResponse>(repositoryKeys.detail(repository.id), {
+        repository: updatedRepository,
+      });
+      queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) =>
+        old
+          ? {
+              repositories: old.repositories.map((r) =>
+                r.id === updatedRepository.id ? updatedRepository : r
+              ),
+            }
+          : old
+      );
       onSuccess();
     },
     onError: (err, _data, context) => {
-      // Rollback to previous value on error
+      // Rollback to previous values on error
       if (context?.previousRepositories) {
         queryClient.setQueryData(repositoryKeys.all(), context.previousRepositories);
+      }
+      if (context?.previousRepository) {
+        queryClient.setQueryData(repositoryKeys.detail(repository.id), context.previousRepository);
       }
       setError(err instanceof Error ? err.message : 'Failed to update repository');
     },

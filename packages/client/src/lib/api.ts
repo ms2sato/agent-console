@@ -220,6 +220,10 @@ export interface RepositoriesResponse {
   repositories: Repository[];
 }
 
+export interface RepositoryResponse {
+  repository: Repository;
+}
+
 export interface CreateRepositoryResponse {
   repository: Repository;
 }
@@ -230,6 +234,14 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
     await handleApiError(res, 'Failed to fetch repositories');
   }
   return res.json();
+}
+
+export async function fetchRepository(repositoryId: string): Promise<RepositoryResponse> {
+  const res = await api.repositories[':id'].$get({ param: { id: repositoryId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch repository');
+  }
+  return res.json() as Promise<RepositoryResponse>;
 }
 
 export async function registerRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResponse> {
