@@ -176,11 +176,20 @@ ${
 ## Completion Steps
 1. Determine the appropriate test level based on CLAUDE.md rules and Orchestrator instructions. If your judgment differs from the Orchestrator's instruction, propose with reasoning. (e.g., docs-only changes may skip tests per CLAUDE.md)
 2. Run \`/review-loop\` if instructed by the Orchestrator (skip if not instructed)
-3. Create PR (title: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`)
-4. Wait for CI to be fully green. Address any CI failures or CodeRabbit review comments. Do NOT report completion until CI is green.
-5. After CI is green, report completion to the Orchestrator with your retrospective report. Include the PR URL and CI status.
-6. After your PR is merged, report back to the Orchestrator with the merge confirmation.
-7. If you resolved an issue by communicating directly with the owner, report the following to the Orchestrator:
+3. Run CodeRabbit CLI self-review before creating the PR (skip if CLI is not installed):
+   \`\`\`bash
+   if command -v coderabbit >/dev/null 2>&1 || test -x ~/.local/bin/coderabbit; then
+     coderabbit review --agent --base main
+   fi
+   \`\`\`
+   - Fix any CRITICAL or HIGH severity issues found
+   - MEDIUM/LOW issues: fix if straightforward, otherwise note in the PR description
+   - If CLI is not installed, skip this step entirely
+4. Create PR (title: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`)
+5. Wait for CI to be fully green. Address any CI failures or CodeRabbit review comments. Do NOT report completion until CI is green.
+6. After CI is green, report completion to the Orchestrator with your retrospective report. Include the PR URL and CI status.
+7. After your PR is merged, report back to the Orchestrator with the merge confirmation.
+8. If you resolved an issue by communicating directly with the owner, report the following to the Orchestrator:
    - What was the problem
    - How it was resolved
    - What is needed to prevent the same issue in the future
