@@ -280,8 +280,8 @@ function DashboardPage() {
       if (!old) return old;
       return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
     });
-    // Update individual repository cache for detail/edit pages
-    queryClient.setQueryData(repositoryKeys.detail(repository.id), { repository });
+    // Invalidate detail cache to refetch with full server-shaped response (includes remoteUrl)
+    queryClient.invalidateQueries({ queryKey: repositoryKeys.detail(repository.id) });
   }, [queryClient]);
 
   // Handle worktree pull completed

@@ -5,7 +5,7 @@ import {
   useNavigate,
   type ErrorComponentProps,
 } from '@tanstack/react-router';
-import { useSuspenseQuery, useQuery, useMutation } from '@tanstack/react-query';
+import { useSuspenseQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchRepository, unregisterRepository, fetchAgents } from '../../../../lib/api';
 import { repositoryKeys, agentKeys } from '../../../../lib/query-keys';
 import { PageBreadcrumb } from '../../../../components/PageBreadcrumb';
@@ -45,6 +45,7 @@ export function RepositoryDetailError({ error, reset }: ErrorComponentProps) {
 function RepositoryDetailPage() {
   const { repositoryId } = Route.useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
@@ -69,6 +70,7 @@ function RepositoryDetailPage() {
   const deleteMutation = useMutation({
     mutationFn: unregisterRepository,
     onSuccess: () => {
+      queryClient.removeQueries({ queryKey: repositoryKeys.detail(repositoryId) });
       navigate({ to: '/settings/repositories' });
     },
     onError: (error) => {

@@ -345,8 +345,20 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
       return { previousRepositories, previousRepository };
     },
-    onSuccess: () => {
-      // Server WebSocket broadcast will handle cache update, but call onSuccess callback
+    onSuccess: ({ repository: updatedRepository }) => {
+      // Update caches with authoritative server response
+      queryClient.setQueryData<RepositoryResponse>(repositoryKeys.detail(repository.id), {
+        repository: updatedRepository,
+      });
+      queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) =>
+        old
+          ? {
+              repositories: old.repositories.map((r) =>
+                r.id === updatedRepository.id ? updatedRepository : r
+              ),
+            }
+          : old
+      );
       onSuccess();
     },
     onError: (err, _data, context) => {
