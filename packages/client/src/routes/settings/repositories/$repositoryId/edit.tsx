@@ -4,7 +4,7 @@ import {
   type ErrorComponentProps,
 } from '@tanstack/react-router';
 import { useSuspenseQuery } from '@tanstack/react-query';
-import { fetchRepositories } from '../../../../lib/api';
+import { fetchRepository } from '../../../../lib/api';
 import { repositoryKeys } from '../../../../lib/query-keys';
 import { PageBreadcrumb } from '../../../../components/PageBreadcrumb';
 import { PagePendingFallback } from '../../../../components/PagePendingFallback';
@@ -43,14 +43,11 @@ function RepositoryEditPage() {
   const navigate = useNavigate();
 
   const { data } = useSuspenseQuery({
-    queryKey: repositoryKeys.all(),
-    queryFn: fetchRepositories,
+    queryKey: repositoryKeys.detail(repositoryId),
+    queryFn: () => fetchRepository(repositoryId),
   });
 
-  const repository = data.repositories.find((r) => r.id === repositoryId);
-  if (!repository) {
-    throw new Error(`Repository not found: ${repositoryId}`);
-  }
+  const repository = data.repository;
 
   const navigateToDetail = () => {
     navigate({ to: '/settings/repositories/$repositoryId', params: { repositoryId } });

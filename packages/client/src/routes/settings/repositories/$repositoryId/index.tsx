@@ -6,7 +6,7 @@ import {
   type ErrorComponentProps,
 } from '@tanstack/react-router';
 import { useSuspenseQuery, useQuery, useMutation } from '@tanstack/react-query';
-import { fetchRepositories, unregisterRepository, fetchAgents } from '../../../../lib/api';
+import { fetchRepository, unregisterRepository, fetchAgents } from '../../../../lib/api';
 import { repositoryKeys, agentKeys } from '../../../../lib/query-keys';
 import { PageBreadcrumb } from '../../../../components/PageBreadcrumb';
 import { PagePendingFallback } from '../../../../components/PagePendingFallback';
@@ -49,27 +49,22 @@ function RepositoryDetailPage() {
   const { errorDialogProps, showError } = useErrorDialog();
 
   const { data } = useSuspenseQuery({
-    queryKey: repositoryKeys.all(),
-    queryFn: fetchRepositories,
+    queryKey: repositoryKeys.detail(repositoryId),
+    queryFn: () => fetchRepository(repositoryId),
   });
 
-  const repository = data.repositories.find((r) => r.id === repositoryId);
+  const repository = data.repository;
 
   // Look up agent name for defaultAgentId
-  // Must be called before the conditional throw to maintain hook order
   const { data: agentsData } = useQuery({
     queryKey: agentKeys.all(),
     queryFn: fetchAgents,
-    enabled: !!repository?.defaultAgentId,
+    enabled: !!repository.defaultAgentId,
   });
 
-  const defaultAgentName = repository?.defaultAgentId
+  const defaultAgentName = repository.defaultAgentId
     ? agentsData?.agents.find((a) => a.id === repository.defaultAgentId)?.name
     : undefined;
-
-  if (!repository) {
-    throw new Error(`Repository not found: ${repositoryId}`);
-  }
 
   const deleteMutation = useMutation({
     mutationFn: unregisterRepository,

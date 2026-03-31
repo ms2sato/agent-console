@@ -267,9 +267,10 @@ function DashboardPage() {
   }, [queryClient]);
 
   // Handle repository deleted
-  const handleRepositoryDeleted = useCallback(() => {
-    logger.debug('[Repository] Deleted');
+  const handleRepositoryDeleted = useCallback((repositoryId: string) => {
+    logger.debug(`[Repository] Deleted: ${repositoryId}`);
     queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
+    queryClient.invalidateQueries({ queryKey: repositoryKeys.detail(repositoryId) });
   }, [queryClient]);
 
   // Handle repository updated
@@ -279,6 +280,8 @@ function DashboardPage() {
       if (!old) return old;
       return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
     });
+    // Update individual repository cache for detail/edit pages
+    queryClient.setQueryData(repositoryKeys.detail(repository.id), { repository });
   }, [queryClient]);
 
   // Handle worktree pull completed
