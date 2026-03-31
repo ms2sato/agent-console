@@ -73,10 +73,23 @@ export interface InternalTimerPtyNotification extends BasePtyNotificationParams 
   intent: PtyNotificationIntent;
 }
 
+export interface InternalReviewCommentPtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-review-comment';
+  tag: 'internal:review-comment';
+  fields: {
+    session: string;
+    file: string;
+    line: string;
+    body: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
-  | InternalTimerPtyNotification;
+  | InternalTimerPtyNotification
+  | InternalReviewCommentPtyNotification;
 
 /**
  * Build and send a structured notification to a PTY process.

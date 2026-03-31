@@ -19,6 +19,7 @@ import type { TimerManager } from '../services/timer-manager.js';
 import { worktreeService } from '../services/worktree-service.js';
 import { annotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
+import { broadcastToApp } from '../websocket/routes.js';
 import { deleteWorktree } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
@@ -950,8 +951,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         mechanicalFiles: z.number().int().min(0),
         confidence: z.enum(['high', 'medium', 'low']),
       }).describe('Summary of the review analysis'),
+      sourceSessionId: z.string().optional().describe('Source session ID that requested the review (e.g., orchestrator). When provided, this becomes a review queue item.'),
     },
-    async ({ workerId, sessionId, annotations, summary }) => {
+    async ({ workerId, sessionId, annotations, summary, sourceSessionId }) => {
       try {
         // Validate session exists
         const session = sessionManager.getSession(sessionId);
@@ -971,7 +973,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // Store annotations (validation happens inside the service)
-        const annotationSet = annotationService.setAnnotations(workerId, { annotations, summary });
+        const annotationSet = annotationService.setAnnotations(
+          workerId,
+          { annotations, summary },
+          { sourceSessionId, sessionId },
+        );
 
         // Push to connected client (best-effort: annotations are already stored)
         try {
@@ -983,8 +989,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        // Notify app-level clients when a review queue item is created
+        if (sourceSessionId) {
+          broadcastToApp({ type: 'review-queue-updated' });
+        }
+
         logger.info(
-          { sessionId, workerId, annotationCount: annotations.length },
+          { sessionId, workerId, annotationCount: annotations.length, sourceSessionId },
           'Review annotations written via MCP',
         );
 
@@ -1030,6 +1041,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        // Check if this was a review queue item before clearing
+        const existingAnnotations = annotationService.getAnnotations(workerId);
+        const wasReviewQueueItem = existingAnnotations?.sourceSessionId != null;
+
         annotationService.clearAnnotations(workerId);
 
         // Push null to connected client (best-effort: annotations are already cleared)
@@ -1040,6 +1055,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
             { err: notifyErr, sessionId, workerId },
             'Failed to push annotation clear to client (annotations were cleared successfully)',
           );
+        }
+
+        // Notify app-level clients when a review queue item is removed
+        if (wasReviewQueueItem) {
+          broadcastToApp({ type: 'review-queue-updated' });
         }
 
         logger.info({ sessionId, workerId }, 'Review annotations cleared via MCP');

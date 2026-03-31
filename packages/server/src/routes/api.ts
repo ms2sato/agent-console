@@ -8,6 +8,7 @@ import { agents } from './agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
+import { reviewQueue } from './review-queue.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -47,7 +48,8 @@ const api = new Hono<AppBindings>()
   .route('/agents', agents)
   .route('/jobs', jobs)
   .route('/settings', settings)
-  .route('/system', system);
+  .route('/system', system)
+  .route('/review-queue', reviewQueue);
 
 export type AppType = typeof api;
 export { api };
