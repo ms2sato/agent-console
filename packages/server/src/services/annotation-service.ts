@@ -37,6 +37,10 @@ export class AnnotationService {
   ): ReviewAnnotationSet {
     this.validateInput(data);
 
+    if (options?.sourceSessionId && !options.sessionId) {
+      throw new Error('sessionId is required when sourceSessionId is provided');
+    }
+
     const annotationSet: ReviewAnnotationSet = {
       workerId,
       annotations: data.annotations,

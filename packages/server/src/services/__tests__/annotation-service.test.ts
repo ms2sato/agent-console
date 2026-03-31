@@ -95,6 +95,12 @@ describe('AnnotationService', () => {
       service.setAnnotations('worker-1', validInput());
       expect(service.getMetadata('worker-1')).toBeUndefined();
     });
+
+    it('should throw when sourceSessionId is provided without sessionId', () => {
+      expect(() =>
+        service.setAnnotations('worker-1', validInput(), { sourceSessionId: 'orch-1' }),
+      ).toThrow('sessionId is required when sourceSessionId is provided');
+    });
   });
 
   describe('getAnnotations', () => {
@@ -148,14 +154,6 @@ describe('AnnotationService', () => {
       expect(items).toHaveLength(1);
       expect(items[0].workerId).toBe('worker-2');
       expect(items[0].sourceSessionId).toBe('orchestrator');
-    });
-
-    it('should skip items without metadata', () => {
-      // This shouldn't happen in practice, but test the guard
-      service.setAnnotations('worker-1', validInput(), { sourceSessionId: 'orchestrator' });
-      // No sessionId in metadata
-      const items = service.listReviewQueue(() => undefined);
-      expect(items).toEqual([]);
     });
 
     it('should use session titles from callback', () => {
