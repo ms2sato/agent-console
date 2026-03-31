@@ -28,19 +28,11 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - **Write memos in the user's preferred language.** Follow the Language Policy in CLAUDE.md — adapt to the language the user uses. Technical terms, PR/Issue numbers, and links can remain in English.
 - **Always include links when referencing Issues or PRs in memos.** Use full Markdown links: `[#123](https://github.com/owner/repo/issues/123)` for Issues, `[#123](https://github.com/owner/repo/pull/123)` for PRs. The owner clicks through from the memo — bare numbers are not actionable.
 - Use `create_timer` after delegating tasks to monitor progress. Delete the timer when the agent reports back.
-- **Use lightweight worktree flow for trivial changes.** For single-file documentation or skill edits, avoid the full delegate_to_worktree → PR → merge cycle. Instead, create a temporary git worktree and edit directly:
-  ```bash
-  MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
-  git -C "$MAIN_DIR" fetch origin main
-  git -C "$MAIN_DIR" worktree add -b docs/your-branch /tmp/quick-fix origin/main
-  # Edit files directly using the Edit tool on /tmp/quick-fix/...
-  # Then commit, push, create PR, merge, and clean up:
-  git -C /tmp/quick-fix add . && git -C /tmp/quick-fix commit -m "docs: your change [skip ci]"
-  git -C /tmp/quick-fix push origin docs/your-branch
-  gh pr create --head docs/your-branch --title "..." --body "..."
-  gh pr merge <number> --squash
-  git -C "$MAIN_DIR" worktree remove /tmp/quick-fix
-  ```
+- **Use lightweight worktree flow for trivial changes.** For documentation, skill, or agent definition edits, avoid the full delegate_to_worktree → agent → PR cycle. Instead, use `EnterWorktree` / `ExitWorktree` to create a temporary worktree, edit directly, and push:
+  1. `EnterWorktree` (with a descriptive name like `docs/your-change`)
+  2. Edit files using the Edit tool
+  3. Commit, push, and create PR via `gh pr create`
+  4. `ExitWorktree` with `action: "keep"` (worktree is cleaned up after PR merge)
   This reduces 5-10 minute delegation cycles to ~2 minutes for trivial changes.
 - **Use TaskCreate for multi-step procedures.** When executing enumerated steps from skills (e.g., sprint retrospective, sprint start), create a task checklist via `TaskCreate`/`TaskUpdate` to track progress and prevent step omission. Exception: procedures that have a dedicated script (e.g., `acceptance-check.js`) should use the script instead.
 
