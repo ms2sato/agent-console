@@ -91,28 +91,69 @@ export interface ReviewAnnotation {
   reason: string;      // Why this section needs review
 }
 
+/** Summary statistics for a review annotation set */
+export interface AnnotationSummary {
+  totalFiles: number;
+  reviewFiles: number;
+  mechanicalFiles: number;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+/** Review status for review queue items */
+export type ReviewStatus = 'pending' | 'completed';
+
+/** An inline comment from the reviewer */
+export interface ReviewComment {
+  id: string;
+  file: string;
+  line: number;
+  body: string;
+  createdAt: string;  // ISO timestamp
+}
+
 /** Complete set of annotations for a worker */
 export interface ReviewAnnotationSet {
   workerId: string;
   annotations: ReviewAnnotation[];
-  summary: {
-    totalFiles: number;
-    reviewFiles: number;
-    mechanicalFiles: number;
-    confidence: 'high' | 'medium' | 'low';
-  };
+  summary: AnnotationSummary;
   createdAt: string;  // ISO timestamp
+  /** Session that requested the review (e.g., orchestrator). When absent, not a review queue item. */
+  sourceSessionId?: string;
+  /** Review lifecycle state. Defaults to 'pending' when sourceSessionId is provided. */
+  status: ReviewStatus;
+  /** Inline comments from the reviewer */
+  comments: ReviewComment[];
 }
 
 /** Input for creating annotations (no workerId or createdAt - those are added by the service) */
 export interface ReviewAnnotationInput {
   annotations: ReviewAnnotation[];
-  summary: {
-    totalFiles: number;
-    reviewFiles: number;
-    mechanicalFiles: number;
-    confidence: 'high' | 'medium' | 'low';
-  };
+  summary: AnnotationSummary;
+}
+
+// ============================================================
+// Review Queue API Types
+// ============================================================
+
+/** A single item in the review queue */
+export interface ReviewQueueItem {
+  workerId: string;
+  sessionId: string;
+  sessionTitle: string;
+  sourceSessionId: string;
+  sourceSessionTitle: string;
+  annotationCount: number;
+  summary: AnnotationSummary;
+  status: ReviewStatus;
+  commentCount: number;
+  createdAt: string;
+}
+
+/** Review queue items grouped by source session */
+export interface ReviewQueueGroup {
+  sourceSessionId: string;
+  sourceSessionTitle: string;
+  items: ReviewQueueItem[];
 }
 
 // ============================================================

@@ -209,6 +209,9 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           logger.debug(`[WebSocket] memo-updated: ${msg.sessionId}`);
           optionsRef.current.onMemoUpdated?.(msg.sessionId, msg.content);
           break;
+        case 'review-queue-updated':
+          // Phase 2 will add client-side handling
+          break;
         default: {
           const _exhaustive: never = msg;
           logger.warn('Unknown message type received:', _exhaustive);

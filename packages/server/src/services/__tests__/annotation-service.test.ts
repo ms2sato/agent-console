@@ -62,6 +62,39 @@ describe('AnnotationService', () => {
       }));
       expect(result.annotations).toHaveLength(0);
     });
+
+    it('should always set status to pending on creation', () => {
+      const result = service.setAnnotations('worker-1', validInput());
+      expect(result.status).toBe('pending');
+    });
+
+    it('should always set comments to empty array on creation', () => {
+      const result = service.setAnnotations('worker-1', validInput());
+      expect(result.comments).toEqual([]);
+    });
+
+    it('should set sourceSessionId when provided in options', () => {
+      const result = service.setAnnotations('worker-1', validInput(), {
+        sourceSessionId: 'orchestrator-session',
+        sessionId: 'target-session',
+      });
+      expect(result.sourceSessionId).toBe('orchestrator-session');
+    });
+
+    it('should leave sourceSessionId undefined when not provided', () => {
+      const result = service.setAnnotations('worker-1', validInput());
+      expect(result.sourceSessionId).toBeUndefined();
+    });
+
+    it('should store sessionId in metadata when provided', () => {
+      service.setAnnotations('worker-1', validInput(), { sessionId: 'sess-1' });
+      expect(service.getMetadata('worker-1')).toEqual({ sessionId: 'sess-1' });
+    });
+
+    it('should not store metadata when sessionId is not provided', () => {
+      service.setAnnotations('worker-1', validInput());
+      expect(service.getMetadata('worker-1')).toBeUndefined();
+    });
   });
 
   describe('getAnnotations', () => {
@@ -86,6 +119,160 @@ describe('AnnotationService', () => {
 
     it('should not throw for unknown workerId', () => {
       expect(() => service.clearAnnotations('nonexistent')).not.toThrow();
+    });
+
+    it('should also clear metadata', () => {
+      service.setAnnotations('worker-1', validInput(), { sessionId: 'sess-1' });
+      service.clearAnnotations('worker-1');
+      expect(service.getMetadata('worker-1')).toBeUndefined();
+    });
+  });
+
+  describe('listReviewQueue', () => {
+    it('should return empty array when no review items exist', () => {
+      service.setAnnotations('worker-1', validInput());
+      const items = service.listReviewQueue(() => undefined);
+      expect(items).toEqual([]);
+    });
+
+    it('should return only items with sourceSessionId', () => {
+      // Regular annotation (not a review queue item)
+      service.setAnnotations('worker-1', validInput(), { sessionId: 'sess-1' });
+      // Review queue item
+      service.setAnnotations('worker-2', validInput(), {
+        sessionId: 'sess-2',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const items = service.listReviewQueue(() => undefined);
+      expect(items).toHaveLength(1);
+      expect(items[0].workerId).toBe('worker-2');
+      expect(items[0].sourceSessionId).toBe('orchestrator');
+    });
+
+    it('should skip items without metadata', () => {
+      // This shouldn't happen in practice, but test the guard
+      service.setAnnotations('worker-1', validInput(), { sourceSessionId: 'orchestrator' });
+      // No sessionId in metadata
+      const items = service.listReviewQueue(() => undefined);
+      expect(items).toEqual([]);
+    });
+
+    it('should use session titles from callback', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const titles: Record<string, string> = {
+        'sess-1': 'Worker Session',
+        'orchestrator': 'Orchestrator Session',
+      };
+      const items = service.listReviewQueue((id) => titles[id]);
+
+      expect(items[0].sessionTitle).toBe('Worker Session');
+      expect(items[0].sourceSessionTitle).toBe('Orchestrator Session');
+    });
+
+    it('should fall back to session ID when title is not available', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const items = service.listReviewQueue(() => undefined);
+      expect(items[0].sessionTitle).toBe('sess-1');
+      expect(items[0].sourceSessionTitle).toBe('orchestrator');
+    });
+
+    it('should include correct annotation and comment counts', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+      service.addComment('worker-1', { file: 'a.ts', line: 1, body: 'Fix this' });
+
+      const items = service.listReviewQueue(() => undefined);
+      expect(items[0].annotationCount).toBe(1);
+      expect(items[0].commentCount).toBe(1);
+    });
+  });
+
+  describe('addComment', () => {
+    it('should store comment with generated id and timestamp', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const comment = service.addComment('worker-1', {
+        file: 'src/index.ts',
+        line: 15,
+        body: 'This needs refactoring',
+      });
+
+      expect(comment.id).toBeString();
+      expect(comment.id.length).toBeGreaterThan(0);
+      expect(comment.file).toBe('src/index.ts');
+      expect(comment.line).toBe(15);
+      expect(comment.body).toBe('This needs refactoring');
+      expect(comment.createdAt).toBeString();
+      expect(new Date(comment.createdAt).toISOString()).toBe(comment.createdAt);
+    });
+
+    it('should persist comment on the annotation set', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      service.addComment('worker-1', { file: 'a.ts', line: 1, body: 'Comment 1' });
+      service.addComment('worker-1', { file: 'b.ts', line: 2, body: 'Comment 2' });
+
+      const annotations = service.getAnnotations('worker-1');
+      expect(annotations!.comments).toHaveLength(2);
+    });
+
+    it('should throw for unknown worker', () => {
+      expect(() =>
+        service.addComment('nonexistent', { file: 'a.ts', line: 1, body: 'test' }),
+      ).toThrow('No annotations found for worker nonexistent');
+    });
+
+    it('should throw for worker without sourceSessionId', () => {
+      service.setAnnotations('worker-1', validInput());
+
+      expect(() =>
+        service.addComment('worker-1', { file: 'a.ts', line: 1, body: 'test' }),
+      ).toThrow('Worker worker-1 is not a review queue item');
+    });
+  });
+
+  describe('updateStatus', () => {
+    it('should change status to completed', () => {
+      service.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      service.updateStatus('worker-1', 'completed');
+
+      const annotations = service.getAnnotations('worker-1');
+      expect(annotations!.status).toBe('completed');
+    });
+
+    it('should throw for unknown worker', () => {
+      expect(() => service.updateStatus('nonexistent', 'completed')).toThrow(
+        'No annotations found for worker nonexistent',
+      );
+    });
+
+    it('should throw for non-review-queue item', () => {
+      service.setAnnotations('worker-1', validInput());
+
+      expect(() => service.updateStatus('worker-1', 'completed')).toThrow(
+        'Worker worker-1 is not a review queue item',
+      );
     });
   });
 

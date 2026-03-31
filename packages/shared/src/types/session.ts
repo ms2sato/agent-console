@@ -164,6 +164,7 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worktree-pull-completed': 24,
   'worktree-pull-failed': 25,
   'memo-updated': 26,
+  'review-queue-updated': 27,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
@@ -197,7 +198,8 @@ export type AppServerMessage =
   | { type: 'worker-message'; message: WorkerMessage }
   | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
   | { type: 'worker-restarted'; sessionId: string; workerId: string }
-  | { type: 'memo-updated'; sessionId: string; content: string };
+  | { type: 'memo-updated'; sessionId: string; content: string }
+  | { type: 'review-queue-updated' };
 
 /**
  * Valid message types for AppClientMessage.
