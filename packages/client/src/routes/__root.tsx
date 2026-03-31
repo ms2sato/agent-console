@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import { createRootRoute, Outlet, Link, useLocation, useNavigate } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { validateSessions, resumeSession, logout as logoutApi } from '../lib/api';
-import { worktreeKeys, sessionKeys } from '../lib/query-keys';
+import { validateSessions, resumeSession, logout as logoutApi, fetchReviewQueue } from '../lib/api';
+import { worktreeKeys, sessionKeys, reviewQueueKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
@@ -319,6 +319,7 @@ function RootLayout() {
 
             <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
               <ValidationWarningIndicator />
+              <ReviewNavLink />
               <JobsNavLink />
               <AgentsNavLink />
               <RepositoriesNavLink />
@@ -428,6 +429,43 @@ function RepositoriesNavLink() {
       }`}
     >
       Repositories
+    </Link>
+  );
+}
+
+function ReviewNavLink() {
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const isActive = location.pathname.startsWith('/review');
+
+  // Fetch review queue for pending count
+  const { data: groups } = useQuery({
+    queryKey: reviewQueueKeys.list(),
+    queryFn: fetchReviewQueue,
+  });
+
+  // Real-time updates via WebSocket
+  useAppWsEvent({
+    onReviewQueueUpdated: () => {
+      queryClient.invalidateQueries({ queryKey: reviewQueueKeys.root() });
+    },
+  });
+
+  const pendingCount = groups?.reduce((sum, g) => sum + g.items.length, 0) ?? 0;
+
+  return (
+    <Link
+      to="/review"
+      className={`text-sm py-1 px-2 rounded no-underline flex items-center gap-1.5 ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
+    >
+      Review
+      {pendingCount > 0 && (
+        <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none">
+          {pendingCount}
+        </span>
+      )}
     </Link>
   );
 }

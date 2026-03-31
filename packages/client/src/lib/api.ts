@@ -27,6 +27,8 @@ import type {
   LoginRequest,
   LoginResponse,
   CurrentUserResponse,
+  ReviewQueueGroup,
+  ReviewComment,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -850,4 +852,44 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     await handleApiError(res, 'Failed to fetch current user');
   }
   return res.json() as Promise<CurrentUserResponse>;
+}
+
+// ===========================================================================
+// Review Queue
+// ===========================================================================
+
+export async function fetchReviewQueue(): Promise<ReviewQueueGroup[]> {
+  const res = await api['review-queue'].$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch review queue');
+  }
+  return res.json() as Promise<ReviewQueueGroup[]>;
+}
+
+export async function addReviewComment(
+  workerId: string,
+  comment: { file: string; line: number; body: string }
+): Promise<ReviewComment> {
+  const res = await api['review-queue'][':workerId'].comments.$post({
+    param: { workerId },
+    json: comment,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to add review comment');
+  }
+  return res.json() as Promise<ReviewComment>;
+}
+
+export async function updateReviewStatus(
+  workerId: string,
+  status: 'completed'
+): Promise<{ workerId: string; status: string }> {
+  const res = await api['review-queue'][':workerId'].status.$patch({
+    param: { workerId },
+    json: { status },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update review status');
+  }
+  return res.json() as Promise<{ workerId: string; status: string }>;
 }

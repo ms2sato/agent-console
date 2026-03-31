@@ -13,10 +13,12 @@ import { Route as MaintenanceRouteImport } from './routes/maintenance'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
+import { Route as ReviewIndexRouteImport } from './routes/review/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as WorktreeDeletionTasksTaskIdRouteImport } from './routes/worktree-deletion-tasks/$taskId'
 import { Route as WorktreeCreationTasksTaskIdRouteImport } from './routes/worktree-creation-tasks/$taskId'
+import { Route as ReviewSourceSessionIdRouteImport } from './routes/review/$sourceSessionId'
 import { Route as SettingsRepositoriesIndexRouteImport } from './routes/settings/repositories/index'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as JobsJobIdIndexRouteImport } from './routes/jobs/$jobId/index'
@@ -46,6 +48,11 @@ const SettingsIndexRoute = SettingsIndexRouteImport.update({
   path: '/settings/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReviewIndexRoute = ReviewIndexRouteImport.update({
+  id: '/review/',
+  path: '/review/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const JobsIndexRoute = JobsIndexRouteImport.update({
   id: '/jobs/',
   path: '/jobs/',
@@ -68,6 +75,11 @@ const WorktreeCreationTasksTaskIdRoute =
     path: '/worktree-creation-tasks/$taskId',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ReviewSourceSessionIdRoute = ReviewSourceSessionIdRouteImport.update({
+  id: '/review/$sourceSessionId',
+  path: '/review/$sourceSessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRepositoriesIndexRoute =
   SettingsRepositoriesIndexRouteImport.update({
     id: '/settings/repositories/',
@@ -117,10 +129,12 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/maintenance': typeof MaintenanceRoute
+  '/review/$sourceSessionId': typeof ReviewSourceSessionIdRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/jobs/': typeof JobsIndexRoute
+  '/review/': typeof ReviewIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
@@ -135,10 +149,12 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/maintenance': typeof MaintenanceRoute
+  '/review/$sourceSessionId': typeof ReviewSourceSessionIdRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents': typeof AgentsIndexRoute
   '/jobs': typeof JobsIndexRoute
+  '/review': typeof ReviewIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
@@ -154,10 +170,12 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/maintenance': typeof MaintenanceRoute
+  '/review/$sourceSessionId': typeof ReviewSourceSessionIdRoute
   '/worktree-creation-tasks/$taskId': typeof WorktreeCreationTasksTaskIdRoute
   '/worktree-deletion-tasks/$taskId': typeof WorktreeDeletionTasksTaskIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/jobs/': typeof JobsIndexRoute
+  '/review/': typeof ReviewIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/agents/$agentId/edit': typeof AgentsAgentIdEditRoute
   '/sessions/$sessionId/$workerId': typeof SessionsSessionIdWorkerIdRoute
@@ -174,10 +192,12 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/maintenance'
+    | '/review/$sourceSessionId'
     | '/worktree-creation-tasks/$taskId'
     | '/worktree-deletion-tasks/$taskId'
     | '/agents/'
     | '/jobs/'
+    | '/review/'
     | '/settings/'
     | '/agents/$agentId/edit'
     | '/sessions/$sessionId/$workerId'
@@ -192,10 +212,12 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/maintenance'
+    | '/review/$sourceSessionId'
     | '/worktree-creation-tasks/$taskId'
     | '/worktree-deletion-tasks/$taskId'
     | '/agents'
     | '/jobs'
+    | '/review'
     | '/settings'
     | '/agents/$agentId/edit'
     | '/sessions/$sessionId/$workerId'
@@ -210,10 +232,12 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/maintenance'
+    | '/review/$sourceSessionId'
     | '/worktree-creation-tasks/$taskId'
     | '/worktree-deletion-tasks/$taskId'
     | '/agents/'
     | '/jobs/'
+    | '/review/'
     | '/settings/'
     | '/agents/$agentId/edit'
     | '/sessions/$sessionId/$workerId'
@@ -229,10 +253,12 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
   MaintenanceRoute: typeof MaintenanceRoute
+  ReviewSourceSessionIdRoute: typeof ReviewSourceSessionIdRoute
   WorktreeCreationTasksTaskIdRoute: typeof WorktreeCreationTasksTaskIdRoute
   WorktreeDeletionTasksTaskIdRoute: typeof WorktreeDeletionTasksTaskIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   JobsIndexRoute: typeof JobsIndexRoute
+  ReviewIndexRoute: typeof ReviewIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   AgentsAgentIdEditRoute: typeof AgentsAgentIdEditRoute
   SessionsSessionIdWorkerIdRoute: typeof SessionsSessionIdWorkerIdRoute
@@ -274,6 +300,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/review/': {
+      id: '/review/'
+      path: '/review'
+      fullPath: '/review/'
+      preLoaderRoute: typeof ReviewIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/jobs/': {
       id: '/jobs/'
       path: '/jobs'
@@ -300,6 +333,13 @@ declare module '@tanstack/react-router' {
       path: '/worktree-creation-tasks/$taskId'
       fullPath: '/worktree-creation-tasks/$taskId'
       preLoaderRoute: typeof WorktreeCreationTasksTaskIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/review/$sourceSessionId': {
+      id: '/review/$sourceSessionId'
+      path: '/review/$sourceSessionId'
+      fullPath: '/review/$sourceSessionId'
+      preLoaderRoute: typeof ReviewSourceSessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/repositories/': {
@@ -365,10 +405,12 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
   MaintenanceRoute: MaintenanceRoute,
+  ReviewSourceSessionIdRoute: ReviewSourceSessionIdRoute,
   WorktreeCreationTasksTaskIdRoute: WorktreeCreationTasksTaskIdRoute,
   WorktreeDeletionTasksTaskIdRoute: WorktreeDeletionTasksTaskIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   JobsIndexRoute: JobsIndexRoute,
+  ReviewIndexRoute: ReviewIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   AgentsAgentIdEditRoute: AgentsAgentIdEditRoute,
   SessionsSessionIdWorkerIdRoute: SessionsSessionIdWorkerIdRoute,
