@@ -8,10 +8,12 @@ import {
 import { useSuspenseQuery, useQuery, useMutation } from '@tanstack/react-query';
 import { fetchRepositories, unregisterRepository, fetchAgents } from '../../../../lib/api';
 import { repositoryKeys, agentKeys } from '../../../../lib/query-keys';
+import { PageBreadcrumb } from '../../../../components/PageBreadcrumb';
+import { PagePendingFallback } from '../../../../components/PagePendingFallback';
+import { PageErrorFallback } from '../../../../components/PageErrorFallback';
 import { ConfirmDialog } from '../../../../components/ui/confirm-dialog';
 import { SectionHeader, DetailRow } from '../../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../../components/ui/error-dialog';
-import { Spinner } from '../../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/settings/repositories/$repositoryId/')({
   component: RepositoryDetailPage,
@@ -20,39 +22,23 @@ export const Route = createFileRoute('/settings/repositories/$repositoryId/')({
 });
 
 export function RepositoryDetailPending() {
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-gray-500">
-        <Spinner size="sm" />
-        <span>Loading repository...</span>
-      </div>
-    </div>
-  );
+  return <PagePendingFallback message="Loading repository..." />;
 }
 
 export function RepositoryDetailError({ error, reset }: ErrorComponentProps) {
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/settings/repositories" className="hover:text-white">Repositories</Link>
-        <span>/</span>
-        <span className="text-white">Error</span>
-      </div>
-      <div className="card text-center py-10">
-        <p className="text-red-400 mb-2">Failed to load repository</p>
-        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
-        <div className="flex justify-center gap-2">
-          <button onClick={reset} className="btn btn-secondary">
-            Retry
-          </button>
-          <Link to="/settings/repositories" className="btn btn-primary">
-            Back to Repositories
-          </Link>
-        </div>
-      </div>
-    </div>
+    <PageErrorFallback
+      error={error}
+      reset={reset}
+      breadcrumbItems={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Repositories', to: '/settings/repositories' },
+        { label: 'Error' },
+      ]}
+      errorMessage="Failed to load repository"
+      backTo="/settings/repositories"
+      backLabel="Back to Repositories"
+    />
   );
 }
 
@@ -99,13 +85,11 @@ function RepositoryDetailPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/settings/repositories" className="hover:text-white">Repositories</Link>
-        <span>/</span>
-        <span className="text-white">{repository.name}</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Repositories', to: '/settings/repositories' },
+        { label: repository.name },
+      ]} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

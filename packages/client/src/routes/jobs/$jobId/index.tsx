@@ -10,10 +10,12 @@ import { JOB_STATUS } from '@agent-console/shared';
 import { fetchJob, retryJob, cancelJob } from '../../../lib/api';
 import { jobKeys } from '../../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../../lib/format';
+import { PageBreadcrumb } from '../../../components/PageBreadcrumb';
+import { PagePendingFallback } from '../../../components/PagePendingFallback';
+import { PageErrorFallback } from '../../../components/PageErrorFallback';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
 import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
-import { Spinner } from '../../../components/ui/Spinner';
 import { StatusBadge } from '../../../components/jobs';
 
 export const Route = createFileRoute('/jobs/$jobId/')({
@@ -24,39 +26,23 @@ export const Route = createFileRoute('/jobs/$jobId/')({
 });
 
 export function JobDetailPending() {
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-gray-500">
-        <Spinner size="sm" />
-        <span>Loading job...</span>
-      </div>
-    </div>
-  );
+  return <PagePendingFallback message="Loading job..." />;
 }
 
 export function JobDetailError({ error, reset }: ErrorComponentProps) {
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/jobs" className="hover:text-white">Jobs</Link>
-        <span>/</span>
-        <span className="text-white">Error</span>
-      </div>
-      <div className="card text-center py-10">
-        <p className="text-red-400 mb-2">Failed to load job</p>
-        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
-        <div className="flex justify-center gap-2">
-          <button onClick={reset} className="btn btn-secondary">
-            Retry
-          </button>
-          <Link to="/jobs" className="btn btn-primary">
-            Back to Jobs
-          </Link>
-        </div>
-      </div>
-    </div>
+    <PageErrorFallback
+      error={error}
+      reset={reset}
+      breadcrumbItems={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Jobs', to: '/jobs' },
+        { label: 'Error' },
+      ]}
+      errorMessage="Failed to load job"
+      backTo="/jobs"
+      backLabel="Back to Jobs"
+    />
   );
 }
 
@@ -108,13 +94,11 @@ function JobDetailPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/jobs" className="hover:text-white">Jobs</Link>
-        <span>/</span>
-        <span className="text-white">{job.type}</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Jobs', to: '/jobs' },
+        { label: job.type },
+      ]} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

@@ -1,4 +1,5 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
+import { PageBreadcrumb } from '../../../components/PageBreadcrumb';
 import { RepositoryList } from '../../../components/repositories/RepositoryList';
 
 export const Route = createFileRoute('/settings/repositories/')({
@@ -9,11 +10,10 @@ function RepositoriesPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <span className="text-white">Repositories</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Repositories' },
+      ]} />
 
       {/* Header */}
       <h1 className="text-2xl font-semibold mb-2">Repository Settings</h1>
