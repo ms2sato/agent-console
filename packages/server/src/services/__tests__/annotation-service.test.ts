@@ -96,10 +96,12 @@ describe('AnnotationService', () => {
       expect(service.getMetadata('worker-1')).toBeUndefined();
     });
 
-    it('should throw when sourceSessionId is provided without sessionId', () => {
-      expect(() =>
-        service.setAnnotations('worker-1', validInput(), { sourceSessionId: 'orch-1' }),
-      ).toThrow('sessionId is required when sourceSessionId is provided');
+    it('should delete stale metadata when re-setting annotations without sessionId', () => {
+      service.setAnnotations('worker-1', validInput(), { sessionId: 'sess-1' });
+      expect(service.getMetadata('worker-1')).toEqual({ sessionId: 'sess-1' });
+
+      service.setAnnotations('worker-1', validInput());
+      expect(service.getMetadata('worker-1')).toBeUndefined();
     });
   });
 

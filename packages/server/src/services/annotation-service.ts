@@ -11,12 +11,18 @@ import { createLogger } from '../lib/logger.js';
 const logger = createLogger('annotation-service');
 
 /** Options for setAnnotations controlling review queue behavior. */
-export interface SetAnnotationsOptions {
-  /** The session ID that owns the worker. Stored as internal metadata for review queue lookups. */
-  sessionId?: string;
-  /** Source session that requested the review (e.g., orchestrator). When set, the annotation becomes a review queue item. */
-  sourceSessionId?: string;
-}
+export type SetAnnotationsOptions =
+  | {
+      /** The session ID that owns the worker. Stored as internal metadata for review queue lookups. */
+      sessionId: string;
+      /** Source session that requested the review (e.g., orchestrator). When set, the annotation becomes a review queue item. */
+      sourceSessionId: string;
+    }
+  | {
+      /** The session ID that owns the worker. Optional for non-queue annotation writes. */
+      sessionId?: string;
+      sourceSessionId?: undefined;
+    };
 
 /**
  * In-memory store for diff review annotations, keyed by workerId.
@@ -37,10 +43,6 @@ export class AnnotationService {
   ): ReviewAnnotationSet {
     this.validateInput(data);
 
-    if (options?.sourceSessionId && !options.sessionId) {
-      throw new Error('sessionId is required when sourceSessionId is provided');
-    }
-
     const annotationSet: ReviewAnnotationSet = {
       workerId,
       annotations: data.annotations,
@@ -54,6 +56,8 @@ export class AnnotationService {
     this.store.set(workerId, annotationSet);
     if (options?.sessionId) {
       this.metadata.set(workerId, { sessionId: options.sessionId });
+    } else {
+      this.metadata.delete(workerId);
     }
     logger.info({ workerId, annotationCount: data.annotations.length }, 'Annotations stored');
     return annotationSet;
@@ -90,6 +94,7 @@ export class AnnotationService {
     const items: ReviewQueueItem[] = [];
     for (const [workerId, annotationSet] of this.store) {
       if (!annotationSet.sourceSessionId) continue;
+      if (annotationSet.status !== 'pending') continue;
       const meta = this.metadata.get(workerId);
       if (!meta) continue;
       items.push({

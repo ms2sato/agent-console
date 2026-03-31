@@ -151,17 +151,17 @@ describe('Review Queue API', () => {
       expect(comment.id).toBeString();
       expect(comment.createdAt).toBeString();
 
-      // Verify PTY notification was sent to source session's agent worker
+      // Verify PTY notification was sent to source session's agent worker via writePtyNotification
       expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith(
-        'orchestrator', 'agent-w', expect.stringContaining('[Review Comment]'),
+        'orchestrator', 'agent-w', expect.stringContaining('[internal:review-comment]'),
       );
-      // Verify notification format includes session title, file path, line number, and body
+      // Verify structured notification format includes key=value fields
       const notificationCall = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0];
       const notification = notificationCall[2] as string;
-      expect(notification).toContain('Session: Worker Session 1');
-      expect(notification).toContain('File: src/index.ts');
-      expect(notification).toContain('Line: 15');
-      expect(notification).toContain('Needs refactoring');
+      expect(notification).toContain('session=');
+      expect(notification).toContain('file=src/index.ts');
+      expect(notification).toContain('line=15');
+      expect(notification).toContain('intent=triage');
 
       // Verify broadcastToApp was called
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'review-queue-updated' });

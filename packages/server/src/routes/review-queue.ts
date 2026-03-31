@@ -7,6 +7,7 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { broadcastToApp } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
+import { writePtyNotification } from '../lib/pty-notification.js';
 
 const logger = createLogger('api:review-queue');
 
@@ -28,10 +29,9 @@ export const reviewQueue = new Hono<AppBindings>()
 
     const items = annotationService.listReviewQueue(getSessionTitle);
 
-    // Group by sourceSessionId, only include pending items
+    // Group by sourceSessionId
     const groupMap = new Map<string, ReviewQueueGroup>();
     for (const item of items) {
-      if (item.status !== 'pending') continue;
       let group = groupMap.get(item.sourceSessionId);
       if (!group) {
         group = {
@@ -67,15 +67,21 @@ export const reviewQueue = new Hono<AppBindings>()
           const targetSession = meta ? sessionManager.getSession(meta.sessionId) : undefined;
           const targetTitle = targetSession?.title ?? 'Unknown session';
 
-          const notification = `\n[Review Comment] Session: ${targetTitle}\nFile: ${file}, Line: ${line}\n---\n${body}`;
-          sessionManager.writeWorkerInput(annotationSet.sourceSessionId, agentWorker.id, notification);
-          setTimeout(() => {
-            try {
-              sessionManager.writeWorkerInput(annotationSet.sourceSessionId!, agentWorker.id, '\r');
-            } catch {
-              // PTY may have been disposed
-            }
-          }, 150);
+          const writeInput = (data: string) =>
+            sessionManager.writeWorkerInput(annotationSet.sourceSessionId!, agentWorker.id, data);
+
+          writePtyNotification({
+            kind: 'internal-review-comment',
+            tag: 'internal:review-comment',
+            fields: {
+              session: targetTitle,
+              file,
+              line: String(line),
+              body,
+            },
+            intent: 'triage',
+            writeInput,
+          });
         }
       }
     } catch (err) {
