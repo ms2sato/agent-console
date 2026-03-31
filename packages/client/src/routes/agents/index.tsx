@@ -5,6 +5,7 @@ import type { AgentDefinition } from '@agent-console/shared';
 import { unregisterAgent } from '../../lib/api';
 import { agentKeys } from '../../lib/query-keys';
 import { useAgents } from '../../components/AgentSelector';
+import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
@@ -55,11 +56,10 @@ function AgentsPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <span className="text-white">Agents</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Agents' },
+      ]} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

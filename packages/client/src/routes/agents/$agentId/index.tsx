@@ -8,11 +8,13 @@ import {
 import { useSuspenseQuery, useMutation } from '@tanstack/react-query';
 import { fetchAgent, unregisterAgent } from '../../../lib/api';
 import { agentKeys } from '../../../lib/query-keys';
+import { PageBreadcrumb } from '../../../components/PageBreadcrumb';
+import { PagePendingFallback } from '../../../components/PagePendingFallback';
+import { PageErrorFallback } from '../../../components/PageErrorFallback';
 import { CapabilityIndicator } from '../../../components/agents';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
 import { SectionHeader, DetailRow } from '../../../components/ui/detail-layout';
 import { ErrorDialog, useErrorDialog } from '../../../components/ui/error-dialog';
-import { Spinner } from '../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/agents/$agentId/')({
   component: AgentDetailPage,
@@ -21,39 +23,23 @@ export const Route = createFileRoute('/agents/$agentId/')({
 });
 
 export function AgentDetailPending() {
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-gray-500">
-        <Spinner size="sm" />
-        <span>Loading agent...</span>
-      </div>
-    </div>
-  );
+  return <PagePendingFallback message="Loading agent..." />;
 }
 
 export function AgentDetailError({ error, reset }: ErrorComponentProps) {
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/agents" className="hover:text-white">Agents</Link>
-        <span>/</span>
-        <span className="text-white">Error</span>
-      </div>
-      <div className="card text-center py-10">
-        <p className="text-red-400 mb-2">Failed to load agent</p>
-        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
-        <div className="flex justify-center gap-2">
-          <button onClick={reset} className="btn btn-secondary">
-            Retry
-          </button>
-          <Link to="/agents" className="btn btn-primary">
-            Back to Agents
-          </Link>
-        </div>
-      </div>
-    </div>
+    <PageErrorFallback
+      error={error}
+      reset={reset}
+      breadcrumbItems={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Agents', to: '/agents' },
+        { label: 'Error' },
+      ]}
+      errorMessage="Failed to load agent"
+      backTo="/agents"
+      backLabel="Back to Agents"
+    />
   );
 }
 
@@ -92,13 +78,11 @@ function AgentDetailPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/agents" className="hover:text-white">Agents</Link>
-        <span>/</span>
-        <span className="text-white">{agent.name}</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Agents', to: '/agents' },
+        { label: agent.name },
+      ]} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

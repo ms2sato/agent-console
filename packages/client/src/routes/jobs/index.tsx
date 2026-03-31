@@ -5,6 +5,7 @@ import { JOB_STATUS, JOB_TYPES, type Job, type JobStatus, type JobType } from '@
 import { fetchJobs, fetchJobStats, retryJob, cancelJob, type FetchJobsParams } from '../../lib/api';
 import { jobKeys } from '../../lib/query-keys';
 import { formatTimestamp } from '../../lib/format';
+import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { StatusBadge } from '../../components/jobs';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
@@ -113,13 +114,10 @@ function JobsPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">
-          Agent Console
-        </Link>
-        <span>/</span>
-        <span className="text-white">Jobs</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Jobs' },
+      ]} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
-import { createFileRoute, Link, useNavigate, type ErrorComponentProps } from '@tanstack/react-router';
+import { createFileRoute, useNavigate, type ErrorComponentProps } from '@tanstack/react-router';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { fetchAgent } from '../../../lib/api';
 import { agentKeys } from '../../../lib/query-keys';
+import { PageBreadcrumb } from '../../../components/PageBreadcrumb';
+import { PagePendingFallback } from '../../../components/PagePendingFallback';
+import { PageErrorFallback } from '../../../components/PageErrorFallback';
 import { EditAgentForm } from '../../../components/agents';
-import { Spinner } from '../../../components/ui/Spinner';
 
 export const Route = createFileRoute('/agents/$agentId/edit')({
   component: AgentEditPage,
@@ -13,39 +15,23 @@ export const Route = createFileRoute('/agents/$agentId/edit')({
 });
 
 export function AgentEditPending() {
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-gray-500">
-        <Spinner size="sm" />
-        <span>Loading agent...</span>
-      </div>
-    </div>
-  );
+  return <PagePendingFallback message="Loading agent..." />;
 }
 
 export function AgentEditError({ error, reset }: ErrorComponentProps) {
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/agents" className="hover:text-white">Agents</Link>
-        <span>/</span>
-        <span className="text-white">Error</span>
-      </div>
-      <div className="card text-center py-10">
-        <p className="text-red-400 mb-2">Failed to load agent</p>
-        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
-        <div className="flex justify-center gap-2">
-          <button onClick={reset} className="btn btn-secondary">
-            Retry
-          </button>
-          <Link to="/agents" className="btn btn-primary">
-            Back to Agents
-          </Link>
-        </div>
-      </div>
-    </div>
+    <PageErrorFallback
+      error={error}
+      reset={reset}
+      breadcrumbItems={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Agents', to: '/agents' },
+        { label: 'Error' },
+      ]}
+      errorMessage="Failed to load agent"
+      backTo="/agents"
+      backLabel="Back to Agents"
+    />
   );
 }
 
@@ -78,17 +64,12 @@ function AgentEditPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-        <Link to="/" className="hover:text-white">Agent Console</Link>
-        <span>/</span>
-        <Link to="/agents" className="hover:text-white">Agents</Link>
-        <span>/</span>
-        <Link to="/agents/$agentId" params={{ agentId }} className="hover:text-white">
-          {agent.name}
-        </Link>
-        <span>/</span>
-        <span className="text-white">Edit</span>
-      </div>
+      <PageBreadcrumb items={[
+        { label: 'Agent Console', to: '/' },
+        { label: 'Agents', to: '/agents' },
+        { label: agent.name, to: '/agents/$agentId', params: { agentId } },
+        { label: 'Edit' },
+      ]} />
 
       <h1 className="text-2xl font-semibold mb-6">Edit Agent</h1>
 
