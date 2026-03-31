@@ -281,6 +281,7 @@ function ReviewDiffPage() {
           onCommentBodyChange={setCommentBody}
           onSubmitComment={handleSubmitComment}
           onCancelComment={handleCancelComment}
+          onLineClick={setCommentState}
         />
       ) : (
         <div className="flex items-center justify-center flex-1 text-gray-500">
@@ -304,6 +305,7 @@ interface ReviewDiffContentProps {
   onCommentBodyChange: (body: string) => void;
   onSubmitComment: () => void;
   onCancelComment: () => void;
+  onLineClick: (state: { file: string; line: number }) => void;
 }
 
 function ReviewDiffContent({
@@ -319,6 +321,7 @@ function ReviewDiffContent({
   onCommentBodyChange,
   onSubmitComment,
   onCancelComment,
+  onLineClick,
 }: ReviewDiffContentProps) {
   const {
     diffData,
@@ -408,6 +411,7 @@ function ReviewDiffContent({
             onRequestExpand={requestFileLines}
             annotationSet={annotationSet}
             showFullDiff={showFullDiff}
+            onLineClick={(file, line) => onLineClick({ file, line })}
           />
         </ErrorBoundary>
 
