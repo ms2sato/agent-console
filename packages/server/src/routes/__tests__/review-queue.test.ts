@@ -7,8 +7,9 @@ import { annotationService } from '../../services/annotation-service.js';
 import type { ReviewAnnotationInput, ReviewComment, ReviewQueueGroup } from '@agent-console/shared';
 
 // Mock broadcastToApp to prevent WebSocket side effects in tests
+const mockBroadcastToApp = mock(() => {});
 mock.module('../../websocket/routes.js', () => ({
-  broadcastToApp: mock(() => {}),
+  broadcastToApp: mockBroadcastToApp,
 }));
 
 // Dynamically import the route after mocking
@@ -50,6 +51,8 @@ describe('Review Queue API', () => {
     for (const workerId of ['worker-1', 'worker-2', 'worker-3', 'worker-4']) {
       annotationService.clearAnnotations(workerId);
     }
+
+    mockBroadcastToApp.mockClear();
 
     mockSessionManager = createMockSessionManager({
       'sess-1': { title: 'Worker Session 1', workers: [{ id: 'worker-1', type: 'git-diff' }] },
@@ -147,6 +150,21 @@ describe('Review Queue API', () => {
       expect(comment.body).toBe('Needs refactoring');
       expect(comment.id).toBeString();
       expect(comment.createdAt).toBeString();
+
+      // Verify PTY notification was sent to source session's agent worker
+      expect(mockSessionManager.writeWorkerInput).toHaveBeenCalledWith(
+        'orchestrator', 'agent-w', expect.stringContaining('[Review Comment]'),
+      );
+      // Verify notification format includes session title, file path, line number, and body
+      const notificationCall = (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mock.calls[0];
+      const notification = notificationCall[2] as string;
+      expect(notification).toContain('Session: Worker Session 1');
+      expect(notification).toContain('File: src/index.ts');
+      expect(notification).toContain('Line: 15');
+      expect(notification).toContain('Needs refactoring');
+
+      // Verify broadcastToApp was called
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'review-queue-updated' });
     });
 
     it('should return 404 for unknown worker', async () => {
@@ -242,6 +260,9 @@ describe('Review Queue API', () => {
       // Verify the status was actually updated
       const annotations = annotationService.getAnnotations('worker-1');
       expect(annotations!.status).toBe('completed');
+
+      // Verify broadcastToApp was called
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'review-queue-updated' });
     });
 
     it('should return 404 for unknown worker', async () => {
