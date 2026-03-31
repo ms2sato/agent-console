@@ -84,3 +84,10 @@ export const notificationKeys = {
   /** Notification status */
   status: () => ['notification-status'] as const,
 } as const;
+
+export const reviewQueueKeys = {
+  /** Root key for invalidating all review queue queries */
+  root: () => ['review-queue'] as const,
+  /** Full queue list */
+  list: () => ['review-queue', 'list'] as const,
+} as const;

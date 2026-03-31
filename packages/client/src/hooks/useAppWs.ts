@@ -71,6 +71,8 @@ interface UseAppWsEventOptions {
   onInboundEvent?: (sessionId: string, event: InboundEventSummary) => void;
   /** Called when a session memo is updated */
   onMemoUpdated?: (sessionId: string, content: string) => void;
+  /** Called when the review queue is updated (new items, comments, status changes) */
+  onReviewQueueUpdated?: () => void;
 }
 
 /**
@@ -210,7 +212,8 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           optionsRef.current.onMemoUpdated?.(msg.sessionId, msg.content);
           break;
         case 'review-queue-updated':
-          // Phase 2 will add client-side handling
+          logger.debug('[WebSocket] review-queue-updated');
+          optionsRef.current.onReviewQueueUpdated?.();
           break;
         default: {
           const _exhaustive: never = msg;

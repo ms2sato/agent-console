@@ -64,6 +64,8 @@ interface DiffViewerProps {
   onRequestExpand?: (path: string, startLine: number, endLine: number) => void;
   annotationSet?: ReviewAnnotationSet | null;
   showFullDiff?: boolean;
+  /** Called when a diff line number is clicked (for inline commenting) */
+  onLineClick?: (file: string, line: number) => void;
 }
 
 /**
@@ -165,7 +167,7 @@ function getOverlappingAnnotations(hunk: { newStart: number; newLines: number },
   return annotations.filter((a) => a.startLine <= hunkEnd && a.endLine >= hunkStart);
 }
 
-export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expandedLines, onRequestExpand, annotationSet, showFullDiff }: DiffViewerProps) {
+export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expandedLines, onRequestExpand, annotationSet, showFullDiff, onLineClick }: DiffViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -410,6 +412,7 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
                   onRequestExpand={onRequestExpand ? (startLine, endLine) => onRequestExpand(file.path, startLine, endLine) : undefined}
                   fileAnnotations={fileAnnotations.length > 0 ? fileAnnotations : undefined}
                   showFullDiff={showFullDiff}
+                  onLineClick={onLineClick ? (line: number) => onLineClick(file.path, line) : undefined}
                 />
               ) : (
                 <div className="flex items-center justify-center py-8 text-gray-500">
@@ -454,6 +457,7 @@ interface FileHunksProps {
   onRequestExpand?: (startLine: number, endLine: number) => void;
   fileAnnotations?: ReviewAnnotation[];
   showFullDiff?: boolean;
+  onLineClick?: (line: number) => void;
 }
 
 const MAX_EXPAND_LINES = 20;
@@ -527,7 +531,7 @@ function AnnotationReasonBanner({ annotations }: { annotations: ReviewAnnotation
   );
 }
 
-function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnotations, showFullDiff }: FileHunksProps) {
+function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnotations, showFullDiff, onLineClick }: FileHunksProps) {
   const language = getLanguageFromPath(filePath);
   const isFilteredView = fileAnnotations != null && fileAnnotations.length > 0 && !showFullDiff;
   const hasAnnotations = fileAnnotations != null && fileAnnotations.length > 0;
@@ -711,7 +715,16 @@ function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnot
                 <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
                   {oldLineNum !== null ? oldLineNum : ''}
                 </div>
-                <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
+                <div
+                  className={`w-12 text-right px-2 select-none shrink-0 border-r border-gray-800 ${
+                    onLineClick && newLineNum !== null
+                      ? 'text-gray-500 cursor-pointer hover:text-indigo-400 hover:bg-indigo-900/20'
+                      : 'text-gray-600'
+                  }`}
+                  onClick={onLineClick && newLineNum !== null ? () => onLineClick(newLineNum) : undefined}
+                  role={onLineClick && newLineNum !== null ? 'button' : undefined}
+                  title={onLineClick && newLineNum !== null ? 'Click to comment' : undefined}
+                >
                   {newLineNum !== null ? newLineNum : ''}
                 </div>
                 <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
