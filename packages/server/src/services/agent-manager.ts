@@ -91,6 +91,14 @@ export class AgentManager {
   }
 
   /**
+   * Find agents by name (exact, case-sensitive match).
+   * Returns matching agents array to distinguish 0/1/multiple matches.
+   */
+  getAgentsByName(name: string): AgentDefinition[] {
+    return this.getAllAgents().filter((agent) => agent.name === name);
+  }
+
+  /**
    * Get the default agent (Claude Code)
    */
   getDefaultAgent(): AgentDefinition {
