@@ -152,12 +152,15 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> escalate to the owner
   4. If all checks pass -> report to the owner as ready for review (use `write_memo` so the owner sees it)
-- **CodeRabbit Rate Limit handling**: Before requesting a CodeRabbit re-review (`@coderabbitai review`), ALWAYS check the rate limit status first:
-  1. Check recent CodeRabbit comments on the PR and nearby PRs:
+- **CodeRabbit review strategy**: Two layers of CodeRabbit review are used:
+  1. **Pre-PR: CLI self-review by the coding agent** — delegation instructions include a step to run `coderabbit review --agent --base main` before creating the PR (if CLI is installed). This catches CRITICAL/HIGH issues early without rate limit concerns.
+  2. **Post-PR: GitHub bot auto-review** — triggered automatically when the PR is created. May hit rate limits.
+- **CodeRabbit Rate Limit handling** (for the GitHub bot): Before requesting a CodeRabbit re-review (`@coderabbitai review`), ALWAYS check the rate limit status first:
+  1. Check recent CodeRabbit comments on the PR:
      ```bash
      gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[] | select(.user.login == "coderabbitai[bot]") | {created_at, body: .body[:300]}'
      ```
-  2. Look for "Rate limit exceeded" and "wait **XX minutes**" in the comment body
+  2. Look for "Rate limit exceeded" and "wait **XX minutes and YY seconds**" in the comment body
   3. Calculate when the limit expires: `comment.created_at + wait_minutes`
   4. Create a timer via `create_timer` for the remaining wait duration
   5. When the timer fires, post `@coderabbitai review` as a PR comment
