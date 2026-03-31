@@ -34,7 +34,10 @@ function ReviewQueuePage() {
     },
   });
 
-  const totalPending = groups?.reduce((sum, g) => sum + g.items.length, 0) ?? 0;
+  const totalPending = groups?.reduce(
+    (sum, g) => sum + g.items.filter((i) => i.status === 'pending').length,
+    0
+  ) ?? 0;
 
   return (
     <div className="p-6 max-w-4xl mx-auto">

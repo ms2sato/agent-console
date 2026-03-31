@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ReviewQueueItem } from '@agent-console/shared';
@@ -34,6 +34,7 @@ function ReviewDiffPage() {
   const [visibleFile, setVisibleFile] = useState<string | null>(null);
   // Track file to scroll to
   const [scrollToFile, setScrollToFile] = useState<string | null>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch review queue and filter to this source session
   const { data: groups, isLoading: isLoadingQueue } = useQuery({
@@ -53,11 +54,14 @@ function ReviewDiffPage() {
   const items: ReviewQueueItem[] = group?.items ?? [];
   const currentItem = items[currentIndex] ?? null;
 
-  // Clamp index if items change
-  const safeIndex = items.length > 0 ? Math.min(currentIndex, items.length - 1) : 0;
-  if (safeIndex !== currentIndex && items.length > 0) {
-    setCurrentIndex(safeIndex);
-  }
+  // Clamp index when items change (must not call setState during render)
+  useEffect(() => {
+    if (items.length === 0) return;
+    const safeIndex = Math.min(currentIndex, items.length - 1);
+    if (safeIndex !== currentIndex) {
+      setCurrentIndex(safeIndex);
+    }
+  }, [items.length, currentIndex]);
 
   // Navigation
   const hasPrev = currentIndex > 0;
@@ -105,17 +109,28 @@ function ReviewDiffPage() {
 
   const handleMarkComplete = useCallback(() => {
     if (!currentItem) return;
-    completeMutation.mutate(currentItem.workerId);
-    // Auto-advance to next if available
-    if (hasNext) {
-      setCurrentIndex((i) => i + 1);
-    }
+    completeMutation.mutate(currentItem.workerId, {
+      onSuccess: () => {
+        // Auto-advance to next after successful completion
+        if (hasNext) {
+          setCurrentIndex((i) => i + 1);
+        }
+      },
+    });
   }, [currentItem, completeMutation, hasNext]);
 
   const handleFileClick = useCallback((filePath: string) => {
     setScrollToFile(filePath);
     setVisibleFile(filePath);
-    setTimeout(() => setScrollToFile(null), 1000);
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => setScrollToFile(null), 1000);
+  }, []);
+
+  // Cleanup scroll timer on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    };
   }, []);
 
   const handleFileVisible = useCallback((filePath: string) => {
