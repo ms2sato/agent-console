@@ -30,8 +30,8 @@ async function getOrgRepoFromPath(repoPath: string): Promise<string> {
 }
 
 export interface RepositoryLifecycleCallbacks {
-  onRepositoryCreated: (repository: Repository) => void;
-  onRepositoryUpdated: (repository: Repository) => void;
+  onRepositoryCreated: (repository: Repository) => void | Promise<void>;
+  onRepositoryUpdated: (repository: Repository) => void | Promise<void>;
   onRepositoryDeleted: (repositoryId: string) => void;
 }
 
@@ -147,7 +147,7 @@ export class RepositoryManager {
 
     // Callback fires after successful save - clients will receive state update
     // only after database write is confirmed
-    this.lifecycleCallbacks?.onRepositoryCreated(repository);
+    await this.lifecycleCallbacks?.onRepositoryCreated(repository);
 
     return repository;
   }
@@ -198,7 +198,7 @@ export class RepositoryManager {
 
     // Callback fires after successful update - clients will receive state update
     // only after database write is confirmed
-    this.lifecycleCallbacks?.onRepositoryUpdated(updated);
+    await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
 
     return updated;
   }

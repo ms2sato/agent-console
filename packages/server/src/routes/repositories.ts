@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import type {
   GitHubIssueSummary,
-  Repository,
 } from '@agent-console/shared';
 import {
   CreateRepositoryRequestSchema,
@@ -21,6 +20,7 @@ import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
+import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { createLogger } from '../lib/logger.js';
 import type { AppBindings } from '../app-context.js';
 
@@ -28,14 +28,6 @@ const logger = createLogger('api:repositories');
 
 // Guard against concurrent description generation for the same repository
 const descriptionGenerationsInProgress = new Set<string>();
-
-async function withRepositoryRemote(repository: Repository): Promise<Repository> {
-  const remoteUrl = await getRemoteUrl(repository.path);
-  return {
-    ...repository,
-    remoteUrl: remoteUrl ?? undefined,
-  };
-}
 
 const repositories = new Hono<AppBindings>()
   // Get all repositories
