@@ -30,6 +30,8 @@ export interface WorktreeDeletionTask {
   gitStatus?: string;
   /** Result of cleanup command execution (when configured) */
   cleanupCommandResult?: HookCommandResult;
+  /** Per-session PTY kill errors (non-blocking warnings) */
+  killErrors?: Array<{ sessionId: string; error: string }>;
   /** ISO 8601 timestamp */
   createdAt: string;
 }
@@ -43,6 +45,8 @@ export interface WorktreeDeletionCompletedPayload {
   sessionId: string;
   /** Present when cleanup command was executed before deletion */
   cleanupCommandResult?: HookCommandResult;
+  /** Per-session PTY kill errors (non-blocking — deletion proceeded despite these) */
+  killErrors?: Array<{ sessionId: string; error: string }>;
 }
 
 /**

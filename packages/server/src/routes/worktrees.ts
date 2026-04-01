@@ -345,6 +345,7 @@ const worktrees = new Hono<AppBindings>()
               taskId,
               sessionId: sid,
               cleanupCommandResult: result.cleanupCommandResult,
+              killErrors: result.killErrors,
             });
           }
           logger.info({ taskId, repoId, worktreePath, sessionIds: result.sessionIds }, 'Worktree and session deletion completed');
