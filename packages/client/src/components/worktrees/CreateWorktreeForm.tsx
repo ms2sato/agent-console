@@ -81,28 +81,26 @@ export function CreateWorktreeForm({
   });
 
   // Draft persistence: restore saved values on mount, save on change, clear on successful submit
-  const loadDraft = useCallback((): Partial<CreateWorktreeFormData> | null => {
-    if (!draftKey) return null;
-    try {
-      const saved = localStorage.getItem(draftKey);
-      if (saved) return JSON.parse(saved) as Partial<CreateWorktreeFormData>;
-    } catch {
-      // Ignore corrupted drafts
-    }
-    return null;
-  }, [draftKey]);
+  // Tracks whether draft was cleared (e.g., after successful submit) to skip unmount save
+  const draftClearedRef = useRef(false);
 
   // Restore draft on mount
   useEffect(() => {
-    const draft = loadDraft();
-    if (draft) {
-      reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
+    if (!draftKey) return;
+    draftClearedRef.current = false;
+    try {
+      const saved = localStorage.getItem(draftKey);
+      if (saved) {
+        const draft = JSON.parse(saved) as Partial<CreateWorktreeFormData>;
+        reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
+      }
+    } catch {
+      // Ignore corrupted drafts
     }
-    // Only run on mount (and when draftKey changes)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftKey]);
+    // loadDraft and getValues are stable refs from useCallback/react-hook-form — safe to omit
+  }, [draftKey, reset, getValues]);
 
-  // Save draft on form changes (debounced)
+  // Save draft on form changes (debounced) and on unmount
   useEffect(() => {
     if (!draftKey) return;
     let timeoutId: ReturnType<typeof setTimeout>;
@@ -118,19 +116,22 @@ export function CreateWorktreeForm({
     });
     return () => {
       clearTimeout(timeoutId);
-      // Save current values on unmount so closing the dialog preserves the draft
-      try {
-        localStorage.setItem(draftKey, JSON.stringify(getValues()));
-      } catch {
-        // Ignore storage errors
+      // Save current values on unmount — but skip if draft was already cleared (successful submit)
+      if (!draftClearedRef.current) {
+        try {
+          localStorage.setItem(draftKey, JSON.stringify(getValues()));
+        } catch {
+          // Ignore storage errors
+        }
       }
       subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftKey, watch]);
+    // getValues is a stable ref from react-hook-form — safe to omit
+  }, [draftKey, watch, getValues]);
 
   const clearDraft = useCallback(() => {
     if (draftKey) {
+      draftClearedRef.current = true;
       localStorage.removeItem(draftKey);
     }
   }, [draftKey]);

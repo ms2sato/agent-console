@@ -37,7 +37,7 @@ export function QuickWorktreeDialog({
     enabled: open,
   });
 
-  const { handleCreateWorktree } = useCreateWorktree({
+  const { handleCreateWorktree, error, clearError } = useCreateWorktree({
     repositoryId,
     repositoryName,
   });
@@ -47,12 +47,21 @@ export function QuickWorktreeDialog({
   const defaultAgentId = repositoryQuery.data?.repository.defaultAgentId;
 
   const handleSubmit = async (...args: Parameters<typeof handleCreateWorktree>) => {
-    await handleCreateWorktree(...args);
-    onOpenChange(false);
+    try {
+      await handleCreateWorktree(...args);
+      onOpenChange(false);
+    } catch {
+      // Error is captured in useCreateWorktree's error state and shown below
+    }
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) clearError();
+    onOpenChange(nextOpen);
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Worktree</DialogTitle>
@@ -60,6 +69,9 @@ export function QuickWorktreeDialog({
             Create a new worktree for {repositoryName}
           </DialogDescription>
         </DialogHeader>
+        {error && (
+          <p className="text-sm text-red-400 mb-2" role="alert">{error}</p>
+        )}
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Spinner size="md" />
@@ -70,7 +82,7 @@ export function QuickWorktreeDialog({
             defaultBranch={defaultBranch}
             defaultAgentId={defaultAgentId}
             onSubmit={handleSubmit}
-            onCancel={() => onOpenChange(false)}
+            onCancel={() => handleOpenChange(false)}
             draftKey={`worktree-draft:${repositoryId}`}
           />
         )}
