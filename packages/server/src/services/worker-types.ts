@@ -5,7 +5,7 @@
  * Public API types (Worker, AgentWorker, etc.) are defined in @agent-console/shared.
  */
 
-import type { AgentActivityState } from '@agent-console/shared';
+import type { AgentActivityState, ExitReason } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
 
@@ -16,7 +16,7 @@ import type { ActivityDetector } from './activity-detector.js';
  */
 export interface WorkerCallbacks {
   onData: (data: string, offset: number) => void;
-  onExit: (exitCode: number, signal: string | null) => void;
+  onExit: (exitCode: number, signal: string | null, reason?: ExitReason) => void;
   onActivityChange?: (state: AgentActivityState) => void;
 }
 

@@ -12,6 +12,7 @@ import type {
   SessionActivationState,
   WorkerMessage,
   AppServerMessage,
+  ExitReason,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
@@ -317,7 +318,7 @@ export class SessionManager {
    * This broadcasts session-updated events to keep clients in sync.
    */
   setupPtyExitCallback(): void {
-    this.workerManager.setGlobalPtyExitCallback((sessionId, _workerId) => {
+    this.workerManager.setGlobalPtyExitCallback((sessionId, _workerId, _reason) => {
       const session = this.sessions.get(sessionId);
       if (session) {
         // Broadcast session update with new activation state
@@ -410,7 +411,7 @@ export class SessionManager {
   /**
    * Set a global callback for all worker exit events (for notifications)
    */
-  setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number) => void): void {
+  setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void): void {
     this.workerManager.setGlobalWorkerExitCallback(callback);
   }
 
@@ -607,7 +608,7 @@ export class SessionManager {
       if (worker.type === 'git-diff') {
         stopWatching(session.locationPath);
       } else {
-        killPromises.push(this.workerManager.killWorker(worker));
+        killPromises.push(this.workerManager.killWorker(worker, id));
       }
     }
     await Promise.all(killPromises);
@@ -629,7 +630,7 @@ export class SessionManager {
         stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers
-        killPromises.push(this.workerManager.killWorker(worker));
+        killPromises.push(this.workerManager.killWorker(worker, id));
       }
     }
     await Promise.all(killPromises);
@@ -819,7 +820,7 @@ export class SessionManager {
         stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers (don't delete output files)
-        killPromises.push(this.workerManager.killWorker(worker));
+        killPromises.push(this.workerManager.killWorker(worker, id));
       }
     }
     await Promise.all(killPromises);
@@ -971,7 +972,7 @@ export class SessionManager {
       logger.error({ sessionId: id, err }, 'Failed to activate PTY workers during session resume');
 
       // Kill all workers that were successfully activated
-      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker)));
+      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker, id)));
 
       // Remove session from memory
       this.sessions.delete(id);
@@ -996,7 +997,7 @@ export class SessionManager {
       logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
 
       // Kill all workers that were successfully activated
-      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker)));
+      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker, id)));
 
       // Remove session from memory
       this.sessions.delete(id);

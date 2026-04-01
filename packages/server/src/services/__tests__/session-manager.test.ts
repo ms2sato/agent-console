@@ -239,7 +239,7 @@ describe('SessionManager', () => {
       const pty = ptyFactory.instances[0];
       pty.simulateExit(0);
 
-      expect(onExit).toHaveBeenCalledWith(0, null);
+      expect(onExit).toHaveBeenCalledWith(0, null, 'unexpected');
     });
 
     it('should buffer output for reconnection', async () => {
@@ -896,7 +896,7 @@ describe('SessionManager', () => {
       pty.simulateExit(0);
 
       // Global exit callback should have been called with session and worker info
-      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 0);
+      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 0, 'unexpected');
     });
 
     it('should call global callback with non-zero exit code', async () => {
@@ -918,7 +918,7 @@ describe('SessionManager', () => {
       pty.simulateExit(1);
 
       // Global exit callback should have been called with the exit code
-      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 1);
+      expect(exitCallback).toHaveBeenCalledWith(session.id, workerId, 1, 'unexpected');
     });
 
     it('should call global callback for terminal worker exit', async () => {
@@ -946,7 +946,7 @@ describe('SessionManager', () => {
       terminalPty.simulateExit(0);
 
       // Global exit callback should have been called for the terminal worker
-      expect(exitCallback).toHaveBeenCalledWith(session.id, terminalWorker!.id, 0);
+      expect(exitCallback).toHaveBeenCalledWith(session.id, terminalWorker!.id, 0, 'unexpected');
     });
   });
 
@@ -3238,7 +3238,7 @@ describe('SessionManager', () => {
       // Simulate PTY crash with non-zero exit (signal 9 = SIGKILL)
       ptyFactory.instances[0].simulateExit(1, 9);
 
-      expect(onExit).toHaveBeenCalledWith(1, '9');
+      expect(onExit).toHaveBeenCalledWith(1, '9', 'unexpected');
     });
 
     it('should continue operating after one session crashes', async () => {

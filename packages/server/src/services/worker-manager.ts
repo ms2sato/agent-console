@@ -18,6 +18,7 @@ import type {
   TerminalWorker,
   GitDiffWorker,
   AgentActivityState,
+  ExitReason,
 } from '@agent-console/shared';
 import type {
   PersistedWorker,
@@ -131,7 +132,8 @@ export type GlobalActivityCallback = (
  */
 export type PtyExitCallback = (
   sessionId: string,
-  workerId: string
+  workerId: string,
+  reason: ExitReason
 ) => void;
 
 /**
@@ -140,7 +142,8 @@ export type PtyExitCallback = (
 export type GlobalWorkerExitCallback = (
   sessionId: string,
   workerId: string,
-  exitCode: number
+  exitCode: number,
+  reason: ExitReason
 ) => void;
 
 /**
@@ -455,12 +458,12 @@ export class WorkerManager {
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
       for (const callbacks of callbacksSnapshot) {
-        callbacks.onExit(exitCode, signalStr);
+        callbacks.onExit(exitCode, signalStr, 'unexpected');
       }
 
       // Notify listeners about worker exit
-      this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode);
-      this.globalPtyExitCallback?.(sessionId, worker.id);
+      this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode, 'unexpected');
+      this.globalPtyExitCallback?.(sessionId, worker.id, 'unexpected');
     });
     if (onExitDisposable) {
       disposables.push({ dispose: () => onExitDisposable.dispose() });
@@ -657,7 +660,7 @@ export class WorkerManager {
    * Awaits PTY process exit to ensure directory handles are released
    * before callers proceed (e.g., git worktree remove).
    */
-  async killWorker(worker: InternalWorker): Promise<void> {
+  async killWorker(worker: InternalWorker, sessionId: string): Promise<void> {
     if (worker.type === 'agent' || worker.type === 'terminal') {
       const pty = worker.pty;
 
@@ -700,6 +703,20 @@ export class WorkerManager {
             clearTimeout(timeoutHandle);
           }
         }
+
+        // Fire exit notifications for managed kill.
+        // The onExit handler in setupWorkerEventHandlers was disposed above,
+        // so we must explicitly notify WebSocket connections and global listeners.
+        const exitCode = 0; // Managed kills are intentional
+        const signal: string | null = null;
+
+        const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+        for (const callbacks of callbacksSnapshot) {
+          callbacks.onExit(exitCode, signal, 'managed');
+        }
+
+        this.globalWorkerExitCallback?.(sessionId, worker.id, exitCode, 'managed');
+        this.globalPtyExitCallback?.(sessionId, worker.id, 'managed');
 
         this.detachPty(worker);
       } else {

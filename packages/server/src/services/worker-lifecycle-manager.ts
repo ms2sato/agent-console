@@ -273,7 +273,7 @@ export class WorkerLifecycleManager {
 
     // Clean up based on worker type
     if (worker.type === 'agent' || worker.type === 'terminal') {
-      await this.deps.workerManager.killWorker(worker);
+      await this.deps.workerManager.killWorker(worker, sessionId);
       await this.cleanupWorkerOutput(sessionId, workerId, resolver);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
@@ -370,7 +370,7 @@ export class WorkerLifecycleManager {
     const locationPath = session.locationPath;
 
     // Kill existing worker
-    await this.deps.workerManager.killWorker(existingWorker);
+    await this.deps.workerManager.killWorker(existingWorker, sessionId);
 
     // Reset the output file to prevent offset mismatch with client cache.
     const resolver = this.deps.getPathResolver(session);
@@ -407,7 +407,7 @@ export class WorkerLifecycleManager {
     const currentSession = this.deps.getSession(sessionId);
     if (!currentSession) {
       logger.warn({ sessionId, workerId }, 'Session deleted during worker restart, killing new worker');
-      await this.deps.workerManager.killWorker(newWorker);
+      await this.deps.workerManager.killWorker(newWorker, sessionId);
       return null;
     }
 
