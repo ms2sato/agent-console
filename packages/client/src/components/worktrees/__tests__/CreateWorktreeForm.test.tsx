@@ -514,7 +514,7 @@ describe('CreateWorktreeForm', () => {
       localStorage.removeItem(draftKey);
     });
 
-    it('should save form state to localStorage under draftKey on unmount', async () => {
+    it('should save only dirty fields to localStorage on unmount', async () => {
       const user = userEvent.setup();
 
       renderCreateWorktreeForm({ draftKey });
@@ -524,21 +524,25 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Type a value to change the form state
+      // Type a value to change only the sessionTitle field
       const titleInput = screen.getByPlaceholderText('Session title');
       await user.type(titleInput, 'Saved Title');
 
       // Unmount triggers the cleanup effect which saves current form values
       cleanup();
 
-      // The draft should be saved to localStorage with the draftKey
+      // The draft should be saved to localStorage with only the dirty field
       const saved = localStorage.getItem(draftKey);
       expect(saved).not.toBeNull();
       const parsed = JSON.parse(saved!);
       expect(parsed.sessionTitle).toBe('Saved Title');
+      // Non-dirty fields should NOT be in the draft
+      expect(parsed.agentId).toBeUndefined();
+      expect(parsed.branchNameMode).toBeUndefined();
+      expect(parsed.initialPrompt).toBeUndefined();
     });
 
-    it('should save draft to localStorage on form value changes', async () => {
+    it('should save only dirty fields on form value changes', async () => {
       const user = userEvent.setup();
 
       renderCreateWorktreeForm({ draftKey });
@@ -548,7 +552,7 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Type into the prompt field
+      // Type into the prompt field only
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
       await user.type(promptInput, 'New feature prompt');
 
@@ -558,6 +562,9 @@ describe('CreateWorktreeForm', () => {
         expect(saved).not.toBeNull();
         const parsed = JSON.parse(saved!);
         expect(parsed.initialPrompt).toBe('New feature prompt');
+        // Non-dirty fields should NOT be saved
+        expect(parsed.agentId).toBeUndefined();
+        expect(parsed.sessionTitle).toBeUndefined();
       }, { timeout: 2000 });
     });
 
