@@ -3,25 +3,20 @@
 /**
  * Orchestrator Delegation Message Generation Script
  *
- * Generates a structured delegation message template for worktree assignments
- * based on the Issue number. Structurally prevents omission of required sections
- * (acceptance criteria, retrospective, completion steps).
+ * Generates a concise delegation prompt that references the Issue as the source of truth.
+ * The prompt contains only: Issue URL, supplementary notes placeholder, and completion steps.
+ * All design details, acceptance criteria, and affected files live in the Issue itself.
  *
- * Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number> [--validate]
+ * This avoids the 5000-char prompt limit by keeping the prompt lean.
+ *
+ * Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number>
  */
 
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 
 function usage() {
   console.error(
-    'Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number> [--validate]'
-  );
-  console.error(
-    '  Generate mode: node .claude/skills/orchestrator/delegation-prompt.js 42'
-  );
-  console.error(
-    '  Validate mode: echo "$PROMPT_TEXT" | node .claude/skills/orchestrator/delegation-prompt.js 42 --validate'
+    'Usage: node .claude/skills/orchestrator/delegation-prompt.js <Issue number>'
   );
   process.exit(1);
 }
@@ -48,7 +43,7 @@ function getIssue(issueNumber) {
   }
 }
 
-function extractAcceptanceCriteria(body) {
+export function extractAcceptanceCriteria(body) {
   if (!body) return [];
   const lines = body.split('\n');
   const criteria = [];
@@ -60,55 +55,6 @@ function extractAcceptanceCriteria(body) {
   }
   return criteria;
 }
-
-function extractSection(text, sectionName) {
-  const pattern = new RegExp(
-    `### ${sectionName}[^\\n]*\\n([\\s\\S]*?)(?=\\n###|\\n##[^#]|$)`
-  );
-  const match = text.match(pattern);
-  if (!match) return null;
-  // Remove HTML comments and trim
-  return match[1].replace(/<!--.*?-->/g, '').trim();
-}
-
-function validate(text) {
-  const errors = [];
-
-  const affectedFiles = extractSection(text, 'Affected Files');
-  if (affectedFiles === null) {
-    errors.push('Missing "### Affected Files" section');
-  } else {
-    if (affectedFiles.includes('path/to/file.ts')) {
-      errors.push(
-        '"Affected Files" contains placeholder path (path/to/file.ts)'
-      );
-    }
-    if (!/`[^`]+`/.test(affectedFiles)) {
-      errors.push(
-        '"Affected Files" must include at least one specific file path in backticks'
-      );
-    }
-  }
-
-  const keyFunctions = extractSection(text, 'Key Functions/Types');
-  if (!keyFunctions) {
-    errors.push('"Key Functions/Types" section is empty or missing');
-  }
-
-  const constraints = extractSection(text, 'Constraints');
-  if (!constraints) {
-    errors.push('"Constraints" section is empty or missing');
-  }
-
-  const testingApproach = extractSection(text, 'Testing Approach');
-  if (!testingApproach) {
-    errors.push('"Testing Approach" section is empty or missing');
-  }
-
-  return errors;
-}
-
-export { extractSection, validate };
 
 // --- Main ---
 
@@ -122,21 +68,6 @@ if (!issueNumber || !/^\d+$/.test(issueNumber)) {
   usage();
 }
 
-const validateMode = process.argv[3] === '--validate';
-
-if (validateMode) {
-  const input = readFileSync('/dev/stdin', 'utf-8');
-  const errors = validate(input);
-  if (errors.length > 0) {
-    for (const error of errors) {
-      console.error(`✗ ${error}`);
-    }
-    process.exit(1);
-  }
-  console.log('✓ Validation passed');
-  process.exit(0);
-}
-
 const issue = getIssue(issueNumber);
 if (!issue) {
   console.error(
@@ -147,79 +78,38 @@ if (!issue) {
 
 const criteria = extractAcceptanceCriteria(issue.body);
 
-const output = `## Task Summary
+if (criteria.length === 0) {
+  console.error(
+    `⚠ WARNING: No acceptance criteria found in Issue #${issueNumber}.`
+  );
+  console.error(
+    '  Orchestrator must fill in acceptance criteria in the Issue before delegating.'
+  );
+}
+
+const output = `## Task
 Issue: ${issue.url}
 ${issue.title}
 
-## Acceptance Criteria
-${
-  criteria.length > 0
-    ? criteria.map((c) => `- [ ] ${c}`).join('\n')
-    : '(No acceptance criteria found in the Issue. Orchestrator must fill in before delegating.)'
-}
+Read the Issue carefully — it contains the full design, acceptance criteria, and affected files list.
 
-## Implementation Guidelines
-
-### Affected Files
-<!-- List each file with: current behavior → required change -->
-- \`path/to/file.ts\`: [current] → [change]
-
-### Key Functions/Types
-<!-- Function signatures or type definitions that will change -->
-
-### Constraints
-<!-- What NOT to change, backward compatibility, scope boundaries -->
-
-### Testing Approach
-<!-- Which test files to update, what new tests to add -->
+## Key Implementation Notes
+<!-- Orchestrator: Add only supplementary context NOT already in the Issue.
+     Keep concise — the Issue is the source of truth.
+     Examples: specific constraints, testing approach, files to avoid. -->
 
 ## Completion Steps
-1. Determine the appropriate test level based on CLAUDE.md rules and Orchestrator instructions. If your judgment differs from the Orchestrator's instruction, propose with reasoning. (e.g., docs-only changes may skip tests per CLAUDE.md)
-2. Run \`/review-loop\` if instructed by the Orchestrator (skip if not instructed)
-3. Run CodeRabbit CLI self-review before creating the PR (skip if CLI is not installed):
-   \`\`\`bash
-   if command -v coderabbit >/dev/null 2>&1 || test -x ~/.local/bin/coderabbit; then
-     coderabbit review --agent --base main
-   fi
-   \`\`\`
-   - Fix any CRITICAL or HIGH severity issues found
-   - MEDIUM/LOW issues: fix if straightforward, otherwise note in the PR description
-   - If CLI is not installed, skip this step entirely
-4. Create PR (title: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`)
-5. Wait for CI to be fully green. Address any CI failures or CodeRabbit review comments. Do NOT report completion until CI is green.
-6. After CI is green, report completion to the Orchestrator with your retrospective report. Include the PR URL and CI status.
-7. After your PR is merged, report back to the Orchestrator with the merge confirmation.
-8. If you resolved an issue by communicating directly with the owner, report the following to the Orchestrator:
-   - What was the problem
-   - How it was resolved
-   - What is needed to prevent the same issue in the future
-
-### Retrospective Template
-After PR merge, report your retrospective in the following format:
-
-> ## Retrospective
-> ### Difficulties encountered
-> ### Time-consuming tasks
-> ### How issues were resolved
-> ### Suggestions for improvement
-`;
-
-const mcpCallExample = `## MCP Call Example
-\`\`\`
-delegate_to_worktree({
-  repositoryId: <your AGENT_CONSOLE_REPOSITORY_ID>,
-  prompt: <the full text above>,
-  parentSessionId: <your AGENT_CONSOLE_SESSION_ID>,
-  parentWorkerId: <your AGENT_CONSOLE_WORKER_ID>,
-})
-\`\`\`
+1. Run CodeRabbit CLI self-review if installed: \`coderabbit review --agent --base main\`
+2. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
+3. Wait for CI green, fix any issues.
+4. Report completion with PR URL and retrospective to Orchestrator.
 `;
 
 console.log(output);
-console.log(mcpCallExample);
-console.log(`⚠ IMPORTANT: Fill in ALL sections under "Implementation Guidelines" before delegating.
-  Required sections: Affected Files, Key Functions/Types, Constraints, Testing Approach
-  Each "Affected Files" entry must include a specific file path (not placeholder).
+console.log(`--- Orchestrator Checklist ---
+1. Customize "Key Implementation Notes" with supplementary context
+2. Verify Issue #${issueNumber} has complete acceptance criteria (${criteria.length} found)
+3. Keep total prompt under 5000 characters (Issue holds the details)
 `);
 
 } // end if (import.meta.main)
