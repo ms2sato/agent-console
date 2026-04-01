@@ -38,7 +38,7 @@
   3. **Impact inventory**: Read the affected files and identify all state-changing operations. Present this list to the owner for review BEFORE delegating.
   4. Update the Issue if criteria need to be added or corrected
   5. You must be able to explain each criterion in your own words before delegating
-- **Generate delegation messages**: Run `node .claude/skills/orchestrator/delegation-prompt.js <Issue number>` to generate a structured delegation message with all required sections (acceptance criteria, retrospective template, completion steps). Customize the generated template before sending.
+- **Generate delegation messages**: Run `node .claude/skills/orchestrator/delegation-prompt.js <Issue number>` to generate a delegation prompt template. The Issue is the source of truth — the prompt references the Issue URL and provides a placeholder for supplementary notes only. Customize the "Key Implementation Notes" section with constraints or context not already in the Issue before sending.
 - **Available specialist agents for delegation**:
   - `frontend-specialist` — for changes in `packages/client`
   - `backend-specialist` — for changes in `packages/server`
