@@ -56,28 +56,7 @@ Consider extracting to `worker-lifecycle.ts` or similar.
 
 ### Module Design Evaluation
 
-When evaluating or designing modules, apply these three lenses:
-
-**Cohesion: Does the module have a single, clear purpose?**
-- Can you describe the module's purpose in one sentence without using "and"? If not, it likely has multiple responsibilities.
-- Change cohesion: When one feature changes, do the affected files always change together? Files that always change together should be in the same module.
-- Negative cohesion: If two functions in the same module never change together, they may belong in different modules.
-- Temporal cohesion trap: Functions grouped "because they run at startup" or "because they're called together" may not belong together. Group by domain responsibility, not timing.
-
-**Coupling: How much does this module depend on others?**
-- Can this module change without forcing changes elsewhere?
-- Does this module depend on implementation details of another? (It shouldn't)
-- Would a new team member understand this module without reading its dependencies?
-- Data coupling (good): Modules communicate through simple data parameters.
-- Stamp coupling (caution): Modules share complex data structures beyond what's needed.
-- Control coupling (bad): One module controls another's behavior via flags.
-- Content coupling (prohibited): One module directly accesses another's internals.
-
-**Encapsulation: Is the interface minimal and stable?**
-- Does the public API reveal only what callers need?
-- Can the internal implementation change without affecting callers?
-- Is the dependency direction correct? High-level modules should not depend on low-level implementation details.
-- Are dependencies explicit (imports) rather than implicit (global state, naming conventions)?
+See "Design Review Mindset" in CLAUDE.md for module evaluation criteria (cohesion, coupling, encapsulation). The CLAUDE.md checklist is the primary reference — apply it when evaluating module boundaries, dependency direction, and interface design.
 
 ## 2. Bug Resistance
 
