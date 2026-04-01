@@ -23,3 +23,5 @@ description: React patterns and frontend best practices for this project. Use wh
 
 - [react-patterns.md](react-patterns.md) - React patterns (useEffect alternatives, Suspense, state management)
 - [frontend-standards.md](frontend-standards.md) - Directory structure, TanStack Router/Query, React best practices, styling
+
+See also: `ux-design-standards` skill for UX design principles that guide feature-level decisions.

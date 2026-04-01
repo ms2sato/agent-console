@@ -98,7 +98,7 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
 
 **Step 4: Apply skill improvements (parallel execution)**
 - Apply agreed-upon improvements to skill files and merge (Orchestrator can merge since it's documentation)
-- **Delegate skill improvement application to a worktree in parallel during the retrospective**. Once improvement proposals are agreed upon in Step 3, create and merge improvement PRs in a worktree in parallel with Step 5 memory write-out
+- **Batch all improvements into a single PR.** Do not create separate PRs for each improvement. Collect all agreed-upon changes (skill files, agent definitions, CLAUDE.md updates) into one worktree, create a single PR, and merge it at the end of the retrospective. This reduces CI overhead, merge cycles, and conflict checks.
 - Since the next Orchestrator will operate with the improved skills after context clear, **it is desirable that improvements are merged by the time the retrospective completes**. Do not defer to the next sprint
 
 **Step 5: Final memory write-out**
