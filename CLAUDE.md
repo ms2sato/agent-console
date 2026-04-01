@@ -116,9 +116,11 @@ Project-defined skills (in `.claude/skills/`):
 
 ## Language Policy
 
-**Code and documentation:** Write all code comments, commit messages, issues, pull requests, and documentation (including files under `docs/`) in English.
+**Public artifacts:** Write all code comments, commit messages, issues, pull requests, and documentation (including files under `docs/`) in English. These are visible to the broader community.
 
-**Communication with Claude:** Adapt to the user's preferred language. Respond in the same language the user uses.
+**User-facing artifacts:** Review annotations, memos, and other content visible only to the user should follow the user's preferred language. Adapt to the same language the user uses.
+
+**Communication with Claude:** Respond in the same language the user uses. Technical terms and code identifiers can remain in English.
 
 ## Project Structure
 
