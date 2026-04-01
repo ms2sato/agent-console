@@ -33,3 +33,6 @@ src/routeTree.gen.ts
 .claude/settings.local.json
 .claude/review-queue/*.jsonl
 .claude/review-queue/fixing.json
+
+# Orchestrator acceptance check results
+.acceptance-check-*.json

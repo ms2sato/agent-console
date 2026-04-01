@@ -79,8 +79,15 @@
 - **CI Green -> Acceptance Check Flow**:
   1. Run acceptance check script and answer Q1-Q7
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
-  3. If uncertain -> escalate to the owner
-  4. If all checks pass -> report to the owner as ready for review (use `write_memo` so the owner sees it)
+  3. If uncertain -> resolve before proceeding:
+     a. Self-investigate (read more code, grep for context)
+     b. Ask the coding agent via `send_session_message` for clarification
+     c. Only escalate to the owner if self-investigation and agent communication cannot resolve it
+     Never defer uncertainty as a review annotation — resolve it before pass/fail judgment.
+  4. If all checks pass -> write review annotations and report to the owner:
+     a. Call `write_review_annotations` with `sourceSessionId` (your session ID) to add the PR to the owner's Review Queue (`/review` page)
+     b. Annotate sections where the owner's domain expertise adds value — not sections you were uncertain about (those should already be resolved per step 3)
+     c. Update memo via `write_memo` to notify the owner
 - **CodeRabbit review strategy**: Two layers of CodeRabbit review are used:
   1. **Pre-PR: CLI self-review by the coding agent** — delegation instructions include a step to run `coderabbit review --agent --base main` before creating the PR (if CLI is installed). This catches CRITICAL/HIGH issues early without rate limit concerns.
   2. **Post-PR: GitHub bot auto-review** — triggered automatically when the PR is created. May hit rate limits.

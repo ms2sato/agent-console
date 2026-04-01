@@ -13,7 +13,7 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
    ```
    **Why:** The Orchestrator session branch may be behind `origin/main` if other PRs were merged between sprints. Starting from stale code leads to incorrect decisions. Using `rebase` instead of `reset --hard` preserves any local commits that haven't been pushed, making it a safer default.
 2. Decide the sprint task list in consultation with the owner (Issue-based)
-3. Create `memory/orchestrator_sprint_context.md`:
+3. Update `memory/project_sprint_status.md` (Claude memory) with:
    - Sprint goal
    - Task list (Issue numbers)
    - Active context (design decisions, notes, gotchas)
@@ -24,7 +24,7 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
 
 ## Sprint Execution
 - Task progression, acceptance checks, merges
-- When new gotchas are discovered, append them to `orchestrator_sprint_context.md` immediately
+- When new gotchas are discovered, append them to `memory/project_sprint_status.md` (Claude memory) immediately
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
 
 ## Post-Merge Conflict Check
@@ -116,19 +116,11 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
   2. **Does it duplicate skills/CLAUDE.md?**: If the rule is already reflected in skills or CLAUDE.md, it's a deletion candidate
   3. **However, retain memories with "Why (past failure context)"**: Even if a skill has the rule, lessons from cases where it wasn't followed have value as double reminders. The existence value of memory is in specific failure examples and "why it couldn't be followed" context
   4. Present deletion candidates to the owner with reasons and confirm before deleting
-- Update `memory/orchestrator_sprint_context.md` to final version:
-  - **Persistence decision**: For each active context item:
-    - Permanent design decisions -> move to `docs/design/`
-    - Temporary knowledge needed for the next sprint -> leave as-is
-    - New tasks -> convert to Issues
-    - Unnecessary -> delete
+- Update `memory/project_sprint_status.md` (Claude memory) to final version:
   - **Merged PR list**: This sprint's achievements
-  - **Open PR cleanup**: Status, acceptance check results, blockers
-  - **Active worktrees**: Remaining worktrees and reasons
-  - **Next sprint recommended tasks**: Prioritized (blockers > 1st release > quality > process)
   - **Retrospective results**: What worked, what needs improvement, blockers
-  - **Process improvement list**: All improvements made this sprint
-  - **Cleanup of unnecessary memory**: Review MEMORY.md and delete memory that has served its purpose (completed migration records, outdated handoffs, etc.). Confirm with owner before deleting
+  - **Next sprint recommended tasks**: Prioritized (blockers > 1st release > quality > process)
+  - **Active context**: Design decisions, gotchas carried forward to next sprint
 
 ## Sprint End Proposal Conditions
 
