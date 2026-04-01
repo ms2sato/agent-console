@@ -400,7 +400,7 @@ describe('WorkerManager', () => {
       const mockPty = ptyFactory.instances[0];
       expect(mockPty.killed).toBe(false);
 
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
 
       expect(mockPty.killed).toBe(true);
     });
@@ -410,7 +410,7 @@ describe('WorkerManager', () => {
       workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
 
       expect(mockPty.killed).toBe(true);
     });
@@ -422,7 +422,7 @@ describe('WorkerManager', () => {
       // PTY is set before kill
       expect(worker.pty).not.toBeNull();
 
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
 
       // After awaiting, PTY should be detached (null)
       expect(worker.pty).toBeNull();
@@ -436,7 +436,7 @@ describe('WorkerManager', () => {
       expect(worker.disposables).toBeDefined();
       expect(worker.disposables!.length).toBeGreaterThan(0);
 
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
 
       // After kill, disposables should be cleared
       expect(worker.disposables).toBeUndefined();
@@ -447,7 +447,7 @@ describe('WorkerManager', () => {
       // Worker not activated -- pty is null
 
       // Should not throw
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
     });
 
     it('should resolve with timeout when PTY does not exit', async () => {
@@ -462,7 +462,7 @@ describe('WorkerManager', () => {
           this.killed = true;
         };
 
-        const killPromise = workerManager.killWorker(worker);
+        const killPromise = workerManager.killWorker(worker, 'test-session');
 
         // Advance past PTY_EXIT_TIMEOUT_MS (5000ms)
         jest.advanceTimersByTime(5000);
@@ -486,7 +486,7 @@ describe('WorkerManager', () => {
       };
 
       // Should not throw
-      await workerManager.killWorker(worker);
+      await workerManager.killWorker(worker, 'test-session');
     });
   });
 
@@ -587,7 +587,7 @@ describe('WorkerManager', () => {
       const mockPty = ptyFactory.instances[0];
       mockPty.simulateExit(0);
 
-      expect(globalExitCallback).toHaveBeenCalledWith('sess-exit', 'term-exit');
+      expect(globalExitCallback).toHaveBeenCalledWith('sess-exit', 'term-exit', 'unexpected');
     });
 
     it('should fire global worker exit callback', () => {
@@ -603,7 +603,7 @@ describe('WorkerManager', () => {
       const mockPty = ptyFactory.instances[0];
       mockPty.simulateExit(1);
 
-      expect(globalWorkerExitCallback).toHaveBeenCalledWith('sess-wexit', 'term-wexit', 1);
+      expect(globalWorkerExitCallback).toHaveBeenCalledWith('sess-wexit', 'term-wexit', 1, 'unexpected');
     });
   });
 

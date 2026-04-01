@@ -323,7 +323,7 @@ export async function setupWebSocketRoutes(
   completedSteps.add('setGlobalActivityCallback');
 
   // Set up global worker exit callback to send notifications
-  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode) => {
+  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode, _reason) => {
     const session = sessionManager.getSession(sessionId);
     if (session) {
       notificationManager.onWorkerExit(
@@ -574,8 +574,8 @@ export async function setupWebSocketRoutes(
           onData: (data, offset) => {
             sender?.send({ type: 'output', data, offset });
           },
-          onExit: (exitCode, signal) => {
-            sender?.send({ type: 'exit', exitCode, signal });
+          onExit: (exitCode, signal, reason) => {
+            sender?.send({ type: 'exit', exitCode, signal, reason });
           },
           onActivityChange: (state: AgentActivityState) => {
             sender?.send({ type: 'activity', state });

@@ -1709,7 +1709,7 @@ describe('WorkerLifecycleManager', () => {
 
       ptyFactory.instances[0].simulateExit(0);
 
-      expect(onExit).toHaveBeenCalledWith(0, null);
+      expect(onExit).toHaveBeenCalledWith(0, null, 'unexpected');
     });
   });
 

@@ -36,6 +36,13 @@ export type {
   RestartWorkerRequest,
 } from '../schemas/worker.js';
 
+/**
+ * Reason a worker's PTY exited.
+ * - 'managed': Intentional kill via API (delete, restart, pause, etc.)
+ * - 'unexpected': Process exited on its own (crash, user exit, signal)
+ */
+export type ExitReason = 'managed' | 'unexpected';
+
 export type SessionStatus = 'active' | 'inactive';
 
 /** Whether a session has active PTY processes running */
@@ -117,7 +124,7 @@ export type WorkerErrorCode =
 
 export type WorkerServerMessage =
   | { type: 'output'; data: string; offset: number }
-  | { type: 'exit'; exitCode: number; signal: string | null }
+  | { type: 'exit'; exitCode: number; signal: string | null; reason?: ExitReason }
   | { type: 'history'; data: string; offset: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode }
