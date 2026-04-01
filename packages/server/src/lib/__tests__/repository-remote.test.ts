@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import type { Repository } from '@agent-console/shared';
 
-const mockGetRemoteUrl = mock(() => Promise.resolve('https://github.com/test/repo.git'));
+const mockGetRemoteUrl = mock(() => Promise.resolve('https://github.com/test/repo.git' as string | null));
 
 mock.module('../git.js', () => ({
   getRemoteUrl: mockGetRemoteUrl,
