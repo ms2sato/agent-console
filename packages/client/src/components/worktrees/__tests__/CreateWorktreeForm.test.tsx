@@ -503,6 +503,131 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
+  describe('draft persistence', () => {
+    const draftKey = 'test-draft-key';
+
+    beforeEach(() => {
+      localStorage.removeItem(draftKey);
+    });
+
+    afterEach(() => {
+      localStorage.removeItem(draftKey);
+    });
+
+    it('should save only dirty fields to localStorage on unmount', async () => {
+      const user = userEvent.setup();
+
+      renderCreateWorktreeForm({ draftKey });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Type a value to change only the sessionTitle field
+      const titleInput = screen.getByPlaceholderText('Session title');
+      await user.type(titleInput, 'Saved Title');
+
+      // Unmount triggers the cleanup effect which saves current form values
+      cleanup();
+
+      // The draft should be saved to localStorage with only the dirty field
+      const saved = localStorage.getItem(draftKey);
+      expect(saved).not.toBeNull();
+      const parsed = JSON.parse(saved!);
+      expect(parsed.sessionTitle).toBe('Saved Title');
+      // Non-dirty fields should NOT be in the draft
+      expect(parsed.agentId).toBeUndefined();
+      expect(parsed.branchNameMode).toBeUndefined();
+      expect(parsed.initialPrompt).toBeUndefined();
+    });
+
+    it('should save only dirty fields on form value changes', async () => {
+      const user = userEvent.setup();
+
+      renderCreateWorktreeForm({ draftKey });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Type into the prompt field only
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'New feature prompt');
+
+      // Wait for debounced save (500ms debounce in implementation)
+      await waitFor(() => {
+        const saved = localStorage.getItem(draftKey);
+        expect(saved).not.toBeNull();
+        const parsed = JSON.parse(saved!);
+        expect(parsed.initialPrompt).toBe('New feature prompt');
+        // Non-dirty fields should NOT be saved
+        expect(parsed.agentId).toBeUndefined();
+        expect(parsed.sessionTitle).toBeUndefined();
+      }, { timeout: 2000 });
+    });
+
+    it('should clear draft from localStorage after successful submit', async () => {
+      const user = userEvent.setup();
+
+      const { props } = renderCreateWorktreeForm({ draftKey });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Type a prompt (required for prompt mode validation)
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Add feature');
+
+      // Submit the form
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      // Wait for onSubmit to be called
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      // After successful submit, clearDraft removes the item from localStorage.
+      // Note: The cleanup effect on unmount will re-save, but at this point
+      // (before unmount) the item should have been removed.
+      expect(localStorage.getItem(draftKey)).toBeNull();
+    });
+
+    it('should not save to localStorage when draftKey is not provided', async () => {
+      const user = userEvent.setup();
+
+      // Clear any stale draft keys before this test
+      const noDraftKey = 'no-draft-key-marker';
+      localStorage.removeItem(noDraftKey);
+
+      renderCreateWorktreeForm(); // no draftKey
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Type something to trigger potential save
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Some text');
+
+      // Wait for any debounced save to fire (500ms debounce + margin)
+      await new Promise(resolve => setTimeout(resolve, 700));
+
+      // Without a draftKey, the component should not have saved anything.
+      // We can't check all keys since other tests may leave data.
+      // Instead, verify that the specific localStorage operations weren't called
+      // by checking no key with 'undefined' was created (a common mistake when
+      // draftKey is falsy and accidentally stringified).
+      expect(localStorage.getItem('undefined')).toBeNull();
+      expect(localStorage.getItem('null')).toBeNull();
+    });
+  });
+
   describe('remote branch status', () => {
     it('should show loading state while checking remote status', async () => {
       // Make the remote status fetch hang to observe loading state

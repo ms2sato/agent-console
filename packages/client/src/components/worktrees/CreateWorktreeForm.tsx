@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, useEffect, useCallback } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -42,6 +42,9 @@ export interface CreateWorktreeFormProps {
   defaultAgentId?: string | null;
   onSubmit: (request: CreateWorktreeFormRequest) => Promise<void>;
   onCancel: () => void;
+  /** When provided, form values are persisted to localStorage under this key.
+   *  On mount, saved values are restored. On successful submit, the draft is cleared. */
+  draftKey?: string;
 }
 
 export function CreateWorktreeForm({
@@ -50,6 +53,7 @@ export function CreateWorktreeForm({
   defaultAgentId,
   onSubmit,
   onCancel,
+  draftKey,
 }: CreateWorktreeFormProps) {
   const {
     register,
@@ -59,7 +63,8 @@ export function CreateWorktreeForm({
     clearErrors,
     watch,
     setValue,
-    formState: { errors },
+    reset,
+    formState: { errors, dirtyFields },
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
     defaultValues: {
@@ -74,6 +79,81 @@ export function CreateWorktreeForm({
     mode: 'onBlur',
     shouldUnregister: true,
   });
+
+  // Draft persistence: restore saved values on mount, save on change, clear on successful submit
+  // Tracks whether draft was cleared (e.g., after successful submit) to skip unmount save
+  const draftClearedRef = useRef(false);
+
+  // Ref to access dirtyFields inside effects without re-triggering them
+  const dirtyFieldsRef = useRef(dirtyFields);
+  dirtyFieldsRef.current = dirtyFields;
+
+  /** Pick only user-modified fields from form values, so props-derived defaults
+   *  (e.g., agentId from server) are not persisted and can update between sessions. */
+  const pickDirtyValues = useCallback((values: Record<string, unknown>): Record<string, unknown> => {
+    const dirty = dirtyFieldsRef.current;
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(values)) {
+      if (dirty[key as keyof typeof dirty]) {
+        result[key] = values[key];
+      }
+    }
+    return result;
+  }, []);
+
+  // Restore draft on mount
+  useEffect(() => {
+    if (!draftKey) return;
+    draftClearedRef.current = false;
+    try {
+      const saved = localStorage.getItem(draftKey);
+      if (saved) {
+        const draft = JSON.parse(saved) as Partial<CreateWorktreeFormData>;
+        // getValues() returns initial defaults (form just mounted).
+        // The draft overwrites them with previously saved user input.
+        reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
+      }
+    } catch {
+      // Ignore corrupted drafts
+    }
+    // reset and getValues are stable refs from react-hook-form
+  }, [draftKey, reset, getValues]);
+
+  // Save draft on form changes (debounced) and on unmount
+  useEffect(() => {
+    if (!draftKey) return;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const subscription = watch((value) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        try {
+          localStorage.setItem(draftKey, JSON.stringify(pickDirtyValues(value as Record<string, unknown>)));
+        } catch {
+          // Ignore storage errors (e.g., quota exceeded)
+        }
+      }, 500);
+    });
+    return () => {
+      clearTimeout(timeoutId);
+      // Save current values on unmount — but skip if draft was already cleared (successful submit)
+      if (!draftClearedRef.current) {
+        try {
+          localStorage.setItem(draftKey, JSON.stringify(pickDirtyValues(getValues() as Record<string, unknown>)));
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      subscription.unsubscribe();
+    };
+    // getValues is a stable ref from react-hook-form; pickDirtyValues is stable via useCallback
+  }, [draftKey, watch, getValues, pickDirtyValues]);
+
+  const clearDraft = useCallback(() => {
+    if (draftKey) {
+      draftClearedRef.current = true;
+      localStorage.removeItem(draftKey);
+    }
+  }, [draftKey]);
 
   const agentId = watch('agentId');
   const resolvedAgentId = useResolvedAgentId(agentId, defaultAgentId ?? undefined);
@@ -216,6 +296,7 @@ export function CreateWorktreeForm({
     try {
       const request = buildRequest(data, useRemote);
       await onSubmit(request);
+      clearDraft();
     } catch (err) {
       setError('root', {
         message: err instanceof Error ? err.message : 'Failed to create worktree',
