@@ -22,6 +22,7 @@ import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
+import { withRepositoryRemote } from '../lib/repository-remote.js';
 
 const logger = createLogger('websocket');
 
@@ -414,14 +415,17 @@ export async function setupWebSocketRoutes(
   completedSteps.add('setAgentLifecycleCallbacks');
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
+  // Created/updated callbacks are async to enrich with remoteUrl before broadcasting
   repositoryManager.setLifecycleCallbacks({
-    onRepositoryCreated: (repository) => {
+    onRepositoryCreated: async (repository) => {
+      const enriched = await withRepositoryRemote(repository);
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-created');
-      broadcastToApp({ type: 'repository-created', repository });
+      broadcastToApp({ type: 'repository-created', repository: enriched });
     },
-    onRepositoryUpdated: (repository) => {
+    onRepositoryUpdated: async (repository) => {
+      const enriched = await withRepositoryRemote(repository);
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-updated');
-      broadcastToApp({ type: 'repository-updated', repository });
+      broadcastToApp({ type: 'repository-updated', repository: enriched });
     },
     onRepositoryDeleted: (repositoryId) => {
       logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
@@ -486,14 +490,15 @@ export async function setupWebSocketRoutes(
               ws.send(JSON.stringify(agentsSyncMsg));
               logger.debug({ agentCount: allAgents.length }, 'Sent agents-sync');
             }),
-            Promise.resolve().then(() => {
+            Promise.resolve().then(async () => {
               const allRepositories = repositoryManager.getAllRepositories();
+              const enrichedRepositories = await Promise.all(allRepositories.map(withRepositoryRemote));
               const repositoriesSyncMsg: AppServerMessage = {
                 type: 'repositories-sync',
-                repositories: allRepositories,
+                repositories: enrichedRepositories,
               };
               ws.send(JSON.stringify(repositoriesSyncMsg));
-              logger.debug({ repoCount: allRepositories.length }, 'Sent repositories-sync');
+              logger.debug({ repoCount: enrichedRepositories.length }, 'Sent repositories-sync');
             }),
           ]).then(() => {
             // Replay queued messages that were broadcast during sync
