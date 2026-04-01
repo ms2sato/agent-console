@@ -10,7 +10,6 @@ import {
   createSession,
   deleteSession,
   resumeSession,
-  createWorktreeAsync,
   deleteWorktreeAsync,
   pullWorktreeAsync,
   openPath,
@@ -19,6 +18,7 @@ import {
   generateRepositoryDescription,
 } from '../lib/api';
 import { useAppWsEvent } from '../hooks/useAppWs';
+import { useCreateWorktree } from '../hooks/useCreateWorktree';
 import { emitSessionDeleted } from '../lib/app-websocket';
 import { generateTaskId } from '../lib/id';
 import { formatPath } from '../lib/path';
@@ -39,7 +39,7 @@ import {
 import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
 import { QuickSessionForm } from '../components/sessions';
-import { useWorktreeCreationTasksContext, useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
+import { useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
@@ -658,7 +658,10 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
   const [fallbackInfo, setFallbackInfo] = useState<BranchNameFallback | null>(null);
   const [setupCommandFailure, setSetupCommandFailure] = useState<HookCommandResult | null>(null);
   const { errorDialogProps, showError: showWorktreeError } = useErrorDialog();
-  const { addTask, removeTask } = useWorktreeCreationTasksContext();
+  const { handleCreateWorktree: createWorktree } = useCreateWorktree({
+    repositoryId: repository.id,
+    repositoryName: repository.name,
+  });
   const isGitHubRemote = Boolean(
     repository.remoteUrl &&
       (repository.remoteUrl.startsWith('git@github.com:') ||
@@ -684,27 +687,11 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
 
   // Async worktree creation - returns immediately after API accepts the request
   const handleCreateWorktree = async (formRequest: CreateWorktreeFormRequest) => {
-    const taskId = generateTaskId();
-    // Build full request with taskId for storage and API
-    const request = { ...formRequest, taskId };
-
     try {
-      // Add task to UI immediately
-      addTask({
-        id: taskId,
-        repositoryId: repository.id,
-        repositoryName: repository.name,
-        request,
-      });
-
-      // Call async API (returns { accepted: true })
-      await createWorktreeAsync(repository.id, request);
-
+      await createWorktree(formRequest);
       // Close the form immediately - task shows in sidebar
       setShowCreateWorktree(false);
     } catch (error) {
-      // If API call fails immediately (e.g., network error), remove the task and show error dialog
-      removeTask(taskId);
       showWorktreeError('Failed to Create Worktree', error instanceof Error ? error.message : 'Unknown error');
     }
   };

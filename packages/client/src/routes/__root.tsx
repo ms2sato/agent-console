@@ -5,6 +5,7 @@ import { validateSessions, resumeSession, logout as logoutApi, fetchReviewQueue 
 import { worktreeKeys, sessionKeys, reviewQueueKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { WarningIcon, ChevronRightIcon } from '../components/Icons';
+import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
@@ -263,6 +264,7 @@ function RootLayout() {
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [quickWorktreeOpen, setQuickWorktreeOpen] = useState(false);
 
   // Close mobile drawers on route change
   useEffect(() => {
@@ -300,9 +302,14 @@ function RootLayout() {
                   {currentSession.type === 'worktree' && (
                     <>
                       <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                      <span className="text-slate-400 text-[0.8125rem]">
+                      <button
+                        type="button"
+                        onClick={() => setQuickWorktreeOpen(true)}
+                        className="text-slate-400 text-[0.8125rem] hover:text-slate-200 transition-colors cursor-pointer"
+                        title="Create worktree"
+                      >
                         {currentSession.repositoryName}
-                      </span>
+                      </button>
                     </>
                   )}
                   {currentSession.title && (
@@ -352,6 +359,14 @@ function RootLayout() {
                     sessionFilter={sessionFilter}
                   />
                 }
+              />
+            )}
+            {currentSession?.type === 'worktree' && (
+              <QuickWorktreeDialog
+                open={quickWorktreeOpen}
+                onOpenChange={setQuickWorktreeOpen}
+                repositoryId={currentSession.repositoryId}
+                repositoryName={currentSession.repositoryName}
               />
             )}
           </header>

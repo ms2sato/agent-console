@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, useEffect, useCallback } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -42,6 +42,9 @@ export interface CreateWorktreeFormProps {
   defaultAgentId?: string | null;
   onSubmit: (request: CreateWorktreeFormRequest) => Promise<void>;
   onCancel: () => void;
+  /** When provided, form values are persisted to localStorage under this key.
+   *  On mount, saved values are restored. On successful submit, the draft is cleared. */
+  draftKey?: string;
 }
 
 export function CreateWorktreeForm({
@@ -50,6 +53,7 @@ export function CreateWorktreeForm({
   defaultAgentId,
   onSubmit,
   onCancel,
+  draftKey,
 }: CreateWorktreeFormProps) {
   const {
     register,
@@ -59,6 +63,7 @@ export function CreateWorktreeForm({
     clearErrors,
     watch,
     setValue,
+    reset,
     formState: { errors },
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
@@ -74,6 +79,61 @@ export function CreateWorktreeForm({
     mode: 'onBlur',
     shouldUnregister: true,
   });
+
+  // Draft persistence: restore saved values on mount, save on change, clear on successful submit
+  const loadDraft = useCallback((): Partial<CreateWorktreeFormData> | null => {
+    if (!draftKey) return null;
+    try {
+      const saved = localStorage.getItem(draftKey);
+      if (saved) return JSON.parse(saved) as Partial<CreateWorktreeFormData>;
+    } catch {
+      // Ignore corrupted drafts
+    }
+    return null;
+  }, [draftKey]);
+
+  // Restore draft on mount
+  useEffect(() => {
+    const draft = loadDraft();
+    if (draft) {
+      reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
+    }
+    // Only run on mount (and when draftKey changes)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
+  // Save draft on form changes (debounced)
+  useEffect(() => {
+    if (!draftKey) return;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const subscription = watch((value) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        try {
+          localStorage.setItem(draftKey, JSON.stringify(value));
+        } catch {
+          // Ignore storage errors (e.g., quota exceeded)
+        }
+      }, 500);
+    });
+    return () => {
+      clearTimeout(timeoutId);
+      // Save current values on unmount so closing the dialog preserves the draft
+      try {
+        localStorage.setItem(draftKey, JSON.stringify(getValues()));
+      } catch {
+        // Ignore storage errors
+      }
+      subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, watch]);
+
+  const clearDraft = useCallback(() => {
+    if (draftKey) {
+      localStorage.removeItem(draftKey);
+    }
+  }, [draftKey]);
 
   const agentId = watch('agentId');
   const resolvedAgentId = useResolvedAgentId(agentId, defaultAgentId ?? undefined);
@@ -216,6 +276,7 @@ export function CreateWorktreeForm({
     try {
       const request = buildRequest(data, useRemote);
       await onSubmit(request);
+      clearDraft();
     } catch (err) {
       setError('root', {
         message: err instanceof Error ? err.message : 'Failed to create worktree',
