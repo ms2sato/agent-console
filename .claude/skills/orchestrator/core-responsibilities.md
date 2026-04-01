@@ -76,7 +76,8 @@
   - Focus on domain correctness — "Did they do what was asked AND is the result logically sound?"
   - Verify test existence and layer adequacy per test-standards skill
   - **Acceptance criteria <-> test 1:1 verification**: For each acceptance criterion that specifies a test layer, explicitly confirm the corresponding test exists in the PR diff by file name and test case name. Do NOT pass the check if a criterion says "integration test" but only unit tests exist. This is a hard gate, not a judgment call.
-- **CI Green -> Acceptance Check Flow**:
+- **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
+  0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
   1. Run acceptance check script and answer Q1-Q7
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> resolve before proceeding:
