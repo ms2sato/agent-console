@@ -55,12 +55,4 @@ description: Code quality evaluation criteria for reviews. Use when reviewing co
 - **Type Safety** — Avoid `any`, use `unknown` with guards. No `unknown` as shortcut (`value as unknown as T` prohibited). Shared types in `packages/shared`. Always `async/await`, no fire-and-forget.
 - **Enum-like Definitions** — Define labeled object first, derive type with `keyof typeof`. Avoid separate type + labels (can drift).
 
-## Evaluation Output Format
-
-For each aspect reviewed, provide:
-1. **Rating**: Good / Acceptable / Needs Improvement / Critical Issue
-2. **Evidence**: Specific code references (file:line)
-3. **Impact**: What could go wrong if not addressed
-4. **Recommendation**: Concrete suggestion for improvement
-
 See [code-quality-standards.md](code-quality-standards.md) for implementation examples and code patterns (used by coding agents).

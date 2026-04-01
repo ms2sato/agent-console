@@ -38,7 +38,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - **Use TaskCreate for multi-step procedures.** When executing enumerated steps from skills (e.g., sprint retrospective, sprint start), create a task checklist via `TaskCreate`/`TaskUpdate` to track progress and prevent step omission. Exception: procedures that have a dedicated script (e.g., `acceptance-check.js`) should use the script instead.
 
 ### DO NOT
-- Write or edit **production code** directly — always delegate to coding agents. However, the Orchestrator MAY directly edit non-production files (docs/, .claude/skills/**, .claude/agents/**, CLAUDE.md) using the lightweight worktree flow when changes are trivial and well-defined.
+- Write or edit **production code** — always delegate to coding agents. Non-production files (docs/, .claude/skills/**, .claude/agents/**, CLAUDE.md) may be edited by the Orchestrator, but always in a separate worktree (`EnterWorktree`), never in the Orchestrator session itself.
 - Make business strategy decisions without owner approval
 - Launch tasks that touch overlapping files in parallel
 - Assume Issue descriptions match current code — verify first
