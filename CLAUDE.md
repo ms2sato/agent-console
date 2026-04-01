@@ -106,6 +106,7 @@ Project-defined skills (in `.claude/skills/`):
 - **Frontend standards:** `.claude/skills/frontend-standards/` - React patterns and frontend best practices
 - **Backend standards:** `.claude/skills/backend-standards/` - Hono/Bun patterns and backend best practices
 - **Test standards:** `.claude/skills/test-standards/` - Testing best practices and anti-patterns
+- **UX design standards:** `.claude/skills/ux-design-standards/` - UX design principles for multi-agent management UI
 
 **Parallel execution.** When changes span multiple packages, launch specialists in parallel:
 - Frontend and backend changes → `frontend-specialist` + `backend-specialist` simultaneously

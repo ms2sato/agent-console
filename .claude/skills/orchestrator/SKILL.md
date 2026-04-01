@@ -10,6 +10,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 ## Required Skills (auto-load)
 - `test-standards` — determine appropriate test layer for acceptance criteria, verify test adequacy during acceptance checks
 - `code-quality-standards` — evaluate domain design, service layer separation, and code quality during acceptance checks
+- `ux-design-standards` — evaluate UX design in acceptance criteria and feature design
 
 ---
 
