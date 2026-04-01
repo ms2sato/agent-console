@@ -1,21 +1,20 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import type { Repository } from '@agent-console/shared';
-import { withRepositoryRemote } from '../repository-remote.js';
 
-/**
- * Tests for withRepositoryRemote utility.
- *
- * Uses actual git operations against the current repository (integration-style)
- * to avoid Bun.spawn mocking issues in parallel test execution.
- * The core getRemoteUrl function is unit-tested in git.test.ts;
- * these tests verify the enrichment/spreading behavior of withRepositoryRemote.
- */
+const mockGetRemoteUrl = mock(() => Promise.resolve('https://github.com/test/repo.git'));
+
+mock.module('../git.js', () => ({
+  getRemoteUrl: mockGetRemoteUrl,
+}));
+
+// Import after mock.module
+const { withRepositoryRemote } = await import('../repository-remote.js');
 
 function createTestRepository(overrides?: Partial<Repository>): Repository {
   return {
     id: 'repo-1',
     name: 'test-repo',
-    path: process.cwd(),
+    path: '/tmp/test-repo',
     createdAt: '2024-01-01T00:00:00Z',
     description: null,
     defaultAgentId: null,
@@ -25,30 +24,37 @@ function createTestRepository(overrides?: Partial<Repository>): Repository {
 
 describe('withRepositoryRemote', () => {
   it('should enrich repository with remoteUrl from git remote', async () => {
+    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository();
     const enriched = await withRepositoryRemote(repo);
 
-    // The current working directory is a git repo with a remote
-    expect(enriched.remoteUrl).toBeDefined();
-    expect(typeof enriched.remoteUrl).toBe('string');
-    // Original fields preserved
+    expect(enriched.remoteUrl).toBe('https://github.com/test/repo.git');
     expect(enriched.id).toBe('repo-1');
     expect(enriched.name).toBe('test-repo');
-    expect(enriched.path).toBe(process.cwd());
+    expect(enriched.path).toBe('/tmp/test-repo');
     expect(enriched.createdAt).toBe('2024-01-01T00:00:00Z');
   });
 
+  it('should set remoteUrl to undefined when no remote exists', async () => {
+    mockGetRemoteUrl.mockResolvedValueOnce(null);
+    const repo = createTestRepository();
+    const enriched = await withRepositoryRemote(repo);
+
+    expect(enriched.remoteUrl).toBeUndefined();
+  });
+
   it('should not mutate the original repository object', async () => {
+    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository();
     const enriched = await withRepositoryRemote(repo);
 
     expect(enriched).not.toBe(repo);
-    // Original object is unchanged
     expect(repo.remoteUrl).toBeUndefined();
-    expect(enriched.remoteUrl).toBeDefined();
+    expect(enriched.remoteUrl).toBe('https://github.com/test/repo.git');
   });
 
   it('should preserve all existing repository fields', async () => {
+    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository({
       description: 'A test repo',
       setupCommand: 'bun install',
