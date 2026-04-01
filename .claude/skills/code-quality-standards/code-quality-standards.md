@@ -58,6 +58,12 @@ Consider extracting to `worker-lifecycle.ts` or similar.
 
 See "Design Review Mindset" in CLAUDE.md for module evaluation criteria (cohesion, coupling, encapsulation). The CLAUDE.md checklist is the primary reference — apply it when evaluating module boundaries, dependency direction, and interface design.
 
+**Coupling levels** (from best to worst):
+- Data coupling (good): Modules communicate through simple data parameters.
+- Stamp coupling (caution): Modules share complex data structures beyond what's needed.
+- Control coupling (bad): One module controls another's behavior via flags.
+- Content coupling (prohibited): One module directly accesses another's internals.
+
 ## 2. Bug Resistance
 
 ### Type Safety
