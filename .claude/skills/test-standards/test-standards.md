@@ -131,26 +131,40 @@ Using `mock.module()` or `vi.mock()` instead of fetch-level mocks.
 - `mock.module()` is permanent in bun:test (cannot be reset)
 - Tests pass even when integration is broken
 
-**Bun-specific: `mock.module()` is process-global.** Mocking a module in one test file pollutes ALL test files that run in the same process. This has caused production incidents (e.g., mocking `config.js` in deletion tests broke 26+ unrelated tests).
+**Bun-specific: `mock.module()` is process-global and permanent.** Mocking a module in one test file pollutes ALL test files that run in the same process. This has caused production incidents (e.g., mocking `config.js` in deletion tests broke 26+ unrelated tests; centralizing `worktreeService` mock into a shared helper broke 23 MCP tests via import-time side effects).
 
-**Preferred approach: dependency injection over module mocking for cross-cutting concerns.**
-When a service depends on other services or configuration, accept them as parameters (constructor or function args) rather than importing and mocking the module. This was successfully applied in `deleteWorktree(params, deps)` (#383).
+**`mock.module()` is a code smell, not a testing tool.** If you need `mock.module()` to test something, the production code has a design problem — it depends on a module-level singleton instead of accepting dependencies as parameters. The correct fix is to refactor the production code for DI, not to find clever `mock.module()` workarounds.
+
+**Common traps that do NOT solve the problem:**
+- "Each test file defines its own `mock.module()`" — still leaks if Bun runs files in the same process
+- "Centralized mock helper that calls `mock.module()` once" — makes it worse: every file that imports the helper triggers the global mock via import side effects
+- "Reset mocks in `beforeEach`" — `mock.module()` cannot be reset in Bun
+
+**Preferred approach: dependency injection over module mocking.**
+When a service depends on other services or configuration, accept them as parameters (constructor or function args) rather than importing a singleton. This project uses `AppContext` for DI — services are injected via Hono middleware context. Route handler tests use `createTestContext()` or `asAppContext()` to inject mocks without `mock.module()`.
 
 ```typescript
-// ❌ Fragile: mock.module pollutes other tests
-mock.module('../../lib/config.js', () => ({
-  getRepositoriesDir: () => '/fake/path',
+// ❌ mock.module — pollutes other tests, cannot be reset
+mock.module('../../services/worktree-service.js', () => ({
+  worktreeService: { listWorktrees: mock(() => []) },
 }));
 
-// ✅ Robust: dependency injection
+// ✅ DI via AppContext — isolated, no global side effects
+app.use('*', async (c, next) => {
+  c.set('appContext', asAppContext({
+    worktreeService: mockWorktreeService,  // injected mock
+  }));
+  await next();
+});
+
+// ✅ DI via function parameters — for service-to-service deps
 export async function deleteWorktree(
   params: DeleteWorktreeParams,
-  deps: DeleteWorktreeDeps,  // sessionManager, repositoryManager, etc.
+  deps: DeleteWorktreeDeps,  // worktreeService, sessionManager, etc.
 ): Promise<DeleteWorktreeResult> { ... }
 
 // In tests: pass mock deps directly
-const deps = createMockDeps({ repo: mockRepo });
-const result = await deleteWorktree(params, deps);
+const result = await deleteWorktree(params, { worktreeService: mockService, ... });
 ```
 
 ### 3. Private Method Testing
