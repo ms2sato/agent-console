@@ -2665,7 +2665,12 @@ describe('SessionManager', () => {
       await manager.pauseSession(session.id);
 
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
-      expect(onSessionPaused).toHaveBeenCalledWith(session.id, expect.any(String));
+      expect(onSessionPaused).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: session.id,
+          activationState: 'hibernated',
+        })
+      );
     });
 
     it('should persist all worker entries with pid: null after pausing', async () => {
@@ -2951,7 +2956,8 @@ describe('SessionManager', () => {
         expect.objectContaining({
           id: session.id,
           type: 'worktree',
-        })
+        }),
+        expect.any(Array) // activityStates
       );
     });
 

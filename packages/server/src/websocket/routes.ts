@@ -359,17 +359,17 @@ export async function setupWebSocketRoutes(
       logger.debug({ sessionId, workerId }, 'Broadcasting worker-activated');
       broadcastToApp({ type: 'worker-activated', sessionId, workerId });
     },
-    onWorkerRestarted: (sessionId, workerId) => {
+    onWorkerRestarted: (sessionId, workerId, activityState) => {
       logger.debug({ sessionId, workerId }, 'Broadcasting worker-restarted');
-      broadcastToApp({ type: 'worker-restarted', sessionId, workerId });
+      broadcastToApp({ type: 'worker-restarted', sessionId, workerId, activityState });
     },
-    onSessionPaused: (sessionId, pausedAt) => {
-      logger.debug({ sessionId }, 'Broadcasting session-paused');
-      broadcastToApp({ type: 'session-paused', sessionId, pausedAt });
+    onSessionPaused: (session) => {
+      logger.debug({ sessionId: session.id }, 'Broadcasting session-paused');
+      broadcastToApp({ type: 'session-paused', session });
     },
-    onSessionResumed: (session) => {
+    onSessionResumed: (session, activityStates) => {
       logger.debug({ sessionId: session.id }, 'Broadcasting session-resumed');
-      broadcastToApp({ type: 'session-resumed', session });
+      broadcastToApp({ type: 'session-resumed', session, activityStates });
     },
     onDiffBaseCommitChanged: (sessionId, workerId, newBaseCommit) => {
       logger.debug({ sessionId, workerId }, 'Updating git-diff base commit via WebSocket');

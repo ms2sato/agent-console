@@ -595,6 +595,16 @@ export class SessionManager {
   }
 
   /**
+   * Get a persisted session as a public Session type.
+   * Used for inactive/paused sessions that aren't in memory.
+   */
+  async getPersistedSession(id: string): Promise<Session | null> {
+    const persisted = await this.sessionRepository.findById(id);
+    if (!persisted) return null;
+    return this.persistedToPublicSession(persisted);
+  }
+
+  /**
    * Kill all workers in a session without deleting the session itself.
    * Used to release directory handles (e.g., cwd) before worktree deletion
    * while keeping the session recoverable if deletion fails.
@@ -843,8 +853,9 @@ export class SessionManager {
 
     logger.info({ sessionId: id }, 'Session paused');
 
-    // Call lifecycle callback
-    this.sessionLifecycleCallbacks?.onSessionPaused?.(id, pausedAt);
+    // Call lifecycle callback with full public Session (includes activationState: 'hibernated')
+    const pausedPublicSession = this.persistedToPublicSession(persistedSession);
+    this.sessionLifecycleCallbacks?.onSessionPaused?.(pausedPublicSession);
 
     return true;
   }
@@ -1019,8 +1030,19 @@ export class SessionManager {
 
     const publicSession = this.toPublicSession(internalSession);
 
-    // Call lifecycle callback
-    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession);
+    // Collect activity states for resumed session's workers
+    const activityStates: import('@agent-console/shared').WorkerActivityInfo[] = [];
+    for (const worker of publicSession.workers) {
+      if (worker.type === 'agent') {
+        const state = this.getWorkerActivityState(id, worker.id);
+        if (state) {
+          activityStates.push({ sessionId: id, workerId: worker.id, activityState: state });
+        }
+      }
+    }
+
+    // Call lifecycle callback with activity states
+    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession, activityStates);
 
     return publicSession;
   }

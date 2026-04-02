@@ -638,7 +638,7 @@ describe('WorkerLifecycleManager', () => {
 
       await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
 
-      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id);
+      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id, expect.any(String));
     });
 
     it('should call onWorkerRestarted even when agent is not changed', async () => {
@@ -656,7 +656,7 @@ describe('WorkerLifecycleManager', () => {
       );
 
       // onWorkerRestarted should be called regardless of agent/branch changes
-      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id);
+      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id, expect.any(String));
       // onSessionUpdated should NOT be called since agent and branch did not change
       expect(mockOnSessionUpdated).not.toHaveBeenCalled();
     });
