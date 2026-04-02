@@ -24,6 +24,7 @@ import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
+import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
 import { createMcpApp } from '../mcp-server.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
@@ -181,7 +182,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService() });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);

@@ -26,7 +26,7 @@ import { findOpenPullRequest } from '../services/github-pr-service.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
-import { interSessionMessageService } from '../services/inter-session-message-service.js';
+import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
@@ -160,6 +160,7 @@ export interface McpDependencies {
   timerManager: TimerManager;
   worktreeService: WorktreeService;
   annotationService: AnnotationService;
+  interSessionMessageService: InterSessionMessageService;
 }
 
 // ---------- Factory ----------
@@ -170,7 +171,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.

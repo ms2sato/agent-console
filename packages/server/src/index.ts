@@ -135,6 +135,7 @@ const mcpApp = createMcpApp({
   timerManager: appContext.timerManager,
   worktreeService: appContext.worktreeService,
   annotationService: appContext.annotationService,
+  interSessionMessageService: appContext.interSessionMessageService,
 });
 app.route('', mcpApp);
 

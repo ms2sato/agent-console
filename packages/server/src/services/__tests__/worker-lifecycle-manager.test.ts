@@ -23,6 +23,7 @@ import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
 import { JobQueue } from '../../jobs/index.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { AnnotationService } from '../annotation-service.js';
+import { InterSessionMessageService } from '../inter-session-message-service.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -103,6 +104,7 @@ describe('WorkerLifecycleManager', () => {
       getPathResolver: () => new SessionDataPathResolver(),
       annotationService: new AnnotationService(),
       workerOutputFileManager: new WorkerOutputFileManager(),
+      interSessionMessageService: new InterSessionMessageService(),
       ...overrides,
     };
   }
