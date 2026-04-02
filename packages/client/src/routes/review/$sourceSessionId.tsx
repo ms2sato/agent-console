@@ -417,7 +417,7 @@ function ReviewDiffContent({
 
         {/* Inline comment input overlay */}
         {commentState && (
-          <div className="absolute bottom-0 left-0 right-0 bg-slate-800 border-t border-gray-600 p-3">
+          <div className="absolute bottom-0 left-0 right-0 z-30 bg-slate-800 border-t border-gray-600 p-3">
             <div className="flex items-start gap-2">
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-gray-400 mb-1">

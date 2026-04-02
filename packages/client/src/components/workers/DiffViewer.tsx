@@ -710,13 +710,13 @@ function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnot
             return (
               <div
                 key={lineIndex}
-                className={`flex ${bgColor} hover:bg-slate-800/50`}
+                className={`flex ${bgColor} hover:bg-slate-800/50${onLineClick && newLineNum !== null ? ' group' : ''}`}
               >
                 <div className="w-12 text-right px-2 text-gray-600 select-none shrink-0 border-r border-gray-800">
                   {oldLineNum !== null ? oldLineNum : ''}
                 </div>
                 <div
-                  className={`w-12 text-right px-2 select-none shrink-0 border-r border-gray-800 ${
+                  className={`w-12 text-right px-2 select-none shrink-0 border-r border-gray-800 relative ${
                     onLineClick && newLineNum !== null
                       ? 'text-gray-500 cursor-pointer hover:text-indigo-400 hover:bg-indigo-900/20'
                       : 'text-gray-600'
@@ -726,6 +726,11 @@ function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnot
                   title={onLineClick && newLineNum !== null ? 'Click to comment' : undefined}
                 >
                   {newLineNum !== null ? newLineNum : ''}
+                  {onLineClick && newLineNum !== null && (
+                    <span className="absolute inset-0 flex items-center justify-center text-indigo-400 opacity-0 group-hover:opacity-100 bg-indigo-900/30 text-xs font-bold transition-opacity">
+                      +
+                    </span>
+                  )}
                 </div>
                 <div className="flex-1 px-4 py-0.5 whitespace-pre-wrap break-all">
                   <span className={`select-none mr-2 ${prefixColor}`}>{prefix}</span>
