@@ -46,7 +46,7 @@ import {
 import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
-import { interSessionMessageService } from './inter-session-message-service.js';
+import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
 import { memoService } from './memo-service.js';
 import { createLogger } from '../lib/logger.js';
@@ -113,6 +113,8 @@ interface SessionManagerOptions {
   annotationService?: AnnotationService;
   /** Worker output file management. Defaults to a fresh instance if not provided. */
   workerOutputFileManager?: WorkerOutputFileManager;
+  /** Inter-session message file management. Defaults to a fresh instance if not provided. */
+  interSessionMessageService?: InterSessionMessageService;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
 }
@@ -132,6 +134,7 @@ export class SessionManager {
   private jobQueue: JobQueue | null = null;
   private notificationManager: NotificationManager | null = null;
   private workerOutputFileManager: WorkerOutputFileManager;
+  private interSessionMessageService: InterSessionMessageService;
   private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
@@ -163,6 +166,7 @@ export class SessionManager {
     this.userRepository = options?.userRepository ?? null;
     const workerOutputFileManager = options.workerOutputFileManager ?? new WorkerOutputFileManager();
     this.workerOutputFileManager = workerOutputFileManager;
+    this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
     this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
@@ -184,6 +188,7 @@ export class SessionManager {
       getPathResolver: (session) => this.getPathResolverForSession(session),
       annotationService: options.annotationService ?? new AnnotationService(),
       workerOutputFileManager,
+      interSessionMessageService: this.interSessionMessageService,
     });
   }
 
@@ -680,7 +685,7 @@ export class SessionManager {
 
       // 2c. Clean up inter-session message files
       try {
-        await interSessionMessageService.deleteSessionMessages(id, resolver);
+        await this.interSessionMessageService.deleteSessionMessages(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
       }

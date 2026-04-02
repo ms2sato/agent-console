@@ -37,7 +37,7 @@ import { JOB_TYPES } from '../jobs/index.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
-import { interSessionMessageService } from './inter-session-message-service.js';
+import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { AnnotationService } from './annotation-service.js';
 import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import {
@@ -83,6 +83,8 @@ export interface WorkerLifecycleDeps {
   annotationService: AnnotationService;
   /** Worker output file management (buffering, history, cleanup) */
   workerOutputFileManager: WorkerOutputFileManager;
+  /** Inter-session message file management */
+  interSessionMessageService: InterSessionMessageService;
 }
 
 /**
@@ -292,7 +294,7 @@ export class WorkerLifecycleManager {
 
     // Clean up inter-session message files for this worker
     try {
-      await interSessionMessageService.deleteWorkerMessages(sessionId, workerId, resolver);
+      await this.deps.interSessionMessageService.deleteWorkerMessages(sessionId, workerId, resolver);
     } catch (err) {
       logger.warn(
         { sessionId, workerId, err },

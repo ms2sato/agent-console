@@ -141,5 +141,3 @@ export class InterSessionMessageService {
     logger.debug({ sessionId, workerId }, 'Worker message directory removed');
   }
 }
-
-export const interSessionMessageService = new InterSessionMessageService();
