@@ -226,6 +226,7 @@ export async function createAppContext(
 
   // 8. Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
+    db,
     jobQueue,
     sessionManager,
     repositoryManager,
@@ -360,6 +361,7 @@ export async function createTestContext(
 
   // Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
+    db,
     jobQueue,
     sessionManager,
     repositoryManager,

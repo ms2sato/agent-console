@@ -1,21 +1,20 @@
+import type { Kysely } from 'kysely';
 import type { JobQueue } from '../../jobs/index.js';
 import { JOB_TYPES } from '../../jobs/index.js';
 import type { SessionManager } from '../session-manager.js';
 import type { RepositoryManager } from '../repository-manager.js';
 import type { InboundEventSummary } from '@agent-console/shared';
+import type { Database } from '../../database/schema.js';
 import { GitHubServiceParser } from './github-service-parser.js';
 import { createInboundEventJobHandler } from './job-handler.js';
 import { createInboundHandlers } from './handlers.js';
 import { ServiceParserRegistry } from './parser-registry.js';
 import { createCICompletionChecker } from './ci-completion-checker.js';
 import { resolveTargets as resolveTargetsImpl } from './resolve-targets.js';
-import {
-  createPendingNotification,
-  findInboundEventNotification,
-  markNotificationDelivered,
-} from '../../repositories/inbound-event-notification-repository.js';
+import { InboundEventNotificationRepository } from '../../repositories/inbound-event-notification-repository.js';
 
 export interface InboundIntegrationOptions {
+  db: Kysely<Database>;
   jobQueue: JobQueue;
   sessionManager: SessionManager;
   repositoryManager: RepositoryManager;
@@ -63,11 +62,7 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
       getServiceParser: (serviceId) => parserRegistry.get(serviceId),
       resolveTargets,
       handlers,
-      notificationRepository: {
-        findInboundEventNotification,
-        createPendingNotification,
-        markNotificationDelivered,
-      },
+      notificationRepository: new InboundEventNotificationRepository(options.db),
       ciCompletionChecker: createCICompletionChecker(),
     })
   );
