@@ -271,6 +271,3 @@ export class PersistenceService {
     return true;
   }
 }
-
-// Singleton instance
-export const persistenceService = new PersistenceService();
