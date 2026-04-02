@@ -22,6 +22,7 @@ import type {
 import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../persistence-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -43,7 +44,7 @@ describe('WorkerManager', () => {
 
     ptyFactory.reset();
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
-    workerManager = new WorkerManager(userMode, agentManager);
+    workerManager = new WorkerManager(userMode, agentManager, new WorkerOutputFileManager());
   });
 
   afterEach(async () => {

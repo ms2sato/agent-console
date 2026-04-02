@@ -118,6 +118,7 @@ import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.j
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
 import { JobQueue } from '../jobs/job-queue.js';
 import { registerJobHandlers } from '../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
@@ -184,7 +185,7 @@ describe('API Routes Integration', () => {
 
     // Create a test JobQueue with the shared database connection
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     // Setup memfs with config directory, mock git repo, and common test paths
     setupMemfs({

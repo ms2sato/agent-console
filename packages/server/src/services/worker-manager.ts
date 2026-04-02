@@ -44,7 +44,7 @@ import type { AgentManager } from './agent-manager.js';
 import { expandTemplate } from '../lib/template.js';
 import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
-import { workerOutputFileManager } from '../lib/worker-output-file.js';
+import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worker-manager');
@@ -164,7 +164,7 @@ export class WorkerManager {
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
 
-  constructor(userMode: UserMode, agentManager: AgentManager) {
+  constructor(userMode: UserMode, agentManager: AgentManager, private workerOutputFileManager: WorkerOutputFileManager) {
     this.userMode = userMode;
     this.agentManager = agentManager;
   }
@@ -428,7 +428,7 @@ export class WorkerManager {
 
       worker.outputOffset += Buffer.byteLength(data, 'utf-8');
 
-      workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver);
+      this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.processOutput(data);

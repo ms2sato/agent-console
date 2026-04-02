@@ -9,6 +9,7 @@ import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { createSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SessionManager } from '../../services/session-manager.js';
@@ -85,7 +86,7 @@ describe('Worker WebSocket connection error codes', () => {
     await initializeDatabase(':memory:');
 
     testJobQueue = new JobQueue(getDatabase());
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
@@ -296,7 +297,7 @@ describe('WebSocket authentication rejection (C4)', () => {
     await initializeDatabase(':memory:');
 
     testJobQueue = new JobQueue(getDatabase());
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));

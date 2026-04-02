@@ -6,6 +6,7 @@ import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
 import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import type { AppBindings } from '../../app-context.js';
@@ -36,7 +37,7 @@ describe('Repository Slack Integration API', () => {
 
     // Create job queue with the in-memory database
     testJobQueue = new JobQueue(db, { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     // Create repository repository backed by in-memory SQLite
     repositoryRepository = new SqliteRepositoryRepository(db);

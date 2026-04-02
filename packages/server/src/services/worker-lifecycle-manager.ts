@@ -44,7 +44,7 @@ import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
-import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { type WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -81,6 +81,8 @@ export interface WorkerLifecycleDeps {
   getPathResolver: (session: InternalSession) => SessionDataPathResolver;
   /** In-memory review annotation store */
   annotationService: AnnotationService;
+  /** Worker output file management (buffering, history, cleanup) */
+  workerOutputFileManager: WorkerOutputFileManager;
 }
 
 /**
@@ -178,7 +180,7 @@ export class WorkerLifecycleManager {
     // Initialize output file immediately for PTY workers (agent/terminal)
     // This prevents race conditions where WebSocket connects before any output is buffered
     if (request.type === 'agent' || request.type === 'terminal') {
-      await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);
+      await this.deps.workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);
     }
 
     await this.deps.persistSession(session);
@@ -376,7 +378,7 @@ export class WorkerLifecycleManager {
 
     // Reset the output file to prevent offset mismatch with client cache.
     const resolver = this.deps.getPathResolver(session);
-    await workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
+    await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
 
     // Create new worker with same ID, preserving original createdAt for tab order
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
@@ -649,10 +651,10 @@ export class WorkerLifecycleManager {
 
     // Use line-limited read for initial connection (fromOffset is 0 or undefined)
     if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
-      return workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines, resolver);
+      return this.deps.workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines, resolver);
     }
 
-    return workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, fromOffset);
+    return this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, fromOffset);
   }
 
   /**
@@ -666,7 +668,7 @@ export class WorkerLifecycleManager {
     if (!worker || worker.type === 'git-diff') return 0;
 
     const resolver = session ? this.deps.getPathResolver(session) : new SessionDataPathResolver();
-    return workerOutputFileManager.getCurrentOffset(sessionId, workerId, resolver);
+    return this.deps.workerOutputFileManager.getCurrentOffset(sessionId, workerId, resolver);
   }
 
   // ========== Private Helpers ==========

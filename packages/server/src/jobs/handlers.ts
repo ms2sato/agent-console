@@ -12,7 +12,7 @@ import {
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
 } from './job-types.js';
-import { workerOutputFileManager } from '../lib/worker-output-file.js';
+import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -22,7 +22,7 @@ const logger = createLogger('job-handlers');
  * Register all job handlers with the job queue.
  * @param jobQueue The JobQueue instance to register handlers with
  */
-export function registerJobHandlers(jobQueue: JobQueue): void {
+export function registerJobHandlers(jobQueue: JobQueue, workerOutputFileManager: WorkerOutputFileManager): void {
   // Handler for deleting all output files for a session
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
