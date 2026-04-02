@@ -17,6 +17,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
+import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
@@ -87,7 +88,7 @@ describe('Worker WebSocket connection error codes', () => {
     registerJobHandlers(testJobQueue);
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    const notificationManager = new NotificationManager(new SlackHandler());
+    const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     sessionManager = await SessionManager.create({
       sessionRepository,
       jobQueue: testJobQueue,
@@ -298,7 +299,7 @@ describe('WebSocket authentication rejection (C4)', () => {
     registerJobHandlers(testJobQueue);
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    const notificationManager = new NotificationManager(new SlackHandler());
+    const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     const sessionManager = await SessionManager.create({
       sessionRepository,
       jobQueue: testJobQueue,

@@ -21,6 +21,7 @@ import type { AgentManager } from './services/agent-manager.js';
 import type { TimerManager } from './services/timer-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { WorktreeService } from './services/worktree-service.js';
+import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
@@ -45,6 +46,7 @@ import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
+import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
 
 const logger = createLogger('app-context');
 
@@ -81,6 +83,9 @@ export interface AppContext {
 
   /** Worktree management (create, remove, list, hooks) */
   worktreeService: WorktreeService;
+
+  /** Repository-level Slack integration CRUD */
+  repositorySlackIntegrationService: RepositorySlackIntegrationService;
 
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
@@ -147,7 +152,8 @@ export async function createAppContext(
   const agentManager = await AgentManagerClass.create(agentRepository);
 
   // 5. Create notification services (needed by SessionManager)
-  const slackHandler = new SlackHandler();
+  const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
+  const slackHandler = new SlackHandler(repositorySlackIntegrationService);
   const notificationManager = new NotificationManagerClass(slackHandler);
 
   // 5.5. Create user mode (determines auth + PTY spawning strategy)
@@ -242,6 +248,7 @@ export async function createAppContext(
     systemCapabilities,
     agentManager,
     worktreeService,
+    repositorySlackIntegrationService,
     userMode,
     timerManager,
     inboundIntegration,
@@ -298,9 +305,10 @@ export async function createTestContext(
   const agentManager = await AgentManagerClass.create(agentRepository);
 
   // Use provided or create new notification manager (needed by SessionManager)
+  const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
   const notificationManager =
     overrides?.notificationManager ??
-    new NotificationManagerClass(new SlackHandler());
+    new NotificationManagerClass(new SlackHandler(repositorySlackIntegrationService));
 
   // Create user mode
   const userRepository = new SqliteUserRepository(db);
@@ -377,6 +385,7 @@ export async function createTestContext(
     systemCapabilities,
     agentManager,
     worktreeService,
+    repositorySlackIntegrationService,
     userMode,
     timerManager,
     inboundIntegration,

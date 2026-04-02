@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { RepositorySlackIntegration } from '@agent-console/shared';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
+import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
@@ -14,6 +17,7 @@ import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests_
 
 describe('Repository Slack Integration API', () => {
   let app: Hono<AppBindings>;
+  let db: Kysely<Database>;
   let repositoryRepository: SqliteRepositoryRepository;
   let testJobQueue: JobQueue;
   const testRepositoryId = 'test-repo-123';
@@ -28,14 +32,14 @@ describe('Repository Slack Integration API', () => {
     setupMemfs(gitRepoFiles);
 
     // Initialize in-memory database
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
 
     // Create job queue with the in-memory database
-    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    testJobQueue = new JobQueue(db, { concurrency: 1 });
     registerJobHandlers(testJobQueue);
 
     // Create repository repository backed by in-memory SQLite
-    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    repositoryRepository = new SqliteRepositoryRepository(db);
 
     // Pre-populate test repository BEFORE initializing the manager.
     // This is necessary because RepositoryManager loads repositories at initialization
@@ -53,11 +57,15 @@ describe('Repository Slack Integration API', () => {
       jobQueue: testJobQueue,
     });
 
+    // Create integration service with DI
+    const repositorySlackIntegrationService = new RepositorySlackIntegrationService(db);
+
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
       c.set('appContext', asAppContext({
         repositoryManager,
+        repositorySlackIntegrationService,
       }));
       await next();
     });
@@ -67,7 +75,7 @@ describe('Repository Slack Integration API', () => {
 
   afterEach(async () => {
     await testJobQueue.stop();
-    await closeDatabase();
+    await db.destroy();
     cleanupMemfs();
   });
 
