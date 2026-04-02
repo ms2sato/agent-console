@@ -1,26 +1,14 @@
 ---
 name: backend-standards
-description: Hono/Bun patterns and backend best practices for this project. Use when implementing API endpoints, WebSocket handlers, services, or server-side logic in packages/server.
+description: Detailed backend patterns and code examples for server implementation. Use when you need step-by-step guidance or concrete code patterns beyond what the auto-loaded backend rules provide.
 ---
 
-# Backend Standards
+# Backend Standards (Procedural Guide)
 
-## Key Principles
-
-- **Server is the source of truth** - Backend manages all session/worker state
-- **Structured logging** - Use Pino with context objects
-- **Resource cleanup** - Always clean up PTY processes and connections
-- **Type safety** - Define types in shared package, validate at boundaries
-## Backend Best Practices
-
-- **Resource Cleanup** - PTY processes, WebSocket connections, file handles must be cleaned up
-- **Callback Detachment** - Detach callbacks when resources are destroyed (memory leak prevention)
-- **WebSocket Message Types** - Define and validate server→client and client→server types explicitly
-- **Output Buffering** - Buffer rapid PTY output before WebSocket send to reduce message frequency
-- **Structured Logging** - Use Pino with structured data: `logger.info({ sessionId }, 'message')`
+> **Note:** Declarative rules (conventions, directory structure, naming) are in `.claude/rules/backend.md` and auto-loaded for `packages/server/**`. This skill provides detailed code examples and patterns.
 
 ## Detailed Documentation
 
-- [backend-standards.md](backend-standards.md) - Directory structure, Hono, logging, services, testing, security, best practices
-- [websocket-patterns.md](websocket-patterns.md) - Dual WebSocket architecture, message protocol, broadcasting
-- [webhook-receiver-patterns.md](webhook-receiver-patterns.md) - Webhook receiver design: always-200, async processing, internal error handling
+- [backend-standards.md](backend-standards.md) - Full code examples for Hono routes, Valibot validation, logging patterns, service singletons, callback lifecycle, resource cleanup, async patterns
+- [websocket-patterns.md](websocket-patterns.md) - WebSocket implementation details: dual architecture setup, message protocol types, broadcast implementation, output buffering code
+- [webhook-receiver-patterns.md](webhook-receiver-patterns.md) - Webhook receiver implementation: always-200 pattern, async processing, signature verification, error handling strategy

@@ -3,7 +3,7 @@ name: test-reviewer
 description: Review test quality and coverage, including detection of missing tests for production code changes. Use when evaluating whether tests are adequate, well-designed, or need improvement after tests are added or modified.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-skills: development-workflow-standards, code-quality-standards, test-standards
+skills: code-quality-standards, test-standards
 ---
 
 You are a test quality specialist. Your responsibility is to evaluate the adequacy and quality of tests.
