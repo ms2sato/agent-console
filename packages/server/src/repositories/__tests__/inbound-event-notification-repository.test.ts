@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import type { Kysely } from 'kysely';
 import {
-  createPendingNotification,
-  markNotificationDelivered,
-  findInboundEventNotification,
+  InboundEventNotificationRepository,
   NOTIFICATION_STATUS,
 } from '../inbound-event-notification-repository.js';
 import type { Database } from '../../database/schema.js';
@@ -44,10 +42,11 @@ async function createTestSession(db: Kysely<Database>, sessionId: string = TEST_
 }
 
 describe('inbound-event-notification-repository', () => {
-  const withDb = async <T>(handler: (db: Kysely<Database>) => Promise<T>): Promise<T> => {
+  const withDb = async <T>(handler: (db: Kysely<Database>, repo: InboundEventNotificationRepository) => Promise<T>): Promise<T> => {
     const db = await createDatabaseForTest();
+    const repo = new InboundEventNotificationRepository(db);
     try {
-      return await handler(db);
+      return await handler(db, repo);
     } finally {
       await db.destroy();
     }
@@ -55,14 +54,14 @@ describe('inbound-event-notification-repository', () => {
 
   describe('createPendingNotification', () => {
     it('creates notification with pending status and null notified_at', async () => {
-      await withDb(async (db) => {
+      await withDb(async (db, repo) => {
         // Session required for FK constraint
         await createTestSession(db);
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
         const rows = await db
           .selectFrom('inbound_event_notifications')
@@ -76,19 +75,19 @@ describe('inbound-event-notification-repository', () => {
     });
 
     it('ignores duplicate pending notifications', async () => {
-      await withDb(async (db) => {
+      await withDb(async (db, repo) => {
         // Session required for FK constraint
         await createTestSession(db);
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-2',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
         const rows = await db
           .selectFrom('inbound_event_notifications')
@@ -103,21 +102,20 @@ describe('inbound-event-notification-repository', () => {
 
   describe('markNotificationDelivered', () => {
     it('updates status to delivered and sets notified_at', async () => {
-      await withDb(async (db) => {
+      await withDb(async (db, repo) => {
         // Session required for FK constraint
         await createTestSession(db);
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
-        await markNotificationDelivered(
+        await repo.markNotificationDelivered(
           BASE_NOTIFICATION.job_id,
           BASE_NOTIFICATION.session_id,
           BASE_NOTIFICATION.worker_id,
-          BASE_NOTIFICATION.handler_id,
-          db
+          BASE_NOTIFICATION.handler_id
         );
 
         const rows = await db
@@ -134,13 +132,12 @@ describe('inbound-event-notification-repository', () => {
 
   describe('findInboundEventNotification', () => {
     it('returns null when notification does not exist', async () => {
-      await withDb(async (db) => {
-        const result = await findInboundEventNotification(
+      await withDb(async (_db, repo) => {
+        const result = await repo.findInboundEventNotification(
           'non-existent-job',
           'session-1',
           'worker-1',
-          'handler-1',
-          db
+          'handler-1'
         );
 
         expect(result).toBeNull();
@@ -148,21 +145,20 @@ describe('inbound-event-notification-repository', () => {
     });
 
     it('returns notification when it exists', async () => {
-      await withDb(async (db) => {
+      await withDb(async (db, repo) => {
         // Session required for FK constraint
         await createTestSession(db);
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
-        const result = await findInboundEventNotification(
+        const result = await repo.findInboundEventNotification(
           BASE_NOTIFICATION.job_id,
           BASE_NOTIFICATION.session_id,
           BASE_NOTIFICATION.worker_id,
-          BASE_NOTIFICATION.handler_id,
-          db
+          BASE_NOTIFICATION.handler_id
         );
 
         expect(result).not.toBeNull();
@@ -174,23 +170,23 @@ describe('inbound-event-notification-repository', () => {
 
   describe('foreign key constraint', () => {
     it('rejects notifications with non-existent session_id', async () => {
-      await withDb(async (db) => {
+      await withDb(async (_db, repo) => {
         // Do NOT create session - notification should fail FK constraint
-        await expect(createPendingNotification({
+        await expect(repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db)).rejects.toThrow('FOREIGN KEY constraint failed');
+        })).rejects.toThrow('FOREIGN KEY constraint failed');
       });
     });
 
     it('cascades delete when session is deleted', async () => {
-      await withDb(async (db) => {
+      await withDb(async (db, repo) => {
         await createTestSession(db);
 
-        await createPendingNotification({
+        await repo.createPendingNotification({
           id: 'notification-1',
           ...BASE_NOTIFICATION,
-        }, db);
+        });
 
         // Verify notification exists
         let rows = await db
