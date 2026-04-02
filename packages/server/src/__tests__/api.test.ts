@@ -51,9 +51,6 @@ const mockSuggestSessionMetadata = mock(async () => ({
   branch: 'suggested-branch',
   title: 'Suggested Title',
 }));
-mock.module('../services/session-metadata-suggester.js', () => ({
-  suggestSessionMetadata: mockSuggestSessionMetadata,
-}));
 
 // Mock github-pr-service to avoid spawning real gh processes in tests.
 // findOpenPullRequest returns null (no open PR) by default so deletion proceeds normally.
@@ -302,6 +299,7 @@ describe('API Routes Integration', () => {
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
         worktreeService: new WorktreeService({ db: getDatabase() }),
+        suggestSessionMetadata: mockSuggestSessionMetadata,
         broadcastToApp: mockBroadcastToApp,
       }));
       await next();

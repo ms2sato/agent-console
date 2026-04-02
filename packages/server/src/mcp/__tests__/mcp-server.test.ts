@@ -32,9 +32,6 @@ const mockSuggestSessionMetadata = mock(async () => ({
   branch: 'feat/auto-generated-branch',
   title: 'Auto-Generated Title',
 }));
-mock.module('../../services/session-metadata-suggester.js', () => ({
-  suggestSessionMetadata: mockSuggestSessionMetadata,
-}));
 
 // Mock worktree-deletion-service
 // NOTE: We spread the real module without overriding deleteWorktree.
@@ -182,7 +179,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), broadcastToApp: () => {} });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, broadcastToApp: () => {} });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
