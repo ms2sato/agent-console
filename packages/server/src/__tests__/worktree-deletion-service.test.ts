@@ -3,18 +3,23 @@ import type { Session } from '@agent-console/shared';
 import type { DeleteWorktreeDeps } from '../services/worktree-deletion-service.js';
 
 // ---------- Module mocks ----------
-// Only mock worktree-service (test-specific). Do NOT mock config or logger
-// because mock.module has global side effects that leak into other test files.
+// Spread the real worktreeService and only override the methods used by deleteWorktree.
+// This prevents leaking incomplete mocks to other test files that import worktree-service.
+import { worktreeService as realWorktreeService } from '../services/worktree-service.js';
 
-const mockWorktreeService = {
-  isWorktreeOf: mock(() => Promise.resolve(true)),
-  removeWorktree: mock(() => Promise.resolve({ success: true })),
-  listWorktrees: mock(() => Promise.resolve([])),
-  executeHookCommand: mock(() => Promise.resolve({ success: true })),
-};
+const mockIsWorktreeOf = mock(() => Promise.resolve(true));
+const mockRemoveWorktree = mock(() => Promise.resolve({ success: true } as { success: boolean; error?: string }));
+const mockListWorktrees = mock(() => Promise.resolve([] as Array<{ path: string; index?: number; branch?: string }>));
+const mockExecuteHookCommand = mock(() => Promise.resolve({ success: true }));
 
 mock.module('../services/worktree-service.js', () => ({
-  worktreeService: mockWorktreeService,
+  worktreeService: {
+    ...realWorktreeService,
+    isWorktreeOf: mockIsWorktreeOf,
+    removeWorktree: mockRemoveWorktree,
+    listWorktrees: mockListWorktrees,
+    executeHookCommand: mockExecuteHookCommand,
+  },
 }));
 
 // ---------- Import module under test AFTER mocks ----------
@@ -86,15 +91,15 @@ describe('deleteWorktree — kill phase error handling', () => {
     process.env.AGENT_CONSOLE_HOME = TEST_AGENT_CONSOLE_HOME;
 
     _getDeletionsInProgress().clear();
-    mockWorktreeService.isWorktreeOf.mockReset();
-    mockWorktreeService.isWorktreeOf.mockImplementation(() => Promise.resolve(true));
-    mockWorktreeService.removeWorktree.mockReset();
-    mockWorktreeService.removeWorktree.mockImplementation(() =>
+    mockIsWorktreeOf.mockReset();
+    mockIsWorktreeOf.mockImplementation(() => Promise.resolve(true));
+    mockRemoveWorktree.mockReset();
+    mockRemoveWorktree.mockImplementation(() =>
       Promise.resolve({ success: true }),
     );
-    mockWorktreeService.listWorktrees.mockReset();
-    mockWorktreeService.listWorktrees.mockImplementation(() => Promise.resolve([]));
-    mockWorktreeService.executeHookCommand.mockReset();
+    mockListWorktrees.mockReset();
+    mockListWorktrees.mockImplementation(() => Promise.resolve([]));
+    mockExecuteHookCommand.mockReset();
   });
 
   afterEach(() => {
@@ -125,7 +130,7 @@ describe('deleteWorktree — kill phase error handling', () => {
       { sessionId: 'session-1', error: 'PTY process not found' },
     ]);
     // Worktree removal was still called despite the kill failure
-    expect(mockWorktreeService.removeWorktree).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
   });
 
   it('should proceed with worktree deletion when killSessionWorkers fails for all sessions', async () => {
@@ -144,7 +149,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     expect(result.killErrors).toHaveLength(2);
     expect(result.killErrors![0].sessionId).toBe('session-1');
     expect(result.killErrors![1].sessionId).toBe('session-2');
-    expect(mockWorktreeService.removeWorktree).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
   });
 
   it('should not include killErrors when all kills succeed', async () => {
@@ -162,7 +167,7 @@ describe('deleteWorktree — kill phase error handling', () => {
   });
 
   it('should still report worktree removal failure even when kills succeed', async () => {
-    mockWorktreeService.removeWorktree.mockImplementation(() =>
+    mockRemoveWorktree.mockImplementation(() =>
       Promise.resolve({ success: false, error: 'dirty tree' }),
     );
 
