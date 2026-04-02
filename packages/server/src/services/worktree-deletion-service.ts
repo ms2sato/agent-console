@@ -142,6 +142,8 @@ export interface DeleteWorktreeParams {
  * 5. Acquire concurrency guard
  * 6. Execute cleanup command, kill workers, remove worktree, delete sessions
  */
+export type DeleteWorktreeFn = typeof deleteWorktree;
+
 export async function deleteWorktree(
   params: DeleteWorktreeParams,
   deps: DeleteWorktreeDeps,

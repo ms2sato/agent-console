@@ -59,6 +59,8 @@ export interface CreateWorktreeResult {
  *
  * On failure after worktree creation, rolls back by force-removing the created worktree.
  */
+export type CreateWorktreeWithSessionFn = typeof createWorktreeWithSession;
+
 export async function createWorktreeWithSession(
   params: CreateWorktreeParams,
   sessionManager: SessionManager,

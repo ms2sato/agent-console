@@ -4,6 +4,8 @@ import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
 import { createMcpApp } from './mcp/mcp-server.js';
+import { createWorktreeWithSession } from './services/worktree-creation-service.js';
+import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
 import { serverConfig } from './lib/server-config.js';
@@ -137,6 +139,8 @@ const mcpApp = createMcpApp({
   annotationService: appContext.annotationService,
   interSessionMessageService: appContext.interSessionMessageService,
   suggestSessionMetadata: appContext.suggestSessionMetadata,
+  createWorktreeWithSession,
+  deleteWorktree,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
