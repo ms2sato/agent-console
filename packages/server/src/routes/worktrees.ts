@@ -13,7 +13,6 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
-import { broadcastToApp } from '../websocket/routes.js';
 import {
   _getDeletionsInProgress,
   isDeletionInProgress,
@@ -51,7 +50,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager, worktreeService } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, worktreeService, broadcastToApp } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -173,7 +172,7 @@ const worktrees = new Hono<AppBindings>()
   // Pull a worktree (git pull --ff-only, async)
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, worktreeService } = c.get('appContext');
+    const { repositoryManager, worktreeService, broadcastToApp } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -284,7 +283,7 @@ const worktrees = new Hono<AppBindings>()
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, worktreeService } = c.get('appContext');
+    const { repositoryManager, sessionManager, worktreeService, broadcastToApp } = c.get('appContext');
 
     // Get worktree path from URL (everything after /worktrees/)
     const url = new URL(c.req.url);

@@ -4,7 +4,6 @@ import type { ReviewQueueGroup } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
-import { broadcastToApp } from '../websocket/routes.js';
 import { createLogger } from '../lib/logger.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 
@@ -47,7 +46,7 @@ export const reviewQueue = new Hono<AppBindings>()
   })
   .post('/:workerId/comments', vValidator(AddCommentSchema), async (c) => {
     const workerId = c.req.param('workerId');
-    const { sessionManager, annotationService } = c.get('appContext');
+    const { sessionManager, annotationService, broadcastToApp } = c.get('appContext');
     const { file, line, body } = c.req.valid('json');
 
     const annotationSet = annotationService.getAnnotations(workerId);
@@ -96,7 +95,7 @@ export const reviewQueue = new Hono<AppBindings>()
   })
   .patch('/:workerId/status', vValidator(UpdateStatusSchema), (c) => {
     const workerId = c.req.param('workerId');
-    const { sessionManager, annotationService } = c.get('appContext');
+    const { sessionManager, annotationService, broadcastToApp } = c.get('appContext');
     const { status } = c.req.valid('json');
 
     const annotationSet = annotationService.getAnnotations(workerId);
