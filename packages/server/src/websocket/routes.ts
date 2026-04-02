@@ -11,7 +11,7 @@ import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
-import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit } from './git-diff-handler.js';
+import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit, initializeGitDiffHandlers } from './git-diff-handler.js';
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
 import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
@@ -274,7 +274,20 @@ export async function setupWebSocketRoutes(
     registry = new WebSocketConnectionRegistry();
   }
 
-  const { sessionManager, notificationManager, agentManager, repositoryManager } = appContext;
+  const { sessionManager, notificationManager, agentManager, repositoryManager, annotationService } = appContext;
+
+  // Initialize git-diff handlers with injected dependencies
+  const { getDiffData, getFileLines, resolveRef, startWatching, stopWatching } = await import('../services/git-diff-service.js');
+  const { getMergeBaseSafe } = await import('../lib/git.js');
+  initializeGitDiffHandlers({
+    getDiffData,
+    resolveRef,
+    getMergeBase: getMergeBaseSafe,
+    startWatching,
+    stopWatching,
+    getFileLines,
+    annotationService,
+  });
 
   // Track which initialization steps have been completed
   const completedSteps = new Set<string>();

@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import type { ReviewQueueGroup } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
-import { annotationService } from '../services/annotation-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { broadcastToApp } from '../websocket/routes.js';
@@ -24,7 +23,7 @@ const UpdateStatusSchema = v.object({
 
 export const reviewQueue = new Hono<AppBindings>()
   .get('/', (c) => {
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, annotationService } = c.get('appContext');
     const getSessionTitle = (sessionId: string) => sessionManager.getSession(sessionId)?.title;
 
     const items = annotationService.listReviewQueue(getSessionTitle);
@@ -48,7 +47,7 @@ export const reviewQueue = new Hono<AppBindings>()
   })
   .post('/:workerId/comments', vValidator(AddCommentSchema), async (c) => {
     const workerId = c.req.param('workerId');
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, annotationService } = c.get('appContext');
     const { file, line, body } = c.req.valid('json');
 
     const annotationSet = annotationService.getAnnotations(workerId);
@@ -97,7 +96,7 @@ export const reviewQueue = new Hono<AppBindings>()
   })
   .patch('/:workerId/status', vValidator(UpdateStatusSchema), (c) => {
     const workerId = c.req.param('workerId');
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, annotationService } = c.get('appContext');
     const { status } = c.req.valid('json');
 
     const annotationSet = annotationService.getAnnotations(workerId);

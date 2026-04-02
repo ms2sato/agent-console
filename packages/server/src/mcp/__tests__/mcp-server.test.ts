@@ -22,6 +22,7 @@ import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-rep
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
+import { AnnotationService } from '../../services/annotation-service.js';
 import { createMcpApp } from '../mcp-server.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
@@ -167,6 +168,7 @@ describe('MCP Server Tools', () => {
   let repositoryManager: RepositoryManager;
   let timerManager: TimerManager;
   let worktreeService: WorktreeService;
+  let annotationService: AnnotationService;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
@@ -178,7 +180,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -231,6 +233,9 @@ describe('MCP Server Tools', () => {
     const db = getDatabase();
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
+    // Create AnnotationService
+    annotationService = new AnnotationService();
+
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
       ptyProvider: ptyFactory.provider,
@@ -238,6 +243,7 @@ describe('MCP Server Tools', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      annotationService,
     });
 
     // Create RepositoryManager (initially empty)

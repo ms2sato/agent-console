@@ -47,6 +47,7 @@ import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { interSessionMessageService } from './inter-session-message-service.js';
+import { AnnotationService } from './annotation-service.js';
 import { memoService } from './memo-service.js';
 import { createLogger } from '../lib/logger.js';
 import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
@@ -108,6 +109,8 @@ interface SessionManagerOptions {
   /** User repository for resolving createdBy → username for PTY spawning */
   userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
+  /** In-memory review annotation store. Defaults to a fresh instance if not provided. */
+  annotationService?: AnnotationService;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
 }
@@ -174,6 +177,7 @@ export class SessionManager {
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       getPathResolver: (session) => this.getPathResolverForSession(session),
+      annotationService: options.annotationService ?? new AnnotationService(),
     });
   }
 

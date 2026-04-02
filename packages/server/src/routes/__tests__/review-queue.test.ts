@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
 import { onApiError } from '../../lib/error-handler.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
-import { annotationService } from '../../services/annotation-service.js';
+import { AnnotationService } from '../../services/annotation-service.js';
 import type { ReviewAnnotationInput, ReviewComment, ReviewQueueGroup } from '@agent-console/shared';
 
 // Mock broadcastToApp to prevent WebSocket side effects in tests
@@ -44,13 +44,10 @@ function createMockSessionManager(sessions: Record<string, { title?: string; wor
 describe('Review Queue API', () => {
   let app: Hono<AppBindings>;
   let mockSessionManager: ReturnType<typeof createMockSessionManager>;
+  let annotationService: AnnotationService;
 
   beforeEach(() => {
-    // Clear all annotations between tests
-    // Access the private store via the public API
-    for (const workerId of ['worker-1', 'worker-2', 'worker-3', 'worker-4']) {
-      annotationService.clearAnnotations(workerId);
-    }
+    annotationService = new AnnotationService();
 
     mockBroadcastToApp.mockClear();
 
@@ -65,7 +62,7 @@ describe('Review Queue API', () => {
 
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager: mockSessionManager as never }));
+      c.set('appContext', asAppContext({ sessionManager: mockSessionManager as never, annotationService }));
       await next();
     });
     app.onError(onApiError);
