@@ -16,7 +16,7 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
-import { worktreeService } from '../services/worktree-service.js';
+import type { WorktreeService } from '../services/worktree-service.js';
 import { annotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
 import { broadcastToApp } from '../websocket/routes.js';
@@ -158,6 +158,7 @@ export interface McpDependencies {
   repositoryManager: RepositoryManager;
   agentManager: AgentManager;
   timerManager: TimerManager;
+  worktreeService: WorktreeService;
 }
 
 // ---------- Factory ----------
@@ -168,7 +169,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -632,7 +633,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             createdBy: parentCreatedBy,
             templateVars,
           },
-        }, sessionManager);
+        }, sessionManager, worktreeService);
 
         if (!result.success) {
           return errorResult(`Worktree creation failed: ${result.error}`);
@@ -788,7 +789,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             worktreePath: session.locationPath,
             force: force ?? false,
           },
-          { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
+          { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );
 
         if (!result.success) {

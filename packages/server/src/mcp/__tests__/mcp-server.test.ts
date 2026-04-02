@@ -19,6 +19,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
+import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { createMcpApp } from '../mcp-server.js';
@@ -165,6 +166,7 @@ describe('MCP Server Tools', () => {
   let agentManager: AgentManager;
   let repositoryManager: RepositoryManager;
   let timerManager: TimerManager;
+  let worktreeService: WorktreeService;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
@@ -176,7 +178,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -243,6 +245,9 @@ describe('MCP Server Tools', () => {
 
     // Create TimerManager (no-op callback for tests)
     timerManager = new TimerManager(() => {});
+
+    // Create WorktreeService with in-memory database
+    worktreeService = new WorktreeService(db);
 
     // Create MCP app with injected dependencies and initialize MCP session
     await remountMcpApp();

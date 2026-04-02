@@ -3,7 +3,7 @@ import { $ } from 'bun';
 import type { HookCommandResult, Session } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
-import { worktreeService } from './worktree-service.js';
+import type { WorktreeService } from './worktree-service.js';
 import type { SessionManager } from './session-manager.js';
 
 const logger = createLogger('worktree-deletion-service');
@@ -42,6 +42,7 @@ function clearDeletionInProgress(worktreePath: string): void {
  * @returns null if valid, or an error message string if invalid.
  */
 async function validateWorktreePath(
+  worktreeService: WorktreeService,
   repoPath: string,
   worktreePath: string,
   repoId: string,
@@ -66,6 +67,7 @@ async function validateWorktreePath(
  * Looks up the worktree in git listing to resolve template variables.
  */
 async function executeCleanupCommandIfConfigured(
+  worktreeService: WorktreeService,
   repo: { path: string; name: string; cleanupCommand?: string | null },
   repoId: string,
   worktreePath: string,
@@ -92,6 +94,7 @@ async function executeCleanupCommandIfConfigured(
 // ---------- Dependencies ----------
 
 export interface DeleteWorktreeDeps {
+  worktreeService: WorktreeService;
   sessionManager: SessionManager;
   repositoryManager: {
     getRepository(id: string): { name: string; path: string; cleanupCommand?: string | null } | undefined;
@@ -138,7 +141,7 @@ export async function deleteWorktree(
   deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
   const { repoId, worktreePath, force } = params;
-  const { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
+  const { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
   // 1. Look up repository
   const repo = repositoryManager.getRepository(repoId);
@@ -147,7 +150,7 @@ export async function deleteWorktree(
   }
 
   // 2. Validate worktree path
-  const validationError = await validateWorktreePath(repo.path, worktreePath, repoId);
+  const validationError = await validateWorktreePath(worktreeService, repo.path, worktreePath, repoId);
   if (validationError) {
     return { success: false, error: validationError, errorType: 'validation' };
   }
@@ -200,6 +203,7 @@ export async function deleteWorktree(
   try {
     // 6a. Execute cleanup command if configured
     const cleanupCommandResult = await executeCleanupCommandIfConfigured(
+      worktreeService,
       { path: repo.path, name: repo.name, cleanupCommand: repo.cleanupCommand },
       repoId,
       worktreePath,

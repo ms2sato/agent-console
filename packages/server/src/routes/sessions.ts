@@ -5,7 +5,6 @@ import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
 } from '@agent-console/shared';
-import { worktreeService } from '../services/worktree-service.js';
 import { createSessionValidationService } from '../services/session-validation-service.js';
 import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
@@ -159,7 +158,7 @@ const sessions = new Hono<AppBindings>()
   // Get branches for a session's repository
   .get('/:sessionId/branches', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, worktreeService } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {

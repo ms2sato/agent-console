@@ -119,6 +119,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../database/conn
 import { JobQueue } from '../jobs/job-queue.js';
 import { registerJobHandlers } from '../jobs/handlers.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
+import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
 
@@ -297,6 +298,7 @@ describe('API Routes Integration', () => {
         repositoryManager: testRepositoryManager!,
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
+        worktreeService: new WorktreeService(getDatabase()),
       }));
       await next();
     });

@@ -133,6 +133,7 @@ const mcpApp = createMcpApp({
   repositoryManager: appContext.repositoryManager,
   agentManager: appContext.agentManager,
   timerManager: appContext.timerManager,
+  worktreeService: appContext.worktreeService,
 });
 app.route('', mcpApp);
 
