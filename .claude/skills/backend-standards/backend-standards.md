@@ -63,6 +63,75 @@ Decision criteria:
 - Use named exports for multiple related items
 - Avoid default exports except for route handlers
 
+## Dependency Injection Policy
+
+**Rule: No module-level singleton exports.** Services with state or external dependencies (DB, file system) must be instantiated in `createAppContext()` and injected where needed.
+
+### Service Classification
+
+| Classification | AppContext Registration | DI Method | Example |
+|---------------|----------------------|-----------|---------|
+| **First-class service** — used by route handlers or MCP tools | Yes | `c.get('appContext').serviceName` | SessionManager, WorktreeService, AnnotationService |
+| **Internal service** — dependency of another service | No | Constructor or function parameter | `deleteWorktree(params, { worktreeService, sessionManager })` |
+| **Stateless utility** — no state, no side effects | No | Direct import | logger, config readers, pure functions, type definitions |
+
+### First-Class Services (AppContext)
+
+Services that cross the **request boundary** — i.e., route handlers and MCP tool handlers access them directly. AppContext is the DI container for the Hono request lifecycle.
+
+```typescript
+// Registering in app-context.ts
+export interface AppContext {
+  sessionManager: SessionManager;
+  worktreeService: WorktreeService;
+  // ...
+}
+
+// Consuming in route handler
+app.get('/api/worktrees', async (c) => {
+  const { worktreeService } = c.get('appContext');
+  // ...
+});
+```
+
+### Internal Services (Parameter DI)
+
+Services that are only used by other services. They accept their dependencies as constructor or function parameters — not via AppContext.
+
+```typescript
+// Function parameter DI
+export async function deleteWorktree(
+  params: DeleteWorktreeParams,
+  deps: DeleteWorktreeDeps,  // { worktreeService, sessionManager, ... }
+): Promise<DeleteWorktreeResult> { ... }
+
+// Constructor DI
+export class WorktreeService {
+  constructor(db: Kysely<Database>) { ... }
+}
+```
+
+### What NOT to Do
+
+```typescript
+// ❌ Module-level singleton — blocks test isolation
+export const worktreeService = new WorktreeService();
+
+// ❌ Calling getDatabase() inside a service — hidden global dependency
+private get repository() {
+  return new SqliteRepository(getDatabase());
+}
+
+// ❌ Importing a singleton in a route handler — untestable without mock.module
+import { worktreeService } from '../services/worktree-service.js';
+```
+
+### When Creating a New Service
+
+1. Does a route handler or MCP tool use it? → **Add to AppContext** (first-class)
+2. Is it only used by other services? → **Accept as parameter** (internal)
+3. Is it stateless with no external deps? → **Direct import is fine** (utility)
+
 ## Core Concepts
 
 ### Session Manager
