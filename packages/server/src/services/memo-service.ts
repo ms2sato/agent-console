@@ -83,5 +83,3 @@ export class MemoService {
     logger.debug({ sessionId }, 'Memo deleted');
   }
 }
-
-export const memoService = new MemoService();

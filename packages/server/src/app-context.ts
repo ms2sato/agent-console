@@ -52,6 +52,7 @@ import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceC
 import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
 import { InterSessionMessageService as InterSessionMessageServiceClass } from './services/inter-session-message-service.js';
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
+import { MemoService } from './services/memo-service.js';
 
 const logger = createLogger('app-context');
 
@@ -103,6 +104,9 @@ export interface AppContext {
 
   /** Inter-session message file management */
   interSessionMessageService: InterSessionMessageService;
+
+  /** Memo file management */
+  memoService: MemoService;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -160,6 +164,7 @@ export async function createAppContext(
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
+  const memoService = new MemoService();
 
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -188,6 +193,7 @@ export async function createAppContext(
     annotationService,
     workerOutputFileManager,
     interSessionMessageService,
+    memoService,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -269,6 +275,7 @@ export async function createAppContext(
     repositorySlackIntegrationService,
     annotationService,
     interSessionMessageService,
+    memoService,
     userMode,
     timerManager,
     inboundIntegration,
@@ -322,6 +329,7 @@ export async function createTestContext(
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
+  const memoService = new MemoService();
 
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -353,6 +361,7 @@ export async function createTestContext(
     annotationService,
     workerOutputFileManager,
     interSessionMessageService,
+    memoService,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -415,6 +424,7 @@ export async function createTestContext(
     repositorySlackIntegrationService,
     annotationService,
     interSessionMessageService,
+    memoService,
     userMode,
     timerManager,
     inboundIntegration,
