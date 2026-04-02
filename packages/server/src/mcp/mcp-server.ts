@@ -19,7 +19,6 @@ import type { TimerManager } from '../services/timer-manager.js';
 import type { WorktreeService } from '../services/worktree-service.js';
 import type { AnnotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
-import { broadcastToApp } from '../websocket/routes.js';
 import { deleteWorktree } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
 import { findOpenPullRequest } from '../services/github-pr-service.js';
@@ -31,7 +30,7 @@ import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
-import type { Session, AgentActivityState } from '@agent-console/shared';
+import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
 
@@ -161,6 +160,7 @@ export interface McpDependencies {
   worktreeService: WorktreeService;
   annotationService: AnnotationService;
   interSessionMessageService: InterSessionMessageService;
+  broadcastToApp: (msg: AppServerMessage) => void;
 }
 
 // ---------- Factory ----------
@@ -171,7 +171,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService, broadcastToApp } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.

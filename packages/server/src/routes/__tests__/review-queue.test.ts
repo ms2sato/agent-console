@@ -4,16 +4,10 @@ import type { AppBindings } from '../../app-context.js';
 import { onApiError } from '../../lib/error-handler.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { AnnotationService } from '../../services/annotation-service.js';
+import { reviewQueue } from '../review-queue.js';
 import type { ReviewAnnotationInput, ReviewComment, ReviewQueueGroup } from '@agent-console/shared';
 
-// Mock broadcastToApp to prevent WebSocket side effects in tests
 const mockBroadcastToApp = mock(() => {});
-mock.module('../../websocket/routes.js', () => ({
-  broadcastToApp: mockBroadcastToApp,
-}));
-
-// Dynamically import the route after mocking
-const { reviewQueue } = await import('../review-queue.js');
 
 function validInput(): ReviewAnnotationInput {
   return {
@@ -62,7 +56,7 @@ describe('Review Queue API', () => {
 
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager: mockSessionManager as never, annotationService }));
+      c.set('appContext', asAppContext({ sessionManager: mockSessionManager as never, annotationService, broadcastToApp: mockBroadcastToApp }));
       await next();
     });
     app.onError(onApiError);

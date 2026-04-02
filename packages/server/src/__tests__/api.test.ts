@@ -13,7 +13,6 @@ import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-f
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
 import { MockPty } from './utils/mock-pty.js';
 import { mockGit, GitError } from './utils/mock-git-helper.js';
-import * as wsRoutes from '../websocket/routes.js';
 
 // Set up test config directory BEFORE any service imports to ensure
 // services use the test config path when their modules are loaded
@@ -161,6 +160,9 @@ branch refs/heads/main
   mockGit.pullFastForward.mockImplementation(() => Promise.resolve(0));
 }
 
+// Mock broadcastToApp for capturing broadcast calls from route handlers
+const mockBroadcastToApp = mock((_msg: Record<string, unknown>) => {});
+
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
 
@@ -234,8 +236,8 @@ describe('API Routes Integration', () => {
     mockFindOpenPullRequest.mockReset();
     mockFindOpenPullRequest.mockImplementation(async () => null);
 
-    // Spy on broadcastToApp to capture calls from async route handlers
-    spyOn(wsRoutes, 'broadcastToApp');
+    // Reset broadcastToApp mock
+    mockBroadcastToApp.mockClear();
 
     // Setup default git command responses
     setupDefaultGitMocks();
@@ -300,6 +302,7 @@ describe('API Routes Integration', () => {
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
         worktreeService: new WorktreeService({ db: getDatabase() }),
+        broadcastToApp: mockBroadcastToApp,
       }));
       await next();
     });
@@ -1984,7 +1987,7 @@ describe('API Routes Integration', () => {
           expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
 
           // No sessions exist for this worktree, so no broadcast should occur
-          const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+          const broadcastSpy = mockBroadcastToApp;
           const completedCalls = broadcastSpy.mock.calls.filter(
             (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-completed'
           );
@@ -2209,7 +2212,7 @@ describe('API Routes Integration', () => {
         expect(deleteSpy).not.toHaveBeenCalled();
 
         // broadcastToApp was called with worktree-deletion-failed
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const failedCall = broadcastSpy.mock.calls.find(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
@@ -2269,7 +2272,7 @@ describe('API Routes Integration', () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
 
         // Verify broadcastToApp was called with worktree-deletion-completed for EACH session ID
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
@@ -2304,7 +2307,7 @@ describe('API Routes Integration', () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
 
         // Verify broadcastToApp was NOT called with worktree-deletion-completed for this taskId
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
@@ -2364,7 +2367,7 @@ describe('API Routes Integration', () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
 
         // Verify broadcastToApp was called with worktree-deletion-failed for EACH session ID
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
@@ -2547,7 +2550,7 @@ describe('API Routes Integration', () => {
         // Wait for background operation
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const completedCall = broadcastSpy.mock.calls.find(
           (call: unknown[]) => {
             const m = call[0] as { type: string; taskId?: string };
@@ -2603,7 +2606,7 @@ describe('API Routes Integration', () => {
         // Wait for background operation
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const completedCall = broadcastSpy.mock.calls.find(
           (call: unknown[]) => {
             const m = call[0] as { type: string; taskId?: string };
@@ -2640,7 +2643,7 @@ describe('API Routes Integration', () => {
         // Wait for background operation
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const failedCall = broadcastSpy.mock.calls.find(
           (call: unknown[]) => {
             const m = call[0] as { type: string; taskId?: string };
@@ -2680,7 +2683,7 @@ describe('API Routes Integration', () => {
         // Wait for background operation
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        const broadcastSpy = wsRoutes.broadcastToApp as ReturnType<typeof spyOn>;
+        const broadcastSpy = mockBroadcastToApp;
         const failedCall = broadcastSpy.mock.calls.find(
           (call: unknown[]) => {
             const m = call[0] as { type: string; taskId?: string };

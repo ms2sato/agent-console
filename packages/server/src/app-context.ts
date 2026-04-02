@@ -22,11 +22,11 @@ import type { TimerManager } from './services/timer-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { WorktreeService } from './services/worktree-service.js';
 import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
-import type { AuthUser } from '@agent-console/shared';
+import type { AuthUser, AppServerMessage } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
-import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
+import type { InboundIntegrationInstance } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
 import { JobQueue as JobQueueClass } from './jobs/job-queue.js';
@@ -110,6 +110,9 @@ export interface AppContext {
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
+
+  /** Broadcast a message to all connected app WebSocket clients */
+  broadcastToApp: (msg: AppServerMessage) => void;
 }
 
 /**
@@ -121,7 +124,7 @@ export interface CreateAppContextOptions {
   /** Job queue concurrency (default: 4) */
   jobConcurrency?: number;
   /** Callback to broadcast messages to app WebSocket clients */
-  broadcastToApp?: InboundIntegrationOptions['broadcastToApp'];
+  broadcastToApp?: (msg: AppServerMessage) => void;
 }
 
 /**
@@ -279,6 +282,7 @@ export async function createAppContext(
     userMode,
     timerManager,
     inboundIntegration,
+    broadcastToApp: options?.broadcastToApp ?? (() => {}),
   };
 }
 
@@ -428,6 +432,7 @@ export async function createTestContext(
     userMode,
     timerManager,
     inboundIntegration,
+    broadcastToApp: () => {},
   };
 }
 

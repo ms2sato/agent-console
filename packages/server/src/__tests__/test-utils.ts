@@ -155,6 +155,7 @@ export const TEST_AUTH_USER = {
 export function asAppContext(partial: Partial<AppContext>): AppContext {
   return {
     userMode: new SingleUserMode(bunPtyProvider, TEST_AUTH_USER),
+    broadcastToApp: () => {},
     ...partial,
   } as AppContext;
 }

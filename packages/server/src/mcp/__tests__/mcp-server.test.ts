@@ -182,7 +182,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService() });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), broadcastToApp: () => {} });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
