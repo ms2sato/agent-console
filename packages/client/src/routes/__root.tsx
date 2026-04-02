@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { validateSessions, resumeSession, logout as logoutApi, fetchReviewQueue } from '../lib/api';
 import { worktreeKeys, sessionKeys, reviewQueueKeys } from '../lib/query-keys';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
-import { WarningIcon, ChevronRightIcon } from '../components/Icons';
+import { WarningIcon, ChevronRightIcon, PlusIcon } from '../components/Icons';
 import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -302,14 +302,9 @@ function RootLayout() {
                   {currentSession.type === 'worktree' && (
                     <>
                       <ChevronRightIcon className="w-3.5 h-3.5 text-slate-500" />
-                      <button
-                        type="button"
-                        onClick={() => setQuickWorktreeOpen(true)}
-                        className="text-slate-400 text-[0.8125rem] hover:text-slate-200 transition-colors cursor-pointer"
-                        title="Create worktree"
-                      >
+                      <span className="text-slate-400 text-[0.8125rem]">
                         {currentSession.repositoryName}
-                      </button>
+                      </span>
                     </>
                   )}
                   {currentSession.title && (
@@ -325,6 +320,14 @@ function RootLayout() {
             </div>
 
             <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setQuickWorktreeOpen(true)}
+                className="text-slate-400 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
+                title="Create worktree"
+              >
+                <PlusIcon className="w-4 h-4" />
+              </button>
               <ValidationWarningIndicator />
               <ReviewNavLink />
               <JobsNavLink />
@@ -361,14 +364,11 @@ function RootLayout() {
                 }
               />
             )}
-            {currentSession?.type === 'worktree' && (
-              <QuickWorktreeDialog
-                open={quickWorktreeOpen}
-                onOpenChange={setQuickWorktreeOpen}
-                repositoryId={currentSession.repositoryId}
-                repositoryName={currentSession.repositoryName}
-              />
-            )}
+            <QuickWorktreeDialog
+              open={quickWorktreeOpen}
+              onOpenChange={setQuickWorktreeOpen}
+              defaultRepositoryId={currentSession?.type === 'worktree' ? currentSession.repositoryId : undefined}
+            />
           </header>
           <ConnectionBanner connected={connected} hasEverConnected={hasEverConnected} />
           <WebhookConfigBanner />
