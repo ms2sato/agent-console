@@ -34,13 +34,9 @@ jobs:
       - name: Build shared package
         run: bun run --filter @agent-console/shared build
 
-      - name: Generate route tree
-        working-directory: packages/client
-        run: bunx --bun vite build
-        # routeTree.gen.ts is gitignored; Vite's TanStack Router plugin generates it
+      - name: Build
+        run: bun run build
+        # client build runs "vite build && tsc --noEmit": vite generates routeTree.gen.ts, then tsc checks types
 
       - name: Test
         run: bun run test
-
-      - name: Build
-        run: bun run build
