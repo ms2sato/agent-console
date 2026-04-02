@@ -123,19 +123,18 @@ export function useSessionState(): UseSessionStateReturn {
   const handleSessionResumed = useCallback((session: Session, activityStates: WorkerActivityInfo[]) => {
     setSessions(prev => upsertSession(prev, session));
     sessionsRef.current = upsertSession(sessionsRef.current, session);
-    // Initialize activity states for the resumed session
+    // Initialize activity states for the resumed session.
+    // Always set the entry (even when empty) to clear any stale state from before pause.
     const sessionActivityStates: Record<string, AgentActivityState> = {};
     for (const { sessionId, workerId, activityState } of activityStates) {
       if (sessionId === session.id) {
         sessionActivityStates[workerId] = activityState;
       }
     }
-    if (Object.keys(sessionActivityStates).length > 0) {
-      setWorkerActivityStates(prev => ({
-        ...prev,
-        [session.id]: sessionActivityStates,
-      }));
-    }
+    setWorkerActivityStates(prev => ({
+      ...prev,
+      [session.id]: sessionActivityStates,
+    }));
   }, []);
 
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {

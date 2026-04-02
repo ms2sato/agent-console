@@ -191,14 +191,39 @@ const SessionDeletedSchema = v.object({
   sessionId: v.string(),
 });
 
+// State-specific session schemas to enforce invariants
+const HibernatedSessionSchema = v.union([
+  v.object({
+    ...WorktreeSessionSchema.entries,
+    activationState: v.literal('hibernated'),
+    pausedAt: v.string(),
+  }),
+  v.object({
+    ...QuickSessionSchema.entries,
+    activationState: v.literal('hibernated'),
+    pausedAt: v.string(),
+  }),
+]);
+
+const RunningSessionSchema = v.union([
+  v.object({
+    ...WorktreeSessionSchema.entries,
+    activationState: v.literal('running'),
+  }),
+  v.object({
+    ...QuickSessionSchema.entries,
+    activationState: v.literal('running'),
+  }),
+]);
+
 const SessionPausedSchema = v.object({
   type: v.literal('session-paused'),
-  session: SessionSchema,
+  session: HibernatedSessionSchema,
 });
 
 const SessionResumedSchema = v.object({
   type: v.literal('session-resumed'),
-  session: SessionSchema,
+  session: RunningSessionSchema,
   activityStates: v.array(WorkerActivityInfoSchema),
 });
 

@@ -67,6 +67,17 @@ export interface QuickSession extends SessionBase {
 
 export type Session = WorktreeSession | QuickSession;
 
+/** A session that has been paused (hibernated with pausedAt timestamp) */
+export type PausedSession = (WorktreeSession | QuickSession) & {
+  activationState: 'hibernated';
+  pausedAt: string;
+};
+
+/** A session that is actively running */
+export type RunningSession = (WorktreeSession | QuickSession) & {
+  activationState: 'running';
+};
+
 export interface CreateSessionResponse {
   session: Session;
 }

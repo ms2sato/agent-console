@@ -854,7 +854,8 @@ export class SessionManager {
     logger.info({ sessionId: id }, 'Session paused');
 
     // Call lifecycle callback with full public Session (includes activationState: 'hibernated')
-    const pausedPublicSession = this.persistedToPublicSession(persistedSession);
+    // persistedToPublicSession always returns hibernated state for persisted sessions
+    const pausedPublicSession = this.persistedToPublicSession(persistedSession) as import('@agent-console/shared').PausedSession;
     this.sessionLifecycleCallbacks?.onSessionPaused?.(pausedPublicSession);
 
     return true;
@@ -1042,7 +1043,8 @@ export class SessionManager {
     }
 
     // Call lifecycle callback with activity states
-    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession, activityStates);
+    // After resume, session is always in running state
+    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession as import('@agent-console/shared').RunningSession, activityStates);
 
     return publicSession;
   }

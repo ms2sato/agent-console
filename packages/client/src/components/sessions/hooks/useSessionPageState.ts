@@ -101,7 +101,7 @@ export function useSessionPageState({
   }, [sessionId])
 
   // Handle session resumed (paused -> active, triggered by another client or sidebar)
-  const handleSessionResumed = useCallback((resumedSession: Session) => {
+  const handleSessionResumed = useCallback((resumedSession: Session, activityStates: WorkerActivityInfo[]) => {
     if (resumedSession.id !== sessionId) return
     if (stateRef.current.type === 'restarting') return
 
@@ -110,6 +110,15 @@ export function useSessionPageState({
     if (nextState.type === 'active') {
       updateTabsFromSessionRef.current(resumedSession.workers)
     }
+
+    // Rebuild worker activity states from the payload (same pattern as handleSessionsSync)
+    const sessionActivities: Record<string, AgentActivityState> = {}
+    for (const info of activityStates) {
+      if (info.sessionId === sessionId) {
+        sessionActivities[info.workerId] = info.activityState
+      }
+    }
+    setWorkerActivityStates(sessionActivities)
   }, [sessionId, updateTabsFromSessionRef])
 
   // Handle worker restarted: reset activity state for the restarted worker

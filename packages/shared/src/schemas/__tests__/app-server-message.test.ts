@@ -170,13 +170,27 @@ describe('AppServerMessageSchema', () => {
     it('should reject old-style payload with sessionId/pausedAt', () => {
       expectInvalid({ type: 'session-paused', sessionId: 'session-1', pausedAt: '2026-01-01T01:00:00Z' });
     });
+
+    it('should reject session with activationState: running', () => {
+      expectInvalid({
+        type: 'session-paused',
+        session: { ...worktreeSession, activationState: 'running' },
+      });
+    });
+
+    it('should reject session without pausedAt', () => {
+      expectInvalid({
+        type: 'session-paused',
+        session: { ...worktreeSession, activationState: 'hibernated' },
+      });
+    });
   });
 
   describe('session-resumed', () => {
     it('should accept payload with session and activityStates', () => {
       const output = expectValid({
         type: 'session-resumed',
-        session: worktreeSession,
+        session: { ...worktreeSession, activationState: 'running' },
         activityStates: [
           { sessionId: 'session-1', workerId: 'worker-1', activityState: 'idle' },
         ],
@@ -185,7 +199,15 @@ describe('AppServerMessageSchema', () => {
     });
 
     it('should reject missing activityStates', () => {
-      expectInvalid({ type: 'session-resumed', session: worktreeSession });
+      expectInvalid({ type: 'session-resumed', session: { ...worktreeSession, activationState: 'running' } });
+    });
+
+    it('should reject session with activationState: hibernated', () => {
+      expectInvalid({
+        type: 'session-resumed',
+        session: { ...worktreeSession, activationState: 'hibernated' },
+        activityStates: [],
+      });
     });
   });
 
