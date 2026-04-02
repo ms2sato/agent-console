@@ -163,6 +163,16 @@ function WorktreeDeletionTaskPage() {
               )}
             </div>
           )}
+          {isCompleted && task.killErrors && task.killErrors.length > 0 && (
+            <div className="mt-3 p-3 bg-yellow-900/30 border border-yellow-600 rounded text-yellow-200 text-sm">
+              <p className="font-medium">Some worker processes failed to stop</p>
+              <ul className="mt-1 text-xs text-yellow-300 list-disc list-inside">
+                {task.killErrors.map((ke) => (
+                  <li key={ke.sessionId}>Session {ke.sessionId}: {ke.error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Error details (if failed) */}

@@ -92,7 +92,7 @@ export function useWorktreeDeletionTasks(): UseWorktreeDeletionTasksReturn {
       setTasks((prev) =>
         prev.map((t) =>
           t.id === payload.taskId
-            ? { ...t, status: 'completed' as const, cleanupCommandResult: payload.cleanupCommandResult }
+            ? { ...t, status: 'completed' as const, cleanupCommandResult: payload.cleanupCommandResult, killErrors: payload.killErrors }
             : t
         )
       );

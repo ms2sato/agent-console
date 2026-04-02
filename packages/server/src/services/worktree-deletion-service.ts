@@ -110,6 +110,8 @@ export interface DeleteWorktreeResult {
   gitStatus?: string;
   cleanupCommandResult?: HookCommandResult;
   sessionDeleteError?: string;
+  /** Per-session PTY kill errors (non-blocking — deletion proceeded despite these) */
+  killErrors?: Array<{ sessionId: string; error: string }>;
   /** Session IDs that were cleaned up (for WebSocket broadcast) */
   sessionIds?: string[];
 }
@@ -204,7 +206,18 @@ export async function deleteWorktree(
     );
 
     // 6b. Kill PTY processes to release directory handles (await exit before worktree remove)
-    await Promise.all(sessionIds.map((sid) => sessionManager.killSessionWorkers(sid)));
+    const killResults = await Promise.allSettled(
+      sessionIds.map((sid) => sessionManager.killSessionWorkers(sid)),
+    );
+    const killErrors: Array<{ sessionId: string; error: string }> = [];
+    for (let i = 0; i < killResults.length; i++) {
+      const result = killResults[i];
+      if (result.status === 'rejected') {
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        logger.warn({ sessionId: sessionIds[i], error: msg }, 'PTY kill failed, proceeding with deletion');
+        killErrors.push({ sessionId: sessionIds[i], error: msg });
+      }
+    }
 
     // 6c. Remove worktree via git
     const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
@@ -243,7 +256,13 @@ export async function deleteWorktree(
     }
 
     logger.info({ repoId, worktreePath, sessionIds }, 'Worktree deletion completed');
-    return { success: true, cleanupCommandResult, sessionDeleteError, sessionIds };
+    return {
+      success: true,
+      cleanupCommandResult,
+      ...(killErrors.length > 0 ? { killErrors } : {}),
+      sessionDeleteError,
+      sessionIds,
+    };
   } finally {
     clearDeletionInProgress(worktreePath);
   }
