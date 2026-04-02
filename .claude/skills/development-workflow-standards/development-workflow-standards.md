@@ -104,10 +104,12 @@ it('should handle session with no workers without crashing', () => {
 
 Before completing any code changes, always verify:
 
-1. **Run tests:** Execute `bun run test` and ensure all tests pass
+1. **Run the FULL test suite:** Execute `bun run test` and ensure **ALL** tests pass — not just the tests you added or modified. Running only new tests is not sufficient. The full suite must be green before every push.
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors
 3. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 4. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
+
+**Hard rule for production code changes:** When any file outside of `docs/`, `.claude/skills/`, or `.claude/agents/` is modified, you MUST run `bun run test` (full suite) and confirm zero failures before pushing. Do not report task completion without full test verification. Violations waste review cycles and block other developers.
 
 **Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
 
