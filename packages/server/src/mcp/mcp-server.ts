@@ -21,7 +21,7 @@ import type { AnnotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
 import { deleteWorktree } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
-import { findOpenPullRequest } from '../services/github-pr-service.js';
+import type { OpenPrInfo } from '../services/github-pr-service.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -162,6 +162,8 @@ export interface McpDependencies {
   interSessionMessageService: InterSessionMessageService;
   suggestSessionMetadata: SuggestSessionMetadataFn;
   broadcastToApp: (msg: AppServerMessage) => void;
+  fetchPullRequestUrl: (branch: string, cwd: string) => Promise<string | null>;
+  findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
 }
 
 // ---------- Factory ----------
@@ -172,7 +174,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, broadcastToApp } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, broadcastToApp, findOpenPullRequest } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.

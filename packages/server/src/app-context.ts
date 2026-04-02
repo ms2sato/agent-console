@@ -27,6 +27,7 @@ import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
+import type { OpenPrInfo } from './services/github-pr-service.js';
 import type { InboundIntegrationInstance } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -55,6 +56,7 @@ import { InterSessionMessageService as InterSessionMessageServiceClass } from '.
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
+import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
 
 const logger = createLogger('app-context');
 
@@ -118,6 +120,12 @@ export interface AppContext {
 
   /** Broadcast a message to all connected app WebSocket clients */
   broadcastToApp: (msg: AppServerMessage) => void;
+
+  /** Fetch PR URL for a branch */
+  fetchPullRequestUrl: (branch: string, cwd: string) => Promise<string | null>;
+
+  /** Find open PR for a branch */
+  findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
 }
 
 /**
@@ -289,6 +297,8 @@ export async function createAppContext(
     timerManager,
     inboundIntegration,
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
+    fetchPullRequestUrl,
+    findOpenPullRequest,
   };
 }
 
@@ -440,6 +450,8 @@ export async function createTestContext(
     timerManager,
     inboundIntegration,
     broadcastToApp: () => {},
+    fetchPullRequestUrl,
+    findOpenPullRequest,
   };
 }
 

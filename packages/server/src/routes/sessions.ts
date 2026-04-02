@@ -6,7 +6,6 @@ import {
   UpdateSessionRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { fetchPullRequestUrl } from '../services/github-pr-service.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
@@ -202,6 +201,7 @@ const sessions = new Hono<AppBindings>()
     const branchName = session.worktreeId;
     const orgRepo = await getOrgRepoFromPath(session.locationPath);
 
+    const { fetchPullRequestUrl } = c.get('appContext');
     const prUrl = await fetchPullRequestUrl(branchName, session.locationPath);
 
     return c.json({

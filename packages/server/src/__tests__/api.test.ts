@@ -52,13 +52,9 @@ const mockSuggestSessionMetadata = mock(async () => ({
   title: 'Suggested Title',
 }));
 
-// Mock github-pr-service to avoid spawning real gh processes in tests.
-// findOpenPullRequest returns null (no open PR) by default so deletion proceeds normally.
+// github-pr-service mocks (injected via AppContext)
 const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
-mock.module('../services/github-pr-service.js', () => ({
-  findOpenPullRequest: mockFindOpenPullRequest,
-  fetchPullRequestUrl: mock(async () => null),
-}));
+const mockFetchPullRequestUrl = mock(async () => null as string | null);
 
 // =============================================================================
 // Bun.spawn mock for hook command tests (executeHookCommand in worktree-service)
@@ -229,9 +225,11 @@ describe('API Routes Integration', () => {
       title: 'Suggested Title',
     }));
 
-    // Reset github-pr-service mock (default: no open PR)
+    // Reset github-pr-service mocks (default: no open PR, no PR URL)
     mockFindOpenPullRequest.mockReset();
     mockFindOpenPullRequest.mockImplementation(async () => null);
+    mockFetchPullRequestUrl.mockReset();
+    mockFetchPullRequestUrl.mockImplementation(async () => null);
 
     // Reset broadcastToApp mock
     mockBroadcastToApp.mockClear();
@@ -301,6 +299,8 @@ describe('API Routes Integration', () => {
         worktreeService: new WorktreeService({ db: getDatabase() }),
         suggestSessionMetadata: mockSuggestSessionMetadata,
         broadcastToApp: mockBroadcastToApp,
+        findOpenPullRequest: mockFindOpenPullRequest,
+        fetchPullRequestUrl: mockFetchPullRequestUrl,
       }));
       await next();
     });

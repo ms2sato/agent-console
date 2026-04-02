@@ -18,7 +18,6 @@ import {
   deleteWorktree,
 } from '../services/worktree-deletion-service.js';
 import { createWorktreeWithSession } from '../services/worktree-creation-service.js';
-import { findOpenPullRequest } from '../services/github-pr-service.js';
 
 export { _getDeletionsInProgress };
 
@@ -282,7 +281,7 @@ const worktrees = new Hono<AppBindings>()
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, worktreeService, broadcastToApp } = c.get('appContext');
+    const { repositoryManager, sessionManager, worktreeService, broadcastToApp, findOpenPullRequest } = c.get('appContext');
 
     // Get worktree path from URL (everything after /worktrees/)
     const url = new URL(c.req.url);

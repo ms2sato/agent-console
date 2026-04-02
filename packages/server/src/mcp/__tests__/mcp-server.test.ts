@@ -52,12 +52,9 @@ mock.module('../../services/worktree-creation-service.js', () => ({
   ...require('../../services/worktree-creation-service.js'),
 }));
 
-// Mock github-pr-service
+// github-pr-service mocks (injected via McpDependencies)
 const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
-mock.module('../../services/github-pr-service.js', () => ({
-  findOpenPullRequest: mockFindOpenPullRequest,
-  fetchPullRequestUrl: mock(async () => null),
-}));
+const mockFetchPullRequestUrl = mock(async () => null as string | null);
 
 // Import the real deletion service's concurrency guard (for tests that need
 // to pre-populate it). The mock.module above spreads the real module exports,
@@ -179,7 +176,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, broadcastToApp: () => {} });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -224,6 +221,8 @@ describe('MCP Server Tools', () => {
     // Reset github-pr-service mocks
     mockFindOpenPullRequest.mockReset();
     mockFindOpenPullRequest.mockImplementation(async () => null);
+    mockFetchPullRequestUrl.mockReset();
+    mockFetchPullRequestUrl.mockImplementation(async () => null);
 
     // Create session repository
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
