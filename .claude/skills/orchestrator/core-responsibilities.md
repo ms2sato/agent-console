@@ -76,9 +76,10 @@
   - Focus on domain correctness — "Did they do what was asked AND is the result logically sound?"
   - Verify test existence and layer adequacy per test-standards skill
   - **Acceptance criteria <-> test 1:1 verification**: For each acceptance criterion that specifies a test layer, explicitly confirm the corresponding test exists in the PR diff by file name and test case name. Do NOT pass the check if a criterion says "integration test" but only unit tests exist. This is a hard gate, not a judgment call.
+  - **Comment accuracy verification**: Verify that JSDoc comments, inline comments, and documentation added or modified in the PR accurately describe the actual code behavior. Misleading comments are worse than no comments — flag any discrepancy between comment text and implementation.
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
   0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
-  1. Run acceptance check script and answer Q1-Q7
+  1. Run acceptance check script and answer Q1-Q7. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> resolve before proceeding:
      a. Self-investigate (read more code, grep for context)
@@ -88,7 +89,8 @@
   4. If all checks pass -> write review annotations and report to the owner:
      a. Call `write_review_annotations` with `sourceSessionId` (your session ID) to add the PR to the owner's Review Queue (`/review` page)
      b. Annotate sections where the owner's domain expertise adds value — not sections you were uncertain about (those should already be resolved per step 3)
-     c. Update memo via `write_memo` to notify the owner
+     c. Write annotation `reason` fields in the user's preferred language (not English). Technical terms and code identifiers can remain in English.
+     d. Update memo via `write_memo` to notify the owner
 - **CodeRabbit review strategy**: Two layers of CodeRabbit review are used:
   1. **Pre-PR: CLI self-review by the coding agent** — delegation instructions include a step to run `coderabbit review --agent --base main` before creating the PR (if CLI is installed). This catches CRITICAL/HIGH issues early without rate limit concerns.
   2. **Post-PR: GitHub bot auto-review** — triggered automatically when the PR is created. May hit rate limits.
