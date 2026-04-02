@@ -16,7 +16,7 @@ import { CreateWorktreeForm } from './CreateWorktreeForm';
 interface QuickWorktreeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** When provided, skip repository selection */
+  /** Pre-selects this repository when the dialog opens */
   defaultRepositoryId?: string;
 }
 
