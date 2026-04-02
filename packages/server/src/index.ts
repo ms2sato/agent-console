@@ -136,6 +136,7 @@ const mcpApp = createMcpApp({
   worktreeService: appContext.worktreeService,
   annotationService: appContext.annotationService,
   interSessionMessageService: appContext.interSessionMessageService,
+  suggestSessionMetadata: appContext.suggestSessionMetadata,
   broadcastToApp: appContext.broadcastToApp,
 });
 app.route('', mcpApp);

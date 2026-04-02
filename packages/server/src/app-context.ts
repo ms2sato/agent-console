@@ -26,6 +26,7 @@ import type { AuthUser, AppServerMessage } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
+import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { InboundIntegrationInstance } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -53,6 +54,7 @@ import { AnnotationService as AnnotationServiceClass } from './services/annotati
 import { InterSessionMessageService as InterSessionMessageServiceClass } from './services/inter-session-message-service.js';
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
+import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 
 const logger = createLogger('app-context');
 
@@ -107,6 +109,9 @@ export interface AppContext {
 
   /** Memo file management */
   memoService: MemoService;
+
+  /** Suggest session metadata (branch name, title) from user prompt */
+  suggestSessionMetadata: SuggestSessionMetadataFn;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -279,6 +284,7 @@ export async function createAppContext(
     annotationService,
     interSessionMessageService,
     memoService,
+    suggestSessionMetadata,
     userMode,
     timerManager,
     inboundIntegration,
@@ -429,6 +435,7 @@ export async function createTestContext(
     annotationService,
     interSessionMessageService,
     memoService,
+    suggestSessionMetadata,
     userMode,
     timerManager,
     inboundIntegration,

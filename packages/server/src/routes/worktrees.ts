@@ -8,7 +8,6 @@ import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-c
 import type { AppBindings } from '../app-context.js';
 import { getRepositoriesDir } from '../lib/config.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
@@ -50,7 +49,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager, worktreeService, broadcastToApp } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
