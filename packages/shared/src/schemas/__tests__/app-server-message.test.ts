@@ -94,8 +94,10 @@ describe('AppServerMessageSchema', () => {
         ],
       });
       expect(output.type).toBe('sessions-sync');
-      expect(output.sessions).toHaveLength(2);
-      expect(output.activityStates).toHaveLength(1);
+      if (output.type === 'sessions-sync') {
+        expect(output.sessions).toHaveLength(2);
+        expect(output.activityStates).toHaveLength(1);
+      }
     });
 
     it('should accept empty arrays', () => {
@@ -104,7 +106,9 @@ describe('AppServerMessageSchema', () => {
         sessions: [],
         activityStates: [],
       });
-      expect(output.sessions).toHaveLength(0);
+      if (output.type === 'sessions-sync') {
+        expect(output.sessions).toHaveLength(0);
+      }
     });
 
     it('should reject missing sessions', () => {
