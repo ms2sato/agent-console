@@ -1,8 +1,10 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { Session } from '@agent-console/shared';
 import type { DeleteWorktreeDeps } from '../services/worktree-deletion-service.js';
 
-// ---------- Module mocks (must precede module-under-test import) ----------
+// ---------- Module mocks ----------
+// Only mock worktree-service (test-specific). Do NOT mock config or logger
+// because mock.module has global side effects that leak into other test files.
 
 const mockWorktreeService = {
   isWorktreeOf: mock(() => Promise.resolve(true)),
@@ -15,19 +17,6 @@ mock.module('../services/worktree-service.js', () => ({
   worktreeService: mockWorktreeService,
 }));
 
-mock.module('../lib/config.js', () => ({
-  getRepositoriesDir: () => '/repos',
-}));
-
-mock.module('../lib/logger.js', () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
-
 // ---------- Import module under test AFTER mocks ----------
 
 const { deleteWorktree, _getDeletionsInProgress } = await import(
@@ -36,9 +25,12 @@ const { deleteWorktree, _getDeletionsInProgress } = await import(
 
 // ---------- Test helpers ----------
 
+// Control getRepositoriesDir() via AGENT_CONSOLE_HOME env var.
+// With AGENT_CONSOLE_HOME=/test-home, getRepositoriesDir() returns /test-home/repositories.
+const TEST_AGENT_CONSOLE_HOME = '/test-home';
 const TEST_REPO_ID = 'repo-1';
-const TEST_REPO_PATH = '/repos/test-repo';
-const TEST_WORKTREE_PATH = '/repos/test-repo/worktrees/wt-1';
+const TEST_REPO_PATH = '/test-home/repositories/test-repo';
+const TEST_WORKTREE_PATH = '/test-home/repositories/test-repo/worktrees/wt-1';
 
 function createMockSession(id: string, locationPath: string): Session {
   return {
@@ -87,7 +79,12 @@ function createMockDeps(overrides?: {
 // ---------- Tests ----------
 
 describe('deleteWorktree — kill phase error handling', () => {
+  let originalAgentConsoleHome: string | undefined;
+
   beforeEach(() => {
+    originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
+    process.env.AGENT_CONSOLE_HOME = TEST_AGENT_CONSOLE_HOME;
+
     _getDeletionsInProgress().clear();
     mockWorktreeService.isWorktreeOf.mockReset();
     mockWorktreeService.isWorktreeOf.mockImplementation(() => Promise.resolve(true));
@@ -98,6 +95,14 @@ describe('deleteWorktree — kill phase error handling', () => {
     mockWorktreeService.listWorktrees.mockReset();
     mockWorktreeService.listWorktrees.mockImplementation(() => Promise.resolve([]));
     mockWorktreeService.executeHookCommand.mockReset();
+  });
+
+  afterEach(() => {
+    if (originalAgentConsoleHome === undefined) {
+      delete process.env.AGENT_CONSOLE_HOME;
+    } else {
+      process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+    }
   });
 
   it('should proceed with worktree deletion when killSessionWorkers fails for some sessions', async () => {
