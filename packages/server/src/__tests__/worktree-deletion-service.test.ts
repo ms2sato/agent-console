@@ -1,32 +1,8 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import type { Session } from '@agent-console/shared';
 import type { DeleteWorktreeDeps } from '../services/worktree-deletion-service.js';
-
-// ---------- Module mocks ----------
-// Spread the real worktreeService and only override the methods used by deleteWorktree.
-// This prevents leaking incomplete mocks to other test files that import worktree-service.
-import { worktreeService as realWorktreeService } from '../services/worktree-service.js';
-
-const mockIsWorktreeOf = mock(() => Promise.resolve(true));
-const mockRemoveWorktree = mock(() => Promise.resolve({ success: true } as { success: boolean; error?: string }));
-const mockListWorktrees = mock(() => Promise.resolve([] as Array<{ path: string; index?: number; branch?: string }>));
-const mockExecuteHookCommand = mock(() => Promise.resolve({ success: true }));
-
-mock.module('../services/worktree-service.js', () => ({
-  worktreeService: {
-    ...realWorktreeService,
-    isWorktreeOf: mockIsWorktreeOf,
-    removeWorktree: mockRemoveWorktree,
-    listWorktrees: mockListWorktrees,
-    executeHookCommand: mockExecuteHookCommand,
-  },
-}));
-
-// ---------- Import module under test AFTER mocks ----------
-
-const { deleteWorktree, _getDeletionsInProgress } = await import(
-  '../services/worktree-deletion-service.js'
-);
+import { deleteWorktree, _getDeletionsInProgress } from '../services/worktree-deletion-service.js';
+import { worktreeService } from '../services/worktree-service.js';
 
 // ---------- Test helpers ----------
 
@@ -85,21 +61,23 @@ function createMockDeps(overrides?: {
 
 describe('deleteWorktree — kill phase error handling', () => {
   let originalAgentConsoleHome: string | undefined;
+  let spyIsWorktreeOf: ReturnType<typeof spyOn>;
+  let spyRemoveWorktree: ReturnType<typeof spyOn>;
+  let spyListWorktrees: ReturnType<typeof spyOn>;
+  let spyExecuteHookCommand: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = TEST_AGENT_CONSOLE_HOME;
 
     _getDeletionsInProgress().clear();
-    mockIsWorktreeOf.mockReset();
-    mockIsWorktreeOf.mockImplementation(() => Promise.resolve(true));
-    mockRemoveWorktree.mockReset();
-    mockRemoveWorktree.mockImplementation(() =>
-      Promise.resolve({ success: true }),
-    );
-    mockListWorktrees.mockReset();
-    mockListWorktrees.mockImplementation(() => Promise.resolve([]));
-    mockExecuteHookCommand.mockReset();
+
+    // Use spyOn instead of mock.module to avoid global module replacement
+    // that leaks into other test files in the same Bun process.
+    spyIsWorktreeOf = spyOn(worktreeService, 'isWorktreeOf').mockResolvedValue(true);
+    spyRemoveWorktree = spyOn(worktreeService, 'removeWorktree').mockResolvedValue({ success: true });
+    spyListWorktrees = spyOn(worktreeService, 'listWorktrees').mockResolvedValue([]);
+    spyExecuteHookCommand = spyOn(worktreeService, 'executeHookCommand').mockResolvedValue({ success: true });
   });
 
   afterEach(() => {
@@ -108,6 +86,11 @@ describe('deleteWorktree — kill phase error handling', () => {
     } else {
       process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
     }
+
+    spyIsWorktreeOf.mockRestore();
+    spyRemoveWorktree.mockRestore();
+    spyListWorktrees.mockRestore();
+    spyExecuteHookCommand.mockRestore();
   });
 
   it('should proceed with worktree deletion when killSessionWorkers fails for some sessions', async () => {
@@ -129,8 +112,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     expect(result.killErrors).toEqual([
       { sessionId: 'session-1', error: 'PTY process not found' },
     ]);
-    // Worktree removal was still called despite the kill failure
-    expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+    expect(spyRemoveWorktree).toHaveBeenCalledTimes(1);
   });
 
   it('should proceed with worktree deletion when killSessionWorkers fails for all sessions', async () => {
@@ -149,7 +131,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     expect(result.killErrors).toHaveLength(2);
     expect(result.killErrors![0].sessionId).toBe('session-1');
     expect(result.killErrors![1].sessionId).toBe('session-2');
-    expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+    expect(spyRemoveWorktree).toHaveBeenCalledTimes(1);
   });
 
   it('should not include killErrors when all kills succeed', async () => {
@@ -167,9 +149,7 @@ describe('deleteWorktree — kill phase error handling', () => {
   });
 
   it('should still report worktree removal failure even when kills succeed', async () => {
-    mockRemoveWorktree.mockImplementation(() =>
-      Promise.resolve({ success: false, error: 'dirty tree' }),
-    );
+    spyRemoveWorktree.mockResolvedValue({ success: false, error: 'dirty tree' });
 
     const deps = createMockDeps({
       killSessionWorkers: () => Promise.resolve(),
@@ -182,7 +162,6 @@ describe('deleteWorktree — kill phase error handling', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('dirty tree');
-    // Sessions should NOT be deleted when worktree removal fails (preserved for retry)
     expect(deps.sessionManager.deleteSession).not.toHaveBeenCalled();
   });
 });
