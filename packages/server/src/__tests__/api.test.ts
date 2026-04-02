@@ -298,7 +298,7 @@ describe('API Routes Integration', () => {
         repositoryManager: testRepositoryManager!,
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
-        worktreeService: new WorktreeService(getDatabase()),
+        worktreeService: new WorktreeService({ db: getDatabase() }),
       }));
       await next();
     });

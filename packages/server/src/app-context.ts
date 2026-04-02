@@ -140,7 +140,7 @@ export async function createAppContext(
   // 3. Create repositories and services that depend only on db
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
-  const worktreeService = new WorktreeServiceClass(db);
+  const worktreeService = new WorktreeServiceClass({ db });
 
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -291,7 +291,7 @@ export async function createTestContext(
   const sessionRepository =
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
-  const worktreeService = new WorktreeServiceClass(db);
+  const worktreeService = new WorktreeServiceClass({ db });
 
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);

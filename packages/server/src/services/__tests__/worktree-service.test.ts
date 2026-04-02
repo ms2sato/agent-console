@@ -126,7 +126,7 @@ branch refs/heads/feature-1
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -145,7 +145,7 @@ branch refs/heads/feature-1
     it('should filter out worktrees not registered in DB', async () => {
       // No records in mock repository - only main worktree should be returned
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -162,7 +162,7 @@ detached
 `));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
@@ -173,7 +173,7 @@ detached
       mockGit.listWorktrees.mockImplementation(() => Promise.reject(new Error('git error')));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const worktrees = await service.listWorktrees('/repo', 'repo-1');
       expect(worktrees).toEqual([]);
@@ -198,7 +198,7 @@ detached
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
       const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
 
       // Should include: main + feature-1 (from git) + orphaned-1 (from DB only)
@@ -213,7 +213,7 @@ detached
   describe('createWorktree', () => {
     it('should create worktree with existing branch', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -236,7 +236,7 @@ detached
 
     it('should create worktree with new branch from base', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       await service.createWorktree('/repo', 'new-feature', 'repo-1', 'main');
 
@@ -254,7 +254,7 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.createWorktree('/repo', 'existing-branch', 'repo-1');
 
@@ -269,7 +269,7 @@ detached
         fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never, mockRepo);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -289,7 +289,7 @@ detached
         fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, '#!/bin/bash\necho setup');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never, mockRepo);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -307,7 +307,7 @@ detached
         );
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never, mockRepo);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.createWorktree('/repo', 'my-feature', 'repo-1');
 
@@ -326,7 +326,7 @@ detached
         fs.writeFileSync('/repo/.agent-console/root-file.txt', 'root');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never, mockRepo);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -355,7 +355,7 @@ detached
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
 
@@ -376,7 +376,7 @@ detached
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       await service.removeWorktree('/repo', '/worktrees/feature', true);
 
@@ -393,7 +393,7 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
 
@@ -405,7 +405,7 @@ detached
   describe('listBranches', () => {
     it('should list local and remote branches', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.listBranches('/repo');
 
@@ -421,7 +421,7 @@ detached
       mockGit.getDefaultBranch.mockImplementation(() => Promise.reject(new Error('git error')));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.listBranches('/repo');
 
@@ -434,7 +434,7 @@ detached
   describe('getDefaultBranch', () => {
     it('should return default branch from git', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBe('main');
@@ -444,7 +444,7 @@ detached
       mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBeNull();
@@ -454,7 +454,7 @@ detached
   describe('isWorktreeOf', () => {
     it('should return true for valid worktree path', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       // Main worktree path equals repo path, always valid
       const result = await service.isWorktreeOf('/repo/main', '/repo/main', 'repo-1');
@@ -472,7 +472,7 @@ detached
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.isWorktreeOf('/repo/main', '/worktrees/feature-1', 'repo-1');
       expect(result).toBe(true);
@@ -480,7 +480,7 @@ detached
 
     it('should return false for invalid worktree path', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.isWorktreeOf('/repo/main', '/other/path', 'repo-1');
       expect(result).toBe(false);
@@ -490,7 +490,7 @@ detached
   describe('generateNextBranchName', () => {
     it('should return wt-001-XXXX format when no worktrees exist', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const branchName = await service.generateNextBranchName('repo-1');
 
@@ -507,7 +507,7 @@ detached
       });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const branchName = await service.generateNextBranchName('repo-1');
 
@@ -527,7 +527,7 @@ detached
       }
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const branchName = await service.generateNextBranchName('repo-1');
 
@@ -557,7 +557,7 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.createWorktree('/repo', 'feature-gap', 'repo-1');
 
@@ -577,7 +577,7 @@ detached
       }
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.createWorktree('/repo', 'feature-next', 'repo-1');
 
@@ -589,7 +589,7 @@ detached
       // mockRepo.records is empty
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService(null as never, mockRepo);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
 
       const result = await service.createWorktree('/repo', 'first-worktree', 'repo-1');
 
@@ -622,7 +622,7 @@ detached
       it('should substitute {{WORKTREE_NUM}} variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo {{WORKTREE_NUM}}',
@@ -637,7 +637,7 @@ detached
       it('should substitute {{BRANCH}} variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'git checkout {{BRANCH}}',
@@ -652,7 +652,7 @@ detached
       it('should substitute {{REPO}} variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo Working on {{REPO}}',
@@ -667,7 +667,7 @@ detached
       it('should substitute {{WORKTREE_PATH}} variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'cd {{WORKTREE_PATH}} && ls',
@@ -682,7 +682,7 @@ detached
       it('should substitute multiple variables in a single command', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo "WT {{WORKTREE_NUM}} for {{REPO}} on {{BRANCH}} at {{WORKTREE_PATH}}"',
@@ -699,7 +699,7 @@ detached
       it('should evaluate {{WORKTREE_NUM + N}} addition', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'export PORT={{WORKTREE_NUM + 3000}}',
@@ -714,7 +714,7 @@ detached
       it('should evaluate {{WORKTREE_NUM - N}} subtraction', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo {{WORKTREE_NUM - 2}}',
@@ -729,7 +729,7 @@ detached
       it('should evaluate {{WORKTREE_NUM * N}} multiplication', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo {{WORKTREE_NUM * 100}}',
@@ -744,7 +744,7 @@ detached
       it('should evaluate {{WORKTREE_NUM / N}} division (floor)', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo {{WORKTREE_NUM / 3}}',
@@ -760,7 +760,7 @@ detached
       it('should handle arithmetic with spaces around operator', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'export PORT={{WORKTREE_NUM   +   8080}}',
@@ -777,7 +777,7 @@ detached
       it('should return success true and stdout output on exit code 0', async () => {
         setMockSpawnResult('command output here\nsecond line');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.executeHookCommand(
           'echo "hello"',
@@ -793,7 +793,7 @@ detached
       it('should return undefined output when stdout is empty', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.executeHookCommand(
           'silent-command',
@@ -811,7 +811,7 @@ detached
       it('should return success false and stderr on non-zero exit code', async () => {
         setMockSpawnResult('partial output', 1, 'command not found');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.executeHookCommand(
           'invalid-command',
@@ -827,7 +827,7 @@ detached
       it('should include exit code in error when stderr is empty', async () => {
         setMockSpawnResult('', 127, '');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.executeHookCommand(
           'nonexistent-command',
@@ -842,7 +842,7 @@ detached
       it('should handle various non-zero exit codes', async () => {
         setMockSpawnResult('', 2, 'permission denied');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         const result = await service.executeHookCommand(
           'protected-command',
@@ -859,7 +859,7 @@ detached
       it('should inject WORKTREE_NUM environment variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo $WORKTREE_NUM',
@@ -875,7 +875,7 @@ detached
       it('should inject BRANCH environment variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo $BRANCH',
@@ -891,7 +891,7 @@ detached
       it('should inject REPO environment variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo $REPO',
@@ -907,7 +907,7 @@ detached
       it('should inject WORKTREE_PATH environment variable', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo $WORKTREE_PATH',
@@ -923,7 +923,7 @@ detached
       it('should preserve existing process environment variables', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'echo $PATH',
@@ -942,7 +942,7 @@ detached
       it('should execute command in worktree directory (cwd)', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'pwd',
@@ -957,7 +957,7 @@ detached
       it('should execute command via sh -c', async () => {
         setMockSpawnResult('');
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService(null as never);
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
 
         await service.executeHookCommand(
           'npm install && npm run build',

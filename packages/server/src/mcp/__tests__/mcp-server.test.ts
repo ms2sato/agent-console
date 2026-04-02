@@ -247,7 +247,7 @@ describe('MCP Server Tools', () => {
     timerManager = new TimerManager(() => {});
 
     // Create WorktreeService with in-memory database
-    worktreeService = new WorktreeService(db);
+    worktreeService = new WorktreeService({ db });
 
     // Create MCP app with injected dependencies and initialize MCP session
     await remountMcpApp();

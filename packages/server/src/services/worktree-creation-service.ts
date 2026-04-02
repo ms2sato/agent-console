@@ -3,13 +3,19 @@ import type { Session } from '@agent-console/shared';
 import type { SessionManager } from './session-manager.js';
 import type { SessionCreationContext } from './internal-types.js';
 import type { WorktreeService } from './worktree-service.js';
+
+/** Narrow subset of WorktreeService methods needed by the creation service. */
+type CreateWorktreeServiceDeps = Pick<
+  WorktreeService,
+  'createWorktree' | 'listWorktrees' | 'removeWorktree' | 'executeHookCommand'
+>;
 import { fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worktree-creation-service');
 
 async function rollbackWorktree(
-  worktreeService: WorktreeService,
+  worktreeService: CreateWorktreeServiceDeps,
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
@@ -56,7 +62,7 @@ export interface CreateWorktreeResult {
 export async function createWorktreeWithSession(
   params: CreateWorktreeParams,
   sessionManager: SessionManager,
-  worktreeService: WorktreeService,
+  worktreeService: CreateWorktreeServiceDeps,
 ): Promise<CreateWorktreeResult> {
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,

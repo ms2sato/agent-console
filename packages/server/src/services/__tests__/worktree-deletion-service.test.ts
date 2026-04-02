@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { HookCommandResult, Worktree, Session } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import type { DeleteWorktreeDeps } from '../worktree-deletion-service.js';
-import type { WorktreeService } from '../worktree-service.js';
 import { getRepositoriesDir } from '../../lib/config.js';
 
 // Use the real repositories directory path to avoid mocking config.js
@@ -32,7 +31,7 @@ const mockWorktreeService = {
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
   isWorktreeOf: mockIsWorktreeOf,
-} as unknown as WorktreeService;
+};
 
 // --- Mock logger ---
 mock.module('../../lib/logger.js', () => ({

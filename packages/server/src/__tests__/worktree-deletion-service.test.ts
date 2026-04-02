@@ -2,8 +2,6 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { Session } from '@agent-console/shared';
 import type { DeleteWorktreeDeps } from '../services/worktree-deletion-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../services/worktree-deletion-service.js';
-import type { WorktreeService } from '../services/worktree-service.js';
-
 // ---------- Test helpers ----------
 
 // Control getRepositoriesDir() via AGENT_CONSOLE_HOME env var.
@@ -24,7 +22,7 @@ const mockWorktreeService = {
   removeWorktree: mockRemoveWorktree,
   listWorktrees: mockListWorktrees,
   executeHookCommand: mockExecuteHookCommand,
-} as unknown as WorktreeService;
+};
 
 function createMockSession(id: string, locationPath: string): Session {
   return {

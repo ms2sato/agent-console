@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { HookCommandResult, Worktree, Session } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
-import type { WorktreeService } from '../worktree-service.js';
-
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
 const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
@@ -23,7 +21,7 @@ const mockWorktreeService = {
   createWorktree: mockCreateWorktree,
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
-} as unknown as WorktreeService;
+};
 
 // --- Mock fetchRemote ---
 

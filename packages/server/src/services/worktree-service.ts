@@ -132,18 +132,20 @@ async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
   return parseOrgRepo(remoteUrl);
 }
 
+/**
+ * Discriminated union for WorktreeService dependencies.
+ * Either provide a `db` (and the service creates its own repository),
+ * or provide a `worktreeRepository` directly (e.g. in tests).
+ */
+export type WorktreeServiceDeps =
+  | { db: Kysely<Database>; worktreeRepository?: never }
+  | { db?: never; worktreeRepository: WorktreeRepository };
+
 export class WorktreeService {
-  /**
-   * Injected repository (via constructor). When provided, it is used directly.
-   * When not provided, a SqliteWorktreeRepository is created from the given db.
-   *
-   * The optional worktreeRepository parameter allows unit tests of WorktreeService
-   * itself to inject a mock repository without needing a real database.
-   */
   private readonly _worktreeRepository: WorktreeRepository;
 
-  constructor(db: Kysely<Database>, worktreeRepository?: WorktreeRepository) {
-    this._worktreeRepository = worktreeRepository ?? new SqliteWorktreeRepository(db);
+  constructor(deps: WorktreeServiceDeps) {
+    this._worktreeRepository = deps.worktreeRepository ?? new SqliteWorktreeRepository(deps.db);
   }
 
   private get worktreeRepository(): WorktreeRepository {

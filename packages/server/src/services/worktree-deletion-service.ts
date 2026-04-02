@@ -4,6 +4,12 @@ import type { HookCommandResult, Session } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import type { WorktreeService } from './worktree-service.js';
+
+/** Narrow subset of WorktreeService methods needed by the deletion service. */
+type DeleteWorktreeServiceDeps = Pick<
+  WorktreeService,
+  'isWorktreeOf' | 'listWorktrees' | 'executeHookCommand' | 'removeWorktree'
+>;
 import type { SessionManager } from './session-manager.js';
 
 const logger = createLogger('worktree-deletion-service');
@@ -42,7 +48,7 @@ function clearDeletionInProgress(worktreePath: string): void {
  * @returns null if valid, or an error message string if invalid.
  */
 async function validateWorktreePath(
-  worktreeService: WorktreeService,
+  worktreeService: DeleteWorktreeServiceDeps,
   repoPath: string,
   worktreePath: string,
   repoId: string,
@@ -67,7 +73,7 @@ async function validateWorktreePath(
  * Looks up the worktree in git listing to resolve template variables.
  */
 async function executeCleanupCommandIfConfigured(
-  worktreeService: WorktreeService,
+  worktreeService: DeleteWorktreeServiceDeps,
   repo: { path: string; name: string; cleanupCommand?: string | null },
   repoId: string,
   worktreePath: string,
@@ -94,7 +100,7 @@ async function executeCleanupCommandIfConfigured(
 // ---------- Dependencies ----------
 
 export interface DeleteWorktreeDeps {
-  worktreeService: WorktreeService;
+  worktreeService: DeleteWorktreeServiceDeps;
   sessionManager: SessionManager;
   repositoryManager: {
     getRepository(id: string): { name: string; path: string; cleanupCommand?: string | null } | undefined;
