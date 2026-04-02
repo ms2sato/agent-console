@@ -1,19 +1,12 @@
 ---
 name: development-workflow-standards
-description: Development process rules for this project including testing, branching, and commit standards. Use when implementing features, fixing bugs, or making any code changes.
+description: Development workflow procedures including conflict assessment, re-implementation proposals, and TDD steps. Use when you need step-by-step workflow guidance beyond what the auto-loaded verification rules provide.
 ---
 
-# Development Workflow Standards
+# Development Workflow Standards (Procedural Guide)
 
-Refer to [development-workflow-standards.md](development-workflow-standards.md) for detailed rules.
+> **Note:** Verification checklist, commands, branching rules, commit standards, and code quality rules are in `.claude/rules/verification.md` and always auto-loaded. This skill provides detailed procedures and decision frameworks.
 
-## Key Rules
+## Detailed Documentation
 
-- **Testing with code changes**: Always update or add tests. Code without tests is incomplete.
-- **TDD for bug fixes**: Write a failing test first, then implement the fix.
-- **GitHub-Flow**: Always `git fetch origin` then branch from `origin/main`.
-- **Conflict assessment**: Before PR, check conflicts with latest main. If severe, propose re-implementation.
-- **Never merge PRs**: Merging is always the user's decision.
-- **Verification**: Run `bun run test` and `bun run typecheck` before completing changes.
-- **Commands**: `bun run dev`, `bun run build`, `bun run test`, `bun run typecheck`, `bun run lint`
-- **Environment**: Check `.env` for port configuration before `bun run dev`.
+- [development-workflow-standards.md](development-workflow-standards.md) - Full procedures: conflict assessment criteria and decision table, re-implementation proposal format, TDD step-by-step guide, Claude Code on the Web setup

@@ -100,12 +100,18 @@ Project-defined (`.claude/agents/`):
 - `claude-config-specialist` - Analyzing and improving Claude Code configuration (.claude/, CLAUDE.md)
 - `coderabbit-reviewer` - External AI review via CodeRabbit CLI (optional, skips if CLI not installed)
 
+Auto-loaded rules (in `.claude/rules/`):
+- **Frontend rules:** `.claude/rules/frontend.md` - Auto-loaded for `packages/client/**`
+- **Backend rules:** `.claude/rules/backend.md` - Auto-loaded for `packages/server/**`
+- **Testing rules:** `.claude/rules/testing.md` - Auto-loaded for `**/*.test.*`
+- **Verification rules:** `.claude/rules/verification.md` - Always loaded (commands, branching, commits, code quality)
+
 Project-defined skills (in `.claude/skills/`):
-- **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Development process rules (testing, branching, commits)
+- **Development workflow standards:** `.claude/skills/development-workflow-standards/` - Detailed procedures (conflict assessment, TDD steps)
 - **Code quality standards:** `.claude/skills/code-quality-standards/` - Evaluation criteria for code reviews
-- **Frontend standards:** `.claude/skills/frontend-standards/` - React patterns and frontend best practices
-- **Backend standards:** `.claude/skills/backend-standards/` - Hono/Bun patterns and backend best practices
-- **Test standards:** `.claude/skills/test-standards/` - Testing best practices and anti-patterns
+- **Frontend standards:** `.claude/skills/frontend-standards/` - Detailed code examples and patterns
+- **Backend standards:** `.claude/skills/backend-standards/` - Detailed code examples and patterns
+- **Test standards:** `.claude/skills/test-standards/` - Server Bridge Pattern, form testing procedures
 - **UX design standards:** `.claude/skills/ux-design-standards/` - UX design principles for multi-agent management UI
 
 **Parallel execution.** When changes span multiple packages, launch specialists in parallel:
@@ -155,15 +161,19 @@ See [docs/design/session-worker-design.md](docs/design/session-worker-design.md)
 
 ## Reference
 
-Details for each domain are defined in their respective skills and docs. CLAUDE.md intentionally does NOT duplicate skill content — each skill is the single source of truth for its domain.
+Details for each domain are defined in rules, skills, and docs. Rules (`.claude/rules/`) are auto-loaded by file path; skills provide detailed procedures and code examples.
+
+| Topic | Rules (auto-loaded) | Skills (explicit) |
+|-------|---------------------|-------------------|
+| Verification, commands, branching, commits | `.claude/rules/verification.md` (always) | `development-workflow-standards` (procedures) |
+| Frontend (React, TanStack, Tailwind, Valibot) | `.claude/rules/frontend.md` (`packages/client/**`) | `frontend-standards` (code examples) |
+| Backend (Hono, Bun, PTY, WebSocket, logging) | `.claude/rules/backend.md` (`packages/server/**`) | `backend-standards` (code examples) |
+| Testing (methodology, anti-patterns) | `.claude/rules/testing.md` (`**/*.test.*`) | `test-standards` (patterns, bridge testing) |
+| Code quality (design principles, evaluation) | — | `code-quality-standards` skill |
+| UX design principles | — | `ux-design-standards` skill |
 
 | Topic | Source |
 |-------|--------|
-| Development workflow (branching, testing, commits, commands) | `development-workflow-standards` skill |
-| Code quality (design principles, TypeScript, module evaluation) | `code-quality-standards` skill |
-| Frontend (React, TanStack, Tailwind, Valibot) | `frontend-standards` skill |
-| Backend (Hono, Bun, PTY, WebSocket, logging) | `backend-standards` skill |
-| Testing (methodology, anti-patterns, boundary testing) | `test-standards` skill |
 | WebSocket protocol specification | [docs/design/websocket-protocol.md](docs/design/websocket-protocol.md) |
 | Terminal state sync design | [docs/design/terminal-state-sync.md](docs/design/terminal-state-sync.md) |
 | Session/Worker data model | [docs/design/session-worker-design.md](docs/design/session-worker-design.md) |
