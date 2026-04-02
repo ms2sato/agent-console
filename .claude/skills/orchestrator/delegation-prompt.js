@@ -100,7 +100,7 @@ Read the Issue carefully — it contains the full design, acceptance criteria, a
 
 ## Completion Steps
 1. Run the FULL test suite (\`bun run test\`) and confirm ALL tests pass — not just your new tests. If any pre-existing test fails, investigate whether your changes caused it.
-2. Run CodeRabbit CLI self-review if installed: \`coderabbit review --agent --base main\`
+2. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH issues before creating the PR. If CLI is not installed, skip this step.
 3. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
 4. Wait for CI green, fix any issues.
 5. Report completion with PR URL and retrospective to Orchestrator.
