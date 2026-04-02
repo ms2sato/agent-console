@@ -421,7 +421,8 @@ export class WorkerLifecycleManager {
     }
 
     // Always notify that worker was restarted, regardless of agent/branch changes
-    this.deps.getSessionLifecycleCallbacks()?.onWorkerRestarted?.(sessionId, workerId);
+    const activityState = this.getWorkerActivityState(sessionId, workerId) ?? 'unknown';
+    this.deps.getSessionLifecycleCallbacks()?.onWorkerRestarted?.(sessionId, workerId, activityState);
 
     let restartReason = 'Agent worker restarted';
     if (isAgentChanged) {

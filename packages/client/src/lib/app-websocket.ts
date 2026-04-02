@@ -4,7 +4,8 @@
  *
  * @see docs/websocket-reconnection.md for design rationale
  */
-import { APP_SERVER_MESSAGE_TYPES, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
+import * as v from 'valibot';
+import { AppServerMessageSchema, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
 import { getAppWsUrl } from './websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
 import { logger } from './logger.js';
@@ -49,15 +50,15 @@ export const MAX_RETRY_COUNT = 100; // ~50 minutes at 30s max delay
 export const LAST_RESORT_RETRY_DELAY = 60000; // 60s fixed interval after max retries exhausted
 
 /**
- * Validate that a parsed message has a valid type.
- * Uses APP_MESSAGE_TYPES from shared package as single source of truth.
+ * Validate a parsed message against the shared schema.
+ * Returns the validated message or undefined if invalid.
  */
-function isValidMessage(msg: unknown): msg is AppServerMessage {
-  if (typeof msg !== 'object' || msg === null) {
-    return false;
+function parseMessage(msg: unknown): AppServerMessage | undefined {
+  const result = v.safeParse(AppServerMessageSchema, msg);
+  if (result.success) {
+    return result.output;
   }
-  const { type } = msg as { type?: unknown };
-  return typeof type === 'string' && type in APP_SERVER_MESSAGE_TYPES;
+  return undefined;
 }
 
 function hasStateChanged(prev: AppWebSocketState, next: AppWebSocketState): boolean {
@@ -77,9 +78,10 @@ function setState(partial: Partial<AppWebSocketState>) {
 
 function handleMessage(event: MessageEvent) {
   try {
-    const parsed: unknown = JSON.parse(event.data);
-    if (!isValidMessage(parsed)) {
-      logger.error('[WebSocket] Invalid message type:', parsed);
+    const raw: unknown = JSON.parse(event.data);
+    const parsed = parseMessage(raw);
+    if (!parsed) {
+      logger.error('[WebSocket] Invalid message:', raw);
       return;
     }
 

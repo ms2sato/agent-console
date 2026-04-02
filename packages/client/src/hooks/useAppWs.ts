@@ -30,13 +30,13 @@ interface UseAppWsEventOptions {
   /** Called when a session is deleted */
   onSessionDeleted?: (sessionId: string) => void;
   /** Called when a session is paused (removed from memory but preserved in DB) */
-  onSessionPaused?: (sessionId: string, pausedAt: string) => void;
+  onSessionPaused?: (session: Session) => void;
   /** Called when a paused session is resumed */
-  onSessionResumed?: (session: Session) => void;
+  onSessionResumed?: (session: Session, activityStates: WorkerActivityInfo[]) => void;
   /** Called when worker activity state changes */
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
   /** Called when a worker is restarted */
-  onWorkerRestarted?: (sessionId: string, workerId: string) => void;
+  onWorkerRestarted?: (sessionId: string, workerId: string, activityState: AgentActivityState) => void;
   /** Called when initial agent sync is received */
   onAgentsSync?: (agents: AgentDefinition[]) => void;
   /** Called when a new agent is created */
@@ -124,12 +124,12 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           optionsRef.current.onSessionDeleted?.(msg.sessionId);
           break;
         case 'session-paused':
-          logger.debug(`[WebSocket] session-paused: ${msg.sessionId}`);
-          optionsRef.current.onSessionPaused?.(msg.sessionId, msg.pausedAt);
+          logger.debug(`[WebSocket] session-paused: ${msg.session.id}`);
+          optionsRef.current.onSessionPaused?.(msg.session);
           break;
         case 'session-resumed':
           logger.debug(`[WebSocket] session-resumed: ${msg.session.id}`);
-          optionsRef.current.onSessionResumed?.(msg.session);
+          optionsRef.current.onSessionResumed?.(msg.session, msg.activityStates);
           break;
         case 'worker-activity':
           optionsRef.current.onWorkerActivity?.(msg.sessionId, msg.workerId, msg.activityState);
@@ -141,7 +141,7 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           break;
         case 'worker-restarted':
           logger.debug(`[WebSocket] worker-restarted: ${msg.sessionId}/${msg.workerId}`);
-          optionsRef.current.onWorkerRestarted?.(msg.sessionId, msg.workerId);
+          optionsRef.current.onWorkerRestarted?.(msg.sessionId, msg.workerId, msg.activityState);
           break;
         case 'agents-sync':
           logger.debug(`[WebSocket] agents-sync received: ${msg.agents.length} agents`);

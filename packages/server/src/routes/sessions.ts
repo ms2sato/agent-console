@@ -42,16 +42,10 @@ const sessions = new Hono<AppBindings>()
       return c.json({ session });
     }
 
-    // Check persisted metadata for inactive sessions
-    const metadata = await sessionManager.getSessionMetadata(sessionId);
-    if (metadata) {
-      // Return persisted data with inactive status
-      return c.json({
-        session: {
-          ...metadata,
-          status: 'inactive',
-        },
-      });
+    // Check persisted data for inactive/paused sessions
+    const persistedSession = await sessionManager.getPersistedSession(sessionId);
+    if (persistedSession) {
+      return c.json({ session: persistedSession });
     }
 
     throw new NotFoundError('Session');

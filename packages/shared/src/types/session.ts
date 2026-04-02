@@ -1,20 +1,6 @@
+import type * as v from 'valibot';
+import type { AppServerMessageSchema } from '../schemas/app-server-message.js';
 import type { Worker, AgentActivityState } from './worker.js';
-import type { AgentDefinition } from './agent.js';
-import type { WorkerMessage } from './worker-message.js';
-import type { InboundEventSummary } from './system-events.js';
-import type { Repository } from './repository.js';
-import type {
-  WorktreeCreationCompletedPayload,
-  WorktreeCreationFailedPayload,
-} from './worktree-creation.js';
-import type {
-  WorktreeDeletionCompletedPayload,
-  WorktreeDeletionFailedPayload,
-} from './worktree-deletion.js';
-import type {
-  WorktreePullCompletedPayload,
-  WorktreePullFailedPayload,
-} from './worktree-pull.js';
 
 // Re-export schema-derived types
 export type {
@@ -80,6 +66,17 @@ export interface QuickSession extends SessionBase {
 }
 
 export type Session = WorktreeSession | QuickSession;
+
+/** A session that has been paused (hibernated with pausedAt timestamp) */
+export type PausedSession = (WorktreeSession | QuickSession) & {
+  activationState: 'hibernated';
+  pausedAt: string;
+};
+
+/** A session that is actively running */
+export type RunningSession = (WorktreeSession | QuickSession) & {
+  activationState: 'running';
+};
 
 export interface CreateSessionResponse {
   session: Session;
@@ -179,34 +176,7 @@ export const APP_MESSAGE_TYPES = APP_SERVER_MESSAGE_TYPES;
 
 export type AppServerMessageType = keyof typeof APP_SERVER_MESSAGE_TYPES;
 
-export type AppServerMessage =
-  | { type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }
-  | { type: 'session-created'; session: Session }
-  | { type: 'session-updated'; session: Session }
-  | { type: 'session-deleted'; sessionId: string }
-  | { type: 'session-paused'; sessionId: string; pausedAt: string }
-  | { type: 'session-resumed'; session: Session }
-  | { type: 'worker-activity'; sessionId: string; workerId: string; activityState: AgentActivityState }
-  | { type: 'worker-activated'; sessionId: string; workerId: string }
-  | { type: 'agents-sync'; agents: AgentDefinition[] }
-  | { type: 'agent-created'; agent: AgentDefinition }
-  | { type: 'agent-updated'; agent: AgentDefinition }
-  | { type: 'agent-deleted'; agentId: string }
-  | { type: 'repositories-sync'; repositories: Repository[] }
-  | { type: 'repository-created'; repository: Repository }
-  | { type: 'repository-updated'; repository: Repository }
-  | { type: 'repository-deleted'; repositoryId: string }
-  | ({ type: 'worktree-creation-completed' } & WorktreeCreationCompletedPayload)
-  | ({ type: 'worktree-creation-failed' } & WorktreeCreationFailedPayload)
-  | ({ type: 'worktree-deletion-completed' } & WorktreeDeletionCompletedPayload)
-  | ({ type: 'worktree-deletion-failed' } & WorktreeDeletionFailedPayload)
-  | ({ type: 'worktree-pull-completed' } & WorktreePullCompletedPayload)
-  | ({ type: 'worktree-pull-failed' } & WorktreePullFailedPayload)
-  | { type: 'worker-message'; message: WorkerMessage }
-  | { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }
-  | { type: 'worker-restarted'; sessionId: string; workerId: string }
-  | { type: 'memo-updated'; sessionId: string; content: string }
-  | { type: 'review-queue-updated' };
+export type AppServerMessage = v.InferOutput<typeof AppServerMessageSchema>;
 
 /**
  * Valid message types for AppClientMessage.

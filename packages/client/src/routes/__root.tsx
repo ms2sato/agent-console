@@ -183,12 +183,12 @@ function RootLayout() {
   }, [handleSessionsSync, invalidateValidation]);
 
   // Wrap session paused handler to also disconnect lingering worker WebSocket connections
-  const handleSessionPausedWithCleanup = useCallback((sessionId: string, pausedAt: string) => {
+  const handleSessionPausedWithCleanup = useCallback((session: Session) => {
     // Disconnect all worker WebSocket connections for the paused session
     // to prevent them from attempting reconnection to a session that
     // no longer exists in server memory.
-    disconnectSession(sessionId);
-    handleSessionPaused(sessionId, pausedAt);
+    disconnectSession(session.id);
+    handleSessionPaused(session);
   }, [handleSessionPaused]);
 
   // Wrap worktree deletion completed handler to also invalidate worktree queries
@@ -201,11 +201,12 @@ function RootLayout() {
   // Clear IndexedDB terminal cache when a worker is restarted.
   // The active (mounted) Terminal component handles its own cache clearing,
   // but unmounted workers on inactive tabs would retain stale cache entries.
-  const handleWorkerRestarted = useCallback((sessionId: string, workerId: string) => {
+  const handleWorkerRestarted = useCallback((sessionId: string, workerId: string, activityState: AgentActivityState) => {
+    handleWorkerActivity(sessionId, workerId, activityState);
     clearTerminalState(sessionId, workerId).catch((e) =>
       logger.warn('[RootLayout] Failed to clear terminal cache on worker restart:', e)
     );
-  }, []);
+  }, [handleWorkerActivity]);
 
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({

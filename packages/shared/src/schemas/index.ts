@@ -85,6 +85,11 @@ export {
   type GenerateRepositoryDescriptionResponse,
 } from './repository.js';
 
+// App server message schema
+export {
+  AppServerMessageSchema,
+} from './app-server-message.js';
+
 // System schemas
 export {
   SystemOpenRequestSchema,

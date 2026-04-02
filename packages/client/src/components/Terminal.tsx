@@ -323,7 +323,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, []);
 
   // Handle worker-restarted event from app WebSocket
-  const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string) => {
+  const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string, _activityState: AgentActivityState) => {
     if (restartedSessionId !== sessionId || restartedWorkerId !== workerId) {
       return;
     }

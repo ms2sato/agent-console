@@ -201,8 +201,8 @@ describe('useAppWsEvent', () => {
 
       const ws = MockWebSocket.getLastInstance();
       const mockSessions = [
-        { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] },
-        { id: 'session-2', type: 'quick', locationPath: '/path/2', status: 'active', createdAt: '2024-01-01', workers: [] },
+        { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] },
+        { id: 'session-2', type: 'quick', locationPath: '/path/2', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] },
       ];
       const mockActivityStates = [
         { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
@@ -227,7 +227,7 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionCreated }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
 
       act(() => {
         ws?.simulateOpen();
@@ -247,7 +247,7 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionUpdated }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [], title: 'Updated Title' };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], title: 'Updated Title' };
 
       act(() => {
         ws?.simulateOpen();
@@ -341,6 +341,7 @@ describe('useAppWsEvent', () => {
           name: 'Test Agent',
           commandTemplate: 'test {{prompt}}',
           isBuiltIn: false,
+          createdAt: '2024-01-01',
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
         },
       ];
@@ -368,6 +369,7 @@ describe('useAppWsEvent', () => {
         name: 'New Agent',
         commandTemplate: 'newagent {{prompt}}',
         isBuiltIn: false,
+        createdAt: '2024-01-01',
         capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
       };
 
@@ -394,6 +396,7 @@ describe('useAppWsEvent', () => {
         name: 'Updated Agent',
         commandTemplate: 'updated {{prompt}}',
         isBuiltIn: false,
+        createdAt: '2024-01-01',
         capabilities: { supportsContinue: true, supportsHeadlessMode: false, supportsActivityDetection: false },
       };
 
@@ -434,18 +437,28 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionPaused }));
 
       const ws = MockWebSocket.getLastInstance();
+      const mockSession = {
+        id: 'session-1',
+        type: 'quick',
+        locationPath: '/path/1',
+        status: 'inactive',
+        activationState: 'hibernated',
+        createdAt: '2024-01-01',
+        workers: [],
+        pausedAt: '2026-01-01T00:00:00.000Z',
+      };
+
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
           JSON.stringify({
             type: 'session-paused',
-            sessionId: 'session-1',
-            pausedAt: '2026-01-01T00:00:00.000Z',
+            session: mockSession,
           })
         );
       });
 
-      expect(onSessionPaused).toHaveBeenCalledWith('session-1', '2026-01-01T00:00:00.000Z');
+      expect(onSessionPaused).toHaveBeenCalledWith(mockSession);
     });
 
     it('should call onSessionResumed for session-resumed message', () => {
@@ -453,7 +466,10 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionResumed }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', createdAt: '2024-01-01', workers: [] };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
+      const mockActivityStates = [
+        { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+      ];
 
       act(() => {
         ws?.simulateOpen();
@@ -461,11 +477,12 @@ describe('useAppWsEvent', () => {
           JSON.stringify({
             type: 'session-resumed',
             session: mockSession,
+            activityStates: mockActivityStates,
           })
         );
       });
 
-      expect(onSessionResumed).toHaveBeenCalledWith(mockSession);
+      expect(onSessionResumed).toHaveBeenCalledWith(mockSession, mockActivityStates);
     });
 
     it('should call onWorkerRestarted for worker-restarted message', () => {
@@ -481,11 +498,12 @@ describe('useAppWsEvent', () => {
             type: 'worker-restarted',
             sessionId: 'session-1',
             workerId: 'worker-1',
+            activityState: 'idle',
           })
         );
       });
 
-      expect(onWorkerRestarted).toHaveBeenCalledWith('session-1', 'worker-1');
+      expect(onWorkerRestarted).toHaveBeenCalledWith('session-1', 'worker-1', 'idle');
     });
 
     it('should call onWorktreePullCompleted for worktree-pull-completed message', () => {
