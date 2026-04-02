@@ -97,6 +97,7 @@ export const reviewQueue = new Hono<AppBindings>()
   })
   .patch('/:workerId/status', vValidator(UpdateStatusSchema), (c) => {
     const workerId = c.req.param('workerId');
+    const { sessionManager } = c.get('appContext');
     const { status } = c.req.valid('json');
 
     const annotationSet = annotationService.getAnnotations(workerId);
@@ -104,6 +105,40 @@ export const reviewQueue = new Hono<AppBindings>()
     if (!annotationSet.sourceSessionId) throw new ValidationError('Worker is not a review queue item');
 
     annotationService.updateStatus(workerId, status);
+
+    // Send PTY notification to source session's agent worker (best-effort)
+    try {
+      const sourceSession = sessionManager.getSession(annotationSet.sourceSessionId);
+      if (sourceSession) {
+        const agentWorker = sourceSession.workers.find((w) => w.type === 'agent');
+        if (agentWorker) {
+          const meta = annotationService.getMetadata(workerId);
+          const targetSession = meta ? sessionManager.getSession(meta.sessionId) : undefined;
+          const targetTitle = targetSession?.title ?? 'Unknown session';
+
+          const writeInput = (data: string) =>
+            sessionManager.writeWorkerInput(annotationSet.sourceSessionId!, agentWorker.id, data);
+
+          writePtyNotification({
+            kind: 'internal-reviewed',
+            tag: 'internal:reviewed',
+            fields: {
+              session: targetTitle,
+              workerId,
+              status,
+              comments: String(annotationSet.comments.length),
+            },
+            intent: 'triage',
+            writeInput,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { err, workerId, sourceSessionId: annotationSet.sourceSessionId },
+        'Failed to send reviewed notification to source session',
+      );
+    }
 
     broadcastToApp({ type: 'review-queue-updated' });
 
