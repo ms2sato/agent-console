@@ -106,7 +106,7 @@ Before completing any code changes, always verify:
 
 1. **Run the FULL test suite:** Execute `bun run test` and ensure **ALL** tests pass — not just the tests you added or modified. Running only new tests is not sufficient. The full suite must be green before every push.
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors
-3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL or HIGH severity issues before creating a PR. If CodeRabbit CLI is not installed, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`
+3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If CodeRabbit CLI is not installed, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
 
