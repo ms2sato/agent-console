@@ -17,7 +17,7 @@ import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
 import type { WorktreeService } from '../services/worktree-service.js';
-import { annotationService } from '../services/annotation-service.js';
+import type { AnnotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
 import { broadcastToApp } from '../websocket/routes.js';
 import { deleteWorktree } from '../services/worktree-deletion-service.js';
@@ -159,6 +159,7 @@ export interface McpDependencies {
   agentManager: AgentManager;
   timerManager: TimerManager;
   worktreeService: WorktreeService;
+  annotationService: AnnotationService;
 }
 
 // ---------- Factory ----------
@@ -169,7 +170,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.

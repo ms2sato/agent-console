@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { WSContext } from 'hono/ws';
 import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
+import { AnnotationService } from '../../services/annotation-service.js';
 
 
 describe('GitDiffHandler', () => {
@@ -62,6 +63,7 @@ describe('GitDiffHandler', () => {
       startWatching: mockStartWatching,
       stopWatching: mockStopWatching,
       getFileLines: mock(() => Promise.resolve([])),
+      annotationService: new AnnotationService(),
     };
 
     handlers = createGitDiffHandlers(deps);
@@ -296,6 +298,7 @@ describe('GitDiffHandler', () => {
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.resolve(['line1', 'line2', 'line3'])),
+          annotationService: new AnnotationService(),
         } satisfies GitDiffHandlerDependencies;
         const localHandlers = createGitDiffHandlers(deps);
 
@@ -341,6 +344,7 @@ describe('GitDiffHandler', () => {
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('Invalid file path: ../etc/passwd'))),
+          annotationService: new AnnotationService(),
         };
         const localHandlers = createGitDiffHandlers(deps);
 
@@ -383,6 +387,7 @@ describe('GitDiffHandler', () => {
           startWatching: mockStartWatching,
           stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('File not found'))),
+          annotationService: new AnnotationService(),
         };
         const localHandlers = createGitDiffHandlers(deps);
 

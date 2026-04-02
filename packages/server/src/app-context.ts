@@ -24,6 +24,7 @@ import type { WorktreeService } from './services/worktree-service.js';
 import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
+import type { AnnotationService } from './services/annotation-service.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -47,6 +48,7 @@ import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
+import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
 
 const logger = createLogger('app-context');
 
@@ -92,6 +94,9 @@ export interface AppContext {
 
   /** Periodic timer management (in-memory, volatile) */
   timerManager: TimerManager;
+
+  /** In-memory review annotation store */
+  annotationService: AnnotationService;
 
   /** Inbound integration for processing external events (webhooks) */
   inboundIntegration: InboundIntegrationInstance;
@@ -146,6 +151,7 @@ export async function createAppContext(
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
+  const annotationService = new AnnotationServiceClass();
 
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -171,6 +177,7 @@ export async function createAppContext(
     jobQueue,
     agentManager,
     notificationManager,
+    annotationService,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -250,6 +257,7 @@ export async function createAppContext(
     agentManager,
     worktreeService,
     repositorySlackIntegrationService,
+    annotationService,
     userMode,
     timerManager,
     inboundIntegration,
@@ -300,6 +308,7 @@ export async function createTestContext(
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
+  const annotationService = new AnnotationServiceClass();
 
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -328,6 +337,7 @@ export async function createTestContext(
     jobQueue,
     agentManager,
     notificationManager,
+    annotationService,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -388,6 +398,7 @@ export async function createTestContext(
     agentManager,
     worktreeService,
     repositorySlackIntegrationService,
+    annotationService,
     userMode,
     timerManager,
     inboundIntegration,

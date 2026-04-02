@@ -1,15 +1,7 @@
 import type { WSContext } from 'hono/ws';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
 import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget, ReviewAnnotationSet } from '@agent-console/shared';
-import { annotationService } from '../services/annotation-service.js';
-import {
-  getDiffData as getDiffDataImpl,
-  getFileLines as getFileLinesImpl,
-  resolveRef as resolveRefImpl,
-  startWatching as startWatchingImpl,
-  stopWatching as stopWatchingImpl,
-} from '../services/git-diff-service.js';
-import { getMergeBaseSafe as getMergeBaseSafeImpl } from '../lib/git.js';
+import type { AnnotationService } from '../services/annotation-service.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('git-diff-handler');
@@ -25,17 +17,8 @@ export interface GitDiffHandlerDependencies {
   startWatching: (repoPath: string, onChange: () => void) => void;
   stopWatching: (repoPath: string) => void;
   getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget) => Promise<string[]>;
+  annotationService: AnnotationService;
 }
-
-// Default dependencies using real implementations
-const defaultDependencies: GitDiffHandlerDependencies = {
-  getDiffData: getDiffDataImpl,
-  resolveRef: resolveRefImpl,
-  getMergeBase: getMergeBaseSafeImpl,
-  startWatching: startWatchingImpl,
-  stopWatching: stopWatchingImpl,
-  getFileLines: getFileLinesImpl,
-};
 
 // ============================================================
 // Connection State Management
@@ -55,8 +38,8 @@ const activeConnections = new Map<string, ConnectionState>();
 // Factory Function for Dependency Injection (Testing)
 // ============================================================
 
-export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = defaultDependencies) {
-  const { getDiffData, resolveRef, getMergeBase, startWatching, stopWatching, getFileLines } = deps;
+export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
+  const { getDiffData, resolveRef, getMergeBase, startWatching, stopWatching, getFileLines, annotationService } = deps;
 
   /**
    * Send diff data to the client.
@@ -297,13 +280,52 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies = default
 }
 
 // ============================================================
-// Default Exports (for production use)
+// Late-bound Exports (initialized via initializeGitDiffHandlers)
 // ============================================================
 
-const defaultHandlers = createGitDiffHandlers();
+let _handlers: ReturnType<typeof createGitDiffHandlers> | null = null;
 
-export const handleGitDiffConnection = defaultHandlers.handleConnection;
-export const handleGitDiffDisconnection = defaultHandlers.handleDisconnection;
-export const handleGitDiffMessage = defaultHandlers.handleMessage;
-export const updateGitDiffBaseCommit = defaultHandlers.updateBaseCommit;
-export const sendAnnotationsToClient = defaultHandlers.sendAnnotationsToClient;
+/**
+ * Initialize the default git-diff handlers with injected dependencies.
+ * Must be called once at startup before any WebSocket connections are accepted.
+ */
+export function initializeGitDiffHandlers(deps: GitDiffHandlerDependencies): void {
+  _handlers = createGitDiffHandlers(deps);
+}
+
+function getHandlers(): ReturnType<typeof createGitDiffHandlers> {
+  if (!_handlers) {
+    throw new Error('Git diff handlers not initialized. Call initializeGitDiffHandlers() first.');
+  }
+  return _handlers;
+}
+
+export function handleGitDiffConnection(
+  ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['handleConnection']>
+): Promise<void> {
+  return getHandlers().handleConnection(...args);
+}
+
+export function handleGitDiffDisconnection(
+  ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['handleDisconnection']>
+): Promise<void> {
+  return getHandlers().handleDisconnection(...args);
+}
+
+export function handleGitDiffMessage(
+  ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['handleMessage']>
+): Promise<void> {
+  return getHandlers().handleMessage(...args);
+}
+
+export function updateGitDiffBaseCommit(
+  ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['updateBaseCommit']>
+): Promise<void> {
+  return getHandlers().updateBaseCommit(...args);
+}
+
+export function sendAnnotationsToClient(
+  ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['sendAnnotationsToClient']>
+): void {
+  return getHandlers().sendAnnotationsToClient(...args);
+}

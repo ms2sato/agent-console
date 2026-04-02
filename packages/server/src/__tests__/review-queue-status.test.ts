@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Session } from '@agent-console/shared';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from './test-utils.js';
-import { annotationService } from '../services/annotation-service.js';
+import { AnnotationService } from '../services/annotation-service.js';
 
 describe('PATCH /api/review-queue/:workerId/status', () => {
   const SOURCE_SESSION_ID = 'source-session-1';
   const TARGET_SESSION_ID = 'target-session-1';
   const WORKER_ID = 'worker-1';
   const AGENT_WORKER_ID = 'agent-worker-1';
+
+  let annotationService: AnnotationService;
 
   const mockWriteWorkerInput = mock((_sessionId: string, _workerId: string, _data: string) => true);
 
@@ -46,11 +48,11 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
 
   beforeEach(async () => {
     await setupTestEnvironment();
+    annotationService = new AnnotationService();
     mockWriteWorkerInput.mockClear();
   });
 
   afterEach(async () => {
-    annotationService.clearAnnotations(WORKER_ID);
     await cleanupTestEnvironment();
   });
 
@@ -64,7 +66,7 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
       [SOURCE_SESSION_ID]: sourceSession,
       [TARGET_SESSION_ID]: targetSession,
     });
-    const app = await createTestApp({ sessionManager: sessionManager as never });
+    const app = await createTestApp({ sessionManager: sessionManager as never, annotationService });
 
     const res = await app.request(`/api/review-queue/${WORKER_ID}/status`, {
       method: 'PATCH',
@@ -104,7 +106,7 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
       [SOURCE_SESSION_ID]: sessionWithoutAgent,
       [TARGET_SESSION_ID]: targetSession,
     });
-    const app = await createTestApp({ sessionManager: sessionManager as never });
+    const app = await createTestApp({ sessionManager: sessionManager as never, annotationService });
 
     const res = await app.request(`/api/review-queue/${WORKER_ID}/status`, {
       method: 'PATCH',
@@ -120,7 +122,7 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
     setupAnnotations();
 
     const sessionManager = createMockSessionManager({});
-    const app = await createTestApp({ sessionManager: sessionManager as never });
+    const app = await createTestApp({ sessionManager: sessionManager as never, annotationService });
 
     const res = await app.request(`/api/review-queue/${WORKER_ID}/status`, {
       method: 'PATCH',
