@@ -16,6 +16,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
+import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -57,7 +58,7 @@ describe('WebSocket routes notifications', () => {
     registerJobHandlers(testJobQueue);
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    notificationManager = new NotificationManager(new SlackHandler());
+    notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     sessionManager = await SessionManager.create({
       sessionRepository,
       jobQueue: testJobQueue,

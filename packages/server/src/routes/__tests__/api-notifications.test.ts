@@ -2,15 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
-import {
-  upsertRepositorySlackIntegration,
-} from '../../services/notifications/index.js';
+import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
@@ -18,8 +18,10 @@ import { SqliteRepositoryRepository } from '../../repositories/index.js';
 
 describe('Notifications API', () => {
   let app: Hono<AppBindings>;
+  let db: Kysely<Database>;
   let repositoryRepository: SqliteRepositoryRepository;
   let testJobQueue: JobQueue;
+  let integrationService: RepositorySlackIntegrationService;
   const testRepositoryId = 'test-repo-123';
   const testRepoPath = '/test/path/to/repo';
   const testWebhookUrl = 'https://hooks.slack.com/services/T00/B00/xxx';
@@ -30,14 +32,17 @@ describe('Notifications API', () => {
     setupMemfs(gitRepoFiles);
 
     // Initialize in-memory database
-    await initializeDatabase(':memory:');
+    db = await createDatabaseForTest();
+
+    // Create services
+    integrationService = new RepositorySlackIntegrationService(db);
 
     // Create job queue with the in-memory database
-    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    testJobQueue = new JobQueue(db, { concurrency: 1 });
     registerJobHandlers(testJobQueue);
 
     // Create repository repository backed by in-memory SQLite
-    repositoryRepository = new SqliteRepositoryRepository(getDatabase());
+    repositoryRepository = new SqliteRepositoryRepository(db);
 
     // Pre-populate test repository BEFORE initializing the manager
     await repositoryRepository.save({
@@ -53,8 +58,9 @@ describe('Notifications API', () => {
       jobQueue: testJobQueue,
     });
 
-    // Create notification manager
-    const notificationManager = new NotificationManager(new SlackHandler());
+    // Create notification manager with DI
+    const slackHandler = new SlackHandler(integrationService);
+    const notificationManager = new NotificationManager(slackHandler);
 
     // Create app with API routes
     app = new Hono<AppBindings>();
@@ -62,6 +68,7 @@ describe('Notifications API', () => {
       c.set('appContext', asAppContext({
         repositoryManager,
         notificationManager,
+        repositorySlackIntegrationService: integrationService,
       }));
       await next();
     });
@@ -71,7 +78,7 @@ describe('Notifications API', () => {
 
   afterEach(async () => {
     await testJobQueue.stop();
-    await closeDatabase();
+    await db.destroy();
     cleanupMemfs();
   });
 
@@ -103,7 +110,7 @@ describe('Notifications API', () => {
 
     it('should send test notification and return success', async () => {
       // Create Slack integration for the test repository
-      await upsertRepositorySlackIntegration(testRepositoryId, testWebhookUrl, true);
+      await integrationService.upsert(testRepositoryId, testWebhookUrl, true);
 
       // Mock the Slack webhook response
       fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));

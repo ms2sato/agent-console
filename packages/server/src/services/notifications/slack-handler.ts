@@ -13,7 +13,7 @@ import type {
   OutboundServiceHandler,
   NotificationContext,
 } from '@agent-console/shared';
-import { getByRepositoryId } from './repository-slack-integration-service.js';
+import type { RepositorySlackIntegrationService } from './repository-slack-integration-service.js';
 
 const logger = createLogger('slack-handler');
 
@@ -59,7 +59,7 @@ export class SlackHandler implements OutboundServiceHandler {
   /**
    * Initialize the Slack handler.
    */
-  constructor() {
+  constructor(private readonly repositorySlackIntegrationService: RepositorySlackIntegrationService) {
     logger.info('Slack handler initialized');
   }
 
@@ -71,7 +71,7 @@ export class SlackHandler implements OutboundServiceHandler {
    * @returns true if Slack notifications can be sent for this repository
    */
   async canHandle(repositoryId: string): Promise<boolean> {
-    const integration = await getByRepositoryId(repositoryId);
+    const integration = await this.repositorySlackIntegrationService.getByRepositoryId(repositoryId);
     return integration !== null && integration.enabled;
   }
 
@@ -120,7 +120,7 @@ export class SlackHandler implements OutboundServiceHandler {
    * Get webhook URL for a repository, throwing if not configured or disabled.
    */
   private async getWebhookUrl(repositoryId: string): Promise<string> {
-    const integration = await getByRepositoryId(repositoryId);
+    const integration = await this.repositorySlackIntegrationService.getByRepositoryId(repositoryId);
     if (!integration || !integration.enabled) {
       throw new Error('Slack integration not configured or disabled');
     }

@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { NotificationContext } from '@agent-console/shared';
-import { initializeDatabase, closeDatabase, getDatabase } from '../../../database/connection.js';
-import * as repoSlackIntegrationService from '../repository-slack-integration-service.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../../database/schema.js';
+import { createDatabaseForTest } from '../../../database/connection.js';
+import { RepositorySlackIntegrationService } from '../repository-slack-integration-service.js';
 import { SlackHandler } from '../slack-handler.js';
 
 describe('SlackHandler', () => {
   let handler: SlackHandler;
+  let db: Kysely<Database>;
+  let integrationService: RepositorySlackIntegrationService;
 
   // Helper to create a test notification context
   function createTestContext(
@@ -49,7 +53,6 @@ describe('SlackHandler', () => {
 
   // Helper to create the parent repository record (required due to foreign key constraint)
   async function createTestRepository(repositoryId: string = testRepositoryId) {
-    const db = getDatabase();
     const now = new Date().toISOString();
     await db.insertInto('repositories').values({
       id: repositoryId,
@@ -61,13 +64,13 @@ describe('SlackHandler', () => {
   }
 
   beforeEach(async () => {
-    // Initialize in-memory database for each test
-    await initializeDatabase(':memory:');
-    handler = new SlackHandler();
+    db = await createDatabaseForTest();
+    integrationService = new RepositorySlackIntegrationService(db);
+    handler = new SlackHandler(integrationService);
   });
 
   afterEach(async () => {
-    await closeDatabase();
+    await db.destroy();
   });
 
   describe('initialization', () => {
@@ -81,7 +84,7 @@ describe('SlackHandler', () => {
       // Create parent repository first
       await createTestRepository();
       // Create integration in the real database
-      await repoSlackIntegrationService.create(
+      await integrationService.create(
         testRepositoryId,
         testWebhookUrl,
         true
@@ -98,7 +101,7 @@ describe('SlackHandler', () => {
       // Create parent repository first
       await createTestRepository();
       // Create disabled integration
-      await repoSlackIntegrationService.create(
+      await integrationService.create(
         testRepositoryId,
         testWebhookUrl,
         false
@@ -116,7 +119,7 @@ describe('SlackHandler', () => {
       // Create parent repository first
       await createTestRepository();
       // Create enabled integration
-      await repoSlackIntegrationService.create(
+      await integrationService.create(
         testRepositoryId,
         testWebhookUrl,
         true
@@ -147,7 +150,7 @@ describe('SlackHandler', () => {
 
     it('should throw error when Slack integration is disabled', async () => {
       // Update to disabled
-      await repoSlackIntegrationService.update(testRepositoryId, testWebhookUrl, false);
+      await integrationService.update(testRepositoryId, testWebhookUrl, false);
 
       const context = createTestContext('agent:idle');
 
@@ -300,7 +303,7 @@ describe('SlackHandler', () => {
       // Create parent repository first
       await createTestRepository();
       // Create enabled integration
-      await repoSlackIntegrationService.create(
+      await integrationService.create(
         testRepositoryId,
         testWebhookUrl,
         true
@@ -324,7 +327,7 @@ describe('SlackHandler', () => {
 
     it('should use webhook URL from repository integration', async () => {
       const customWebhookUrl = 'https://hooks.slack.com/services/CUSTOM/WEBHOOK/url';
-      await repoSlackIntegrationService.update(testRepositoryId, customWebhookUrl, true);
+      await integrationService.update(testRepositoryId, customWebhookUrl, true);
 
       fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
 
@@ -342,7 +345,7 @@ describe('SlackHandler', () => {
     });
 
     it('should throw error when Slack integration is disabled', async () => {
-      await repoSlackIntegrationService.update(testRepositoryId, testWebhookUrl, false);
+      await integrationService.update(testRepositoryId, testWebhookUrl, false);
 
       await expect(handler.sendTest('Test message', testRepositoryId)).rejects.toThrow(
         'Slack integration not configured or disabled'
