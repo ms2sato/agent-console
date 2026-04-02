@@ -48,7 +48,7 @@ import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
-import { memoService } from './memo-service.js';
+import { MemoService } from './memo-service.js';
 import { createLogger } from '../lib/logger.js';
 import { WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
@@ -115,6 +115,8 @@ interface SessionManagerOptions {
   workerOutputFileManager?: WorkerOutputFileManager;
   /** Inter-session message file management. Defaults to a fresh instance if not provided. */
   interSessionMessageService?: InterSessionMessageService;
+  /** Memo file management. Defaults to a fresh instance if not provided. */
+  memoService?: MemoService;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
 }
@@ -135,6 +137,7 @@ export class SessionManager {
   private notificationManager: NotificationManager | null = null;
   private workerOutputFileManager: WorkerOutputFileManager;
   private interSessionMessageService: InterSessionMessageService;
+  private memoService: MemoService;
   private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
@@ -167,6 +170,7 @@ export class SessionManager {
     const workerOutputFileManager = options.workerOutputFileManager ?? new WorkerOutputFileManager();
     this.workerOutputFileManager = workerOutputFileManager;
     this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
+    this.memoService = options.memoService ?? new MemoService();
     this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
@@ -692,7 +696,7 @@ export class SessionManager {
 
       // 2d. Clean up memo file
       try {
-        await memoService.deleteMemo(id, resolver);
+        await this.memoService.deleteMemo(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
       }
@@ -1092,7 +1096,7 @@ export class SessionManager {
       await this.sessionRepository.delete(id);
       // Clean up memo file
       try {
-        await memoService.deleteMemo(id, resolver);
+        await this.memoService.deleteMemo(id, resolver);
       } catch (err) {
         logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
       }
@@ -1259,10 +1263,10 @@ export class SessionManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
     const resolver = this.getPathResolverForSession(session);
-    const filePath = await memoService.writeMemo(sessionId, content, resolver);
+    const filePath = await this.memoService.writeMemo(sessionId, content, resolver);
     // Re-check after async write: session may have been deleted during the write
     if (!this.sessions.has(sessionId)) {
-      await memoService.deleteMemo(sessionId, resolver).catch(() => {});
+      await this.memoService.deleteMemo(sessionId, resolver).catch(() => {});
       throw new Error(`Session deleted during memo write: ${sessionId}`);
     }
     this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, content);
@@ -1280,7 +1284,7 @@ export class SessionManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
     const resolver = this.getPathResolverForSession(session);
-    return memoService.readMemo(sessionId, resolver);
+    return this.memoService.readMemo(sessionId, resolver);
   }
 
   /**
