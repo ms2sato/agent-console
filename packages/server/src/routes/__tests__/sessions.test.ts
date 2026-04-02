@@ -12,6 +12,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 
@@ -40,7 +41,7 @@ describe('Sessions API - Pause/Resume', () => {
 
     // Create job queue with the in-memory database
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     // Reset process mock and mark current process as alive
     resetProcessMock();

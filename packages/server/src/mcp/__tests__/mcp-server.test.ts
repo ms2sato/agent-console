@@ -8,6 +8,7 @@ import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import {
   SessionManager,
 } from '../../services/session-manager.js';
@@ -200,7 +201,7 @@ describe('MCP Server Tools', () => {
 
     // Create job queue with the in-memory database
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     // Reset process mock and mark current process as alive
     resetProcessMock();

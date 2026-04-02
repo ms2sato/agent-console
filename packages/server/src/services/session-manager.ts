@@ -50,7 +50,7 @@ import { interSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
 import { memoService } from './memo-service.js';
 import { createLogger } from '../lib/logger.js';
-import { workerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
@@ -111,6 +111,8 @@ interface SessionManagerOptions {
   notificationManager?: NotificationManager | null;
   /** In-memory review annotation store. Defaults to a fresh instance if not provided. */
   annotationService?: AnnotationService;
+  /** Worker output file management. Defaults to a fresh instance if not provided. */
+  workerOutputFileManager?: WorkerOutputFileManager;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
 }
@@ -129,6 +131,7 @@ export class SessionManager {
   private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private notificationManager: NotificationManager | null = null;
+  private workerOutputFileManager: WorkerOutputFileManager;
   private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
@@ -158,7 +161,9 @@ export class SessionManager {
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;
-    this.workerManager = new WorkerManager(userMode, agentManager);
+    const workerOutputFileManager = options.workerOutputFileManager ?? new WorkerOutputFileManager();
+    this.workerOutputFileManager = workerOutputFileManager;
+    this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -178,6 +183,7 @@ export class SessionManager {
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       getPathResolver: (session) => this.getPathResolverForSession(session),
       annotationService: options.annotationService ?? new AnnotationService(),
+      workerOutputFileManager,
     });
   }
 
@@ -284,7 +290,7 @@ export class SessionManager {
       const resolver = this.getPathResolverForPersistedSession(orphan);
       // Clean up worker output files
       try {
-        await workerOutputFileManager.deleteSessionOutputs(orphan.id, resolver);
+        await this.workerOutputFileManager.deleteSessionOutputs(orphan.id, resolver);
       } catch (error) {
         logger.error({ sessionId: orphan.id, err: error }, 'Failed to delete worker output files for orphan session');
       }

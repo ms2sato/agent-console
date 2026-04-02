@@ -23,6 +23,7 @@ import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
 import { JobQueue } from '../../jobs/index.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { AnnotationService } from '../annotation-service.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -101,6 +102,7 @@ describe('WorkerLifecycleManager', () => {
       getSessionLifecycleCallbacks: () => mockCallbacks,
       getPathResolver: () => new SessionDataPathResolver(),
       annotationService: new AnnotationService(),
+      workerOutputFileManager: new WorkerOutputFileManager(),
       ...overrides,
     };
   }
@@ -143,7 +145,7 @@ describe('WorkerLifecycleManager', () => {
     };
 
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
-    workerManager = new WorkerManager(userMode, agentManager);
+    workerManager = new WorkerManager(userMode, agentManager, new WorkerOutputFileManager());
     lifecycleManager = new WorkerLifecycleManager(createDeps());
   });
 
@@ -1070,7 +1072,7 @@ describe('WorkerLifecycleManager', () => {
       const failingUserMode = new SingleUserMode({
         spawn: () => { throw new Error('PTY spawn failed'); },
       } as any, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
-      const failingWorkerManager = new WorkerManager(failingUserMode, agentManager);
+      const failingWorkerManager = new WorkerManager(failingUserMode, agentManager, new WorkerOutputFileManager());
       const manager = new WorkerLifecycleManager(createDeps({
         workerManager: failingWorkerManager,
       }));

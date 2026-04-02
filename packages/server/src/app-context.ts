@@ -49,6 +49,7 @@ import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
 import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
+import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 
 const logger = createLogger('app-context');
 
@@ -141,9 +142,10 @@ export async function createAppContext(
   const db = await initializeDatabase(dbPath);
   logger.info({ dbPath: dbPath ?? 'default' }, 'Database initialized');
 
-  // 2. Create job queue
+  // 2. Create job queue and worker output file manager
+  const workerOutputFileManager = new WorkerOutputFileManager();
   const jobQueue = new JobQueueClass(db, { concurrency: jobConcurrency });
-  registerJobHandlers(jobQueue);
+  registerJobHandlers(jobQueue, workerOutputFileManager);
   await jobQueue.start();
   logger.info('JobQueue initialized and started');
 
@@ -178,6 +180,7 @@ export async function createAppContext(
     agentManager,
     notificationManager,
     annotationService,
+    workerOutputFileManager,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({
@@ -296,9 +299,10 @@ export async function createTestContext(
   // This does NOT modify the global db variable, preventing test interference
   const db = await createDatabaseForTest();
 
-  // Create job queue
+  // Create job queue and worker output file manager
+  const workerOutputFileManager = new WorkerOutputFileManager();
   const jobQueue = new JobQueueClass(db, { concurrency: 1 });
-  registerJobHandlers(jobQueue);
+  registerJobHandlers(jobQueue, workerOutputFileManager);
   if (!overrides?.skipJobQueueStart) {
     await jobQueue.start();
   }
@@ -338,6 +342,7 @@ export async function createTestContext(
     agentManager,
     notificationManager,
     annotationService,
+    workerOutputFileManager,
   });
 
   const repositoryManager = await RepositoryManagerClass.create({

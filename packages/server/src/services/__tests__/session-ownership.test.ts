@@ -18,6 +18,7 @@ import { SqliteSessionRepository } from '../../repositories/sqlite-session-repos
 import { SessionManager } from '../session-manager.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory(30000);
@@ -38,7 +39,7 @@ describe('Session Ownership (createdBy)', () => {
 
     const db = getDatabase();
     testJobQueue = new JobQueue(db, { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     resetProcessMock();
     mockProcess.markAlive(process.pid);

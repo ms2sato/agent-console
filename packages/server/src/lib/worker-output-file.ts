@@ -695,5 +695,3 @@ export class WorkerOutputFileManager {
   }
 }
 
-// Singleton instance
-export const workerOutputFileManager = new WorkerOutputFileManager();

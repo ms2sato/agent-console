@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { api } from '../api.js';
 import { onApiError } from '../../lib/error-handler.js';
 import type { AppBindings } from '../../app-context.js';
@@ -18,7 +19,7 @@ describe('Jobs API', () => {
 
     // Create job queue with the in-memory database
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
-    registerJobHandlers(testJobQueue);
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 
     // Create Hono app with error handler
     app = new Hono<AppBindings>();
