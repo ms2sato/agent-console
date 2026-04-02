@@ -138,6 +138,8 @@ const mcpApp = createMcpApp({
   interSessionMessageService: appContext.interSessionMessageService,
   suggestSessionMetadata: appContext.suggestSessionMetadata,
   broadcastToApp: appContext.broadcastToApp,
+  fetchPullRequestUrl: appContext.fetchPullRequestUrl,
+  findOpenPullRequest: appContext.findOpenPullRequest,
 });
 app.route('', mcpApp);
 
