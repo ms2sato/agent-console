@@ -57,6 +57,10 @@ Use conventional commit format: `type: description`
 - `test:` adding or updating tests
 - `docs:` documentation changes
 
+### CI Must Mirror Local Commands
+
+CI must run the same build and test commands as local development (`bun run build`, `bun run test`). Never add CI-only workaround steps that mask broken local workflows. If CI needs an extra step to pass, it means the local scripts are broken — fix the scripts, not CI.
+
 ### Skipping CI with `[skip ci]`
 
 Use `[skip ci]` only for commits that **only** change non-production files (`docs/**`, `.claude/skills/**`, `.claude/agents/**`, `CLAUDE.md`). Do not use if the commit includes production code or test changes.
