@@ -11,7 +11,7 @@ const REPO_PATH = `${REPOS_DIR}/my-repo`;
 const WORKTREE_PATH = `${REPOS_DIR}/my-repo/worktrees/wt-1`;
 const OTHER_WORKTREE_PATH = `${REPOS_DIR}/my-repo/worktrees/wt-other`;
 
-// --- Mock worktreeService ---
+// --- Mock worktreeService (now passed as parameter via DeleteWorktreeDeps) ---
 
 const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
   Promise.resolve([]),
@@ -26,14 +26,12 @@ const mockIsWorktreeOf = mock<
   (repoPath: string, worktreePath: string, repoId: string) => Promise<boolean>
 >(() => Promise.resolve(true));
 
-mock.module('../worktree-service.js', () => ({
-  worktreeService: {
-    listWorktrees: mockListWorktrees,
-    removeWorktree: mockRemoveWorktree,
-    executeHookCommand: mockExecuteHookCommand,
-    isWorktreeOf: mockIsWorktreeOf,
-  },
-}));
+const mockWorktreeService = {
+  listWorktrees: mockListWorktrees,
+  removeWorktree: mockRemoveWorktree,
+  executeHookCommand: mockExecuteHookCommand,
+  isWorktreeOf: mockIsWorktreeOf,
+};
 
 // --- Mock logger ---
 mock.module('../../lib/logger.js', () => ({
@@ -86,6 +84,7 @@ function createMockDeps(overrides: {
 } {
   const sessionManager = createMockSessionManager(overrides.sessions ?? []);
   return {
+    worktreeService: mockWorktreeService,
     sessionManager,
     repositoryManager: {
       getRepository: () => overrides.repo ?? { name: 'my-repo', path: REPO_PATH },

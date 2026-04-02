@@ -17,9 +17,10 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
-import { getDatabase } from '../database/connection.js';
 
 const logger = createLogger('worktree-service');
 
@@ -131,30 +132,24 @@ async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
   return parseOrgRepo(remoteUrl);
 }
 
-export class WorktreeService {
-  /**
-   * Injected repository (via constructor). When provided, it is cached and reused.
-   * When null, worktreeRepository getter creates a fresh SqliteWorktreeRepository
-   * from the current database on each access. This avoids stale references when
-   * the database is closed and reopened (e.g., between tests).
-   *
-   * Design rationale: This lazy getter pattern is intentional. WorktreeService is
-   * exported as a module-level singleton (see bottom of file), so the database is
-   * not yet initialized at construction time. Always requiring DI would force all
-   * callers through a factory — a larger refactor with little benefit here. Tests
-   * CAN inject a repository via the constructor for proper isolation.
-   */
-  private readonly _injectedRepository: WorktreeRepository | null;
+/**
+ * Discriminated union for WorktreeService dependencies.
+ * Either provide a `db` (and the service creates its own repository),
+ * or provide a `worktreeRepository` directly (e.g. in tests).
+ */
+export type WorktreeServiceDeps =
+  | { db: Kysely<Database>; worktreeRepository?: never }
+  | { db?: never; worktreeRepository: WorktreeRepository };
 
-  constructor(worktreeRepository?: WorktreeRepository) {
-    this._injectedRepository = worktreeRepository ?? null;
+export class WorktreeService {
+  private readonly _worktreeRepository: WorktreeRepository;
+
+  constructor(deps: WorktreeServiceDeps) {
+    this._worktreeRepository = deps.worktreeRepository ?? new SqliteWorktreeRepository(deps.db);
   }
 
   private get worktreeRepository(): WorktreeRepository {
-    if (this._injectedRepository) {
-      return this._injectedRepository;
-    }
-    return new SqliteWorktreeRepository(getDatabase());
+    return this._worktreeRepository;
   }
 
   /**
@@ -491,6 +486,3 @@ export class WorktreeService {
     }
   }
 }
-
-// Singleton instance
-export const worktreeService = new WorktreeService();

@@ -7,7 +7,6 @@ import type {
 import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
 import { getRepositoriesDir } from '../lib/config.js';
-import { worktreeService } from '../services/worktree-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { suggestSessionMetadata } from '../services/session-metadata-suggester.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
@@ -39,7 +38,7 @@ const worktrees = new Hono<AppBindings>()
   // Get worktrees for a repository
   .get('/:id/worktrees', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, worktreeService } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -52,7 +51,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, worktreeService } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -133,7 +132,7 @@ const worktrees = new Hono<AppBindings>()
           title: effectiveTitle,
           autoStartSession,
           context: { createdBy: authUser.id },
-        }, sessionManager);
+        }, sessionManager, worktreeService);
 
         if (!result.success) {
           broadcastToApp({
@@ -174,7 +173,7 @@ const worktrees = new Hono<AppBindings>()
   // Pull a worktree (git pull --ff-only, async)
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, worktreeService } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -285,7 +284,7 @@ const worktrees = new Hono<AppBindings>()
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager } = c.get('appContext');
+    const { repositoryManager, sessionManager, worktreeService } = c.get('appContext');
 
     // Get worktree path from URL (everything after /worktrees/)
     const url = new URL(c.req.url);
@@ -315,7 +314,7 @@ const worktrees = new Hono<AppBindings>()
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
 
-    const deletionDeps = { sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
+    const deletionDeps = { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
 
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {

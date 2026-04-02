@@ -20,6 +20,7 @@ import type { NotificationManager } from './services/notifications/notification-
 import type { AgentManager } from './services/agent-manager.js';
 import type { TimerManager } from './services/timer-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
+import type { WorktreeService } from './services/worktree-service.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { InboundIntegrationInstance, InboundIntegrationOptions } from './services/inbound/index.js';
@@ -43,7 +44,7 @@ import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { writePtyNotification } from './lib/pty-notification.js';
-import { worktreeService } from './services/worktree-service.js';
+import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 
 const logger = createLogger('app-context');
 
@@ -77,6 +78,9 @@ export interface AppContext {
 
   /** Agent definition management (built-in + custom agents) */
   agentManager: AgentManager;
+
+  /** Worktree management (create, remove, list, hooks) */
+  worktreeService: WorktreeService;
 
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
@@ -133,9 +137,10 @@ export async function createAppContext(
   await jobQueue.start();
   logger.info('JobQueue initialized and started');
 
-  // 3. Create repositories
+  // 3. Create repositories and services that depend only on db
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const worktreeService = new WorktreeServiceClass({ db });
 
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -236,6 +241,7 @@ export async function createAppContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    worktreeService,
     userMode,
     timerManager,
     inboundIntegration,
@@ -285,6 +291,7 @@ export async function createTestContext(
   const sessionRepository =
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const worktreeService = new WorktreeServiceClass({ db });
 
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -328,7 +335,7 @@ export async function createTestContext(
   sessionManager.setRepositoryCallbacks({
     getRepository: (repoId) => repositoryManager.getRepository(repoId),
     isInitialized: () => true,
-    getWorktreeIndexNumber: async () => 0,
+    getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
   });
 
   notificationManager.setSessionExistsCallback((sessionId) =>
@@ -369,6 +376,7 @@ export async function createTestContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    worktreeService,
     userMode,
     timerManager,
     inboundIntegration,

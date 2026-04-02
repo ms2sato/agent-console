@@ -2,13 +2,23 @@ import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import type { Session } from '@agent-console/shared';
 import type { SessionManager } from './session-manager.js';
 import type { SessionCreationContext } from './internal-types.js';
-import { worktreeService } from './worktree-service.js';
+import type { WorktreeService } from './worktree-service.js';
+
+/** Narrow subset of WorktreeService methods needed by the creation service. */
+type CreateWorktreeServiceDeps = Pick<
+  WorktreeService,
+  'createWorktree' | 'listWorktrees' | 'removeWorktree' | 'executeHookCommand'
+>;
 import { fetchRemote } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worktree-creation-service');
 
-async function rollbackWorktree(repoPath: string, worktreePath: string): Promise<void> {
+async function rollbackWorktree(
+  worktreeService: CreateWorktreeServiceDeps,
+  repoPath: string,
+  worktreePath: string,
+): Promise<void> {
   try {
     await worktreeService.removeWorktree(repoPath, worktreePath, true);
   } catch (cleanupErr) {
@@ -52,6 +62,7 @@ export interface CreateWorktreeResult {
 export async function createWorktreeWithSession(
   params: CreateWorktreeParams,
   sessionManager: SessionManager,
+  worktreeService: CreateWorktreeServiceDeps,
 ): Promise<CreateWorktreeResult> {
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,
@@ -95,7 +106,7 @@ export async function createWorktreeWithSession(
     const worktree = worktrees.find(wt => wt.path === createdWorktreePath);
 
     if (!worktree) {
-      await rollbackWorktree(repoPath, createdWorktreePath);
+      await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
       return { success: false, error: 'Worktree was created but could not be found in the list' };
     }
 
@@ -146,7 +157,7 @@ export async function createWorktreeWithSession(
       { worktreePath: createdWorktreePath, err: postWorktreeErr },
       'Post-worktree step failed, rolling back worktree',
     );
-    await rollbackWorktree(repoPath, createdWorktreePath);
+    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
     const errorMsg = postWorktreeErr instanceof Error ? postWorktreeErr.message : 'Unknown error during worktree creation';
     return { success: false, error: errorMsg };
   }

@@ -8,7 +8,6 @@ import {
   FetchGitHubIssueRequestSchema,
   RepositorySlackIntegrationInputSchema,
 } from '@agent-console/shared';
-import { worktreeService } from '../services/worktree-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { generateRepositoryDescription } from '../services/repository-description-generator.js';
 import {
@@ -225,7 +224,7 @@ const repositories = new Hono<AppBindings>()
   // Get branches for a repository
   .get('/:id/branches', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, worktreeService } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -238,7 +237,7 @@ const repositories = new Hono<AppBindings>()
   // Refresh default branch from remote for a repository
   .post('/:id/refresh-default-branch', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, worktreeService } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
