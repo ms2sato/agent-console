@@ -374,7 +374,7 @@ describe('useSessionState', () => {
   });
 
   describe('handleSessionPaused', () => {
-    it('should set pausedAt and transition activationState to hibernated', () => {
+    it('should replace session with the server-provided paused session', () => {
       const { result } = renderHook(() => useSessionState());
 
       const session = createMockSession({ id: 'session-1', activationState: 'running' });
@@ -383,8 +383,14 @@ describe('useSessionState', () => {
         result.current.handleSessionsSync([session], []);
       });
 
+      const pausedSession = createMockSession({
+        id: 'session-1',
+        activationState: 'hibernated',
+        pausedAt: '2025-01-01T00:00:00.000Z',
+      });
+
       act(() => {
-        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
+        result.current.handleSessionPaused(pausedSession);
       });
 
       expect(result.current.sessions[0].pausedAt).toBe('2025-01-01T00:00:00.000Z');
@@ -403,8 +409,14 @@ describe('useSessionState', () => {
         result.current.handleSessionsSync([session1, session2], []);
       });
 
+      const pausedSession1 = createMockSession({
+        id: 'session-1',
+        activationState: 'hibernated',
+        pausedAt: '2025-01-01T00:00:00.000Z',
+      });
+
       act(() => {
-        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
+        result.current.handleSessionPaused(pausedSession1);
       });
 
       expect(result.current.sessions[0].pausedAt).toBeDefined();
@@ -429,8 +441,15 @@ describe('useSessionState', () => {
       expect(result.current.workerActivityStates['session-1']).toBeDefined();
       expect(result.current.workerActivityStates['session-2']).toBeDefined();
 
+      const pausedSession1 = createMockSession({
+        id: 'session-1',
+        activationState: 'hibernated',
+        pausedAt: '2025-01-01T00:00:00.000Z',
+        workers: [worker1],
+      });
+
       act(() => {
-        result.current.handleSessionPaused('session-1', '2025-01-01T00:00:00.000Z');
+        result.current.handleSessionPaused(pausedSession1);
       });
 
       // Activity states for paused session should be cleaned up
@@ -451,7 +470,7 @@ describe('useSessionState', () => {
       const resumedSession = createMockSession({ id: 'session-1', activationState: 'running' });
 
       act(() => {
-        result.current.handleSessionResumed(resumedSession);
+        result.current.handleSessionResumed(resumedSession, []);
       });
 
       expect(result.current.sessions).toHaveLength(1);
@@ -471,12 +490,37 @@ describe('useSessionState', () => {
       const resumedSession = createMockSession({ id: 'session-1', activationState: 'running' });
 
       act(() => {
-        result.current.handleSessionResumed(resumedSession);
+        result.current.handleSessionResumed(resumedSession, []);
       });
 
       expect(result.current.sessions).toHaveLength(1);
       expect(result.current.sessions[0].activationState).toBe('running');
       expect(result.current.sessions[0].pausedAt).toBeUndefined();
+    });
+
+    it('should initialize activity states from activityStates parameter', () => {
+      const { result } = renderHook(() => useSessionState());
+
+      const session = createMockSession({ id: 'session-1', activationState: 'hibernated', pausedAt: '2024-01-01T00:00:00.000Z' });
+
+      act(() => {
+        result.current.handleSessionsSync([session], []);
+      });
+
+      const resumedSession = createMockSession({ id: 'session-1', activationState: 'running' });
+      const activityStates: WorkerActivityInfo[] = [
+        { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+        { sessionId: 'session-1', workerId: 'worker-2', activityState: 'idle' },
+      ];
+
+      act(() => {
+        result.current.handleSessionResumed(resumedSession, activityStates);
+      });
+
+      expect(result.current.workerActivityStates['session-1']).toEqual({
+        'worker-1': 'active',
+        'worker-2': 'idle',
+      });
     });
   });
 

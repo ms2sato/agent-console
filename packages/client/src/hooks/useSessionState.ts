@@ -19,9 +19,9 @@ interface UseSessionStateReturn {
   /** Handle session deleted */
   handleSessionDeleted: (sessionId: string) => void;
   /** Handle session paused (removed from memory but preserved in DB) */
-  handleSessionPaused: (sessionId: string, pausedAt: string) => void;
+  handleSessionPaused: (session: Session) => void;
   /** Handle paused session resumed */
-  handleSessionResumed: (session: Session) => void;
+  handleSessionResumed: (session: Session, activityStates: WorkerActivityInfo[]) => void;
   /** Handle worker activity state change */
   handleWorkerActivity: (sessionId: string, workerId: string, state: AgentActivityState) => void;
 }
@@ -109,24 +109,33 @@ export function useSessionState(): UseSessionStateReturn {
     });
   }, []);
 
-  const handleSessionPaused = useCallback((sessionId: string, pausedAt: string) => {
-    setSessions(prev => prev.map(s =>
-      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' } : s
-    ));
-    sessionsRef.current = sessionsRef.current.map(s =>
-      s.id === sessionId ? { ...s, pausedAt, activationState: 'hibernated' } : s
-    );
+  const handleSessionPaused = useCallback((session: Session) => {
+    setSessions(prev => upsertSession(prev, session));
+    sessionsRef.current = upsertSession(sessionsRef.current, session);
     // Clean up activity states for paused session (workers are no longer running)
     setWorkerActivityStates(prev => {
       const next = { ...prev };
-      delete next[sessionId];
+      delete next[session.id];
       return next;
     });
   }, []);
 
-  const handleSessionResumed = useCallback((session: Session) => {
+  const handleSessionResumed = useCallback((session: Session, activityStates: WorkerActivityInfo[]) => {
     setSessions(prev => upsertSession(prev, session));
     sessionsRef.current = upsertSession(sessionsRef.current, session);
+    // Initialize activity states for the resumed session
+    const sessionActivityStates: Record<string, AgentActivityState> = {};
+    for (const { sessionId, workerId, activityState } of activityStates) {
+      if (sessionId === session.id) {
+        sessionActivityStates[workerId] = activityState;
+      }
+    }
+    if (Object.keys(sessionActivityStates).length > 0) {
+      setWorkerActivityStates(prev => ({
+        ...prev,
+        [session.id]: sessionActivityStates,
+      }));
+    }
   }, []);
 
   const handleWorkerActivity = useCallback((sessionId: string, workerId: string, state: AgentActivityState) => {

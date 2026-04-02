@@ -11,11 +11,12 @@ import type { Session, Worker, AgentActivityState, WorkerActivityInfo, WorkerMes
 interface CapturedCallbacks {
   onSessionsSync?: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void
   onWorkerActivity?: (sessionId: string, workerId: string, state: AgentActivityState) => void
+  onWorkerRestarted?: (sessionId: string, workerId: string, activityState: AgentActivityState) => void
   onWorkerMessage?: (message: WorkerMessage) => void
   onSessionUpdated?: (session: Session) => void
-  onSessionPaused?: (sessionId: string, pausedAt: string) => void
+  onSessionPaused?: (session: Session) => void
   onSessionDeleted?: (sessionId: string) => void
-  onSessionResumed?: (session: Session) => void
+  onSessionResumed?: (session: Session, activityStates: WorkerActivityInfo[]) => void
 }
 
 let capturedCallbacks: CapturedCallbacks = {}
@@ -561,7 +562,7 @@ describe('useSessionPageState', () => {
   })
 
   describe('session-paused', () => {
-    it('should transition active to paused and apply pausedAt to session', async () => {
+    it('should transition active to paused using server-provided session', async () => {
       const session = createMockSession({ status: 'active' })
       getSessionResponse = session
 
@@ -569,8 +570,9 @@ describe('useSessionPageState', () => {
       expect(result.current.state.type).toBe('active')
 
       const pausedAt = '2026-01-01T00:00:00.000Z'
+      const pausedSession = createMockSession({ status: 'inactive', pausedAt, activationState: 'hibernated' })
       act(() => {
-        capturedCallbacks.onSessionPaused?.('session-1', pausedAt)
+        capturedCallbacks.onSessionPaused?.(pausedSession)
       })
 
       expect(result.current.state.type).toBe('paused')
@@ -579,7 +581,7 @@ describe('useSessionPageState', () => {
       }
     })
 
-    it('should transition disconnected to paused and apply pausedAt to session', async () => {
+    it('should transition disconnected to paused using server-provided session', async () => {
       const session = createMockSession({ status: 'inactive' })
       getSessionResponse = session
 
@@ -587,8 +589,9 @@ describe('useSessionPageState', () => {
       expect(result.current.state.type).toBe('disconnected')
 
       const pausedAt = '2026-01-01T00:00:00.000Z'
+      const pausedSession = createMockSession({ status: 'inactive', pausedAt, activationState: 'hibernated' })
       act(() => {
-        capturedCallbacks.onSessionPaused?.('session-1', pausedAt)
+        capturedCallbacks.onSessionPaused?.(pausedSession)
       })
 
       expect(result.current.state.type).toBe('paused')
@@ -603,8 +606,9 @@ describe('useSessionPageState', () => {
 
       const { result } = await mountHook(createDefaultOptions())
 
+      const otherPausedSession = createMockSession({ id: 'other-session', status: 'inactive', pausedAt: new Date().toISOString() })
       act(() => {
-        capturedCallbacks.onSessionPaused?.('other-session', new Date().toISOString())
+        capturedCallbacks.onSessionPaused?.(otherPausedSession)
       })
 
       expect(result.current.state.type).toBe('active')
@@ -646,7 +650,7 @@ describe('useSessionPageState', () => {
       const resumedSession = createMockSession({ status: 'active' })
 
       act(() => {
-        capturedCallbacks.onSessionResumed?.(resumedSession)
+        capturedCallbacks.onSessionResumed?.(resumedSession, [])
       })
 
       expect(result.current.state.type).toBe('active')
@@ -669,7 +673,7 @@ describe('useSessionPageState', () => {
       const resumedSession = createMockSession({ status: 'active' })
 
       act(() => {
-        capturedCallbacks.onSessionResumed?.(resumedSession)
+        capturedCallbacks.onSessionResumed?.(resumedSession, [])
       })
 
       expect(result.current.state.type).toBe('restarting')
@@ -684,7 +688,7 @@ describe('useSessionPageState', () => {
       const otherSession = createMockSession({ id: 'other-session', status: 'active' })
 
       act(() => {
-        capturedCallbacks.onSessionResumed?.(otherSession)
+        capturedCallbacks.onSessionResumed?.(otherSession, [])
       })
 
       expect(result.current.state.type).toBe('active')
@@ -758,6 +762,61 @@ describe('useSessionPageState', () => {
 
       act(() => {
         capturedCallbacks.onWorkerActivity?.('other-session', 'agent-worker-1', 'active')
+      })
+
+      expect(result.current.workerActivityStates).toEqual({})
+    })
+  })
+
+  describe('worker-restarted', () => {
+    it('should reset workerActivityStates for the restarted worker', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+
+      // Set initial activity state
+      act(() => {
+        capturedCallbacks.onWorkerActivity?.('session-1', 'agent-worker-1', 'active')
+      })
+      expect(result.current.workerActivityStates['agent-worker-1']).toBe('active')
+
+      // Restart the worker
+      act(() => {
+        capturedCallbacks.onWorkerRestarted?.('session-1', 'agent-worker-1', 'idle')
+      })
+
+      expect(result.current.workerActivityStates['agent-worker-1']).toBe('idle')
+    })
+
+    it('should sync activityState when restarted worker matches activeTabIdRef', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const refs = createMockRefs()
+      refs.activeTabIdRef.current = 'agent-worker-1'
+      const options = createDefaultOptions({
+        updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+        activeTabIdRef: refs.activeTabIdRef,
+      })
+
+      const { result } = await mountHook(options)
+
+      act(() => {
+        capturedCallbacks.onWorkerRestarted?.('session-1', 'agent-worker-1', 'idle')
+      })
+
+      expect(result.current.activityState).toBe('idle')
+    })
+
+    it('should ignore events for other sessions', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+
+      act(() => {
+        capturedCallbacks.onWorkerRestarted?.('other-session', 'agent-worker-1', 'idle')
       })
 
       expect(result.current.workerActivityStates).toEqual({})

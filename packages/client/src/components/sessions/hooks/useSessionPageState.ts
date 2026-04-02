@@ -88,16 +88,10 @@ export function useSessionPageState({
   }, [sessionId, updateTabsFromSessionRef])
 
   // Handle session paused (by another client or via settings menu)
-  const handleSessionPaused = useCallback((pausedSessionId: string, pausedAt: string) => {
-    if (pausedSessionId !== sessionId) return
+  const handleSessionPaused = useCallback((pausedSession: Session) => {
+    if (pausedSession.id !== sessionId) return
 
-    setState(prev => {
-      if (prev.type === 'active' || prev.type === 'disconnected') {
-        const updatedSession = { ...prev.session, pausedAt }
-        return sessionToPageState(updatedSession)
-      }
-      return prev
-    })
+    setState(sessionToPageState(pausedSession))
   }, [sessionId])
 
   // Handle session deleted (by another tab/client)
@@ -117,6 +111,18 @@ export function useSessionPageState({
       updateTabsFromSessionRef.current(resumedSession.workers)
     }
   }, [sessionId, updateTabsFromSessionRef])
+
+  // Handle worker restarted: reset activity state for the restarted worker
+  const handleWorkerRestarted = useCallback((eventSessionId: string, workerId: string, activityState: AgentActivityState) => {
+    if (eventSessionId !== sessionId) return
+
+    setWorkerActivityStates(prev => ({ ...prev, [workerId]: activityState }))
+
+    // Sync the active tab's activity state for status bar display
+    if (workerId === activeTabIdRef.current) {
+      setActivityState(activityState)
+    }
+  }, [sessionId, activeTabIdRef])
 
   // Handle sessions-sync (fires after WebSocket reconnects to reconcile stale state)
   const handleSessionsSync = useCallback((syncedSessions: Session[], activityStates: WorkerActivityInfo[]) => {
@@ -173,6 +179,7 @@ export function useSessionPageState({
   useAppWsEvent({
     onSessionsSync: handleSessionsSync,
     onWorkerActivity: handleWorkerActivity,
+    onWorkerRestarted: handleWorkerRestarted,
     onWorkerMessage: (message) => {
       if (message.sessionId === sessionId) {
         setLastMessage(message)

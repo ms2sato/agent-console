@@ -321,11 +321,12 @@ describe('app-websocket', () => {
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      // Test all valid message types
+      // Test all valid message types (sessions must include all required fields for schema validation)
+      const mockSession = { id: 'test', type: 'quick', locationPath: '/test', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
       const validTypes = [
         { type: 'sessions-sync', sessions: [], activityStates: [] },
-        { type: 'session-created', session: {} },
-        { type: 'session-updated', session: {} },
+        { type: 'session-created', session: mockSession },
+        { type: 'session-updated', session: mockSession },
         { type: 'session-deleted', sessionId: 'test' },
         { type: 'worker-activity', sessionId: 'test', workerId: 'test', activityState: 'active' },
       ];
