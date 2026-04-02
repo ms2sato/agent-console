@@ -45,6 +45,12 @@ function resolveUrl(input: unknown): string {
   return '';
 }
 
+const mockRepositoriesResponse = {
+  repositories: [
+    { id: 'repo-1', name: 'Test Repository', path: '/test/repo', defaultAgentId: 'claude-code' },
+  ],
+};
+
 const mockRepositoryResponse = {
   repository: {
     id: 'repo-1',
@@ -80,8 +86,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof QuickWorktreeDi
   const defaultProps = {
     open: true,
     onOpenChange: mock(() => {}),
-    repositoryId: 'repo-1',
-    repositoryName: 'Test Repository',
+    defaultRepositoryId: 'repo-1',
   };
 
   const mergedProps = { ...defaultProps, ...props };
@@ -113,8 +118,11 @@ describe('QuickWorktreeDialog', () => {
 
     mockFetch.mockImplementation((input) => {
       const url = resolveUrl(input);
-      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents')) {
+      if (url.endsWith('/repositories')) {
         return repositoryPromise;
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
       }
       if (url.includes('/branches')) {
         return Promise.resolve(createMockResponse(mockBranchesResponse));
@@ -131,12 +139,15 @@ describe('QuickWorktreeDialog', () => {
     expect(screen.queryByText('Create & Start Session')).toBeNull();
 
     // Clean up
-    resolveRepository!(createMockResponse(mockRepositoryResponse));
+    resolveRepository!(createMockResponse(mockRepositoriesResponse));
   });
 
   it('should render CreateWorktreeForm when data is loaded', async () => {
     mockFetch.mockImplementation((input) => {
       const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
       if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
         return Promise.resolve(createMockResponse(mockRepositoryResponse));
       }
@@ -164,6 +175,9 @@ describe('QuickWorktreeDialog', () => {
   it('should close dialog on successful worktree creation', async () => {
     mockFetch.mockImplementation((input) => {
       const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
       if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
         return Promise.resolve(createMockResponse(mockRepositoryResponse));
       }
@@ -216,6 +230,9 @@ describe('QuickWorktreeDialog', () => {
 
     mockFetch.mockImplementation((input) => {
       const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
       if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
         return Promise.resolve(createMockResponse(mockRepositoryResponse));
       }

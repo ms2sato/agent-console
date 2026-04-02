@@ -315,12 +315,12 @@ export function CreateWorktreeForm({
   };
 
   return (
-    <div className="relative bg-slate-800 p-4 rounded mb-4">
+    <div className="relative bg-slate-800 p-4 rounded mb-4 overflow-hidden">
       <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between flex-wrap gap-y-2">
+            <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
                 value={resolvedAgentId}
