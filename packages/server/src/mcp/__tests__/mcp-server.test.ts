@@ -26,6 +26,8 @@ import { TimerManager } from '../../services/timer-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
 import { createMcpApp } from '../mcp-server.js';
+import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
+import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 const mockSuggestSessionMetadata = mock(async () => ({
@@ -33,33 +35,9 @@ const mockSuggestSessionMetadata = mock(async () => ({
   title: 'Auto-Generated Title',
 }));
 
-// Mock worktree-deletion-service
-// NOTE: We spread the real module without overriding deleteWorktree.
-// Bun's mock.module is process-global, so overriding deleteWorktree here
-// would break service-level tests (worktree-deletion-orchestration.test.ts).
-// Instead, deleteWorktree runs the real implementation with mocked git operations
-// (via mock-git-helper) and mocked github-pr-service. Tests that need specific
-// validation behavior set up proper DB state and paths.
-mock.module('../../services/worktree-deletion-service.js', () => ({
-  ...require('../../services/worktree-deletion-service.js'),
-}));
-
-// Mock worktree-creation-service
-// Like worktree-deletion-service above, we spread the real module to preserve
-// the real createWorktreeWithSession for tests. This prevents mock.module
-// interference with worktree-creation-orchestration.test.ts.
-mock.module('../../services/worktree-creation-service.js', () => ({
-  ...require('../../services/worktree-creation-service.js'),
-}));
-
 // github-pr-service mocks (injected via McpDependencies)
 const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
 const mockFetchPullRequestUrl = mock(async () => null as string | null);
-
-// Import the real deletion service's concurrency guard (for tests that need
-// to pre-populate it). The mock.module above spreads the real module exports,
-// so this import returns the real _getDeletionsInProgress function.
-const { _getDeletionsInProgress } = await import('../../services/worktree-deletion-service.js');
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -176,7 +154,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
