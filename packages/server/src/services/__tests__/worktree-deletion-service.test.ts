@@ -1,12 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import type { Session } from '@agent-console/shared';
+import type { HookCommandResult, Worktree, Session } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import type { DeleteWorktreeDeps } from '../worktree-deletion-service.js';
 import { getRepositoriesDir } from '../../lib/config.js';
-import {
-  mockWorktreeService,
-  resetWorktreeServiceMocks,
-} from '../../__tests__/utils/mock-worktree-service-helper.js';
 
 // Use the real repositories directory path to avoid mocking config.js
 // (Bun's mock.module is global and pollutes other test files)
@@ -15,11 +11,29 @@ const REPO_PATH = `${REPOS_DIR}/my-repo`;
 const WORKTREE_PATH = `${REPOS_DIR}/my-repo/worktrees/wt-1`;
 const OTHER_WORKTREE_PATH = `${REPOS_DIR}/my-repo/worktrees/wt-other`;
 
-// Re-export mock functions as local aliases for readability
-const mockListWorktrees = mockWorktreeService.listWorktrees;
-const mockRemoveWorktree = mockWorktreeService.removeWorktree;
-const mockExecuteHookCommand = mockWorktreeService.executeHookCommand;
-const mockIsWorktreeOf = mockWorktreeService.isWorktreeOf;
+// --- Mock worktreeService ---
+
+const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
+  Promise.resolve([]),
+);
+const mockRemoveWorktree = mock<
+  (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>
+>(() => Promise.resolve({ success: true }));
+const mockExecuteHookCommand = mock<
+  (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
+>(() => Promise.resolve({ success: true }));
+const mockIsWorktreeOf = mock<
+  (repoPath: string, worktreePath: string, repoId: string) => Promise<boolean>
+>(() => Promise.resolve(true));
+
+mock.module('../worktree-service.js', () => ({
+  worktreeService: {
+    listWorktrees: mockListWorktrees,
+    removeWorktree: mockRemoveWorktree,
+    executeHookCommand: mockExecuteHookCommand,
+    isWorktreeOf: mockIsWorktreeOf,
+  },
+}));
 
 // --- Mock logger ---
 mock.module('../../lib/logger.js', () => ({
@@ -99,7 +113,10 @@ describe('deleteWorktree', () => {
   beforeEach(() => {
     _getDeletionsInProgress().clear();
 
-    resetWorktreeServiceMocks();
+    mockListWorktrees.mockReset();
+    mockRemoveWorktree.mockReset();
+    mockExecuteHookCommand.mockReset();
+    mockIsWorktreeOf.mockReset();
 
     mockRemoveWorktree.mockImplementation(() => Promise.resolve({ success: true }));
     mockExecuteHookCommand.mockImplementation(() => Promise.resolve({ success: true, output: 'ok' }));

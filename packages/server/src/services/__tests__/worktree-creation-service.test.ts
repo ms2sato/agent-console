@@ -1,18 +1,40 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import type { Worktree, Session } from '@agent-console/shared';
+import type { HookCommandResult, Worktree, Session } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
-import {
-  mockWorktreeService,
-  resetWorktreeServiceMocks,
-} from '../../__tests__/utils/mock-worktree-service-helper.js';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 
-// Re-export mock functions as local aliases for readability
-const mockListWorktrees = mockWorktreeService.listWorktrees;
-const mockCreateWorktree = mockWorktreeService.createWorktree;
-const mockRemoveWorktree = mockWorktreeService.removeWorktree;
-const mockExecuteHookCommand = mockWorktreeService.executeHookCommand;
-const mockFetchRemote = mockGit.fetchRemote;
+// --- Mock worktreeService ---
+
+const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
+  Promise.resolve([]),
+);
+const mockCreateWorktree = mock<
+  (repoPath: string, branch: string, repoId: string, baseBranch?: string) => Promise<{ worktreePath: string; error?: string }>
+>(() => Promise.resolve({ worktreePath: '/repos/my-repo/worktrees/wt-new' }));
+const mockRemoveWorktree = mock<
+  (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>
+>(() => Promise.resolve({ success: true }));
+const mockExecuteHookCommand = mock<
+  (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
+>(() => Promise.resolve({ success: true }));
+
+mock.module('../worktree-service.js', () => ({
+  worktreeService: {
+    listWorktrees: mockListWorktrees,
+    createWorktree: mockCreateWorktree,
+    removeWorktree: mockRemoveWorktree,
+    executeHookCommand: mockExecuteHookCommand,
+  },
+}));
+
+// --- Mock fetchRemote ---
+
+const mockFetchRemote = mock<(branch: string, cwd: string) => Promise<void>>(() =>
+  Promise.resolve(),
+);
+
+mock.module('../../lib/git.js', () => ({
+  fetchRemote: mockFetchRemote,
+}));
 
 // --- Mock logger ---
 mock.module('../../lib/logger.js', () => ({
@@ -76,10 +98,14 @@ const DEFAULT_PARAMS = {
 
 describe('createWorktreeWithSession', () => {
   beforeEach(() => {
-    resetWorktreeServiceMocks();
-    resetGitMocks();
+    mockListWorktrees.mockReset();
+    mockCreateWorktree.mockReset();
+    mockRemoveWorktree.mockReset();
+    mockExecuteHookCommand.mockReset();
+    mockFetchRemote.mockReset();
 
     // Default implementations
+    mockFetchRemote.mockImplementation(() => Promise.resolve());
     mockCreateWorktree.mockImplementation(() =>
       Promise.resolve({ worktreePath: CREATED_PATH, index: 2 }),
     );
