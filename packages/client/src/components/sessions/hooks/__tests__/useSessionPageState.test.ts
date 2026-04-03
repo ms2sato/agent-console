@@ -194,6 +194,25 @@ describe('useSessionPageState', () => {
     })
   })
 
+  describe('retryLoadSession', () => {
+    it('should re-trigger session load on retryLoadSession', async () => {
+      getSessionResponse = 'throw-server-unavailable'
+
+      const { result } = await mountHook(createDefaultOptions())
+      expect(result.current.state.type).toBe('server_unavailable')
+
+      // Fix the server
+      const activeSession = createMockSession({ status: 'active' })
+      getSessionResponse = activeSession
+
+      await act(async () => {
+        result.current.retryLoadSession()
+      })
+
+      expect(result.current.state.type).toBe('active')
+    })
+  })
+
   describe('sessions-sync (session found in sync)', () => {
     it('should transition from disconnected to active', async () => {
       const disconnectedSession = createMockSession({ status: 'inactive' })
@@ -695,6 +714,63 @@ describe('useSessionPageState', () => {
       if (result.current.state.type === 'active') {
         expect(result.current.state.session.id).toBe('session-1')
       }
+    })
+
+    it('should increment resumeKey on session-resumed', async () => {
+      const pausedSession = createMockSession({ status: 'inactive', pausedAt: '2026-01-01T00:00:00Z' })
+      getSessionResponse = pausedSession
+
+      const refs = createMockRefs()
+      const options = createDefaultOptions({
+        updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+        activeTabIdRef: refs.activeTabIdRef,
+      })
+
+      const { result } = await mountHook(options)
+      expect(result.current.resumeKey).toBe(0)
+
+      const resumedSession = createMockSession({ status: 'active' })
+
+      act(() => {
+        capturedCallbacks.onSessionResumed?.(resumedSession, [])
+      })
+
+      expect(result.current.resumeKey).toBe(1)
+    })
+
+    it('should not increment resumeKey for other sessions', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+      expect(result.current.resumeKey).toBe(0)
+
+      const otherSession = createMockSession({ id: 'other-session', status: 'active' })
+
+      act(() => {
+        capturedCallbacks.onSessionResumed?.(otherSession, [])
+      })
+
+      expect(result.current.resumeKey).toBe(0)
+    })
+
+    it('should not increment resumeKey during restarting state', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+
+      act(() => {
+        result.current.setState({ type: 'restarting' })
+      })
+
+      const resumedSession = createMockSession({ status: 'active' })
+
+      act(() => {
+        capturedCallbacks.onSessionResumed?.(resumedSession, [])
+      })
+
+      expect(result.current.resumeKey).toBe(0)
     })
   })
 
