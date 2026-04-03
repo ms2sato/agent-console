@@ -61,6 +61,19 @@ export function useDraftMessage(sessionId: string, workerId: string | undefined)
   return { content, setContent, clearDraft } as const;
 }
 
+/**
+ * Removes all draft entries for the given session.
+ * Call when a session is deleted to prevent orphaned drafts.
+ */
+export function clearDraftsForSession(sessionId: string): void {
+  const prefix = `${sessionId}:`;
+  for (const key of drafts.keys()) {
+    if (key.startsWith(prefix)) {
+      drafts.delete(key);
+    }
+  }
+}
+
 /** @internal Exported for testing */
 export function _getDraftsMap(): Map<string, string> {
   return drafts;

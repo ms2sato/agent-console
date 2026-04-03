@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { useDraftMessage, _getDraftsMap } from '../useDraftMessage';
+import { useDraftMessage, clearDraftsForSession, _getDraftsMap } from '../useDraftMessage';
 
 describe('useDraftMessage', () => {
   beforeEach(() => {
@@ -136,5 +136,42 @@ describe('useDraftMessage', () => {
     });
     expect(result.current.content).toBe('ignored');
     expect(_getDraftsMap().size).toBe(0);
+  });
+});
+
+describe('clearDraftsForSession', () => {
+  beforeEach(() => {
+    _getDraftsMap().clear();
+  });
+
+  it('should remove all drafts for the given session', () => {
+    _getDraftsMap().set('s1:w1', 'draft 1');
+    _getDraftsMap().set('s1:w2', 'draft 2');
+    _getDraftsMap().set('s2:w1', 'other session');
+
+    clearDraftsForSession('s1');
+
+    expect(_getDraftsMap().has('s1:w1')).toBe(false);
+    expect(_getDraftsMap().has('s1:w2')).toBe(false);
+    expect(_getDraftsMap().get('s2:w1')).toBe('other session');
+  });
+
+  it('should do nothing when no drafts exist for the session', () => {
+    _getDraftsMap().set('s2:w1', 'other session');
+
+    clearDraftsForSession('s1');
+
+    expect(_getDraftsMap().size).toBe(1);
+    expect(_getDraftsMap().get('s2:w1')).toBe('other session');
+  });
+
+  it('should not match session IDs that are prefixes of other IDs', () => {
+    _getDraftsMap().set('s1:w1', 'short session');
+    _getDraftsMap().set('s10:w1', 'longer session id');
+
+    clearDraftsForSession('s1');
+
+    expect(_getDraftsMap().has('s1:w1')).toBe(false);
+    expect(_getDraftsMap().get('s10:w1')).toBe('longer session id');
   });
 });

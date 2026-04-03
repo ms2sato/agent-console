@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 
 const mockSendWorkerMessage = mock(() => Promise.resolve({
   message: {
@@ -18,7 +18,87 @@ mock.module('../../../lib/api', () => ({
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { MessagePanel } from '../MessagePanel';
+import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
+import { _getDraftsMap } from '../../../hooks/useDraftMessage';
+
+describe('MessagePanel logic', () => {
+  describe('canSend', () => {
+    it('should return true when all conditions are met', () => {
+      expect(canSend('worker1', 'Hello', false, 0)).toBe(true);
+    });
+
+    it('should return false when content is empty', () => {
+      expect(canSend('worker1', '', false, 0)).toBe(false);
+    });
+
+    it('should return false when content is only whitespace', () => {
+      expect(canSend('worker1', '   ', false, 0)).toBe(false);
+    });
+
+    it('should return false when targetWorkerId is empty', () => {
+      expect(canSend('', 'Hello', false, 0)).toBe(false);
+    });
+
+    it('should return false when sending is true', () => {
+      expect(canSend('worker1', 'Hello', true, 0)).toBe(false);
+    });
+
+    it('should return false when both content is empty and sending is true', () => {
+      expect(canSend('worker1', '', true, 0)).toBe(false);
+    });
+
+    it('should return false when targetWorkerId is empty and content is valid', () => {
+      expect(canSend('', 'Hello', false, 0)).toBe(false);
+    });
+
+    it('should return true when content has leading/trailing whitespace but is not empty', () => {
+      expect(canSend('worker1', '  Hello  ', false, 0)).toBe(true);
+    });
+
+    it('should return false when all conditions fail', () => {
+      expect(canSend('', '', true, 0)).toBe(false);
+    });
+
+    it('should return true when content is empty but files are attached', () => {
+      expect(canSend('worker1', '', false, 1)).toBe(true);
+    });
+
+    it('should return false when files are attached but sending is true', () => {
+      expect(canSend('worker1', '', true, 2)).toBe(false);
+    });
+  });
+
+  describe('validateFiles', () => {
+    it('should return null when files are within limits', () => {
+      expect(validateFiles({ length: 5, totalSize: 1024 })).toBeNull();
+    });
+
+    it('should return null when no files', () => {
+      expect(validateFiles({ length: 0, totalSize: 0 })).toBeNull();
+    });
+
+    it('should return error when file count exceeds maximum', () => {
+      const result = validateFiles({ length: 11, totalSize: 100 });
+      expect(result).not.toBeNull();
+      expect(result![0]).toBe('Too Many Files');
+    });
+
+    it('should return error when total size exceeds maximum', () => {
+      const result = validateFiles({ length: 1, totalSize: 11 * 1024 * 1024 });
+      expect(result).not.toBeNull();
+      expect(result![0]).toBe('File Size Limit');
+    });
+
+    it('should check file count before size', () => {
+      const result = validateFiles({ length: 11, totalSize: 11 * 1024 * 1024 });
+      expect(result![0]).toBe('Too Many Files');
+    });
+
+    it('should return null at exact limits', () => {
+      expect(validateFiles({ length: 10, totalSize: 10 * 1024 * 1024 })).toBeNull();
+    });
+  });
+});
 
 const defaultProps = {
   sessionId: 'session-1',
@@ -27,6 +107,10 @@ const defaultProps = {
 };
 
 describe('MessagePanel', () => {
+  beforeEach(() => {
+    _getDraftsMap().clear();
+  });
+
   afterEach(() => {
     cleanup();
     mockSendWorkerMessage.mockClear();
@@ -224,6 +308,58 @@ describe('MessagePanel', () => {
     });
 
     expect(mockSendWorkerMessage).not.toHaveBeenCalled();
+  });
+
+  it('restores draft when switching back to a previous worker', async () => {
+    const { container, rerender } = await act(async () =>
+      renderWithRouter(<MessagePanel {...defaultProps} />),
+    );
+    const view = within(container);
+
+    // Type a draft for agent-1
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'draft for agent-1' } });
+    });
+    expect((textarea as HTMLTextAreaElement).value).toBe('draft for agent-1');
+
+    // Switch to agent-2 -- content should be empty (no draft saved for agent-2)
+    await act(async () => {
+      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
+    });
+    const textarea2 = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    expect((textarea2 as HTMLTextAreaElement).value).toBe('');
+
+    // Switch back to agent-1 -- draft should be restored
+    await act(async () => {
+      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-1" />);
+    });
+    const textarea3 = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    expect((textarea3 as HTMLTextAreaElement).value).toBe('draft for agent-1');
+  });
+
+  it('clears draft on successful send', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    // Type a message
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'message to send' } });
+    });
+    expect((textarea as HTMLTextAreaElement).value).toBe('message to send');
+    // Verify draft is stored in the map
+    expect(_getDraftsMap().get('session-1:agent-1')).toBe('message to send');
+
+    // Send via Ctrl+Enter
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
+
+    // Content should be cleared
+    expect((textarea as HTMLTextAreaElement).value).toBe('');
+    // Draft should be removed from the map
+    expect(_getDraftsMap().has('session-1:agent-1')).toBe(false);
   });
 
 });
