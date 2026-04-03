@@ -326,3 +326,31 @@ See the [TanStack Query](#tanstack-query) section for key factory patterns and i
 
 - Display user-friendly error messages
 - Provide retry mechanisms where appropriate
+
+## Browser Verification (UI changes)
+
+**Mandatory for PRs that change UI components, layout, or styling.**
+
+When a PR modifies visual elements, verify the actual rendered result using Chrome MCP before reporting acceptance.
+
+### Procedure
+1. Find free ports: `lsof -i :<port>` to check availability
+2. Start dev server from the PR's worktree: `CLIENT_PORT=<free> PORT=<free> bun run dev`
+3. Navigate Chrome to the frontend URL (the CLIENT_PORT, not the backend PORT)
+4. Take screenshots at both viewport sizes:
+   - **PC**: 1200x700
+   - **Mobile**: 375x667
+5. Evaluate the UI yourself — do not just confirm "it renders". Check:
+   - Layout and spacing
+   - Information hierarchy (is the most important action prominent?)
+   - Redundancy (duplicate labels, unnecessary descriptions)
+   - Responsiveness (does mobile fallback work?)
+   - Accessibility (buttons reachable, text readable)
+6. Stop dev server after verification
+
+### What to check
+- Component layout changes
+- Styling / Tailwind class changes
+- New UI elements or dialogs
+- Responsive behavior
+- Form interactions (tab through fields, submit button reachable)

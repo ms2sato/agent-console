@@ -32,10 +32,11 @@
 - **Always set `useRemote: true`** when calling `delegate_to_worktree` to branch from `origin/main` instead of the (potentially stale) local main. This prevents worktrees from being based on outdated code.
 - Track active sessions via `list_sessions` and `get_session_status`
 - When delegating, always include: clear scope, relevant Issue URL, branch naming. Only instruct `/review-loop` when the Orchestrator determines it necessary — for large-scale changes or changes affecting security/architecture. You may specify only the reviewers relevant to the change, not all reviewers.
+- **Verify affected components on main before delegating.** The orchestrator's worktree may be behind main. Always check the current state of affected files with `git show main:<path>` or by reading the main worktree. Do not assume your local code is current. (Lesson: #500 — delegated with wrong target component because the orchestrator's worktree was stale.)
 - Before delegating, review and update the Issue's acceptance criteria:
   1. Read the acceptance criteria in the Issue
   2. Evaluate whether they are complete based on your knowledge (design discussions, other PR context, architectural decisions)
-  3. **Impact inventory**: Read the affected files and identify all state-changing operations. Present this list to the owner for review BEFORE delegating.
+  3. **Impact inventory**: Read the affected files on main (`git show main:<path>`) and identify all state-changing operations. Present this list to the owner for review BEFORE delegating.
   4. Update the Issue if criteria need to be added or corrected
   5. You must be able to explain each criterion in your own words before delegating
 - **Generate delegation messages**: Run `node .claude/skills/orchestrator/delegation-prompt.js <Issue number>` to generate a delegation prompt template. The Issue is the source of truth — the prompt references the Issue URL and provides a placeholder for supplementary notes only. Customize the "Key Implementation Notes" section with constraints or context not already in the Issue before sending.

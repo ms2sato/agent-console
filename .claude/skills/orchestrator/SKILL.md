@@ -36,6 +36,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
   4. `ExitWorktree` with `action: "keep"` (worktree is cleaned up after PR merge)
   This reduces 5-10 minute delegation cycles to ~2 minutes for trivial changes.
 - **Use TaskCreate for multi-step procedures.** When executing enumerated steps from skills (e.g., sprint retrospective, sprint start), create a task checklist via `TaskCreate`/`TaskUpdate` to track progress and prevent step omission. Exception: procedures that have a dedicated script (e.g., `acceptance-check.js`) should use the script instead.
+- **Know your weakness: procedural compliance.** LLMs are good at knowledge-based judgment (evaluating UX, reviewing code, discussing architecture) but structurally bad at following fixed checklists without skipping steps. When a procedure has enumerated steps, always use TaskCreate or an external script — never rely on memory alone. If you notice yourself thinking "I can skip this step", that is the exact moment you must not skip it.
 
 ### DO NOT
 - Write or edit **production code** — always delegate to coding agents. Non-production files (docs/, .claude/skills/**, .claude/agents/**, CLAUDE.md) may be edited by the Orchestrator, but always in a separate worktree (`EnterWorktree`), never in the Orchestrator session itself.
