@@ -7,6 +7,7 @@ import { useAppWsEvent } from './useAppWs';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
+import { clearDraftsForSession } from './useDraftMessage';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 import { logger } from '../lib/logger';
 
@@ -72,6 +73,7 @@ export function useSessionSideEffects({
         );
       }
     }
+    clearDraftsForSession(sessionId);
     handleSessionDeleted(sessionId);
     invalidateValidation();
   }, [sessions, handleSessionDeleted, invalidateValidation]);
