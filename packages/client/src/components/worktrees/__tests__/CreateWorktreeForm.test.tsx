@@ -472,6 +472,26 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
+  describe('two-column layout', () => {
+    it('should render prompt and branch fields side by side in a grid layout', async () => {
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Prompt and branch fields should both be visible simultaneously
+      expect(screen.getByPlaceholderText(/What do you want to work on/)).toBeTruthy();
+      expect(screen.getByPlaceholderText('Session title')).toBeTruthy();
+      expect(screen.getByText(/Branch name:/)).toBeTruthy();
+      expect(screen.getByPlaceholderText(/Base branch/)).toBeTruthy();
+
+      // Submit button should be present and accessible
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+      expect(screen.getByText('Cancel')).toBeTruthy();
+    });
+  });
+
   describe('UI state', () => {
     it('should call onCancel when cancel button is clicked', async () => {
       const user = userEvent.setup();
