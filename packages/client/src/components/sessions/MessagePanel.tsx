@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHand
 import type { WorkerMessage } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
+import { sendInput as sendPtyInput } from '../../lib/worker-websocket';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
 
 interface MessagePanelProps {
@@ -109,8 +110,13 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
+      return;
     }
-  }, [handleSend]);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      sendPtyInput(sessionId, targetWorkerId, '\x1b');
+    }
+  }, [handleSend, sessionId, targetWorkerId]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
