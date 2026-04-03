@@ -109,9 +109,6 @@ export interface AppContext {
   /** Inter-session message file management */
   interSessionMessageService: InterSessionMessageService;
 
-  /** Memo file management */
-  memoService: MemoService;
-
   /** Suggest session metadata (branch name, title) from user prompt */
   suggestSessionMetadata: SuggestSessionMetadataFn;
 
@@ -291,7 +288,6 @@ export async function createAppContext(
     repositorySlackIntegrationService,
     annotationService,
     interSessionMessageService,
-    memoService,
     suggestSessionMetadata,
     userMode,
     timerManager,
@@ -444,7 +440,6 @@ export async function createTestContext(
     repositorySlackIntegrationService,
     annotationService,
     interSessionMessageService,
-    memoService,
     suggestSessionMetadata,
     userMode,
     timerManager,
