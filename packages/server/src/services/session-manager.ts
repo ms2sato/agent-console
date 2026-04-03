@@ -274,29 +274,7 @@ export class SessionManager {
       }
 
       // Kill any orphan worker processes first
-      for (const worker of session.workers) {
-        // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-        if (worker.type === 'git-diff' || worker.pid === null) continue;
-
-        if (isProcessAlive(worker.pid)) {
-          try {
-            processKill(worker.pid, 'SIGTERM');
-            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-            killedWorkerCount++;
-          } catch (error) {
-            logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
-            // Try SIGKILL as fallback for stubborn processes
-            try {
-              processKill(worker.pid, 'SIGKILL');
-              logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
-              killedWorkerCount++;
-            } catch {
-              // Process may have exited between checks, log but continue
-              logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
-            }
-          }
-        }
-      }
+      killedWorkerCount += SessionManager.killOrphanWorkers(session);
 
       // Mark as paused in DB (not loaded into memory) - user can resume later
       sessionsToSave.push({
@@ -474,28 +452,7 @@ export class SessionManager {
       orphanSessions.push(session);
 
       // Kill all workers in this session (only PTY workers have pid)
-      for (const worker of session.workers) {
-        // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-        if (worker.type === 'git-diff' || worker.pid === null) continue;
-
-        if (isProcessAlive(worker.pid)) {
-          try {
-            processKill(worker.pid, 'SIGTERM');
-            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-            killedCount++;
-          } catch (error) {
-            logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
-            // Try SIGKILL as fallback
-            try {
-              processKill(worker.pid, 'SIGKILL');
-              logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
-              killedCount++;
-            } catch {
-              logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
-            }
-          }
-        }
-      }
+      killedCount += SessionManager.killOrphanWorkers(session);
     }
 
     // Remove orphan sessions from persistence and delete output files
@@ -519,6 +476,38 @@ export class SessionManager {
       preservedSessions: preservedCount,
       serverPid: currentServerPid,
     }, 'Orphan cleanup completed');
+  }
+
+  /**
+   * Kill orphan worker processes for a session.
+   * Returns the number of workers successfully killed.
+   */
+  private static killOrphanWorkers(session: PersistedSession): number {
+    let killedCount = 0;
+    for (const worker of session.workers) {
+      // Skip git-diff workers (no process) and workers with no pid (not yet activated)
+      if (worker.type === 'git-diff' || worker.pid === null) continue;
+
+      if (isProcessAlive(worker.pid)) {
+        try {
+          processKill(worker.pid, 'SIGTERM');
+          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
+          killedCount++;
+        } catch (error) {
+          logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
+          // Try SIGKILL as fallback for stubborn processes
+          try {
+            processKill(worker.pid, 'SIGKILL');
+            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
+            killedCount++;
+          } catch {
+            // Process may have exited between checks, log but continue
+            logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
+          }
+        }
+      }
+    }
+    return killedCount;
   }
 
   // ========== Session Lifecycle ==========
