@@ -127,6 +127,7 @@ export function QuickWorktreeDialog({
             onSubmit={handleSubmit}
             onCancel={() => handleOpenChange(false)}
             draftKey={`worktree-draft:${effectiveRepoId}`}
+            hideTitle
           />
         )}
       </DialogContent>

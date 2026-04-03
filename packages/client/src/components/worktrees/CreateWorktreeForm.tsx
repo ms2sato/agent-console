@@ -45,6 +45,8 @@ export interface CreateWorktreeFormProps {
   /** When provided, form values are persisted to localStorage under this key.
    *  On mount, saved values are restored. On successful submit, the draft is cleared. */
   draftKey?: string;
+  /** Hide the form heading (useful when rendered inside a dialog with its own title) */
+  hideTitle?: boolean;
 }
 
 export function CreateWorktreeForm({
@@ -54,6 +56,7 @@ export function CreateWorktreeForm({
   onSubmit,
   onCancel,
   draftKey,
+  hideTitle,
 }: CreateWorktreeFormProps) {
   const {
     register,
@@ -316,7 +319,7 @@ export function CreateWorktreeForm({
 
   return (
     <div className="relative bg-slate-800 p-3 rounded mb-4 overflow-hidden">
-      <h3 className="text-sm font-medium mb-2">Create Worktree</h3>
+      {!hideTitle && <h3 className="text-sm font-medium mb-2">Create Worktree</h3>}
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset className="flex flex-col gap-2">
           <div className="flex items-center justify-between flex-wrap gap-y-2">
@@ -390,7 +393,7 @@ export function CreateWorktreeForm({
             {/* Right column: branch settings */}
             <div className="flex flex-col gap-2">
               {/* Branch name mode selection */}
-              <fieldset className="flex flex-col gap-1 border-0 p-0 m-0">
+              <fieldset className="flex flex-col gap-0.5 border-0 p-0 m-0">
                 <legend className="text-sm text-gray-400 mb-0.5">Branch name:</legend>
                 <label className={`text-sm flex items-center gap-2 ${!initialPrompt?.trim() ? 'text-gray-600' : 'text-gray-400'}`}>
                   <input
