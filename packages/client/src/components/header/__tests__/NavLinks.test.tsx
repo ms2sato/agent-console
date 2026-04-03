@@ -27,7 +27,7 @@ let reviewQueueResponse: unknown = [];
 let validateSessionsResponse: unknown = { hasIssues: false, results: [] };
 let logoutCalled = false;
 
-const mockFetch: typeof fetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
+const mockFetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
   const url = input instanceof Request ? input.url : String(input);
 
   if (url.includes('/review-queue')) {
@@ -47,7 +47,7 @@ const mockFetch: typeof fetch = mock(async (input: RequestInfo | URL): Promise<R
 });
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch;
+  globalThis.fetch = mockFetch as unknown as typeof fetch;
   reviewQueueResponse = [];
   validateSessionsResponse = { hasIssues: false, results: [] };
   logoutCalled = false;
