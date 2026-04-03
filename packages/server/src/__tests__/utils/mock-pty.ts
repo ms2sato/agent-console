@@ -87,7 +87,7 @@ export class MockPty {
  * Creates a mock factory for PTY providers that tracks all created instances.
  * Usage:
  *   const ptyFactory = createMockPtyFactory();
- *   const manager = new SessionManager(ptyFactory.provider);
+ *   const manager = await SessionManager.create({ ptyProvider: ptyFactory.provider });
  */
 export function createMockPtyFactory(startPid = 10000) {
   const instances: MockPty[] = [];
