@@ -157,10 +157,9 @@ export class SessionManager {
   }
 
   /**
-   * Private constructor - use SessionManager.create() for async initialization.
-   * The constructor is only public for backward compatibility during migration.
+   * Use SessionManager.create() for async initialization.
    */
-  constructor(options: SessionManagerOptions) {
+  private constructor(options: SessionManagerOptions) {
     // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
     const userMode = options?.userMode
       ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
