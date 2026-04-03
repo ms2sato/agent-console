@@ -5,7 +5,6 @@ import { createElement } from 'react';
 import type {
   Session,
   AgentActivityState,
-  WorkerActivityInfo,
 } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../useWorktreeDeletionTasks';
