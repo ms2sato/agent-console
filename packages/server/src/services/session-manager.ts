@@ -49,6 +49,7 @@ import { MessageService } from './message-service.js';
 import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
 import { MemoService } from './memo-service.js';
+import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { createLogger } from '../lib/logger.js';
 import { WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
@@ -117,6 +118,8 @@ interface SessionManagerOptions {
   interSessionMessageService?: InterSessionMessageService;
   /** Memo file management. Defaults to a fresh instance if not provided. */
   memoService?: MemoService;
+  /** PTY message injection service. Defaults to a new instance wired to this manager. */
+  ptyMessageInjectionService?: PtyMessageInjectionService;
   /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
   ptyProvider?: PtyProvider;
 }
@@ -138,6 +141,7 @@ export class SessionManager {
   private workerOutputFileManager: WorkerOutputFileManager;
   private interSessionMessageService: InterSessionMessageService;
   private memoService: MemoService;
+  private ptyMessageInjectionService: PtyMessageInjectionService;
   private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
@@ -194,6 +198,15 @@ export class SessionManager {
       workerOutputFileManager,
       interSessionMessageService: this.interSessionMessageService,
     });
+
+    this.ptyMessageInjectionService = options.ptyMessageInjectionService
+      ?? new PtyMessageInjectionService(
+        (sessionId, workerId, data) => this.writeWorkerInput(sessionId, workerId, data),
+        (sessionId, workerId) => {
+          const s = this.sessions.get(sessionId);
+          return !!s && s.workers.has(workerId);
+        },
+      );
   }
 
   /**
@@ -377,48 +390,9 @@ export class SessionManager {
       timestamp: new Date().toISOString(),
     };
 
-    // Inject message into target worker's PTY
-    // Send each part with delays so TUI agents can process input sequentially
-    const parts: string[] = [];
-    if (content) parts.push(content.replace(/\r?\n/g, '\r'));
-    if (filePaths && filePaths.length > 0) {
-      parts.push(...filePaths);
-    }
-
-    if (parts.length === 0) {
-      logger.warn({ sessionId, toWorkerId }, 'No content or files to send');
-      return null;
-    }
-
-    const injected = this.writeWorkerInput(sessionId, toWorkerId, parts[0]);
-    if (!injected) {
-      logger.warn({ sessionId, toWorkerId }, 'Failed to inject worker message (PTY inactive)');
-      return null;
-    }
-
-    // Send remaining parts and final Enter with delays
-    // Use longer delays to ensure TUI processes each input before the next
-    const DELAY_MS = 150;
-    const sendQueue: Array<() => void> = [];
-
-    for (let i = 1; i < parts.length; i++) {
-      const part = parts[i];
-      sendQueue.push(() => this.writeWorkerInput(sessionId, toWorkerId, `\r${part}`));
-    }
-    // Final Enter to submit
-    sendQueue.push(() => this.writeWorkerInput(sessionId, toWorkerId, '\r'));
-
-    // Execute queue with delays
-    sendQueue.forEach((fn, i) => {
-      setTimeout(() => {
-        const s = this.sessions.get(sessionId);
-        if (!s || !s.workers.has(toWorkerId)) {
-          logger.debug({ sessionId, toWorkerId }, 'Skipping delayed sendMessage write: session or worker no longer exists');
-          return;
-        }
-        fn();
-      }, DELAY_MS * (i + 1));
-    });
+    // Inject message parts into target worker's PTY
+    const injected = this.ptyMessageInjectionService.injectMessage(sessionId, toWorkerId, content, filePaths);
+    if (!injected) return null;
 
     // Store and broadcast
     this.messageService.addMessage(message);
