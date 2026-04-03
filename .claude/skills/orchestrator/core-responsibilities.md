@@ -107,3 +107,32 @@
   6. Delete the timer after the review is requested
   - **Never request re-review immediately** — always check rate limit first.
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
+
+## 7. Post-Merge Flow
+
+After every PR merge, execute all of the following steps:
+
+### 7a. Conflict Check
+Check all remaining open PRs for merge conflicts. The Orchestrator has visibility into all parallel work, so this is the Orchestrator's responsibility.
+
+1. Run: `gh pr list --state open --json number,title,mergeable --jq '.[] | select(.mergeable == "CONFLICTING") | "\(.number) \(.title)"'`
+2. If conflicts are found, send rebase instructions to the responsible agent via `send_session_message`:
+   > The main branch has been updated and conflicts have occurred. Please rebase with `git fetch origin && git rebase origin/main`. After resolving conflicts, verify all tests pass with `bun test` and push.
+3. If the agent's session is no longer active, note the conflicting PR for manual resolution or re-delegation.
+
+**Why:** With multiple worktrees running in parallel, merging one PR frequently causes conflicts in others. Early detection prevents wasted CI runs and review cycles.
+
+### 7b. Main Sync
+Update the local main branch by pulling in the main repository directory (first entry in `git worktree list`). This directory is used as the base for worktree creation.
+
+```bash
+MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
+git -C "$MAIN_DIR" pull origin main
+```
+
+**Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code.
+
+### 7c. Worktree Cleanup
+Clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
+
+Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.

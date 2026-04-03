@@ -27,29 +27,6 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
 - When new gotchas are discovered, append them to `memory/project_sprint_status.md` (Claude memory) immediately
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
 
-## Post-Merge Conflict Check
-
-After merging a PR, check all remaining open PRs for merge conflicts. This is the Orchestrator's responsibility since the Orchestrator has visibility into all parallel work.
-
-**Process:**
-1. After a PR is merged, run: `gh pr list --state open --json number,title,mergeable --jq '.[] | select(.mergeable == "CONFLICTING") | "\(.number) \(.title)"'`
-2. If conflicts are found, send rebase instructions to the responsible agent via `send_session_message`:
-   > The main branch has been updated and conflicts have occurred. Please rebase with `git fetch origin && git rebase origin/main`. After resolving conflicts, verify all tests pass with `bun test` and push.
-3. If the agent's session is no longer active, note the conflicting PR for manual resolution or re-delegation.
-4. After confirming no conflicts, update the local main branch by pulling in the main repository directory. The main directory only holds the main branch and is not used for active development.
-   ```bash
-   MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
-   git -C "$MAIN_DIR" pull origin main
-   ```
-
-**Why:** With multiple worktrees running in parallel, merging one PR frequently causes conflicts in others. Early detection prevents wasted CI runs and review cycles. Additionally, the main repository directory (first entry in `git worktree list`) is used as the base for worktree creation. Keeping it synchronized after each merge prevents worktrees from being based on stale code.
-
-## Worktree Cleanup
-
-After merging a PR (both Orchestrator-authority merges and owner-approved merges), clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
-
-Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.
-
 ## Retrospective Collection and Process Improvement
 
 Coding agents send a retrospective report together with the merge notification after their PR is merged (defined in agent definitions).
@@ -58,7 +35,7 @@ Coding agents send a retrospective report together with the merge notification a
 > After your PR is merged, please report back to the Orchestrator with your retrospective report and the merge confirmation.
 
 **Orchestrator's post-merge flow:**
-1. Post-Merge Conflict Check (above)
+1. Execute Post-Merge Flow (section 7 of core-responsibilities.md)
 2. Wait for the agent's merge notification + retrospective report
 3. Only after receiving the report, clean up the worktree via `remove_worktree`
 
