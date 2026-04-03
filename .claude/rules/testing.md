@@ -73,3 +73,4 @@ Before writing tests, verify:
 - [ ] Mocking at lowest level (fetch, WebSocket, not modules)
 - [ ] Not following existing bad patterns blindly
 - [ ] Not changing production code just for testing without discussion
+- [ ] **Target code is mockable via DI** — check if the code under test imports module-level singletons. If it does, DI refactoring is required before the test can be written safely. Do NOT use `mock.module()` to work around missing DI. See Anti-Pattern #2.
