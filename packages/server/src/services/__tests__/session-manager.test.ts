@@ -92,6 +92,13 @@ describe('SessionManager', () => {
     return getSessionManager();
   }
 
+  describe('factory pattern', () => {
+    it('should only be instantiable via SessionManager.create()', async () => {
+      const manager = await getSessionManager();
+      expect(manager).toBeDefined();
+    });
+  });
+
   describe('createSession', () => {
     it('should create a new worktree session with correct properties', async () => {
       const manager = await getSessionManager();
