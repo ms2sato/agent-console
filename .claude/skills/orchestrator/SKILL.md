@@ -64,13 +64,11 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 
 ## Core Responsibilities
 
-See [core-responsibilities.md](core-responsibilities.md) for detailed procedures (sections 1-6: Prioritization, Issue Creation, Parallel Coordination, First Responder, Work Review, Acceptance Check).
+See [core-responsibilities.md](core-responsibilities.md) for detailed procedures (sections 1-7: Prioritization, Issue Creation, Parallel Coordination, First Responder, Work Review, Acceptance Check, Post-Merge Flow).
 
-### 7-9. Sprint Lifecycle, Post-Merge Flow, Retrospectives
+### 8-10. Sprint Lifecycle, Retrospective Collection, Retrospectives
 
 See [sprint-lifecycle.md](sprint-lifecycle.md) for full details:
-- **Post-Merge Conflict Check** — check open PRs for conflicts after each merge
-- **Worktree Cleanup** — remove completed worktrees after PR merge
 - **Retrospective Collection** — receive and analyze agent retrospectives
 - **Sprint Start / Execution / End** — full sprint lifecycle procedures
 
