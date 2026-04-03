@@ -320,7 +320,7 @@ export function CreateWorktreeForm({
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
                 value={resolvedAgentId}
-                onChange={(value) => setValue('agentId', value)}
+                onChange={(value) => setValue('agentId', value, { shouldDirty: true })}
                 priorityAgentId={defaultAgentId ?? undefined}
               />
             </div>
@@ -442,7 +442,7 @@ export function CreateWorktreeForm({
                     </p>
                   )}
                   {/* Remote branch status - fixed height to prevent layout shift */}
-                  <div className="h-5 mt-1">
+                  <div className="min-h-5 mt-1">
                     {remoteStatusQuery.isLoading && (
                       <div className="text-xs text-gray-400 flex items-center gap-1">
                         <Spinner size="sm" />
