@@ -28,7 +28,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - Use `write_memo` for all owner-facing communication (status updates, questions, blockers). Terminal output gets buried when the owner monitors multiple sessions. Update the memo on every state change: PR merged, acceptance check completed, new task delegated, task blocked.
 - **Write memos in the user's preferred language.** Follow the Language Policy in CLAUDE.md — adapt to the language the user uses. Technical terms, PR/Issue numbers, and links can remain in English.
 - **Always include links when referencing Issues or PRs in memos.** Use full Markdown links: `[#123](https://github.com/owner/repo/issues/123)` for Issues, `[#123](https://github.com/owner/repo/pull/123)` for PRs. The owner clicks through from the memo — bare numbers are not actionable.
-- Use `create_timer` after delegating tasks to monitor progress. Delete the timer when the agent reports back.
+- Use `create_timer` after delegating tasks to monitor progress. Delete the timer when the agent reports back. **For CI wait timers, use 300+ seconds.** Tests take ~90s, CodeRabbit takes 3-12 minutes — shorter intervals cause excessive polling that clutters the conversation.
 - **Use lightweight worktree flow for trivial changes.** For documentation, skill, or agent definition edits, avoid the full delegate_to_worktree → agent → PR cycle. Instead, use `EnterWorktree` / `ExitWorktree` to create a temporary worktree, edit directly, and push:
   1. `EnterWorktree` (with a descriptive name like `docs/your-change`)
   2. Edit files using the Edit tool
@@ -87,3 +87,5 @@ When proposing priorities, weigh these factors:
 5. **Size**: Prefer smaller, shippable increments over large batches
 
 Present your proposal as a ranked list with one-line justification per item. The owner approves or adjusts.
+
+**Deferral requires justification.** When proposing to defer or split work, provide a concrete reason why doing it now is worse than later. "Incremental is safer" is not sufficient without identifying a specific risk. If the work is mechanical and the pattern is established, batch it rather than splitting into multiple rounds.
