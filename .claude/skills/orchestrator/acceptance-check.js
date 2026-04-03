@@ -250,6 +250,22 @@ function saveState(state) {
   writeFileSync(path, JSON.stringify(state, null, 2) + '\n', 'utf-8');
 }
 
+// --- CI status check ---
+
+function getCiStatus(prNumber) {
+  const result = exec(`gh pr checks ${prNumber} --json name,state,conclusion 2>/dev/null`);
+  if (!result) return null;
+  try {
+    const checks = JSON.parse(result);
+    const failed = checks.filter(c => c.conclusion === 'FAILURE' || c.conclusion === 'failure');
+    const pending = checks.filter(c => c.state === 'PENDING' || c.state === 'pending' || c.state === 'IN_PROGRESS');
+    const passed = checks.filter(c => c.conclusion === 'SUCCESS' || c.conclusion === 'success');
+    return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
+  } catch {
+    return null;
+  }
+}
+
 // --- Auto-detection ---
 
 function runAutoDetection(prNumber) {
@@ -257,6 +273,7 @@ function runAutoDetection(prNumber) {
   const categories = categorizeFiles(changedFiles);
   const { testFiles, productionFiles, testCoverage } = findTestFiles(changedFiles);
   const boundaries = analyzePackageBoundaries(categories);
+  const ciStatus = getCiStatus(prNumber);
 
   const linkedIssue = getLinkedIssueNumber(prNumber);
   let acceptanceCriteria = [];
@@ -273,13 +290,38 @@ function runAutoDetection(prNumber) {
     boundaries,
     linkedIssue,
     acceptanceCriteria,
+    ciStatus,
   };
 }
 
 // --- Display functions ---
 
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, ciStatus } = autoDetection;
+
+  // CI status (must be green before acceptance)
+  console.log('[CI Status]');
+  if (!ciStatus) {
+    console.log('  ⚠ Could not retrieve CI status');
+  } else if (ciStatus.allGreen) {
+    console.log(`  ✅ All checks passed (${ciStatus.passed.length} checks)`);
+  } else {
+    if (ciStatus.failed.length > 0) {
+      console.log(`  ❌ FAILED checks (${ciStatus.failed.length}):`);
+      for (const c of ciStatus.failed) {
+        console.log(`    - ${c.name}`);
+      }
+      console.log('  ⛔ CI must be green before acceptance. Do NOT proceed until all checks pass.');
+    }
+    if (ciStatus.pending.length > 0) {
+      console.log(`  ⏳ Pending checks (${ciStatus.pending.length}):`);
+      for (const c of ciStatus.pending) {
+        console.log(`    - ${c.name}`);
+      }
+      console.log('  ⏳ Wait for all checks to complete before proceeding.');
+    }
+  }
+  console.log();
 
   // File categorization
   console.log('[File Categorization]');

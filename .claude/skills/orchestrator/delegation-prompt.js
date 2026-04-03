@@ -100,10 +100,12 @@ Read the Issue carefully — it contains the full design, acceptance criteria, a
 
 ## Completion Steps
 1. Run the FULL test suite (\`bun run test\`) and confirm ALL tests pass — not just your new tests. If any pre-existing test fails, investigate whether your changes caused it.
-2. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
-3. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
-4. Wait for CI green, fix any issues.
-5. Report completion with PR URL and retrospective to Orchestrator.
+2. Run typecheck and confirm no errors. For client changes: \`cd packages/client && bunx tsc --noEmit\`. For server changes: \`cd packages/server && bunx tsc --noEmit\`. Skip this step for documentation-only changes.
+3. Do NOT push until both step 1 and step 2 pass.
+4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
+5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
+6. Wait for CI green, fix any issues.
+7. Report completion with PR URL and retrospective to Orchestrator.
 `;
 
 console.log(output);
