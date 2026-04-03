@@ -391,8 +391,8 @@ describe('CreateWorktreeForm', () => {
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
       expect(promptInput.value).toBe(issue.body);
 
-      // Verify 'prompt' mode is selected (Generate from prompt)
-      const promptRadio = screen.getByLabelText(/Generate from prompt/) as HTMLInputElement;
+      // Verify 'prompt' mode is selected (Auto-generate)
+      const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
       expect(promptRadio.checked).toBe(true);
     });
   });
@@ -466,7 +466,7 @@ describe('CreateWorktreeForm', () => {
       expect(props.onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('should disable Generate from prompt option when no prompt entered', async () => {
+    it('should disable Auto-generate option when no prompt entered', async () => {
       renderCreateWorktreeForm();
 
       // Wait for agents to load
@@ -474,8 +474,8 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // "Generate from prompt" radio should be disabled when no prompt
-      const promptRadio = screen.getByLabelText(/Generate from prompt.*requires prompt/);
+      // "Auto-generate" radio should be disabled when no prompt
+      const promptRadio = screen.getByLabelText(/Auto-generate/);
       expect((promptRadio as HTMLInputElement).disabled).toBe(true);
     });
   });

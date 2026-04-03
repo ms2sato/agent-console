@@ -374,7 +374,7 @@ export function CreateWorktreeForm({
                     value="prompt"
                     disabled={!initialPrompt?.trim()}
                   />
-                  Generate from prompt {initialPrompt?.trim() ? '(recommended)' : '(requires prompt)'}
+                  Auto-generate
                 </label>
                 <label className="text-sm text-gray-400 flex items-center gap-2">
                   <input
