@@ -16,6 +16,11 @@ mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
 }));
 
+const mockSendInput = mock(() => true);
+mock.module('../../../lib/worker-websocket', () => ({
+  sendInput: mockSendInput,
+}));
+
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
@@ -114,6 +119,7 @@ describe('MessagePanel', () => {
   afterEach(() => {
     cleanup();
     mockSendWorkerMessage.mockClear();
+    mockSendInput.mockClear();
   });
 
   it('renders send form with textarea and send button', async () => {
@@ -336,6 +342,49 @@ describe('MessagePanel', () => {
     });
     const textarea3 = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
     expect((textarea3 as HTMLTextAreaElement).value).toBe('draft for agent-1');
+  });
+
+  it('ESC key sends escape character to PTY via WebSocket', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    });
+
+    expect(mockSendInput).toHaveBeenCalledWith('session-1', 'agent-1', '\x1b');
+  });
+
+  it('ESC key preserves draft content in textarea', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'my draft' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    });
+
+    expect((textarea as HTMLTextAreaElement).value).toBe('my draft');
+    expect(mockSendInput).toHaveBeenCalledWith('session-1', 'agent-1', '\x1b');
+  });
+
+  it('ESC key does not trigger HTTP message send', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    });
+
+    expect(mockSendWorkerMessage).not.toHaveBeenCalled();
   });
 
   it('clears draft on successful send', async () => {
