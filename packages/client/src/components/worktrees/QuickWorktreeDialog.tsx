@@ -87,7 +87,7 @@ export function QuickWorktreeDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-lg overflow-hidden">
+      <DialogContent className="max-w-3xl max-h-[calc(100vh-6rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create Worktree</DialogTitle>
           <DialogDescription>
