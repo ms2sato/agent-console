@@ -91,7 +91,11 @@ Design documents (`docs/design/`) are specifications. Code is their implementati
 
 ## Language Policy
 
-**Code and documentation:** Write all code comments, commit messages, and documentation in English.
+**Public artifacts:** Write all code comments, commit messages, issues, pull requests, and documentation in English.
+
+**User-facing artifacts:** Review annotations, memos, and other content visible only to the user should follow the user's preferred language.
+
+**Communication:** Respond in the same language the user uses. Technical terms and code identifiers can remain in English.
 
 ## Claude Code on the Web (Remote Environment)
 
