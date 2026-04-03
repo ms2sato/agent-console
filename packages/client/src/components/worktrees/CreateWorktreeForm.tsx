@@ -27,6 +27,14 @@ export type CreateWorktreeFormRequest =
   | Omit<CreateWorktreeCustomRequest, 'taskId'>
   | Omit<CreateWorktreeExistingRequest, 'taskId'>;
 
+/** Values to pre-fill the form with (e.g., from a fetched GitHub Issue).
+ *  Applied once on mount. When provided, draft restoration is skipped. */
+export interface CreateWorktreeFormPrefill {
+  initialPrompt?: string;
+  sessionTitle?: string;
+  branchNameMode?: 'prompt' | 'custom' | 'existing';
+}
+
 export interface CreateWorktreeFormProps {
   repositoryId: string;
   defaultBranch: string;
@@ -40,6 +48,8 @@ export interface CreateWorktreeFormProps {
   hideTitle?: boolean;
   /** Optional slot rendered before the Agent selector in the header row */
   headerSlot?: ReactNode;
+  /** Values to pre-fill the form with. When provided, draft restoration is skipped. */
+  prefillValues?: CreateWorktreeFormPrefill;
 }
 
 export function CreateWorktreeForm({
@@ -51,6 +61,7 @@ export function CreateWorktreeForm({
   draftKey,
   hideTitle,
   headerSlot,
+  prefillValues,
 }: CreateWorktreeFormProps) {
   const {
     register,
@@ -64,12 +75,12 @@ export function CreateWorktreeForm({
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
     defaultValues: {
-      branchNameMode: 'prompt',
-      initialPrompt: '',
+      branchNameMode: prefillValues?.branchNameMode ?? 'prompt',
+      initialPrompt: prefillValues?.initialPrompt ?? '',
       githubIssue: '',
       customBranch: '',
       baseBranch: '',
-      sessionTitle: '',
+      sessionTitle: prefillValues?.sessionTitle ?? '',
       agentId: defaultAgentId ?? undefined,
     },
     mode: 'onBlur',
@@ -97,9 +108,10 @@ export function CreateWorktreeForm({
     return result;
   }, []);
 
-  // Restore draft on mount
+  // Restore draft on mount (skipped when prefillValues is provided)
   useEffect(() => {
     if (!draftKey) return;
+    if (prefillValues) return; // Skip draft restore when prefilling from issue
     draftClearedRef.current = false;
     try {
       const saved = localStorage.getItem(draftKey);
@@ -113,7 +125,9 @@ export function CreateWorktreeForm({
       // Ignore corrupted drafts
     }
     // reset and getValues are stable refs from react-hook-form
-  }, [draftKey, reset, getValues]);
+  }, [draftKey, reset, getValues, prefillValues]);
+
+
 
   // Save draft on form changes (debounced) and on unmount
   useEffect(() => {

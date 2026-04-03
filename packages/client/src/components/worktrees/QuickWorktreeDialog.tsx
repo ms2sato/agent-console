@@ -198,9 +198,11 @@ export function QuickWorktreeDialog({
           ) : (
             <FromIssueTab
               repositoryId={effectiveRepoId}
+              defaultBranch={defaultBranch}
               defaultAgentId={defaultAgentId}
               onSubmit={handleSubmit}
               onCancel={() => handleOpenChange(false)}
+              headerSlot={repoSelector}
             />
           )
         )}

@@ -60,6 +60,7 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 describe('FromIssueTab', () => {
   const defaultProps = {
     repositoryId: 'repo-1',
+    defaultBranch: 'main',
     defaultAgentId: 'claude-code',
     onSubmit: mock(() => Promise.resolve()),
     onCancel: mock(() => {}),
@@ -72,206 +73,237 @@ describe('FromIssueTab', () => {
     (defaultProps.onCancel as ReturnType<typeof mock>).mockClear();
   });
 
-  it('should render issue URL input and Fetch button', () => {
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      return Promise.resolve(createMockResponse({}));
+  describe('Phase 1: before issue is fetched', () => {
+    it('should render issue URL input, Fetch button, and Cancel button', () => {
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
+
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
+
+      expect(screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123')).toBeTruthy();
+      expect(screen.getByText('Fetch')).toBeTruthy();
+      expect(screen.getByText('Cancel')).toBeTruthy();
+      // CreateWorktreeForm fields should NOT be visible
+      expect(screen.queryByText('Initial prompt (optional)')).toBeNull();
     });
 
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
+    it('should show error when fetch fails', async () => {
+      const user = userEvent.setup();
 
-    expect(screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123')).toBeTruthy();
-    expect(screen.getByText('Fetch')).toBeTruthy();
-    // Create button should be disabled without a fetched issue
-    const createButton = screen.getByText('Create & Start Session');
-    expect(createButton.hasAttribute('disabled')).toBe(true);
-  });
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        if (url.includes('/github-issue')) {
+          return Promise.resolve({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            json: () => Promise.resolve({ error: 'Issue not found' }),
+          } as unknown as Response);
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
 
-  it('should fetch and display issue preview', async () => {
-    const user = userEvent.setup();
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
 
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      if (url.includes('/github-issue')) {
-        return Promise.resolve(createMockResponse(mockIssueResponse));
-      }
-      return Promise.resolve(createMockResponse({}));
+      const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
+      await user.type(input, '#999');
+      fireEvent.click(screen.getByText('Fetch'));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeTruthy();
+      });
     });
 
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
+    it('should call onCancel when Cancel button is clicked', () => {
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
 
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
-    await user.type(input, '#42');
-    fireEvent.click(screen.getByText('Fetch'));
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
 
-    await waitFor(() => {
-      expect(screen.getByText('Fix login bug')).toBeTruthy();
-    });
-
-    expect(screen.getByText('The login page crashes when password is empty.')).toBeTruthy();
-    expect(screen.getByText('Open on GitHub')).toBeTruthy();
-    expect(screen.getByText('Suggested branch: fix/login-bug')).toBeTruthy();
-
-    // Create button should now be enabled
-    const createButton = screen.getByText('Create & Start Session');
-    expect(createButton.hasAttribute('disabled')).toBe(false);
-  });
-
-  it('should submit worktree creation with issue data', async () => {
-    const user = userEvent.setup();
-
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      if (url.includes('/github-issue')) {
-        return Promise.resolve(createMockResponse(mockIssueResponse));
-      }
-      return Promise.resolve(createMockResponse({}));
-    });
-
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
-
-    // Fetch the issue
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
-    await user.type(input, '#42');
-    fireEvent.click(screen.getByText('Fetch'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Fix login bug')).toBeTruthy();
-    });
-
-    // Click Create
-    fireEvent.click(screen.getByText('Create & Start Session'));
-
-    await waitFor(() => {
-      expect(defaultProps.onSubmit).toHaveBeenCalledTimes(1);
-    });
-
-    const submitCall = (defaultProps.onSubmit as ReturnType<typeof mock>).mock.calls[0];
-    const request = submitCall[0];
-    expect(request.mode).toBe('prompt');
-    expect(request.initialPrompt).toBe('The login page crashes when password is empty.');
-    expect(request.title).toBe('Fix login bug');
-    expect(request.autoStartSession).toBe(true);
-  });
-
-  it('should show error when fetch fails', async () => {
-    const user = userEvent.setup();
-
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      if (url.includes('/github-issue')) {
-        return Promise.resolve({
-          ok: false,
-          status: 404,
-          statusText: 'Not Found',
-          json: () => Promise.resolve({ error: 'Issue not found' }),
-        } as unknown as Response);
-      }
-      return Promise.resolve(createMockResponse({}));
-    });
-
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
-
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
-    await user.type(input, '#999');
-    fireEvent.click(screen.getByText('Fetch'));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
+      fireEvent.click(screen.getByText('Cancel'));
+      expect(defaultProps.onCancel).toHaveBeenCalledTimes(1);
     });
   });
 
-  it('should call onCancel when Cancel button is clicked', () => {
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      return Promise.resolve(createMockResponse({}));
+  describe('Phase 2: after issue is fetched', () => {
+    function setupFetchMock() {
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        if (url.includes('/github-issue')) {
+          return Promise.resolve(createMockResponse(mockIssueResponse));
+        }
+        // Remote branch status query
+        if (url.includes('/remote-branch-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
+    }
+
+    async function fetchIssue(user: ReturnType<typeof userEvent.setup>) {
+      const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
+      await user.type(input, '#42');
+      fireEvent.click(screen.getByText('Fetch'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Fix login bug')).toBeTruthy();
+      });
+    }
+
+    it('should show issue preview card and CreateWorktreeForm after fetching', async () => {
+      const user = userEvent.setup();
+      setupFetchMock();
+
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
+
+      await fetchIssue(user);
+
+      // Issue preview card should be visible
+      expect(screen.getByText('Open on GitHub')).toBeTruthy();
+      expect(screen.getByText('The login page crashes when password is empty.')).toBeTruthy();
+
+      // CreateWorktreeForm fields should now be visible
+      expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
+      expect(screen.getByText('Title (optional)')).toBeTruthy();
+      expect(screen.getByText('Branch name:')).toBeTruthy();
     });
 
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
+    it('should prefill form with issue data', async () => {
+      const user = userEvent.setup();
+      setupFetchMock();
 
-    fireEvent.click(screen.getByText('Cancel'));
-    expect(defaultProps.onCancel).toHaveBeenCalledTimes(1);
-  });
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
 
-  it('should use issue title as prompt when body is empty', async () => {
-    const user = userEvent.setup();
+      await fetchIssue(user);
 
-    const issueWithoutBody = {
-      issue: {
-        ...mockIssueResponse.issue,
-        body: '',
-      },
-    };
+      // Check that the initial prompt textarea is prefilled with issue body
+      // (prefill is applied via useEffect, so we need waitFor)
+      await waitFor(() => {
+        const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
+        expect((promptTextarea as HTMLTextAreaElement).value).toBe(
+          'The login page crashes when password is empty.'
+        );
+      });
 
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('/agents')) {
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      }
-      if (url.includes('/github-issue')) {
-        return Promise.resolve(createMockResponse(issueWithoutBody));
-      }
-      return Promise.resolve(createMockResponse({}));
+      // Check that the session title is prefilled with issue title
+      const titleInput = screen.getByPlaceholderText('Session title');
+      expect((titleInput as HTMLInputElement).value).toBe('Fix login bug');
     });
 
-    render(
-      <TestWrapper>
-        <FromIssueTab {...defaultProps} />
-      </TestWrapper>
-    );
+    it('should submit worktree creation with form data', async () => {
+      const user = userEvent.setup();
+      setupFetchMock();
 
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
-    await user.type(input, '#42');
-    fireEvent.click(screen.getByText('Fetch'));
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
 
-    await waitFor(() => {
-      expect(screen.getByText('Fix login bug')).toBeTruthy();
+      await fetchIssue(user);
+
+      // Wait for prefill to be applied before submitting
+      await waitFor(() => {
+        const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
+        expect((promptTextarea as HTMLTextAreaElement).value).toBe(
+          'The login page crashes when password is empty.'
+        );
+      });
+
+      // Click Create & Start Session
+      fireEvent.click(screen.getByText('Create & Start Session'));
+
+      await waitFor(() => {
+        expect(defaultProps.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (defaultProps.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      const request = submitCall[0];
+      expect(request.mode).toBe('prompt');
+      expect(request.initialPrompt).toBe('The login page crashes when password is empty.');
+      expect(request.title).toBe('Fix login bug');
+      expect(request.autoStartSession).toBe(true);
     });
 
-    fireEvent.click(screen.getByText('Create & Start Session'));
+    it('should use issue title as prompt when body is empty', async () => {
+      const user = userEvent.setup();
 
-    await waitFor(() => {
-      expect(defaultProps.onSubmit).toHaveBeenCalledTimes(1);
+      const issueWithoutBody = {
+        issue: {
+          ...mockIssueResponse.issue,
+          body: '',
+        },
+      };
+
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        if (url.includes('/github-issue')) {
+          return Promise.resolve(createMockResponse(issueWithoutBody));
+        }
+        if (url.includes('/remote-branch-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
+
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
+
+      const input = screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123');
+      await user.type(input, '#42');
+      fireEvent.click(screen.getByText('Fetch'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Fix login bug')).toBeTruthy();
+      });
+
+      // The prompt should be prefilled with the title since body is empty
+      await waitFor(() => {
+        const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
+        expect((promptTextarea as HTMLTextAreaElement).value).toBe('Fix login bug');
+      });
     });
-
-    const submitCall = (defaultProps.onSubmit as ReturnType<typeof mock>).mock.calls[0];
-    const request = submitCall[0];
-    // When body is empty, should use title as initial prompt
-    expect(request.initialPrompt).toBe('Fix login bug');
   });
 });
