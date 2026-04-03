@@ -629,6 +629,34 @@ describe('SessionManager', () => {
       expect(injectCalls[0].sessionId).toBe(session.id);
       expect(injectCalls[0].workerId).toBe(agentWorker.id);
     });
+
+    it('should return null when injected PtyMessageInjectionService returns false', async () => {
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      // Override injectMessage to always fail
+      mockInjectionService.injectMessage = () => false;
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        ptyProvider: ptyFactory.provider,
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        ptyMessageInjectionService: mockInjectionService,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'should fail');
+      expect(message).toBeNull();
+    });
   });
 
   describe('resizeWorker', () => {
