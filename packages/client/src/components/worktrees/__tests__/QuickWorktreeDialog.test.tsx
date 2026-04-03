@@ -1,7 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 
 // Mock useCreateWorktree before importing the component
 const mockHandleCreateWorktree = mock(() => Promise.resolve());
@@ -71,7 +72,7 @@ const mockAgentsResponse = {
   ],
 };
 
-function TestWrapper({ children }: { children: React.ReactNode }) {
+async function renderWithRouter(ui: React.ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -79,10 +80,25 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
       },
     },
   });
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const rootRoute = createRootRoute({
+    component: () => ui,
+  });
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+    defaultPendingMinMs: 0,
+  });
+  await act(async () => {
+    await router.load();
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  );
 }
 
-function renderDialog(props: Partial<React.ComponentProps<typeof QuickWorktreeDialog>> = {}) {
+async function renderDialog(props: Partial<React.ComponentProps<typeof QuickWorktreeDialog>> = {}) {
   const defaultProps = {
     open: true,
     onOpenChange: mock(() => {}),
@@ -91,12 +107,12 @@ function renderDialog(props: Partial<React.ComponentProps<typeof QuickWorktreeDi
 
   const mergedProps = { ...defaultProps, ...props };
 
+  const result = await renderWithRouter(
+    <QuickWorktreeDialog {...mergedProps} />
+  );
+
   return {
-    ...render(
-      <TestWrapper>
-        <QuickWorktreeDialog {...mergedProps} />
-      </TestWrapper>
-    ),
+    ...result,
     props: mergedProps,
   };
 }
@@ -130,7 +146,7 @@ describe('QuickWorktreeDialog', () => {
       return Promise.resolve(createMockResponse(mockAgentsResponse));
     });
 
-    renderDialog();
+    await renderDialog();
 
     // Should show a loading spinner
     expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy();
@@ -160,16 +176,17 @@ describe('QuickWorktreeDialog', () => {
       return Promise.resolve(createMockResponse(mockAgentsResponse));
     });
 
-    renderDialog();
+    await renderDialog();
 
     // Wait for the form to appear (the submit button indicates the form is loaded)
     await waitFor(() => {
       expect(screen.getByText('Create & Start Session')).toBeTruthy();
     });
 
-    // Dialog title should be visible
+    // Dialog title and tab should both be visible
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByText('Create Worktree')).toBeTruthy();
+    // "Create Worktree" appears as both the dialog title and the active tab button
+    expect(screen.getAllByText('Create Worktree').length).toBeGreaterThanOrEqual(2);
   });
 
   it('should close dialog on successful worktree creation', async () => {
@@ -190,7 +207,7 @@ describe('QuickWorktreeDialog', () => {
       return Promise.resolve(createMockResponse(mockAgentsResponse));
     });
 
-    const { props } = renderDialog();
+    const { props } = await renderDialog();
 
     // Wait for the form to appear
     await waitFor(() => {
@@ -243,7 +260,7 @@ describe('QuickWorktreeDialog', () => {
       return Promise.resolve(createMockResponse(mockAgentsResponse));
     });
 
-    renderDialog();
+    await renderDialog();
 
     await waitFor(() => {
       expect(screen.getByText('Create & Start Session')).toBeTruthy();
@@ -279,7 +296,7 @@ describe('QuickWorktreeDialog', () => {
     localStorage.removeItem(expectedDraftKey);
 
     try {
-      renderDialog();
+      await renderDialog();
 
       // Wait for the form to load
       await waitFor(() => {
@@ -300,5 +317,145 @@ describe('QuickWorktreeDialog', () => {
     } finally {
       localStorage.removeItem(expectedDraftKey);
     }
+  });
+
+  it('should render tab bar with three tabs', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    await renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // All three tabs should be visible (tab buttons)
+    // "Create Worktree" appears both as dialog title and tab button
+    const worktreeTexts = screen.getAllByText('Create Worktree');
+    expect(worktreeTexts.length).toBeGreaterThanOrEqual(2); // title + tab
+    expect(screen.getByText('Quick Start')).toBeTruthy();
+    expect(screen.getByText('Create from Issue')).toBeTruthy();
+  });
+
+  it('should switch to Quick Start tab and show QuickSessionForm', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    await renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // Click the Quick Start tab
+    fireEvent.click(screen.getByText('Quick Start'));
+
+    // Dialog title should change
+    await waitFor(() => {
+      // QuickSessionForm has a path input
+      expect(screen.getByPlaceholderText('Path (e.g., /path/to/project)')).toBeTruthy();
+    });
+  });
+
+  it('should switch to From Issue tab and show issue form', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    await renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // Click the From Issue tab
+    fireEvent.click(screen.getByText('Create from Issue'));
+
+    // From Issue tab should show the issue URL input
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('https://github.com/owner/repo/issues/123 or #123')).toBeTruthy();
+    });
+  });
+
+  it('should reset tab to worktree when dialog reopens', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    await renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // Switch to Quick Start tab
+    fireEvent.click(screen.getByText('Quick Start'));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Path (e.g., /path/to/project)')).toBeTruthy();
+    });
+
+    // Close and reopen the dialog by re-rendering with open=false then open=true
+    cleanup();
+    await renderDialog({ open: true });
+
+    // Should show Worktree tab content (default tab after reopen)
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
   });
 });

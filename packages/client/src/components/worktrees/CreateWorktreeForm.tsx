@@ -1,4 +1,4 @@
-import { useId, useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,18 +11,9 @@ import type {
   CreateWorktreePromptRequest,
   CreateWorktreeCustomRequest,
   CreateWorktreeExistingRequest,
-  GitHubIssueSummary,
 } from '@agent-console/shared';
-import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
+import { refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
 import { branchKeys } from '../../lib/query-keys';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
 
 /**
  * Worktree creation parameters without taskId.
@@ -35,6 +26,14 @@ export type CreateWorktreeFormRequest =
   | Omit<CreateWorktreePromptRequest, 'taskId'>
   | Omit<CreateWorktreeCustomRequest, 'taskId'>
   | Omit<CreateWorktreeExistingRequest, 'taskId'>;
+
+/** Values to pre-fill the form with (e.g., from a fetched GitHub Issue).
+ *  Applied once on mount. When provided, draft restoration is skipped. */
+export interface CreateWorktreeFormPrefill {
+  initialPrompt?: string;
+  sessionTitle?: string;
+  branchNameMode?: 'prompt' | 'custom' | 'existing';
+}
 
 export interface CreateWorktreeFormProps {
   repositoryId: string;
@@ -49,6 +48,8 @@ export interface CreateWorktreeFormProps {
   hideTitle?: boolean;
   /** Optional slot rendered before the Agent selector in the header row */
   headerSlot?: ReactNode;
+  /** Values to pre-fill the form with. When provided, draft restoration is skipped. */
+  prefillValues?: CreateWorktreeFormPrefill;
 }
 
 export function CreateWorktreeForm({
@@ -60,13 +61,13 @@ export function CreateWorktreeForm({
   draftKey,
   hideTitle,
   headerSlot,
+  prefillValues,
 }: CreateWorktreeFormProps) {
   const {
     register,
     handleSubmit,
     getValues,
     setError,
-    clearErrors,
     watch,
     setValue,
     reset,
@@ -74,12 +75,12 @@ export function CreateWorktreeForm({
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
     defaultValues: {
-      branchNameMode: 'prompt',
-      initialPrompt: '',
+      branchNameMode: prefillValues?.branchNameMode ?? 'prompt',
+      initialPrompt: prefillValues?.initialPrompt ?? '',
       githubIssue: '',
       customBranch: '',
       baseBranch: '',
-      sessionTitle: '',
+      sessionTitle: prefillValues?.sessionTitle ?? '',
       agentId: defaultAgentId ?? undefined,
     },
     mode: 'onBlur',
@@ -107,9 +108,10 @@ export function CreateWorktreeForm({
     return result;
   }, []);
 
-  // Restore draft on mount
+  // Restore draft on mount (skipped when prefillValues is provided)
   useEffect(() => {
     if (!draftKey) return;
+    if (prefillValues) return; // Skip draft restore when prefilling from issue
     draftClearedRef.current = false;
     try {
       const saved = localStorage.getItem(draftKey);
@@ -123,7 +125,9 @@ export function CreateWorktreeForm({
       // Ignore corrupted drafts
     }
     // reset and getValues are stable refs from react-hook-form
-  }, [draftKey, reset, getValues]);
+  }, [draftKey, reset, getValues, prefillValues]);
+
+
 
   // Save draft on form changes (debounced) and on unmount
   useEffect(() => {
@@ -166,14 +170,6 @@ export function CreateWorktreeForm({
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
-  const issueFieldId = useId();
-  const issueErrorId = `${issueFieldId}-error`;
-  const lastFetchedIssue = useRef<string | null>(null);
-  const [isIssueDialogOpen, setIsIssueDialogOpen] = useState(false);
-  const [issueState, setIssueState] = useState<{
-    isLoading: boolean;
-    issue: GitHubIssueSummary | null;
-  }>({ isLoading: false, issue: null });
 
   // Local state for refreshed default branch (overrides prop when set)
   const [refreshedDefaultBranch, setRefreshedDefaultBranch] = useState<string | null>(null);
@@ -206,48 +202,6 @@ export function CreateWorktreeForm({
     staleTime: 30 * 1000, // Consider stale after 30 seconds
     retry: false, // Don't retry on failure (e.g., network issues)
   });
-
-  const buildIssuePrompt = (issue: GitHubIssueSummary) => {
-    const body = issue.body.trim();
-    return body || issue.title;
-  };
-
-  const handleFetchIssue = async (reference: string | undefined, force = false) => {
-    const trimmed = reference?.trim() ?? '';
-    if (!trimmed) {
-      setIssueState({ isLoading: false, issue: null });
-      clearErrors('githubIssue');
-      lastFetchedIssue.current = null;
-      return;
-    }
-
-    if (issueState.isLoading || (!force && lastFetchedIssue.current === trimmed)) {
-      return;
-    }
-
-    setIssueState({ isLoading: true, issue: issueState.issue });
-    clearErrors('githubIssue');
-
-    try {
-      const { issue } = await fetchGitHubIssue(repositoryId, trimmed);
-      lastFetchedIssue.current = trimmed;
-      setIssueState({ isLoading: false, issue });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch GitHub issue';
-      setIssueState({ isLoading: false, issue: null });
-      setError('githubIssue', { message });
-    }
-  };
-
-  const applyIssueToForm = () => {
-    if (!issueState.issue) return;
-    setValue('initialPrompt', buildIssuePrompt(issueState.issue), { shouldDirty: true, shouldValidate: true });
-    if (!getValues('sessionTitle')?.trim()) {
-      setValue('sessionTitle', issueState.issue.title, { shouldDirty: true });
-    }
-    // Use 'prompt' mode to let LLM generate a unique branch name from the issue content
-    setValue('branchNameMode', 'prompt', { shouldDirty: true, shouldValidate: true });
-  };
 
   const buildRequest = (data: CreateWorktreeFormData, useRemote: boolean): CreateWorktreeFormRequest => {
     switch (data.branchNameMode) {
@@ -324,13 +278,6 @@ export function CreateWorktreeForm({
                 priorityAgentId={defaultAgentId ?? undefined}
               />
             </div>
-            <button
-              type="button"
-              className="btn bg-transparent border border-slate-600 text-slate-400 hover:text-white hover:border-slate-500 text-sm"
-              onClick={() => setIsIssueDialogOpen(true)}
-            >
-              Import from Issue
-            </button>
           </div>
 
           {/* Two-column layout for form fields */}
@@ -503,85 +450,6 @@ export function CreateWorktreeForm({
           </div>
         </fieldset>
       </form>
-
-      <Dialog open={isIssueDialogOpen} onOpenChange={setIsIssueDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Import from GitHub Issue</DialogTitle>
-            <DialogDescription>
-              Fetch the issue title and body, then apply them to the prompt and branch fields.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <FormField label="Issue reference" error={errors.githubIssue} fieldId={issueFieldId}>
-              <div className="flex gap-2">
-                <Input
-                  id={issueFieldId}
-                  {...register('githubIssue', {
-                    onBlur: (event) => handleFetchIssue(event.target.value),
-                  })}
-                  placeholder="https://github.com/owner/repo/issues/123 or #123"
-                  className="flex-1"
-                  aria-describedby={errors.githubIssue ? issueErrorId : undefined}
-                  error={errors.githubIssue}
-                />
-                <button
-                  type="button"
-                  className="btn bg-slate-600 hover:bg-slate-500 text-sm"
-                  onClick={() => handleFetchIssue(getValues('githubIssue'), true)}
-                  disabled={issueState.isLoading}
-                >
-                  {issueState.isLoading ? 'Fetching...' : 'Fetch'}
-                </button>
-              </div>
-            </FormField>
-
-            {issueState.issue && (
-              <div className="rounded border border-slate-700 bg-slate-900/60 p-3 text-sm text-gray-300">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-medium text-gray-200">{issueState.issue.title}</p>
-                  <a
-                    className="text-xs text-blue-400 hover:text-blue-300"
-                    href={issueState.issue.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open on GitHub
-                  </a>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-xs text-gray-400 max-h-40 overflow-auto">
-                  {issueState.issue.body || 'No description provided.'}
-                </p>
-                {issueState.issue.suggestedBranch && (
-                  <p className="mt-2 text-xs text-gray-500">
-                    Suggested branch: {issueState.issue.suggestedBranch}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              className="btn btn-primary text-sm"
-              onClick={() => {
-                applyIssueToForm();
-                setIsIssueDialogOpen(false);
-              }}
-              disabled={!issueState.issue}
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger text-sm"
-              onClick={() => setIsIssueDialogOpen(false)}
-            >
-              Close
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
