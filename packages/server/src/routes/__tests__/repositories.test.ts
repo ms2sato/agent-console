@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
-// Mock the description generator BEFORE importing test-utils to ensure proper mock ordering
 const mockGenerateDescription = mock(() => Promise.resolve({ description: 'test' }));
-mock.module('../../services/repository-description-generator.js', () => ({
-  generateRepositoryDescription: mockGenerateDescription,
-}));
 
 import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
@@ -73,6 +69,7 @@ describe('Repositories API', () => {
       sessionManager: sessionManager as any,
       repositorySlackIntegrationService: repositorySlackIntegrationService as any,
       agentManager: agentManager as any,
+      generateRepositoryDescription: mockGenerateDescription as any,
     });
   });
 

@@ -28,6 +28,7 @@ import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { OpenPrInfo } from './services/github-pr-service.js';
+import type { GenerateRepositoryDescriptionFn } from './services/repository-description-generator.js';
 import type { InboundIntegrationInstance } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -57,6 +58,7 @@ import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
+import { generateRepositoryDescription } from './services/repository-description-generator.js';
 
 const logger = createLogger('app-context');
 
@@ -123,6 +125,9 @@ export interface AppContext {
 
   /** Find open PR for a branch */
   findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
+
+  /** Generate AI-powered repository description */
+  generateRepositoryDescription: GenerateRepositoryDescriptionFn;
 }
 
 /**
@@ -295,6 +300,7 @@ export async function createAppContext(
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
     fetchPullRequestUrl,
     findOpenPullRequest,
+    generateRepositoryDescription,
   };
 }
 
@@ -447,6 +453,7 @@ export async function createTestContext(
     broadcastToApp: () => {},
     fetchPullRequestUrl,
     findOpenPullRequest,
+    generateRepositoryDescription,
   };
 }
 
