@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHand
 import type { WorkerMessage } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage } from '../../lib/api';
+import { useDraftMessage } from '../../hooks/useDraftMessage';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -32,16 +33,15 @@ export interface MessagePanelHandle {
 
 export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }, ref) {
-  const [content, setContent] = useState('');
+  const { content, setContent, clearDraft } = useDraftMessage(sessionId, targetWorkerId);
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Clear state when target worker changes
+  // Clear non-draft state when target worker changes
   useEffect(() => {
-    setContent('');
     setFiles([]);
     setHasUnread(false);
     if (textareaRef.current) {
@@ -91,7 +91,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     setSending(true);
     try {
       await sendWorkerMessage(sessionId, targetWorkerId, content.trim(), files.length > 0 ? files : undefined);
-      setContent('');
+      clearDraft();
       setFiles([]);
       setHasUnread(false);
       if (textareaRef.current) {
@@ -103,7 +103,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     } finally {
       setSending(false);
     }
-  }, [sessionId, targetWorkerId, content, files, onError]);
+  }, [sessionId, targetWorkerId, content, files, onError, clearDraft]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
