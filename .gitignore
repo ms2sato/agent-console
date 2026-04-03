@@ -27,7 +27,7 @@ npm-debug.log*
 .env.*.local
 
 # TanStack Router generated files
-src/routeTree.gen.ts
+**/routeTree.gen.ts
 
 # Claude Code local settings
 .claude/settings.local.json
