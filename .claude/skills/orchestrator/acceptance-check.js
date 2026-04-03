@@ -16,6 +16,7 @@
  * Usage:
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number>
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"
+ *   node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only
  */
 
 import { execSync } from 'node:child_process';
@@ -27,9 +28,11 @@ function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"');
+  console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only');
   console.error('Example:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 q1 "Read worker-service.ts..."');
+  console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 --check-only');
   process.exit(1);
 }
 
@@ -79,30 +82,66 @@ function categorizeFiles(files) {
 
 // --- Test file detection ---
 
+// Patterns that require test coverage (production code only)
+const COVERAGE_PATTERNS = [
+  /^packages\/server\/src\/routes\/.+\.ts$/,
+  /^packages\/server\/src\/services\/.+\.ts$/,
+  /^packages\/client\/src\/hooks\/.+\.ts$/,
+  /^packages\/client\/src\/components\/.+\.tsx$/,
+  /^packages\/shared\/src\/.+\.ts$/,
+];
+
+function isTestFile(filePath) {
+  return filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/');
+}
+
+function requiresTestCoverage(filePath) {
+  if (isTestFile(filePath)) return false;
+  return COVERAGE_PATTERNS.some(pattern => pattern.test(filePath));
+}
+
 function findTestFiles(changedFiles) {
   const testFiles = [];
   const productionFiles = [];
 
   for (const file of changedFiles) {
-    if (file.includes('.test.') || file.includes('.spec.') || file.includes('__tests__/')) {
+    if (isTestFile(file)) {
       testFiles.push(file);
     } else if (file.match(/\.(ts|tsx|js|jsx)$/)) {
       productionFiles.push(file);
     }
   }
 
-  // For each production file, check if the conventionally-named test exists in the PR
+  // For each production file, check if a matching test exists in the PR
+  // Supports multiple naming conventions: __tests__/Name.test.ts, __tests__/Name.test.tsx,
+  // Name.test.ts (sibling), etc.
   const testCoverage = [];
   for (const prodFile of productionFiles) {
+    const ext = prodFile.match(/\.(ts|tsx|js|jsx)$/)[0];
     const baseName = prodFile.replace(/\.(ts|tsx|js|jsx)$/, '');
     const dir = baseName.substring(0, baseName.lastIndexOf('/'));
     const fileName = baseName.substring(baseName.lastIndexOf('/') + 1);
-    const expectedTestPath = dir + '/__tests__/' + fileName + '.test.';
-    const hasTest = testFiles.some(tf => tf.startsWith(expectedTestPath));
-    testCoverage.push({ file: prodFile, hasTest, expectedTestPath: dir + '/__tests__/' + fileName + '.test.ts' });
+
+    // Check multiple possible test file patterns
+    const hasTest = testFiles.some(tf => {
+      const tfFileName = tf.substring(tf.lastIndexOf('/') + 1);
+      // Match: fileName.test.ts, fileName.test.tsx, fileName.spec.ts, fileName.spec.tsx
+      if (tfFileName.match(new RegExp(`^${escapeRegExp(fileName)}\\.(test|spec)\\.(ts|tsx|js|jsx)$`))) {
+        return true;
+      }
+      return false;
+    });
+
+    const needsCoverage = requiresTestCoverage(prodFile);
+    const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + (ext === '.tsx' ? '.tsx' : '.ts');
+    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, needsCoverage });
   }
 
   return { testFiles, productionFiles, testCoverage };
+}
+
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // --- Package boundary analysis ---
@@ -145,6 +184,12 @@ function getLinkedIssueNumber(prNumber) {
 
   const match = result.match(/closed?\s+#(\d+)/i);
   return match ? match[1] : null;
+}
+
+function getIssueInfo(issueNumber) {
+  const title = exec(`gh issue view ${issueNumber} --json title --jq .title`);
+  const body = exec(`gh issue view ${issueNumber} --json body --jq .body`);
+  return { title: title || '', body: body || '' };
 }
 
 function getAcceptanceCriteria(issueNumber) {
@@ -246,11 +291,13 @@ function printAutoDetection(autoDetection) {
   if (testCoverage.length === 0) {
     console.log('  (no production code files)');
   } else {
-    for (const { file, hasTest, expectedTestPath } of testCoverage) {
+    for (const { file, hasTest, expectedTestPath, needsCoverage } of testCoverage) {
       if (hasTest) {
-        console.log(`    ${file} -> covered`);
+        console.log(`  ✅ ${file} -> covered`);
+      } else if (needsCoverage) {
+        console.log(`  ❌ ${file} -> NO TEST (expected: ${expectedTestPath})`);
       } else {
-        console.log(`  ! ${file} -> NO TEST (expected: ${expectedTestPath})`);
+        console.log(`  ⬜ ${file} -> skipped (not in coverage patterns)`);
       }
     }
   }
@@ -289,6 +336,33 @@ function printAutoDetection(autoDetection) {
     console.log('[No linked Issue] No "closed #NNN" pattern found in PR body.');
     console.log();
   }
+
+  // Integration test adequacy prompt
+  printIntegrationTestAdequacy(linkedIssue);
+}
+
+function printIntegrationTestAdequacy(linkedIssue) {
+  console.log('--- Integration Test Adequacy ---');
+  console.log('Before answering, re-read the linked Issue and consider:');
+  console.log('  1. What is the user-facing purpose of this change?');
+  console.log('  2. What user operations does it affect?');
+  console.log('  3. For each operation, is there an integration test that verifies');
+  console.log('     the full path (input → processing → output/side-effect)?');
+  console.log('  4. Are there scenarios where only unit tests exist but the user-facing');
+  console.log('     behavior is not verified end-to-end?');
+  console.log();
+
+  if (linkedIssue) {
+    const issueInfo = getIssueInfo(linkedIssue);
+    console.log(`Linked Issue: #${linkedIssue} — ${issueInfo.title}`);
+    if (issueInfo.body) {
+      const bodyPreview = issueInfo.body.length > 500 ? issueInfo.body.substring(0, 500) + '...' : issueInfo.body;
+      console.log(bodyPreview);
+    }
+  } else {
+    console.log('No linked Issue found — evaluate integration test adequacy based on the PR description.');
+  }
+  console.log();
 }
 
 function getQuestions(hasAcceptanceCriteria) {
@@ -390,11 +464,57 @@ function printPostAcceptanceWorkflow() {
   console.log();
 }
 
+// --- Check-only mode ---
+
+function runCheckOnly(prNumber) {
+  const changedFiles = getChangedFiles(prNumber);
+  const { testCoverage } = findTestFiles(changedFiles);
+
+  const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
+  if (filesNeedingCoverage.length === 0) {
+    console.log('## Test Coverage Check\n');
+    console.log('No production files matching coverage patterns were changed.\n');
+    process.exit(0);
+  }
+
+  const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
+  const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
+
+  console.log('## Test Coverage Check\n');
+
+  if (covered.length > 0) {
+    console.log(`### Covered (${covered.length})\n`);
+    for (const { file } of covered) {
+      console.log(`- ✅ \`${file}\``);
+    }
+    console.log();
+  }
+
+  if (gaps.length > 0) {
+    console.log(`### Missing Tests (${gaps.length})\n`);
+    for (const { file, expectedTestPath } of gaps) {
+      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
+    }
+    console.log();
+    console.log(`**${gaps.length} production file(s) missing test coverage.**`);
+    process.exit(1);
+  } else {
+    console.log('**All production files have corresponding tests.** ✅');
+    process.exit(0);
+  }
+}
+
 // --- Main ---
 
 const prNumber = process.argv[2];
 if (!prNumber || !/^\d+$/.test(prNumber)) {
   usage();
+}
+
+const isCheckOnly = process.argv.includes('--check-only');
+
+if (isCheckOnly) {
+  runCheckOnly(prNumber);
 }
 
 const questionArg = process.argv[3];

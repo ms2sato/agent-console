@@ -1,0 +1,36 @@
+name: Test Coverage Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  coverage-check:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run coverage check
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node .claude/skills/orchestrator/acceptance-check.js ${{ github.event.pull_request.number }} --check-only > coverage-result.txt 2>&1 || true
+          cat coverage-result.txt
+
+      - name: Post PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: test-coverage-check
+          path: coverage-result.txt
+
+      - name: Fail if gaps detected
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .claude/skills/orchestrator/acceptance-check.js ${{ github.event.pull_request.number }} --check-only
