@@ -44,6 +44,8 @@ export interface UseSessionPageStateReturn {
   activityState: AgentActivityState
   setActivityState: React.Dispatch<React.SetStateAction<AgentActivityState>>
   lastMessage: WorkerMessage | null
+  resumeKey: number
+  retryLoadSession: () => void
 }
 
 export function useSessionPageState({
@@ -59,6 +61,8 @@ export function useSessionPageState({
   const [activityState, setActivityState] = useState<AgentActivityState>('unknown')
   const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({})
   const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null)
+  const [resumeKey, setResumeKey] = useState(0)
+  const [loadTrigger, setLoadTrigger] = useState(0)
   const syncRequestIdRef = useRef(0)
 
   const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
@@ -107,6 +111,7 @@ export function useSessionPageState({
 
     const nextState = resolveResumedState(resumedSession)
     setState(nextState)
+    setResumeKey(prev => prev + 1)
     if (nextState.type === 'active') {
       updateTabsFromSessionRef.current(resumedSession.workers)
     }
@@ -200,6 +205,11 @@ export function useSessionPageState({
     onSessionResumed: handleSessionResumed,
   })
 
+  const retryLoadSession = useCallback(() => {
+    setState({ type: 'loading' })
+    setLoadTrigger(prev => prev + 1)
+  }, [])
+
   // Load session data
   useEffect(() => {
     let cancelled = false
@@ -228,7 +238,7 @@ export function useSessionPageState({
 
     checkSession()
     return () => { cancelled = true }
-  }, [sessionId])
+  }, [sessionId, loadTrigger])
 
   return {
     state,
@@ -237,5 +247,7 @@ export function useSessionPageState({
     activityState,
     setActivityState,
     lastMessage,
+    resumeKey,
+    retryLoadSession,
   }
 }

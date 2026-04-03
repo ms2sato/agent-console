@@ -327,4 +327,19 @@ describe('sessionToPageState', () => {
     // pausedAt takes precedence
     expect(result.type).toBe('paused');
   });
+
+  it('should transition from paused to active when pausedAt is cleared after resume', () => {
+    // Verify the contract that SessionPage relies on after resume:
+    // When session-resumed WS event delivers a session with pausedAt cleared,
+    // sessionToPageState correctly returns 'active' (enabling reactive state
+    // transition without window.location.reload).
+    const pausedSession = createMockSession({ status: 'inactive', pausedAt: '2026-01-01T00:00:00Z' });
+    expect(sessionToPageState(pausedSession).type).toBe('paused');
+
+    const resumedSession = createMockSession({ status: 'active' });
+    const result = sessionToPageState(resumedSession);
+
+    expect(result.type).toBe('active');
+    expect(result.session).toBe(resumedSession);
+  });
 });

@@ -96,7 +96,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const updateTabsFromSessionRef = useRef<(w: Worker[]) => void>(() => {});
   const sessionActiveTabIdRef = useRef<string | null>(null);
 
-  const { state, setState, workerActivityStates, activityState, setActivityState, lastMessage } = useSessionPageState({
+  const { state, setState, workerActivityStates, activityState, setActivityState, lastMessage, resumeKey, retryLoadSession } = useSessionPageState({
     sessionId,
     updateTabsFromSessionRef,
     activeTabIdRef: sessionActiveTabIdRef,
@@ -171,8 +171,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     setIsResuming(true);
     try {
       await resumeSession(sessionId);
-      // After resume, reload the page to reconnect
-      window.location.reload();
+      // State transition handled by session-resumed WS event via handleSessionResumed.
+      // Terminal remounts via resumeKey change.
     } catch (error) {
       logger.error('Failed to resume session:', error);
       showError('Resume Failed', error instanceof Error ? error.message : 'Failed to resume session');
@@ -235,9 +235,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Server unavailable state
   if (state.type === 'server_unavailable') {
     const handleRetry = () => {
-      setState({ type: 'loading' });
-      // Re-trigger the effect by changing state
-      window.location.reload();
+      retryLoadSession();
     };
 
     return (
@@ -284,8 +282,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setResumeError(null);
       try {
         await resumeSession(sessionId);
-        // After resume, reload the page to reconnect
-        window.location.reload();
+        // State transition handled by session-resumed WS event via handleSessionResumed.
       } catch (error) {
         setResumeError(error instanceof Error ? error.message : 'Failed to resume session');
         setIsResuming(false);
@@ -416,7 +413,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Using key={activeTab.id} ensures Terminal remounts on tab switch
   const activeTabContent = activeTab ? (
     <div
-      key={activeTab.id}
+      key={`${activeTab.id}-${resumeKey}`}
       role="tabpanel"
       id={`worker-tabpanel-${activeTab.id}`}
       aria-labelledby={`worker-tab-${activeTab.id}`}
@@ -488,10 +485,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               isMainWorktree={session.isMainWorktree}
               session={session}
               workerActivityStates={workerActivityStates}
-              onSessionRestart={() => {
-                // Reload page to reconnect WebSocket to restarted session
-                window.location.reload();
-              }}
             />
           ) : (
             <QuickSessionSettings
