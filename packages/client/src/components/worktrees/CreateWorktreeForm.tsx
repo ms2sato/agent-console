@@ -1,4 +1,4 @@
-import { useId, useRef, useState, useEffect, useCallback } from 'react';
+import { useId, useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -13,7 +13,7 @@ import type {
   CreateWorktreeExistingRequest,
   GitHubIssueSummary,
 } from '@agent-console/shared';
-import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus, updateRepository } from '../../lib/api';
+import { fetchGitHubIssue, refreshDefaultBranch, getRemoteBranchStatus } from '../../lib/api';
 import { branchKeys } from '../../lib/query-keys';
 import {
   Dialog,
@@ -47,6 +47,8 @@ export interface CreateWorktreeFormProps {
   draftKey?: string;
   /** Hide the form heading (useful when rendered inside a dialog with its own title) */
   hideTitle?: boolean;
+  /** Optional slot rendered before the Agent selector in the header row */
+  headerSlot?: ReactNode;
 }
 
 export function CreateWorktreeForm({
@@ -57,6 +59,7 @@ export function CreateWorktreeForm({
   onCancel,
   draftKey,
   hideTitle,
+  headerSlot,
 }: CreateWorktreeFormProps) {
   const {
     register,
@@ -191,17 +194,6 @@ export function CreateWorktreeForm({
     },
   });
 
-  // State for "set as default agent" checkbox
-  const [setAsDefault, setSetAsDefault] = useState(false);
-
-  // Mutation to update repository's default agent
-  const updateDefaultAgentMutation = useMutation({
-    mutationFn: (agentId: string) => updateRepository(repositoryId, { defaultAgentId: agentId }),
-    onError: () => {
-      setSetAsDefault(false);
-    },
-  });
-
   // The actual base branch to use (user input or effective default)
   const baseBranch = watch('baseBranch');
   const actualBaseBranch = baseBranch?.trim() || effectiveDefaultBranch;
@@ -322,39 +314,19 @@ export function CreateWorktreeForm({
       {!hideTitle && <h3 className="text-sm font-medium mb-2">Create Worktree</h3>}
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset className="flex flex-col gap-2">
-          <div className="flex items-center justify-between flex-wrap gap-y-2">
+          <div className="flex items-center flex-wrap gap-2">
+            {headerSlot}
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm text-gray-400">Agent:</span>
               <AgentSelector
                 value={resolvedAgentId}
-                onChange={(value) => {
-                  setValue('agentId', value);
-                  if (setAsDefault && value) {
-                    updateDefaultAgentMutation.mutate(value);
-                  }
-                }}
+                onChange={(value) => setValue('agentId', value)}
                 priorityAgentId={defaultAgentId ?? undefined}
               />
-              <label className="text-sm text-gray-400 flex items-center gap-1.5 ml-2">
-                <input
-                  type="checkbox"
-                  checked={setAsDefault}
-                  disabled={updateDefaultAgentMutation.isPending}
-                  onChange={(e) => {
-                    setSetAsDefault(e.target.checked);
-                    const currentAgent = getValues('agentId');
-                    if (e.target.checked && currentAgent) {
-                      updateDefaultAgentMutation.mutate(currentAgent);
-                    }
-                  }}
-                  className="rounded"
-                />
-                Set as default
-              </label>
             </div>
             <button
               type="button"
-              className="btn bg-slate-700 hover:bg-slate-600 text-sm"
+              className="btn bg-transparent border border-slate-600 text-slate-400 hover:text-white hover:border-slate-500 text-sm"
               onClick={() => setIsIssueDialogOpen(true)}
             >
               Import from Issue
@@ -370,8 +342,8 @@ export function CreateWorktreeForm({
                 <Textarea
                   {...register('initialPrompt')}
                   placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
-                  className="w-full min-h-[60px] resize-y"
-                  rows={2}
+                  className="w-full min-h-[80px] resize-y"
+                  rows={3}
                   error={errors.initialPrompt}
                 />
               </FormField>

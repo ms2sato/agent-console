@@ -167,9 +167,9 @@ describe('QuickWorktreeDialog', () => {
       expect(screen.getByText('Create & Start Session')).toBeTruthy();
     });
 
-    // Dialog title should be visible (use role to disambiguate from the form's h3)
+    // Dialog title should be visible
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByText('Create a new worktree for Test Repository')).toBeTruthy();
+    expect(screen.getByText('Create Worktree')).toBeTruthy();
   });
 
   it('should close dialog on successful worktree creation', async () => {

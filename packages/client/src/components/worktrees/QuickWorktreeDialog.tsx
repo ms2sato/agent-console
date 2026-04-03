@@ -9,7 +9,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '../ui/dialog';
 import { CreateWorktreeForm } from './CreateWorktreeForm';
 
@@ -90,30 +89,9 @@ export function QuickWorktreeDialog({
       <DialogContent className="max-w-3xl max-h-[calc(100vh-6rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create Worktree</DialogTitle>
-          <DialogDescription>
-            {selectedRepo
-              ? `Create a new worktree for ${selectedRepo.name}`
-              : 'Select a repository and create a new worktree'}
-          </DialogDescription>
         </DialogHeader>
         {error && (
           <p className="text-sm text-red-400 mb-2" role="alert">{error}</p>
-        )}
-        {/* Repository selector */}
-        {showRepoSelector && !repositoriesQuery.isLoading && repositories.length > 0 && (
-          <div className="flex items-center gap-2 mb-2">
-            <label htmlFor="repo-selector" className="text-sm text-gray-400 shrink-0">Repository:</label>
-            <select
-              id="repo-selector"
-              value={effectiveRepoId ?? ''}
-              onChange={(e) => setSelectedRepoId(e.target.value)}
-              className="flex-1 min-w-0 bg-slate-700 text-sm text-gray-200 rounded px-2 py-1.5 border border-slate-600 focus:border-blue-500 focus:outline-none"
-            >
-              {repositories.map((repo) => (
-                <option key={repo.id} value={repo.id}>{repo.name}</option>
-              ))}
-            </select>
-          </div>
         )}
         {repositoriesQuery.isLoading || !effectiveRepoId || isLoading ? (
           <div className="flex items-center justify-center py-8">
@@ -128,6 +106,21 @@ export function QuickWorktreeDialog({
             onCancel={() => handleOpenChange(false)}
             draftKey={`worktree-draft:${effectiveRepoId}`}
             hideTitle
+            headerSlot={showRepoSelector && repositories.length > 0 ? (
+              <div className="flex items-center gap-2 min-w-[120px] flex-1">
+                <label htmlFor="repo-selector" className="text-sm text-gray-400 shrink-0">Repo:</label>
+                <select
+                  id="repo-selector"
+                  value={effectiveRepoId ?? ''}
+                  onChange={(e) => setSelectedRepoId(e.target.value)}
+                  className="flex-1 min-w-0 bg-slate-700 text-sm text-gray-200 rounded px-2 py-1.5 border border-slate-600 focus:border-blue-500 focus:outline-none"
+                >
+                  {repositories.map((repo) => (
+                    <option key={repo.id} value={repo.id}>{repo.name}</option>
+                  ))}
+                </select>
+              </div>
+            ) : undefined}
           />
         )}
       </DialogContent>
