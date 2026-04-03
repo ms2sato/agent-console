@@ -315,10 +315,10 @@ export function CreateWorktreeForm({
   };
 
   return (
-    <div className="relative bg-slate-800 p-4 rounded mb-4 overflow-hidden">
-      <h3 className="text-sm font-medium mb-3">Create Worktree</h3>
+    <div className="relative bg-slate-800 p-3 rounded mb-4 overflow-hidden">
+      <h3 className="text-sm font-medium mb-2">Create Worktree</h3>
       <form onSubmit={handleSubmit(handleFormSubmit)}>
-        <fieldset className="flex flex-col gap-3">
+        <fieldset className="flex flex-col gap-2">
           <div className="flex items-center justify-between flex-wrap gap-y-2">
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm text-gray-400">Agent:</span>
@@ -358,128 +358,137 @@ export function CreateWorktreeForm({
             </button>
           </div>
 
-          {/* Initial prompt input (available for all modes) */}
-          <FormField label="Initial prompt (optional)" error={errors.initialPrompt}>
-            <Textarea
-              {...register('initialPrompt')}
-              placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
-              className="w-full min-h-[80px] resize-y"
-              rows={3}
-              error={errors.initialPrompt}
-            />
-          </FormField>
-
-          {/* Session title input */}
-          <FormField label="Title (optional)" error={errors.sessionTitle}>
-            <Input
-              {...register('sessionTitle')}
-              placeholder="Session title"
-              className="w-full"
-              error={errors.sessionTitle}
-            />
-            {initialPrompt?.trim() && (
-              <p className="text-xs text-gray-500 mt-1">Leave empty to generate from prompt</p>
-            )}
-          </FormField>
-
-          {/* Branch name mode selection */}
-          <fieldset className="flex flex-col gap-2 border-0 p-0 m-0">
-            <legend className="text-sm text-gray-400 mb-1">Branch name:</legend>
-            <label className={`text-sm flex items-center gap-2 ${!initialPrompt?.trim() ? 'text-gray-600' : 'text-gray-400'}`}>
-              <input
-                {...register('branchNameMode')}
-                type="radio"
-                value="prompt"
-                disabled={!initialPrompt?.trim()}
-              />
-              Generate from prompt {initialPrompt?.trim() ? '(recommended)' : '(requires prompt)'}
-            </label>
-            <label className="text-sm text-gray-400 flex items-center gap-2">
-              <input
-                {...register('branchNameMode')}
-                type="radio"
-                value="custom"
-              />
-              Custom name (new branch)
-            </label>
-            <label className="text-sm text-gray-400 flex items-center gap-2">
-              <input
-                {...register('branchNameMode')}
-                type="radio"
-                value="existing"
-              />
-              Use existing branch
-            </label>
-          </fieldset>
-
-          {/* Branch name input (only for custom/existing) */}
-          {(branchNameMode === 'custom' || branchNameMode === 'existing') && (
-            <FormField error={errors.customBranch}>
-              <Input
-                {...register('customBranch')}
-                placeholder={branchNameMode === 'custom' ? 'New branch name' : 'Existing branch name'}
-                error={errors.customBranch}
-              />
-            </FormField>
-          )}
-
-          {/* Base branch input (only for new branches) */}
-          {branchNameMode !== 'existing' && (
-            <FormField error={errors.baseBranch}>
-              <div className="flex gap-2">
-                <Input
-                  {...register('baseBranch')}
-                  placeholder={`Base branch (default: ${effectiveDefaultBranch})`}
-                  error={errors.baseBranch}
-                  className="flex-1"
+          {/* Two-column layout for form fields */}
+          <div className="grid grid-cols-1 md:grid-cols-[3fr_2fr] gap-x-4 gap-y-2">
+            {/* Left column: prompt and title */}
+            <div className="flex flex-col gap-2">
+              {/* Initial prompt input (available for all modes) */}
+              <FormField label="Initial prompt (optional)" error={errors.initialPrompt}>
+                <Textarea
+                  {...register('initialPrompt')}
+                  placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"
+                  className="w-full min-h-[60px] resize-y"
+                  rows={2}
+                  error={errors.initialPrompt}
                 />
-                <button
-                  type="button"
-                  onClick={() => refreshDefaultBranchMutation.mutate()}
-                  disabled={refreshDefaultBranchMutation.isPending}
-                  className="btn bg-slate-600 hover:bg-slate-500 text-sm shrink-0"
-                  title="Refresh default branch from remote"
-                >
-                  {refreshDefaultBranchMutation.isPending ? (
-                    <Spinner size="sm" />
-                  ) : (
-                    'Refresh'
-                  )}
-                </button>
-              </div>
-              {refreshDefaultBranchMutation.isError && (
-                <p className="text-xs text-red-400 mt-1">
-                  {refreshDefaultBranchMutation.error instanceof Error
-                    ? refreshDefaultBranchMutation.error.message
-                    : 'Failed to refresh default branch'}
-                </p>
+              </FormField>
+
+              {/* Session title input */}
+              <FormField label="Title (optional)" error={errors.sessionTitle}>
+                <Input
+                  {...register('sessionTitle')}
+                  placeholder="Session title"
+                  className="w-full"
+                  error={errors.sessionTitle}
+                />
+                {initialPrompt?.trim() && (
+                  <p className="text-xs text-gray-500 mt-1">Leave empty to generate from prompt</p>
+                )}
+              </FormField>
+            </div>
+
+            {/* Right column: branch settings */}
+            <div className="flex flex-col gap-2">
+              {/* Branch name mode selection */}
+              <fieldset className="flex flex-col gap-1 border-0 p-0 m-0">
+                <legend className="text-sm text-gray-400 mb-0.5">Branch name:</legend>
+                <label className={`text-sm flex items-center gap-2 ${!initialPrompt?.trim() ? 'text-gray-600' : 'text-gray-400'}`}>
+                  <input
+                    {...register('branchNameMode')}
+                    type="radio"
+                    value="prompt"
+                    disabled={!initialPrompt?.trim()}
+                  />
+                  Generate from prompt {initialPrompt?.trim() ? '(recommended)' : '(requires prompt)'}
+                </label>
+                <label className="text-sm text-gray-400 flex items-center gap-2">
+                  <input
+                    {...register('branchNameMode')}
+                    type="radio"
+                    value="custom"
+                  />
+                  Custom name (new branch)
+                </label>
+                <label className="text-sm text-gray-400 flex items-center gap-2">
+                  <input
+                    {...register('branchNameMode')}
+                    type="radio"
+                    value="existing"
+                  />
+                  Use existing branch
+                </label>
+              </fieldset>
+
+              {/* Branch name input (only for custom/existing) */}
+              {(branchNameMode === 'custom' || branchNameMode === 'existing') && (
+                <FormField error={errors.customBranch}>
+                  <Input
+                    {...register('customBranch')}
+                    placeholder={branchNameMode === 'custom' ? 'New branch name' : 'Existing branch name'}
+                    error={errors.customBranch}
+                  />
+                </FormField>
               )}
-              {refreshedDefaultBranch && !refreshDefaultBranchMutation.isError && (
-                <p className="text-xs text-green-400 mt-1">
-                  Default branch updated to: {refreshedDefaultBranch}
-                </p>
-              )}
-              {/* Remote branch status - fixed height to prevent layout shift */}
-              <div className="h-5 mt-1">
-                {remoteStatusQuery.isLoading && (
-                  <div className="text-xs text-gray-400 flex items-center gap-1">
-                    <Spinner size="sm" />
-                    <span>Checking remote status...</span>
+
+              {/* Base branch input (only for new branches) */}
+              {branchNameMode !== 'existing' && (
+                <FormField error={errors.baseBranch}>
+                  <div className="flex gap-2">
+                    <Input
+                      {...register('baseBranch')}
+                      placeholder={`Base branch (default: ${effectiveDefaultBranch})`}
+                      error={errors.baseBranch}
+                      className="flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => refreshDefaultBranchMutation.mutate()}
+                      disabled={refreshDefaultBranchMutation.isPending}
+                      className="btn bg-slate-600 hover:bg-slate-500 text-sm shrink-0"
+                      title="Refresh default branch from remote"
+                    >
+                      {refreshDefaultBranchMutation.isPending ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        'Refresh'
+                      )}
+                    </button>
                   </div>
-                )}
-                {remoteStatusQuery.isError && (
-                  <p className="text-xs text-yellow-400">
-                    Could not check remote status (will use local branch)
-                  </p>
-                )}
-                {remoteStatusQuery.data && remoteStatusQuery.data.behind > 0 && (
-                  <p className="text-xs text-yellow-400">
-                    ⚠️ {remoteStatusQuery.data.behind} commit{remoteStatusQuery.data.behind > 1 ? 's' : ''} behind origin/{actualBaseBranch}
-                  </p>
-                )}
-              </div>
-            </FormField>
-          )}
+                  {refreshDefaultBranchMutation.isError && (
+                    <p className="text-xs text-red-400 mt-1">
+                      {refreshDefaultBranchMutation.error instanceof Error
+                        ? refreshDefaultBranchMutation.error.message
+                        : 'Failed to refresh default branch'}
+                    </p>
+                  )}
+                  {refreshedDefaultBranch && !refreshDefaultBranchMutation.isError && (
+                    <p className="text-xs text-green-400 mt-1">
+                      Default branch updated to: {refreshedDefaultBranch}
+                    </p>
+                  )}
+                  {/* Remote branch status - fixed height to prevent layout shift */}
+                  <div className="h-5 mt-1">
+                    {remoteStatusQuery.isLoading && (
+                      <div className="text-xs text-gray-400 flex items-center gap-1">
+                        <Spinner size="sm" />
+                        <span>Checking remote status...</span>
+                      </div>
+                    )}
+                    {remoteStatusQuery.isError && (
+                      <p className="text-xs text-yellow-400">
+                        Could not check remote status (will use local branch)
+                      </p>
+                    )}
+                    {remoteStatusQuery.data && remoteStatusQuery.data.behind > 0 && (
+                      <p className="text-xs text-yellow-400">
+                        ⚠️ {remoteStatusQuery.data.behind} commit{remoteStatusQuery.data.behind > 1 ? 's' : ''} behind origin/{actualBaseBranch}
+                      </p>
+                    )}
+                  </div>
+                </FormField>
+              )}
+            </div>
+          </div>
 
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
