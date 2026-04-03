@@ -17,6 +17,7 @@
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number>
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only
+ *   node .claude/skills/orchestrator/acceptance-check.js --check-only  (uses local git diff against main)
  */
 
 import { execSync } from 'node:child_process';
@@ -29,10 +30,12 @@ function usage() {
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only');
+  console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only');
   console.error('Example:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 q1 "Read worker-service.ts..."');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 --check-only');
+  console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only  # uses local git diff');
   process.exit(1);
 }
 
@@ -48,6 +51,21 @@ function getChangedFiles(prNumber) {
   const result = exec(`gh pr diff ${prNumber} --name-only`);
   if (result === null) {
     console.error(`Error: Could not retrieve diff for PR #${prNumber}. Please verify the gh command and PR number.`);
+    process.exit(1);
+  }
+  return result.split('\n').filter(Boolean);
+}
+
+function getLocalChangedFiles() {
+  const baseBranch = process.env.BASE_BRANCH || 'origin/main';
+  const mergeBase = exec(`git merge-base ${baseBranch} HEAD`);
+  if (!mergeBase) {
+    console.error(`Error: Could not determine merge-base with ${baseBranch}. Ensure git is available and the branch exists.`);
+    process.exit(1);
+  }
+  const result = exec(`git diff --name-only ${mergeBase}...HEAD`);
+  if (result === null) {
+    console.error('Error: Could not retrieve local git diff.');
     process.exit(1);
   }
   return result.split('\n').filter(Boolean);
@@ -122,14 +140,17 @@ function findTestFiles(changedFiles) {
     const dir = baseName.substring(0, baseName.lastIndexOf('/'));
     const fileName = baseName.substring(baseName.lastIndexOf('/') + 1);
 
-    // Check multiple possible test file patterns
+    // Check multiple possible test file patterns using full path matching
+    // to avoid false positives from basename collisions (e.g., routes/index.ts vs services/index.ts)
+    const testPattern = new RegExp(`\\.(test|spec)\\.(ts|tsx|js|jsx)$`);
     const hasTest = testFiles.some(tf => {
+      if (!testPattern.test(tf)) return false;
+      const tfDir = tf.substring(0, tf.lastIndexOf('/'));
       const tfFileName = tf.substring(tf.lastIndexOf('/') + 1);
-      // Match: fileName.test.ts, fileName.test.tsx, fileName.spec.ts, fileName.spec.tsx
-      if (tfFileName.match(new RegExp(`^${escapeRegExp(fileName)}\\.(test|spec)\\.(ts|tsx|js|jsx)$`))) {
-        return true;
-      }
-      return false;
+      const tfBaseName = tfFileName.replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/, '');
+      if (tfBaseName !== fileName) return false;
+      // Match: sibling test (same dir) or __tests__ subdirectory
+      return tfDir === dir || tfDir === dir + '/__tests__';
     });
 
     const needsCoverage = requiresTestCoverage(prodFile);
@@ -138,10 +159,6 @@ function findTestFiles(changedFiles) {
   }
 
   return { testFiles, productionFiles, testCoverage };
-}
-
-function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // --- Package boundary analysis ---
@@ -182,7 +199,8 @@ function getLinkedIssueNumber(prNumber) {
   const result = exec(`gh pr view ${prNumber} --json body --jq .body`);
   if (!result) return null;
 
-  const match = result.match(/closed?\s+#(\d+)/i);
+  // Match: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved
+  const match = result.match(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/i);
   return match ? match[1] : null;
 }
 
@@ -466,8 +484,7 @@ function printPostAcceptanceWorkflow() {
 
 // --- Check-only mode ---
 
-function runCheckOnly(prNumber) {
-  const changedFiles = getChangedFiles(prNumber);
+function runCheckOnly(changedFiles) {
   const { testCoverage } = findTestFiles(changedFiles);
 
   const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
@@ -506,15 +523,20 @@ function runCheckOnly(prNumber) {
 
 // --- Main ---
 
-const prNumber = process.argv[2];
-if (!prNumber || !/^\d+$/.test(prNumber)) {
-  usage();
-}
-
 const isCheckOnly = process.argv.includes('--check-only');
 
+const prNumber = process.argv[2];
+
+// --check-only can run without a PR number (uses local git diff)
 if (isCheckOnly) {
-  runCheckOnly(prNumber);
+  const changedFiles = (prNumber && /^\d+$/.test(prNumber))
+    ? getChangedFiles(prNumber)
+    : getLocalChangedFiles();
+  runCheckOnly(changedFiles);
+}
+
+if (!prNumber || !/^\d+$/.test(prNumber)) {
+  usage();
 }
 
 const questionArg = process.argv[3];
