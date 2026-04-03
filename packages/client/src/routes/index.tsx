@@ -38,10 +38,9 @@ import {
 } from '../components/ui/alert-dialog';
 import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
-import { QuickSessionForm } from '../components/sessions';
 import { useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
-import type { Session, Repository, Worktree, AgentActivityState, CreateQuickSessionRequest, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
+import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
 
 // Timeout (ms) to auto-remove stale pull entries if WebSocket never responds
@@ -142,9 +141,7 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
 
 function DashboardPage() {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const [showAddRepo, setShowAddRepo] = useState(false);
-  const [showAddSession, setShowAddSession] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
 
@@ -491,19 +488,6 @@ function DashboardPage() {
     }
   };
 
-  const createSessionMutation = useMutation({
-    mutationFn: createSession,
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
-      setShowAddSession(false);
-      navigate({ to: `/sessions/${data.session.id}` });
-    },
-  });
-
-  const handleStartSession = async (data: CreateQuickSessionRequest) => {
-    await createSessionMutation.mutateAsync(data);
-  };
-
   // Show loading state only on initial load before first sync.
   // After the first sync, keep showing previous data (stale-while-revalidate)
   // even during WebSocket reconnection or re-sync to avoid jarring UI flashes.
@@ -525,20 +509,6 @@ function DashboardPage() {
       <div className="py-4 px-4 md:py-6 md:px-6">
         <div className="flex flex-col gap-3 mb-5 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setShowAddSession(true)}
-              className="btn text-sm bg-slate-700 hover:bg-slate-600"
-            >
-              + Quick Start
-            </button>
-            <button
-              onClick={() => setShowAddRepo(true)}
-              className="btn btn-primary text-sm"
-            >
-              + Add Repository
-            </button>
-          </div>
         </div>
 
       {showAddRepo && (
@@ -564,14 +534,6 @@ function DashboardPage() {
             Dismiss
           </button>
         </div>
-      )}
-
-      {showAddSession && (
-        <QuickSessionForm
-          isPending={createSessionMutation.isPending}
-          onSubmit={handleStartSession}
-          onCancel={() => setShowAddSession(false)}
-        />
       )}
 
       {repositories.length === 0 ? (

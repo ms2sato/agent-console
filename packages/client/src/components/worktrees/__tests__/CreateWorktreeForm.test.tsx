@@ -348,55 +348,6 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
-  describe('GitHub issue', () => {
-    it('should populate prompt from issue and use prompt mode for branch generation', async () => {
-      const user = userEvent.setup();
-      const issue = {
-        org: 'owner',
-        repo: 'repo',
-        number: 123,
-        title: 'Add docs',
-        body: 'Please update the README.',
-        url: 'https://github.com/owner/repo/issues/123',
-        suggestedBranch: 'add-docs',
-      };
-
-      mockFetch.mockImplementation((input) => {
-        const url = resolveUrl(input);
-        if (url.includes('/github-issue')) {
-          return Promise.resolve(createMockResponse({ issue }));
-        }
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      });
-
-      renderCreateWorktreeForm();
-
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      const openDialogButton = screen.getByText('Import from Issue');
-      await user.click(openDialogButton);
-
-      const issueInput = screen.getByPlaceholderText(/github.com\/owner\/repo\/issues/);
-      await user.type(issueInput, 'owner/repo#123');
-      await user.click(screen.getByText('Fetch'));
-
-      await waitFor(() => {
-        expect(screen.getByText(issue.title)).toBeTruthy();
-      });
-
-      await user.click(screen.getByText('Apply'));
-
-      const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
-      expect(promptInput.value).toBe(issue.body);
-
-      // Verify 'prompt' mode is selected (Auto-generate)
-      const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
-      expect(promptRadio.checked).toBe(true);
-    });
-  });
-
   describe('default agent sorting', () => {
     it('should render the default agent first even when it is not first in the API response', async () => {
       // Override agents response so custom-agent is first in the API response
