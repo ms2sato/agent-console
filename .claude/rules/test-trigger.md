@@ -1,0 +1,39 @@
+---
+globs:
+  - "packages/server/src/routes/**/*.ts"
+  - "packages/server/src/services/**/*.ts"
+  - "packages/client/src/hooks/**/*.ts"
+  - "packages/client/src/components/**/*.tsx"
+  - "packages/shared/src/**/*.ts"
+  - "!**/*.test.ts"
+  - "!**/*.test.tsx"
+  - "!**/__tests__/**"
+---
+
+# Test Coverage Requirement
+
+When modifying production files matching these patterns, corresponding test files **must** be added or updated.
+
+## Expected Test File Locations
+
+| File Pattern | Expected Test Location |
+|-------------|------------------------|
+| `packages/server/src/routes/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
+| `packages/server/src/services/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
+| `packages/client/src/hooks/**/*.ts` | `.../__tests__/*.test.ts(x)` or sibling `*.test.ts(x)` |
+| `packages/client/src/components/**/*.tsx` | `.../__tests__/*.test.tsx` or sibling `*.test.tsx` |
+| `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
+
+## Before Creating a PR
+
+Run the coverage check to verify all production files have corresponding tests:
+
+```bash
+# With a PR number (uses gh pr diff):
+node .claude/skills/orchestrator/acceptance-check.js <PR-number> --check-only
+
+# Without a PR number (uses local git diff against origin/main):
+node .claude/skills/orchestrator/acceptance-check.js --check-only
+```
+
+If any gaps are detected (non-zero exit code), add the missing tests before proceeding.
