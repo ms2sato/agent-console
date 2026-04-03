@@ -65,7 +65,7 @@ describe('vValidator middleware', () => {
     expect(body.error).toBeTruthy();
   });
 
-  it('should return 400 for valid input with optional nested object present', async () => {
+  it('should return 200 for valid input with optional nested object present', async () => {
     const app = createApp();
     const res = await postJson(app, { name: 'test', user: { email: 'user@example.com' } });
 

@@ -146,8 +146,10 @@ describe('Repositories API', () => {
       // First request starts generation
       const first = app.request('/api/repositories/repo1/generate-description', { method: 'POST' });
 
-      // Wait a tick for the first request to start processing
-      await new Promise((r) => setTimeout(r, 10));
+      // Wait for the first request to reach the generator
+      while (mockGenerateDescription.mock.calls.length === 0) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
 
       // Second request should be blocked
       const second = await app.request('/api/repositories/repo1/generate-description', { method: 'POST' });

@@ -17,7 +17,7 @@ function createEvent(metadata: Partial<InboundSystemEvent['metadata']> = {}): In
   } as InboundSystemEvent;
 }
 
-function createWorktreeSession(overrides: Partial<Session> = {}): Session {
+function createSession(overrides: Partial<Session> = {}): Session {
   return {
     id: 'session-1',
     type: 'worktree',
@@ -35,7 +35,7 @@ const defaultRepository: Repository = {
 
 describe('resolveTargets', () => {
   it('matches repository names case-insensitively', async () => {
-    const session = createWorktreeSession();
+    const session = createSession();
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,
@@ -48,8 +48,8 @@ describe('resolveTargets', () => {
   });
 
   it('filters by branch when event specifies a branch', async () => {
-    const mainSession = createWorktreeSession({ id: 'session-main', worktreeId: 'main' });
-    const featureSession = createWorktreeSession({ id: 'session-feature', worktreeId: 'feature-branch' });
+    const mainSession = createSession({ id: 'session-main', worktreeId: 'main' });
+    const featureSession = createSession({ id: 'session-feature', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
       getSessions: () => [mainSession, featureSession],
       getRepository: () => defaultRepository,
@@ -62,7 +62,7 @@ describe('resolveTargets', () => {
   });
 
   it('skips non-worktree sessions', async () => {
-    const session = createWorktreeSession({ type: 'quick' });
+    const session = createSession({ type: 'quick' });
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,
@@ -75,8 +75,8 @@ describe('resolveTargets', () => {
   });
 
   it('swallows GitError and continues processing remaining sessions', async () => {
-    const session1 = createWorktreeSession({ id: 'session-1', repositoryId: 'repo-1' });
-    const session2 = createWorktreeSession({ id: 'session-2', repositoryId: 'repo-2' });
+    const session1 = createSession({ id: 'session-1', repositoryId: 'repo-1' });
+    const session2 = createSession({ id: 'session-2', repositoryId: 'repo-2' });
     const repositories: Record<string, Repository> = {
       'repo-1': { id: 'repo-1', path: '/path/to/repo1' } as Repository,
       'repo-2': { id: 'repo-2', path: '/path/to/repo2' } as Repository,
@@ -100,7 +100,7 @@ describe('resolveTargets', () => {
   });
 
   it('returns empty array when repositoryName is missing', async () => {
-    const session = createWorktreeSession();
+    const session = createSession();
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,

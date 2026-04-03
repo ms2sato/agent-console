@@ -97,6 +97,8 @@ describe('Agents API', () => {
 
       const body = (await res.json()) as { success: boolean };
       expect(body.success).toBe(true);
+      expect(agentManager.unregisterAgent).toHaveBeenCalledWith('test');
+      expect(agentManager.unregisterAgent).toHaveBeenCalledTimes(1);
     });
   });
 
