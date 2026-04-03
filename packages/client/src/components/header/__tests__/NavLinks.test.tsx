@@ -16,58 +16,38 @@ import {
 
 const originalFetch = globalThis.fetch;
 
-type FetchResponse = {
-  ok: boolean;
-  status: number;
-  json: () => Promise<unknown>;
-  text: () => Promise<string>;
-};
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
 
 let reviewQueueResponse: unknown = [];
 let validateSessionsResponse: unknown = { hasIssues: false, results: [] };
 let logoutCalled = false;
 
-const mockFetch = mock(async (input: RequestInfo | URL): Promise<FetchResponse> => {
+const mockFetch: typeof fetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
   const url = input instanceof Request ? input.url : String(input);
 
   if (url.includes('/review-queue')) {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => reviewQueueResponse,
-      text: async () => JSON.stringify(reviewQueueResponse),
-    };
+    return jsonResponse(reviewQueueResponse);
   }
 
   if (url.includes('/sessions/validate')) {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => validateSessionsResponse,
-      text: async () => JSON.stringify(validateSessionsResponse),
-    };
+    return jsonResponse(validateSessionsResponse);
   }
 
   if (url.includes('/auth/logout')) {
     logoutCalled = true;
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-      text: async () => '{}',
-    };
+    return jsonResponse({});
   }
 
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({}),
-    text: async () => '{}',
-  };
+  return jsonResponse({});
 });
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch as unknown as typeof fetch;
+  globalThis.fetch = mockFetch;
   reviewQueueResponse = [];
   validateSessionsResponse = { hasIssues: false, results: [] };
   logoutCalled = false;
