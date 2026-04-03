@@ -173,12 +173,13 @@ describe('FromIssueTab', () => {
       await user.type(input, '#42');
       fireEvent.click(screen.getByText('Fetch'));
 
+      // Wait for Phase 2: CreateWorktreeForm fields appear
       await waitFor(() => {
-        expect(screen.getByText('Fix login bug')).toBeTruthy();
+        expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
       });
     }
 
-    it('should show issue preview card and CreateWorktreeForm after fetching', async () => {
+    it('should show CreateWorktreeForm after fetching (no preview card)', async () => {
       const user = userEvent.setup();
       setupFetchMock();
 
@@ -189,18 +190,17 @@ describe('FromIssueTab', () => {
       );
 
       await fetchIssue(user);
-
-      // Issue preview card should be visible
-      expect(screen.getByText('Open on GitHub')).toBeTruthy();
-      expect(screen.getByText('The login page crashes when password is empty.')).toBeTruthy();
 
       // CreateWorktreeForm fields should now be visible
       expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
       expect(screen.getByText('Title (optional)')).toBeTruthy();
       expect(screen.getByText('Branch name:')).toBeTruthy();
+
+      // No separate preview card — content is in the form fields
+      expect(screen.queryByText('Open on GitHub')).toBeNull();
     });
 
-    it('should prefill form with issue data', async () => {
+    it('should prefill form with issue data including ref URL', async () => {
       const user = userEvent.setup();
       setupFetchMock();
 
@@ -212,12 +212,11 @@ describe('FromIssueTab', () => {
 
       await fetchIssue(user);
 
-      // Check that the initial prompt textarea is prefilled with issue body
-      // (prefill is applied via useEffect, so we need waitFor)
+      // Check that the initial prompt is prefilled with ref URL + issue body
       await waitFor(() => {
         const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
         expect((promptTextarea as HTMLTextAreaElement).value).toBe(
-          'The login page crashes when password is empty.'
+          'ref https://github.com/owner/repo/issues/42\n\nThe login page crashes when password is empty.'
         );
       });
 
@@ -241,9 +240,7 @@ describe('FromIssueTab', () => {
       // Wait for prefill to be applied before submitting
       await waitFor(() => {
         const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
-        expect((promptTextarea as HTMLTextAreaElement).value).toBe(
-          'The login page crashes when password is empty.'
-        );
+        expect((promptTextarea as HTMLTextAreaElement).value).toContain('ref https://github.com/owner/repo/issues/42');
       });
 
       // Click Create & Start Session
@@ -256,9 +253,33 @@ describe('FromIssueTab', () => {
       const submitCall = (defaultProps.onSubmit as ReturnType<typeof mock>).mock.calls[0];
       const request = submitCall[0];
       expect(request.mode).toBe('prompt');
-      expect(request.initialPrompt).toBe('The login page crashes when password is empty.');
+      expect(request.initialPrompt).toBe(
+        'ref https://github.com/owner/repo/issues/42\n\nThe login page crashes when password is empty.'
+      );
       expect(request.title).toBe('Fix login bug');
       expect(request.autoStartSession).toBe(true);
+    });
+
+    it('should show branch name mode options after fetching', async () => {
+      const user = userEvent.setup();
+      setupFetchMock();
+
+      render(
+        <TestWrapper>
+          <FromIssueTab {...defaultProps} />
+        </TestWrapper>
+      );
+
+      await fetchIssue(user);
+
+      // Branch name mode radio buttons should be available
+      expect(screen.getByLabelText('Auto-generate')).toBeTruthy();
+      expect(screen.getByLabelText('Custom name (new branch)')).toBeTruthy();
+      expect(screen.getByLabelText('Use existing branch')).toBeTruthy();
+
+      // Auto-generate should be selected by default (from prefillValues branchNameMode: 'prompt')
+      const autoGenerate = screen.getByLabelText('Auto-generate') as HTMLInputElement;
+      expect(autoGenerate.checked).toBe(true);
     });
 
     it('should use issue title as prompt when body is empty', async () => {
@@ -295,14 +316,17 @@ describe('FromIssueTab', () => {
       await user.type(input, '#42');
       fireEvent.click(screen.getByText('Fetch'));
 
+      // Wait for Phase 2
       await waitFor(() => {
-        expect(screen.getByText('Fix login bug')).toBeTruthy();
+        expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
       });
 
-      // The prompt should be prefilled with the title since body is empty
+      // The prompt should be prefilled with ref URL + title (since body is empty)
       await waitFor(() => {
         const promptTextarea = screen.getByPlaceholderText(/What do you want to work on/);
-        expect((promptTextarea as HTMLTextAreaElement).value).toBe('Fix login bug');
+        expect((promptTextarea as HTMLTextAreaElement).value).toBe(
+          'ref https://github.com/owner/repo/issues/42\n\nFix login bug'
+        );
       });
     });
   });
