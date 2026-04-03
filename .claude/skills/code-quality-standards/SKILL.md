@@ -8,7 +8,14 @@ description: Code quality evaluation criteria for reviews. Use when reviewing co
 ## 1. Robustness to Change
 - **Single Responsibility Principle** — Each module/class has only one reason to change. Unrelated concerns are separated.
 - **File Size and Responsibility Checks** — Flag files >500 lines. Look for responsibility clustering (e.g., mixed prefixes like `initializeWorker*` vs `createSession*`). Note: responsibility clustering is the primary signal, not raw line count.
-- **Module Design** — Evaluate cohesion, coupling, and encapsulation. See "Design Review Mindset" in CLAUDE.md for detailed module evaluation criteria.
+- **Module Design** — Evaluate cohesion, coupling, and encapsulation using these perspectives:
+  - Is each module cohesive? (single responsibility, would you name it the same after reading all contents?)
+  - Is coupling minimized? (can change without forcing changes elsewhere?)
+  - Is the interface well-encapsulated? (public API reveals only what callers need?)
+  - Is the dependency direction correct? (high-level modules don't depend on low-level details)
+  - Is the placement appropriate? (module-specific or shared, aligned with scope of responsibility)
+  - Is the interface actually usable? (callers can pass the information they need)
+  - Do default values contradict state? (default makes sense when other fields are unset)
 - **Open-Closed Principle** — New features addable without modifying existing code.
 - **Change Localization** — Single feature change contained within a small area. Watch for Shotgun Surgery.
 - **Dependency Management** — Dependencies injected, loosely coupled, abstracted via interfaces.
