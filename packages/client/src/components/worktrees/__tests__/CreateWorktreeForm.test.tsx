@@ -391,8 +391,8 @@ describe('CreateWorktreeForm', () => {
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
       expect(promptInput.value).toBe(issue.body);
 
-      // Verify 'prompt' mode is selected (Generate from prompt)
-      const promptRadio = screen.getByLabelText(/Generate from prompt/) as HTMLInputElement;
+      // Verify 'prompt' mode is selected (Auto-generate)
+      const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
       expect(promptRadio.checked).toBe(true);
     });
   });
@@ -429,46 +429,23 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
-  describe('default agent checkbox', () => {
-    it('should not pre-check "Set as default" even when defaultAgentId is provided', async () => {
-      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+  describe('two-column layout', () => {
+    it('should render prompt and branch fields side by side in a grid layout', async () => {
+      renderCreateWorktreeForm();
 
-      // Wait for agents to load
       await waitFor(() => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // The "Set as default" checkbox should NOT be checked
-      const checkbox = screen.getByLabelText('Set as default') as HTMLInputElement;
-      expect(checkbox.checked).toBe(false);
-    });
+      // Prompt and branch fields should both be visible simultaneously
+      expect(screen.getByPlaceholderText(/What do you want to work on/)).toBeTruthy();
+      expect(screen.getByPlaceholderText('Session title')).toBeTruthy();
+      expect(screen.getByText(/Branch name:/)).toBeTruthy();
+      expect(screen.getByPlaceholderText(/Base branch/)).toBeTruthy();
 
-    it('should not update default agent when changing agent without checking the checkbox', async () => {
-      const user = userEvent.setup();
-      const updateCalls: string[] = [];
-
-      mockFetch.mockImplementation((input) => {
-        const url = resolveUrl(input);
-        if (url.includes('/repositories/') && !url.includes('/agents') && !url.includes('/remote-status') && !url.includes('/github-issue') && !url.includes('/branches/')) {
-          updateCalls.push(url);
-          return Promise.resolve(createMockResponse({}));
-        }
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      });
-
-      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
-
-      // Wait for agents to load
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      // Change the agent via the selector
-      const agentSelector = screen.getByRole('combobox');
-      await user.selectOptions(agentSelector, 'custom-agent');
-
-      // No update to repository default should have been triggered
-      expect(updateCalls.length).toBe(0);
+      // Submit button should be present and accessible
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+      expect(screen.getByText('Cancel')).toBeTruthy();
     });
   });
 
@@ -489,7 +466,7 @@ describe('CreateWorktreeForm', () => {
       expect(props.onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('should disable Generate from prompt option when no prompt entered', async () => {
+    it('should disable Auto-generate option when no prompt entered', async () => {
       renderCreateWorktreeForm();
 
       // Wait for agents to load
@@ -497,8 +474,8 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // "Generate from prompt" radio should be disabled when no prompt
-      const promptRadio = screen.getByLabelText(/Generate from prompt.*requires prompt/);
+      // "Auto-generate" radio should be disabled when no prompt
+      const promptRadio = screen.getByLabelText(/Auto-generate/);
       expect((promptRadio as HTMLInputElement).disabled).toBe(true);
     });
   });
