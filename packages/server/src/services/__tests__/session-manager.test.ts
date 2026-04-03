@@ -12,6 +12,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
+import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -590,6 +591,43 @@ describe('SessionManager', () => {
 
       // No additional PTY writes should have occurred after the worker was deleted
       expect(pty.writtenData.length).toBe(writtenCountBeforeDelete);
+    });
+
+    it('should use injected PtyMessageInjectionService when provided', async () => {
+      const injectCalls: Array<{ sessionId: string; workerId: string; content: string; filePaths?: string[] }> = [];
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      // Spy on injectMessage to verify delegation
+      const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths) => {
+        injectCalls.push({ sessionId, workerId, content, filePaths });
+        return originalInject(sessionId, workerId, content, filePaths);
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        ptyProvider: ptyFactory.provider,
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        ptyMessageInjectionService: mockInjectionService,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello via DI');
+      expect(message).not.toBeNull();
+      expect(injectCalls).toHaveLength(1);
+      expect(injectCalls[0].content).toBe('hello via DI');
+      expect(injectCalls[0].sessionId).toBe(session.id);
+      expect(injectCalls[0].workerId).toBe(agentWorker.id);
     });
   });
 
