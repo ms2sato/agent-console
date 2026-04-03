@@ -9,7 +9,6 @@ import {
   RepositorySlackIntegrationInputSchema,
 } from '@agent-console/shared';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { generateRepositoryDescription } from '../services/repository-description-generator.js';
 import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
@@ -158,7 +157,7 @@ const repositories = new Hono<AppBindings>()
   // Generate a repository description using AI
   .post('/:id/generate-description', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, agentManager } = c.get('appContext');
+    const { repositoryManager, agentManager, generateRepositoryDescription } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
