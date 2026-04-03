@@ -225,6 +225,36 @@ describe('QuickWorktreeDialog', () => {
     });
   });
 
+  it('should render dialog with scrollable content area', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponse));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // The dialog content should have overflow-y-auto for scrollability on small viewports
+    const dialogEl = screen.getByRole('dialog');
+    expect(dialogEl.className).toContain('overflow-y-auto');
+    expect(dialogEl.className).toContain('max-w-3xl');
+  });
+
   it('should pass correct draftKey to CreateWorktreeForm', async () => {
     const user = userEvent.setup();
 
