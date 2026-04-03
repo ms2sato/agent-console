@@ -150,8 +150,8 @@ describe('useSessionSideEffects', () => {
     const session = createMockSession({
       id: 'session-to-delete',
       workers: [
-        { id: 'w1', name: 'Worker 1', type: 'agent', agentId: 'a1', status: 'running' },
-        { id: 'w2', name: 'Worker 2', type: 'agent', agentId: 'a1', status: 'running' },
+        { id: 'w1', name: 'Worker 1', type: 'agent', agentId: 'a1', activated: true, createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'w2', name: 'Worker 2', type: 'agent', agentId: 'a1', activated: true, createdAt: '2026-01-01T00:00:00Z' },
       ] as Session['workers'],
     });
     const handleSessionDeleted = mock(() => {});
