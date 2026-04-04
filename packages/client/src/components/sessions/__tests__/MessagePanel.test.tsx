@@ -23,7 +23,7 @@ mock.module('../../../lib/worker-websocket', () => ({
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
+import { MessagePanel, canSend, validateFiles, SLASH_COMMANDS } from '../MessagePanel';
 import { _getDraftsMap } from '../../../hooks/useDraftMessage';
 
 describe('MessagePanel logic', () => {
@@ -448,6 +448,181 @@ describe('MessagePanel', () => {
     expect((textarea as HTMLTextAreaElement).value).toBe('');
     // Draft should be removed from the map
     expect(_getDraftsMap().has('session-1:agent-1')).toBe(false);
+  });
+
+  describe('slash command completion', () => {
+    it('shows dropdown when typing /', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      expect(view.getByRole('listbox')).toBeTruthy();
+    });
+
+    it('shows all commands when typing just /', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = view.getAllByRole('option');
+      expect(options.length).toBe(SLASH_COMMANDS.length);
+    });
+
+    it('shows filtered results when typing /re', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/re' } });
+      });
+
+      const options = view.getAllByRole('option');
+      expect(options.length).toBe(1);
+      expect(options[0].textContent).toContain('/review-loop');
+    });
+
+    it('does not show dropdown for non-/ prefix', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello /command' } });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+    });
+
+    it('does not show dropdown when content has spaces', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/commit message' } });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+    });
+
+    it('navigates items with arrow keys', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      // First item should be selected by default
+      const options = view.getAllByRole('option');
+      expect(options[0].getAttribute('aria-selected')).toBe('true');
+
+      // Press ArrowDown to move to second item
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      });
+
+      const updatedOptions = view.getAllByRole('option');
+      expect(updatedOptions[0].getAttribute('aria-selected')).toBe('false');
+      expect(updatedOptions[1].getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('selects command with Enter', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/co' } });
+      });
+
+      // /commit and /code-review match; first is /code-review or /commit depending on order
+      // The filtered list is prefix-matched: /co matches /commit and /code-review
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter' });
+      });
+
+      // First matching command should be selected
+      expect(textarea.value).toBe('/commit ');
+      // Dropdown should be closed (content now has a space)
+      expect(view.queryByRole('listbox')).toBeNull();
+    });
+
+    it('selects command with Tab', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/sc' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Tab' });
+      });
+
+      expect(textarea.value).toBe('/schedule ');
+    });
+
+    it('closes dropdown with Escape', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      expect(view.getByRole('listbox')).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Escape' });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+      // Escape should NOT send PTY input when dropdown was visible
+      expect(mockSendInput).not.toHaveBeenCalled();
+    });
+
+    it('selects command on click', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = view.getAllByRole('option');
+      // Click the second command
+      await act(async () => {
+        fireEvent.mouseDown(options[1]);
+      });
+
+      expect(textarea.value).toBe(SLASH_COMMANDS[1].name + ' ');
+    });
+
+    it('does not show dropdown when no commands match filter', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/xyz' } });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+    });
   });
 
 });
