@@ -71,7 +71,7 @@
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
 - **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
   ```
-  run_process({ command: "node .claude/skills/orchestrator/acceptance-check.js <PR number>", sessionId: ..., workerId: ... })
+  run_process({ command: "node .claude/skills/orchestrator/acceptance-check.js <PR number>", cwd: "<repository root path>", sessionId: ..., workerId: ... })
   ```
   The script outputs auto-detection results and Q1 to STDOUT (delivered as `[internal:process]` notifications), then blocks on STDIN. Answer each question via `write_process_response` with concrete evidence (file names, line numbers, grep results). The script automatically advances to the next question after each answer. Do NOT start a check without running the script first.
 - **Purpose**: Verify that the delegated work meets the original Issue requirements and delegation instructions

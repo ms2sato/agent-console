@@ -34,8 +34,9 @@ export class InteractiveProcessManager {
     sessionId: string;
     workerId: string;
     command: string;
+    cwd?: string;
   }): Promise<InteractiveProcessInfo> {
-    const { sessionId, workerId, command } = params;
+    const { sessionId, workerId, command, cwd } = params;
 
     const sessionProcessCount = this.listProcesses(sessionId).filter(
       (p) => p.status === 'running',
@@ -60,6 +61,7 @@ export class InteractiveProcessManager {
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
+      cwd,
     });
 
     const stored: StoredProcess = {

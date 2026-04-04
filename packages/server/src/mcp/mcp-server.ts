@@ -960,8 +960,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
         'The worker to receive STDOUT notifications. ' +
           'Use AGENT_CONSOLE_WORKER_ID environment variable for your own worker.',
       ),
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          'Working directory for the command. Defaults to server CWD if omitted.',
+        ),
     },
-    async ({ command, sessionId, workerId }) => {
+    async ({ command, sessionId, workerId, cwd }) => {
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
@@ -981,6 +987,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           sessionId,
           workerId,
           command,
+          cwd,
         });
 
         return textResult({

@@ -71,6 +71,27 @@ describe('InteractiveProcessManager', () => {
       expect(process.sessionId).toBe('session-2');
     });
 
+    it('should run process in specified cwd when provided', async () => {
+      const tmpDir = await import('os').then((os) => os.tmpdir());
+
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'pwd',
+        cwd: tmpDir,
+      });
+
+      // Wait for the process to produce output
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(onOutput).toHaveBeenCalled();
+      const [, output] = onOutput.mock.calls[0];
+      // macOS resolves /tmp to /private/tmp, so use realpath for comparison
+      const { realpathSync } = await import('fs');
+      const realTmpDir = realpathSync(tmpDir);
+      expect(output.trim()).toBe(realTmpDir);
+    });
+
     it('should call onOutput when process writes to stdout', async () => {
       await manager.runProcess({
         sessionId: 'session-1',

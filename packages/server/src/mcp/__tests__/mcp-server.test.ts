@@ -2608,6 +2608,27 @@ describe('MCP Server Tools', () => {
         expect(data.command).toBe('echo hello');
       });
 
+      it('should pass cwd to the spawned process when provided', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const tmpDir = await import('os').then((os) => os.tmpdir());
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'pwd',
+          sessionId,
+          workerId,
+          cwd: tmpDir,
+        }, nextId++);
+
+        const data = parseToolResult(response) as {
+          processId: string;
+          command: string;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.processId).toBeDefined();
+        expect(data.command).toBe('pwd');
+      });
+
       it('should return error for non-existent session', async () => {
         const response = await callTool(app, mcpSessionId, 'run_process', {
           command: 'echo hello',
