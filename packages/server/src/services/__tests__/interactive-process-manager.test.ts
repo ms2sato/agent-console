@@ -297,8 +297,8 @@ describe('InteractiveProcessManager', () => {
       // Poll for output instead of fixed sleep (CI can be slow)
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
-        const outputCalls = onOutput.mock.calls.filter(([, text]: [unknown, string]) =>
-          text.includes('received:'),
+        const outputCalls = onOutput.mock.calls.filter(
+          (args) => typeof args[1] === 'string' && args[1].includes('received:'),
         );
         if (outputCalls.length > 0) {
           expect(outputCalls[0][1]).toContain('hello world');
@@ -308,7 +308,7 @@ describe('InteractiveProcessManager', () => {
       }
 
       // If we reach here, output was never received
-      const allOutput = onOutput.mock.calls.map(([, text]: [unknown, string]) => text).join('');
+      const allOutput = onOutput.mock.calls.map((args) => String(args[1])).join('');
       throw new Error(`Expected output containing "received:" but got: ${allOutput}`);
     });
   });
