@@ -46,6 +46,18 @@ export function isScrolledToBottom(terminal: TerminalScrollInfo): boolean {
  * In a browser-based terminal manager, preserving scrollback is more valuable
  * than honoring scrollback-clear requests.
  */
+/**
+ * Strip system messages (`[internal:*]`) from terminal output.
+ *
+ * These messages are intended for the AI agent, not the human viewer.
+ * The pattern matches newline-prefixed `[internal:...]` followed by any
+ * content until the next newline, so they are removed from xterm.js display
+ * while remaining available to the agent via PTY.
+ */
+export function stripSystemMessages(data: string): string {
+  return data.replace(/\n\[internal:[^\]]*\][^\n]*/g, '');
+}
+
 export function stripScrollbackClear(data: string): string {
   return data.replaceAll('\x1b[3J', '').replaceAll('\x1b[2J', '\x1b[H\x1b[J');
 }

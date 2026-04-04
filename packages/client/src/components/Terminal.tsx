@@ -9,7 +9,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useTerminalWebSocket, type WorkerError } from '../hooks/useTerminalWebSocket';
 import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
-import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter } from '../lib/terminal-utils.js';
+import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter, stripSystemMessages } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
 import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
 import {
@@ -90,7 +90,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
   /** Conditionally apply scrollback filter based on the stripScrollbackClear prop. */
   const processOutput = useCallback(
-    (data: string) => stripScrollbackClear ? applyScrollbackFilter(data) : data,
+    (data: string) => {
+      let result = stripSystemMessages(data);
+      if (stripScrollbackClear) {
+        result = applyScrollbackFilter(result);
+      }
+      return result;
+    },
     [stripScrollbackClear]
   );
 

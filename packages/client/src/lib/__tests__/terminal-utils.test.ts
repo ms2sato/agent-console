@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isScrolledToBottom, stripScrollbackClear, type TerminalScrollInfo } from '../terminal-utils';
+import { isScrolledToBottom, stripScrollbackClear, stripSystemMessages, type TerminalScrollInfo } from '../terminal-utils';
 
 /**
  * Helper to create a mock terminal with scroll info.
@@ -104,6 +104,53 @@ describe('terminal-utils', () => {
         const terminal = createMockTerminal(99, 1, 100);
         expect(isScrolledToBottom(terminal)).toBe(true);
       });
+    });
+  });
+
+  describe('stripSystemMessages', () => {
+    it('should strip [internal:timer] lines', () => {
+      const input = 'normal output\n[internal:timer] some timer info\nmore output';
+      expect(stripSystemMessages(input)).toBe('normal output\nmore output');
+    });
+
+    it('should strip [internal:process] lines', () => {
+      const input = 'hello\n[internal:process] process started\nworld';
+      expect(stripSystemMessages(input)).toBe('hello\nworld');
+    });
+
+    it('should strip [internal:message] lines', () => {
+      const input = 'before\n[internal:message] incoming message\nafter';
+      expect(stripSystemMessages(input)).toBe('before\nafter');
+    });
+
+    it('should preserve non-system output', () => {
+      const input = 'line 1\nline 2\nline 3';
+      expect(stripSystemMessages(input)).toBe('line 1\nline 2\nline 3');
+    });
+
+    it('should handle multiple system messages mixed with normal output', () => {
+      const input = 'start\n[internal:timer] t1\nmiddle\n[internal:process] p1\n[internal:message] m1\nend';
+      expect(stripSystemMessages(input)).toBe('start\nmiddle\nend');
+    });
+
+    it('should handle data with no system messages (passthrough)', () => {
+      const input = 'just regular terminal output';
+      expect(stripSystemMessages(input)).toBe(input);
+    });
+
+    it('should not strip [internal:*] at the very beginning without leading newline', () => {
+      // The regex requires a leading \n, so a line at position 0 is not stripped
+      const input = '[internal:timer] first line\nnormal line';
+      expect(stripSystemMessages(input)).toBe('[internal:timer] first line\nnormal line');
+    });
+
+    it('should handle empty string', () => {
+      expect(stripSystemMessages('')).toBe('');
+    });
+
+    it('should strip [internal:reviewed] and [internal:review-comment] lines', () => {
+      const input = 'output\n[internal:reviewed] review done\n[internal:review-comment] comment here\nmore';
+      expect(stripSystemMessages(input)).toBe('output\nmore');
     });
   });
 
