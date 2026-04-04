@@ -115,6 +115,8 @@ import { SystemCapabilitiesService } from '../services/system-capabilities-servi
 import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
+import { SingleUserMode } from '../services/user-mode.js';
+import type { PtyProvider } from '../lib/pty-provider.js';
 
 // =============================================================================
 // Test Setup
@@ -279,7 +281,15 @@ describe('API Routes Integration', () => {
     if (testJobQueue) {
       const sessionRepository = await createSessionRepository();
       testAgentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+      const mockPtyProvider: PtyProvider = {
+        spawn: (() => {
+          const pty = new MockPty(nextPtyPid++);
+          mockPtyInstances.push(pty);
+          return pty;
+        }) as unknown as PtyProvider['spawn'],
+      };
       testSessionManager = await SessionManager.create({
+        userMode: new SingleUserMode(mockPtyProvider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         sessionRepository,
         jobQueue: testJobQueue,
         agentManager: testAgentManager,

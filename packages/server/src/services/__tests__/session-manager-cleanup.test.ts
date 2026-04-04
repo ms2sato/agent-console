@@ -7,6 +7,7 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
+import { SingleUserMode } from '../user-mode.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -67,7 +68,7 @@ describe('SessionManager cleanup on initialization', () => {
     const SessionManager = await getSessionManager();
     const db = getDatabase();
     const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
-    return SessionManager.create({ ptyProvider: ptyFactory.provider, agentManager: agentMgr });
+    return SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), agentManager: agentMgr });
   }
 
   it('should mark legacy sessions as paused and kill worker processes', async () => {

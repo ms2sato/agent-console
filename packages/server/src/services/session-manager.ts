@@ -1,4 +1,3 @@
-import * as os from 'os';
 import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
@@ -31,8 +30,7 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
-import { SingleUserMode, type UserMode } from './user-mode.js';
+import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
 } from '../lib/git.js';
@@ -99,7 +97,7 @@ async function defaultPathExists(path: string): Promise<boolean> {
 }
 
 interface SessionManagerOptions {
-  userMode?: UserMode;
+  userMode: UserMode;
   pathExists?: (path: string) => Promise<boolean>;
   sessionRepository?: SessionRepository;
   jobQueue?: JobQueue | null;
@@ -117,8 +115,6 @@ interface SessionManagerOptions {
   memoService?: MemoService;
   /** PTY message injection service. Defaults to a new instance wired to this manager. */
   ptyMessageInjectionService?: PtyMessageInjectionService;
-  /** @deprecated Use userMode instead. Kept for backward compatibility in tests. */
-  ptyProvider?: PtyProvider;
 }
 
 export class SessionManager {
@@ -162,13 +158,7 @@ export class SessionManager {
    * Use SessionManager.create() for async initialization.
    */
   private constructor(options: SessionManagerOptions) {
-    // Prefer userMode if provided. Fall back to wrapping ptyProvider for backward compatibility.
-    const userMode = options?.userMode
-      ?? new SingleUserMode(options?.ptyProvider ?? bunPtyProvider, {
-        id: crypto.randomUUID(),
-        username: os.userInfo().username,
-        homeDir: os.homedir(),
-      });
+    const userMode = options.userMode;
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;

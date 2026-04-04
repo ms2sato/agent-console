@@ -12,6 +12,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
+import { SingleUserMode } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
 
 // Test config directory
@@ -81,7 +82,7 @@ describe('SessionManager', () => {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     // Use the factory pattern for async initialization with jobQueue
     return module.SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
@@ -619,7 +620,7 @@ describe('SessionManager', () => {
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
-        ptyProvider: ptyFactory.provider,
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
@@ -651,7 +652,7 @@ describe('SessionManager', () => {
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
-        ptyProvider: ptyFactory.provider,
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
@@ -1658,7 +1659,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ ptyProvider: ptyFactory.provider, pathExists: pathExistsFn, agentManager });
+      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -2873,7 +2874,7 @@ describe('SessionManager', () => {
       // Create a new manager WITHOUT jobQueue, sharing the same database
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const managerWithoutQueue = await module.SessionManager.create({
-        ptyProvider: ptyFactory.provider,
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: null,
         agentManager,
@@ -3064,7 +3065,7 @@ describe('SessionManager', () => {
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const managerWithMissingPath = await module.SessionManager.create({
-        ptyProvider: ptyFactory.provider,
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
         agentManager,
@@ -3107,7 +3108,7 @@ describe('SessionManager', () => {
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const managerWithFailingPty = await module.SessionManager.create({
-        ptyProvider: failingPtyProvider,
+        userMode: new SingleUserMode(failingPtyProvider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,

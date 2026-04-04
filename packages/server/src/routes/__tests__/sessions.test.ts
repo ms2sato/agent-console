@@ -13,6 +13,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import { SingleUserMode } from '../../services/user-mode.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 
@@ -59,7 +60,7 @@ describe('Sessions API - Pause/Resume', () => {
 
     // Create SessionManager directly using the factory pattern
     sessionManager = await SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,

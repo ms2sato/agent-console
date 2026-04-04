@@ -26,6 +26,7 @@ import { TimerManager } from '../../services/timer-manager.js';
 import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
+import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
@@ -216,7 +217,7 @@ describe('MCP Server Tools', () => {
 
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,

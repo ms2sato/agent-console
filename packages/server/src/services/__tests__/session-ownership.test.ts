@@ -19,6 +19,7 @@ import { SessionManager } from '../session-manager.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import { SingleUserMode } from '../user-mode.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory(30000);
@@ -50,7 +51,7 @@ describe('Session Ownership (createdBy)', () => {
     const sessionRepository = new SqliteSessionRepository(db);
 
     sessionManager = await SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
