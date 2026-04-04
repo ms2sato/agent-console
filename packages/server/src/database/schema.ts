@@ -14,6 +14,7 @@ export interface Database {
   worktrees: WorktreesTable;
   inbound_event_notifications: InboundEventNotificationsTable;
   users: UsersTable;
+  timers: TimersTable;
 }
 
 /**
@@ -307,3 +308,28 @@ export type UserRow = Selectable<UsersTable>;
 export type NewUser = Insertable<UsersTable>;
 /** User data for UPDATE queries */
 export type UserUpdate = Updateable<UsersTable>;
+
+/**
+ * Timers table schema.
+ * Stores cron timer definitions for periodic worker actions.
+ * No foreign key on session_id — timers must survive restarts when sessions may not yet exist.
+ */
+export interface TimersTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Session ID this timer belongs to */
+  session_id: string;
+  /** Worker ID this timer targets */
+  worker_id: string;
+  /** Interval in seconds between executions */
+  interval_seconds: number;
+  /** Action to perform on each tick */
+  action: string;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+}
+
+/** Timer row as returned from SELECT queries */
+export type TimerRow = Selectable<TimersTable>;
+/** Timer data for INSERT queries */
+export type NewTimer = Insertable<TimersTable>;

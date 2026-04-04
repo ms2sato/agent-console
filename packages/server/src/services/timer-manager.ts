@@ -1,4 +1,5 @@
 import type { TimerInfo } from '@agent-console/shared';
+import type { TimerRepository } from '../repositories/timer-repository.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('timer-manager');
@@ -16,7 +17,10 @@ export class TimerManager {
   private timers = new Map<string, StoredTimer>();
   private onTick: (timer: TimerInfo) => void;
 
-  constructor(onTick: (timer: TimerInfo) => void) {
+  constructor(
+    onTick: (timer: TimerInfo) => void,
+    private repository?: TimerRepository,
+  ) {
     this.onTick = onTick;
   }
 
@@ -65,6 +69,18 @@ export class TimerManager {
     }, intervalSeconds * 1000);
 
     this.timers.set(id, { info, handle });
+    if (this.repository) {
+      this.repository.save({
+        id: info.id,
+        sessionId: info.sessionId,
+        workerId: info.workerId,
+        intervalSeconds: info.intervalSeconds,
+        action: info.action,
+        createdAt: info.createdAt,
+      }).catch((err) => {
+        logger.warn({ timerId: id, err }, 'Failed to persist timer, continuing as volatile');
+      });
+    }
     logger.info(
       { timerId: id, sessionId, workerId, intervalSeconds },
       'Timer created'
@@ -81,6 +97,11 @@ export class TimerManager {
 
     clearInterval(stored.handle);
     this.timers.delete(timerId);
+    if (this.repository) {
+      this.repository.delete(timerId).catch((err) => {
+        logger.warn({ timerId, err }, 'Failed to delete persisted timer');
+      });
+    }
     logger.info({ timerId }, 'Timer deleted');
     return true;
   }
@@ -110,6 +131,11 @@ export class TimerManager {
     if (count > 0) {
       logger.info({ sessionId, count }, 'Deleted timers for session');
     }
+    if (this.repository && count > 0) {
+      this.repository.deleteBySessionId(sessionId).catch((err) => {
+        logger.warn({ sessionId, err }, 'Failed to delete persisted timers for session');
+      });
+    }
     return count;
   }
 
@@ -120,5 +146,48 @@ export class TimerManager {
     const count = this.timers.size;
     this.timers.clear();
     logger.info({ count }, 'All timers disposed');
+  }
+
+  async restoreTimers(): Promise<number> {
+    if (!this.repository) {
+      return 0;
+    }
+
+    let records;
+    try {
+      records = await this.repository.findAll();
+    } catch (err) {
+      logger.warn({ err }, 'Failed to load persisted timers, starting fresh');
+      return 0;
+    }
+
+    let restored = 0;
+    for (const record of records) {
+      const info: TimerInfo = {
+        id: record.id,
+        sessionId: record.sessionId,
+        workerId: record.workerId,
+        intervalSeconds: record.intervalSeconds,
+        action: record.action,
+        createdAt: record.createdAt,
+        fireCount: 0,
+      };
+
+      const handle = setInterval(() => {
+        info.lastFiredAt = new Date().toISOString();
+        info.fireCount += 1;
+        logger.debug({ timerId: info.id, fireCount: info.fireCount }, 'Timer fired');
+        this.onTick({ ...info });
+      }, record.intervalSeconds * 1000);
+
+      this.timers.set(record.id, { info, handle });
+      restored += 1;
+    }
+
+    if (restored > 0) {
+      logger.info({ count: restored }, 'Restored persisted timers');
+    }
+
+    return restored;
   }
 }

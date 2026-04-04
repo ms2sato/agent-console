@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(15);
+      expect(result.rows[0]?.user_version).toBe(16);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(15);
+      expect(result.rows[0]?.user_version).toBe(16);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1423,7 +1423,43 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(15);
+      expect(result.rows[0]?.user_version).toBe(16);
+    });
+  });
+
+  describe('schema migration v16: timers table', () => {
+    it('should create timers table with correct columns', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('timers')
+        .values({
+          id: 'timer-1',
+          session_id: 'session-1',
+          worker_id: 'worker-1',
+          interval_seconds: 60,
+          action: 'check status',
+          created_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('timers').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('timer-1');
+      expect(rows[0].session_id).toBe('session-1');
+      expect(rows[0].worker_id).toBe('worker-1');
+      expect(rows[0].interval_seconds).toBe(60);
+      expect(rows[0].action).toBe('check status');
+      expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
+    });
+
+    it('should set schema version to 16', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      const { sql } = await import('kysely');
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(16);
     });
   });
 
