@@ -25,8 +25,6 @@ import type { WebSocketCallbacks } from './session-manager.js';
 import type { MessageService } from './message-service.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { stopWatching } from './git-diff-service.js';
-import { getServerPid } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('session-pause-resume');
@@ -54,6 +52,8 @@ export interface SessionPauseResumeDeps {
   messageService: MessageService;
   userRepository: UserRepository | null;
   resolveSpawnUsername: (createdBy: string | undefined, userRepo: UserRepository | null) => Promise<string>;
+  stopWatching: (locationPath: string) => void;
+  getServerPid: () => number;
 }
 
 export class SessionPauseResumeService {
@@ -91,7 +91,7 @@ export class SessionPauseResumeService {
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
-        stopWatching(session.locationPath);
+        this.deps.stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers (don't delete output files)
         killPromises.push(this.deps.workerManager.killWorker(worker, id));
@@ -268,7 +268,7 @@ export class SessionPauseResumeService {
 
     // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
     try {
-      await this.deps.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
+      await this.deps.sessionRepository.update(id, { serverPid: this.deps.getServerPid(), pausedAt: null });
     } catch (err) {
       logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
 

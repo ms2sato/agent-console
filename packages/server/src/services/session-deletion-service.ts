@@ -10,7 +10,6 @@ import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
-import { stopWatching } from './git-diff-service.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('session-deletion');
@@ -31,6 +30,7 @@ export interface SessionDeletionDeps {
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
   getWebSocketCallbacks: () => { notifySessionDeleted: (sessionId: string) => void } | null;
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
+  stopWatching: (locationPath: string) => void;
 }
 
 export class SessionDeletionService {
@@ -48,7 +48,7 @@ export class SessionDeletionService {
     const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
-        stopWatching(session.locationPath);
+        this.deps.stopWatching(session.locationPath);
       } else {
         killPromises.push(this.deps.workerManager.killWorker(worker, id));
       }
@@ -74,7 +74,7 @@ export class SessionDeletionService {
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
-        stopWatching(session.locationPath);
+        this.deps.stopWatching(session.locationPath);
       } else {
         // Kill PTY for agent/terminal workers
         killPromises.push(this.deps.workerManager.killWorker(worker, id));

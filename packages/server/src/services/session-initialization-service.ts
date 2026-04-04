@@ -4,7 +4,6 @@ import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
-import { getServerPid } from '../lib/config.js';
 import { isProcessAlive, processKill } from '../lib/process-utils.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -26,6 +25,7 @@ interface SessionInitializationDeps {
   workerOutputFileManager: WorkerOutputFileManager;
   jobQueue: JobQueue | null;
   getPathResolverForPersistedSession: PersistedSessionPathResolverFactory;
+  getServerPid: () => number;
 }
 
 export class SessionInitializationService {
@@ -48,7 +48,7 @@ export class SessionInitializationService {
    */
   private async initializeSessions(): Promise<void> {
     const persistedSessions = await this.deps.sessionRepository.findAll();
-    const currentServerPid = getServerPid();
+    const currentServerPid = this.deps.getServerPid();
     const sessionsToSave: PersistedSession[] = [];
     const orphanSessions: PersistedSession[] = [];
     let markedPausedCount = 0;
@@ -136,7 +136,7 @@ export class SessionInitializationService {
    */
   private async cleanupOrphanProcesses(): Promise<void> {
     const persistedSessions = await this.deps.sessionRepository.findAll();
-    const currentServerPid = getServerPid();
+    const currentServerPid = this.deps.getServerPid();
     let killedCount = 0;
     let preservedCount = 0;
     const orphanSessions: PersistedSession[] = [];

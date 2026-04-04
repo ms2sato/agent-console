@@ -5,26 +5,7 @@ import type { InternalWorker } from '../worker-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
 
-// Mock git-diff-service stopWatching at module level
-import path from 'path';
-const gitDiffServicePath = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  '../git-diff-service.js'
-);
 const mockStopWatching = mock(() => {});
-mock.module(gitDiffServicePath, () => ({
-  stopWatching: mockStopWatching,
-}));
-
-// Mock config module for getServerPid
-const configPath = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  '../../lib/config.js'
-);
-mock.module(configPath, () => ({
-  getServerPid: () => 99999,
-  getConfigDir: () => '/tmp/test-config',
-}));
 
 function createMockWorker(overrides: Partial<InternalWorker> & { id: string; type: InternalWorker['type'] }): InternalWorker {
   const base = {
@@ -149,6 +130,8 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     } as unknown as SessionPauseResumeDeps['messageService'],
     userRepository: null,
     resolveSpawnUsername: mock(async () => 'testuser'),
+    stopWatching: mockStopWatching,
+    getServerPid: () => 99999,
     ...overrides,
   };
 }

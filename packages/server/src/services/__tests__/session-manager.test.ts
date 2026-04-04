@@ -27,6 +27,10 @@ let importCounter = 0;
 let agentManager: AgentManager;
 
 describe('SessionManager', () => {
+  // SessionManager delegates to extracted services: SessionInitializationService,
+  // SessionMetadataService, SessionPauseResumeService, SessionDeletionService,
+  // SessionConverterService. These tests verify the delegation works correctly.
+
   beforeEach(async () => {
     // Close any existing database connection first
     await closeDatabase();

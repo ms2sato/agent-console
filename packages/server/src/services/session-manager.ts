@@ -29,6 +29,7 @@ import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
+import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { SingleUserMode, type UserMode } from './user-mode.js';
@@ -231,6 +232,7 @@ export class SessionManager {
       workerOutputFileManager: this.workerOutputFileManager,
       jobQueue: this.jobQueue,
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
+      getServerPid,
     });
 
     this.sessionDeletionService = new SessionDeletionService({
@@ -249,6 +251,7 @@ export class SessionManager {
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       getWebSocketCallbacks: () => this.webSocketCallbacks,
       getTimerCleanupCallback: () => this.timerCleanupCallback,
+      stopWatching,
     });
 
     this.sessionPauseResumeService = new SessionPauseResumeService({
@@ -270,6 +273,8 @@ export class SessionManager {
       messageService: this.messageService,
       userRepository: this.userRepository,
       resolveSpawnUsername,
+      stopWatching,
+      getServerPid,
     });
   }
 

@@ -5,16 +5,7 @@ import type { InternalWorker } from '../worker-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
-// Mock git-diff-service stopWatching at module level
-import path from 'path';
-const gitDiffServicePath = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  '../git-diff-service.js'
-);
 const mockStopWatching = mock(() => {});
-mock.module(gitDiffServicePath, () => ({
-  stopWatching: mockStopWatching,
-}));
 
 function createMockWorker(overrides: Partial<InternalWorker> & { id: string; type: InternalWorker['type'] }): InternalWorker {
   const base = {
@@ -99,6 +90,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
     getTimerCleanupCallback: () => undefined,
+    stopWatching: mockStopWatching,
     ...overrides,
   };
 }

@@ -1,25 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import path from 'path';
 import type { PersistedSession } from '../persistence-service.js';
 import type { SessionRepository } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
-
-// Mock getServerPid to return a known value
-const TEST_SERVER_PID = 99999;
-const configPath = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  '../../lib/config.js'
-);
-mock.module(configPath, () => ({
-  getServerPid: () => TEST_SERVER_PID,
-  getConfigDir: () => '/test/config',
-  getRepositoriesDir: () => '/test/config/repositories',
-}));
-
 import { SessionInitializationService } from '../session-initialization-service.js';
+
+const TEST_SERVER_PID = 99999;
 
 function createMockSessionRepository(sessions: PersistedSession[]): SessionRepository {
   let storedSessions = [...sessions];
@@ -81,6 +69,7 @@ describe('SessionInitializationService', () => {
       workerOutputFileManager,
       jobQueue,
       getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getServerPid: () => TEST_SERVER_PID,
     });
 
     return { service, sessionRepository, workerOutputFileManager, jobQueue };
