@@ -20,19 +20,21 @@ export interface ProcessExitCallback {
   (process: InteractiveProcessInfo): void;
 }
 
-/** Callback to echo content to a worker's PTY for visual feedback. */
-export type PtyEchoWriter = (sessionId: string, workerId: string, data: string) => void;
+/** Service that can submit input to a worker's PTY. */
+export interface PtyInputSubmitter {
+  submitWorkerInput(sessionId: string, workerId: string, content: string): boolean;
+}
 
 export class InteractiveProcessManager {
   private processes = new Map<string, StoredProcess>();
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
-  private ptyEchoWriter?: PtyEchoWriter;
+  private ptyInputSubmitter?: PtyInputSubmitter;
 
-  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyEchoWriter?: PtyEchoWriter) {
+  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyInputSubmitter?: PtyInputSubmitter) {
     this.onOutput = onOutput;
     this.onExit = onExit;
-    this.ptyEchoWriter = ptyEchoWriter;
+    this.ptyInputSubmitter = ptyInputSubmitter;
   }
 
   async runProcess(params: {
@@ -138,8 +140,8 @@ export class InteractiveProcessManager {
       stored.stdin.flush();
 
       // Echo to worker PTY so the response appears as submitted input in the terminal.
-      if (this.ptyEchoWriter) {
-        this.ptyEchoWriter(stored.info.sessionId, stored.info.workerId, content);
+      if (this.ptyInputSubmitter) {
+        this.ptyInputSubmitter.submitWorkerInput(stored.info.sessionId, stored.info.workerId, content);
       }
 
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');

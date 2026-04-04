@@ -304,10 +304,8 @@ export async function createAppContext(
         );
       }
     },
-    // PTY echo writer: echo process response content to the worker's PTY as submitted input
-    (sessionId, workerId, content) => {
-      sessionManager.submitWorkerInput(sessionId, workerId, content);
-    },
+    // PTY input submitter: echo process response content to the worker's PTY as submitted input
+    sessionManager,
   );
 
   // 6.8. Wire process cleanup into session lifecycle
@@ -484,8 +482,8 @@ export async function createTestContext(
     timerManager.deleteTimersBySession(sessionId);
   });
 
-  // Create interactive process manager (no-op callbacks for tests)
-  const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {}, () => {});
+  // Create interactive process manager (no-op callbacks for tests, sessionManager for PTY echo)
+  const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {}, sessionManager);
 
   // Wire process cleanup into session lifecycle
   sessionManager.setProcessCleanupCallback((sessionId) => {

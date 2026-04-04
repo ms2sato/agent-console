@@ -8,13 +8,13 @@ describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
-  let ptyEchoWriter: ReturnType<typeof mock>;
+  let mockSubmitWorkerInput: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
-    ptyEchoWriter = mock(() => {});
-    manager = new InteractiveProcessManager(onOutput, onExit, ptyEchoWriter);
+    mockSubmitWorkerInput = mock(() => true);
+    manager = new InteractiveProcessManager(onOutput, onExit, { submitWorkerInput: mockSubmitWorkerInput });
   });
 
   afterEach(() => {
@@ -381,7 +381,7 @@ describe('InteractiveProcessManager', () => {
       }
 
       expect(result).toBe(true);
-      expect(ptyEchoWriter).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+      expect(mockSubmitWorkerInput).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
     });
   });
 });
