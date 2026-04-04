@@ -73,8 +73,8 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
   3. **Other** — analyze why it worked and consider if the conditions can be reproduced
 - Reach agreement on any skill/process improvement proposals on the spot
 
-**Step 4: Apply skill improvements**
-- Apply agreed-upon improvements to skill files and merge (Orchestrator can merge since it's documentation)
+**Step 4: Apply process improvements**
+- Apply agreed-upon improvements to skill files, rules, agent definitions, and CLAUDE.md as appropriate. Merge after completion (Orchestrator can merge since it's non-production code)
 - **All improvements go into a single PR:**
   - Branch: `docs/sprint-retro-YYYY-MM-DD`
   - PR title: `docs: sprint retrospective improvements (YYYY-MM-DD)`
