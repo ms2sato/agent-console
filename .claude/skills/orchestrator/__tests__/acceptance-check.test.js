@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { Readable } from 'node:stream';
 import {
   categorizeFile,
   categorizeFiles,
@@ -6,7 +7,31 @@ import {
   requiresTestCoverage,
   findTestFiles,
   detectIntegrationTestNeeds,
+  createStdinReader,
+  getQuestions,
+  printQuestion,
+  printSummary,
+  printPostAcceptanceWorkflow,
 } from '../acceptance-check.js';
+
+// --- Helper: create a readable stream that emits null-byte terminated data ---
+
+function createMockStdin(answers) {
+  const chunks = answers.map(a => a + '\0');
+  let index = 0;
+  return new Readable({
+    read() {
+      if (index < chunks.length) {
+        this.push(Buffer.from(chunks[index]));
+        index++;
+      } else {
+        this.push(null);
+      }
+    },
+  });
+}
+
+// --- Existing tests (unchanged) ---
 
 describe('categorizeFile', () => {
   it('categorizes integration package files', () => {
@@ -179,5 +204,219 @@ describe('detectIntegrationTestNeeds', () => {
     const categories = categorizeFiles(files);
     const result = detectIntegrationTestNeeds(files, categories);
     expect(result).toBeNull();
+  });
+});
+
+// --- New tests for STDIN/STDOUT wizard mode ---
+
+describe('createStdinReader', () => {
+  it('reads a single null-byte terminated response', async () => {
+    const stdin = createMockStdin(['hello world']);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
+    expect(result).toBe('hello world');
+  });
+
+  it('trims whitespace from response', async () => {
+    const stdin = createMockStdin(['  answer with spaces  ']);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
+    expect(result).toBe('answer with spaces');
+  });
+
+  it('reads multi-chunk response before null byte', async () => {
+    let pushCount = 0;
+    const stdin = new Readable({
+      read() {
+        if (pushCount === 0) {
+          this.push(Buffer.from('first part '));
+          pushCount++;
+        } else if (pushCount === 1) {
+          this.push(Buffer.from('second part\0'));
+          pushCount++;
+        } else {
+          this.push(null);
+        }
+      },
+    });
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
+    expect(result).toBe('first part second part');
+  });
+
+  it('handles data after null byte by buffering for next read', async () => {
+    // Single chunk contains two answers separated by null byte
+    const stdin = createMockStdin(['first answer', 'second answer']);
+    const readResponse = createStdinReader(stdin);
+    const first = await readResponse();
+    const second = await readResponse();
+    expect(first).toBe('first answer');
+    expect(second).toBe('second answer');
+  });
+
+  it('handles empty response before null byte', async () => {
+    const stdin = createMockStdin(['']);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
+    expect(result).toBe('');
+  });
+
+  it('reads multiple sequential answers from same stream', async () => {
+    const stdin = createMockStdin(['answer1', 'answer2', 'answer3']);
+    const readResponse = createStdinReader(stdin);
+    expect(await readResponse()).toBe('answer1');
+    expect(await readResponse()).toBe('answer2');
+    expect(await readResponse()).toBe('answer3');
+  });
+
+  it('handles multiple answers arriving in a single chunk', async () => {
+    // Simulate all data arriving at once with multiple null bytes
+    const stdin = new Readable({
+      read() {
+        this.push(Buffer.from('a1\0a2\0a3\0'));
+        this.push(null);
+      },
+    });
+    const readResponse = createStdinReader(stdin);
+    expect(await readResponse()).toBe('a1');
+    expect(await readResponse()).toBe('a2');
+    expect(await readResponse()).toBe('a3');
+  });
+});
+
+describe('getQuestions', () => {
+  it('returns 7 questions', () => {
+    const questions = getQuestions(false);
+    expect(questions).toHaveLength(7);
+  });
+
+  it('returns questions with keys q1-q7', () => {
+    const questions = getQuestions(false);
+    const keys = questions.map(q => q.key);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7']);
+  });
+
+  it('uses acceptance criteria variant for Q3 when criteria exist', () => {
+    const questionsWithCriteria = getQuestions(true);
+    const questionsWithoutCriteria = getQuestions(false);
+    expect(questionsWithCriteria[2].text).toContain('Acceptance Criteria');
+    expect(questionsWithoutCriteria[2].text).toContain('Domain Invariants');
+  });
+
+  it('each question has text, focus, insufficient, and sufficient fields', () => {
+    const questions = getQuestions(false);
+    for (const q of questions) {
+      expect(q.text).toBeTruthy();
+      expect(q.focus).toBeTruthy();
+      expect(q.insufficient).toBeTruthy();
+      expect(q.sufficient).toBeTruthy();
+    }
+  });
+});
+
+describe('printQuestion', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints question key, text, focus, and examples', () => {
+    const question = {
+      key: 'q1',
+      text: 'Q1: Test question',
+      focus: 'Test focus',
+      insufficient: 'Bad answer',
+      sufficient: 'Good answer',
+    };
+    printQuestion(question);
+    const output = logs.join('\n');
+    expect(output).toContain('--- Q1 ---');
+    expect(output).toContain('Q1: Test question');
+    expect(output).toContain('Focus: Test focus');
+    expect(output).toContain('Insufficient answer: Bad answer');
+    expect(output).toContain('Sufficient answer: Good answer');
+  });
+});
+
+describe('printSummary', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints answered questions with OK prefix', () => {
+    const questions = [{ key: 'q1' }, { key: 'q2' }];
+    const answers = { q1: 'My answer', q2: 'Another answer' };
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: OK My answer');
+    expect(output).toContain('Q2: OK Another answer');
+  });
+
+  it('truncates long answers to 100 chars', () => {
+    const questions = [{ key: 'q1' }];
+    const longAnswer = 'x'.repeat(150);
+    const answers = { q1: longAnswer };
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: OK ' + 'x'.repeat(100) + '...');
+  });
+
+  it('prints unanswered questions with -- prefix', () => {
+    const questions = [{ key: 'q1' }];
+    const answers = {};
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: -- Not answered');
+  });
+
+  it('treats empty string answer as answered (not unanswered)', () => {
+    const questions = [{ key: 'q1' }];
+    const answers = { q1: '' };
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: OK');
+    expect(output).not.toContain('Not answered');
+  });
+});
+
+describe('printPostAcceptanceWorkflow', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints post-acceptance workflow steps', () => {
+    printPostAcceptanceWorkflow();
+    const output = logs.join('\n');
+    expect(output).toContain('Post-Acceptance Workflow');
+    expect(output).toContain('Do NOT delete the worktree');
   });
 });
