@@ -3,26 +3,20 @@ import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
   Session,
-  WorktreeSession,
-  QuickSession,
   Worker,
   AgentActivityState,
   CreateSessionRequest,
   CreateWorkerParams,
-  SessionActivationState,
   WorkerMessage,
   AppServerMessage,
   ExitReason,
 } from '@agent-console/shared';
 import type {
   PersistedSession,
-  PersistedWorker,
 } from './persistence-service.js';
 import type {
   InternalWorker,
   InternalPtyWorker,
-  InternalAgentWorker,
-  InternalTerminalWorker,
   WorkerCallbacks,
 } from './worker-types.js';
 import type { InternalSession, SessionCreationContext } from './internal-types.js';
@@ -38,24 +32,26 @@ import { getConfigDir, getServerPid } from '../lib/config.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { bunPtyProvider, type PtyProvider } from '../lib/pty-provider.js';
 import { SingleUserMode, type UserMode } from './user-mode.js';
-import { processKill, isProcessAlive } from '../lib/process-utils.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
-  renameBranch as gitRenameBranch,
 } from '../lib/git.js';
-import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
 import { MemoService } from './memo-service.js';
 import { PtyMessageInjectionService } from './pty-message-injection-service.js';
+import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
 import { WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
-import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+import type { JobQueue } from '../jobs/index.js';
+import { SessionInitializationService } from './session-initialization-service.js';
+import { SessionDeletionService } from './session-deletion-service.js';
+import { SessionPauseResumeService } from './session-pause-resume-service.js';
+import { SessionConverterService } from './session-converter-service.js';
 
 /**
  * Callbacks for resolving dependencies without circular imports.
@@ -126,7 +122,6 @@ interface SessionManagerOptions {
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
-  private resumingSessionIds = new Set<string>();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
   private webSocketCallbacks: WebSocketCallbacks | null = null;
@@ -142,6 +137,11 @@ export class SessionManager {
   private interSessionMessageService: InterSessionMessageService;
   private memoService: MemoService;
   private ptyMessageInjectionService: PtyMessageInjectionService;
+  private sessionMetadataService: SessionMetadataService;
+  private sessionInitializationService: SessionInitializationService;
+  private sessionDeletionService: SessionDeletionService;
+  private sessionPauseResumeService: SessionPauseResumeService;
+  private sessionConverterService: SessionConverterService;
   private timerCleanupCallback?: (sessionId: string) => void;
 
   /**
@@ -180,6 +180,13 @@ export class SessionManager {
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
     this.jobQueue = options?.jobQueue ?? null;
 
+    this.sessionConverterService = new SessionConverterService({
+      getRepositoryCallbacks: () => this.repositoryCallbacks,
+      toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
+      toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
+      getServerPid: () => getServerPid(),
+    });
+
     this.workerLifecycleManager = new WorkerLifecycleManager({
       workerManager: this.workerManager,
       agentManager,
@@ -206,6 +213,64 @@ export class SessionManager {
           return !!s && s.workers.has(workerId);
         },
       );
+
+    this.sessionMetadataService = new SessionMetadataService({
+      getSession: (id) => this.sessions.get(id),
+      sessionRepository: this.sessionRepository,
+      persistSession: (session) => this.persistSession(session),
+      toPublicSession: (session) => this.toPublicSession(session),
+      getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+      updateGitDiffWorkersAfterBranchRename: (sessionId) =>
+        this.workerLifecycleManager.updateGitDiffWorkersAfterBranchRename(sessionId),
+    });
+
+    this.sessionInitializationService = new SessionInitializationService({
+      sessionRepository: this.sessionRepository,
+      pathExists: this.pathExists,
+      isSessionInMemory: (id) => this.sessions.has(id),
+      workerOutputFileManager: this.workerOutputFileManager,
+      jobQueue: this.jobQueue,
+      getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
+    });
+
+    this.sessionDeletionService = new SessionDeletionService({
+      getSession: (id) => this.sessions.get(id),
+      setSession: (id, session) => this.sessions.set(id, session),
+      deleteSessionFromMemory: (id) => this.sessions.delete(id),
+      sessionRepository: this.sessionRepository,
+      workerManager: this.workerManager,
+      jobQueue: this.jobQueue,
+      notificationManager: this.notificationManager,
+      messageService: this.messageService,
+      interSessionMessageService: this.interSessionMessageService,
+      memoService: this.memoService,
+      getPathResolverForSession: (session) => this.getPathResolverForSession(session),
+      getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
+      getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+      getWebSocketCallbacks: () => this.webSocketCallbacks,
+      getTimerCleanupCallback: () => this.timerCleanupCallback,
+    });
+
+    this.sessionPauseResumeService = new SessionPauseResumeService({
+      getSession: (id) => this.sessions.get(id),
+      setSession: (id, session) => this.sessions.set(id, session),
+      deleteSession: (id) => { this.sessions.delete(id); },
+      sessionRepository: this.sessionRepository,
+      workerManager: this.workerManager,
+      pathExists: this.pathExists,
+      getRepositoryEnvVars: (id) => this.getRepositoryEnvVars(id),
+      getPathResolverForSession: (session) => this.getPathResolverForSession(session),
+      toPublicSession: (session) => this.toPublicSession(session),
+      toPersistedSessionWithServerPid: (session, serverPid) => this.toPersistedSessionWithServerPid(session, serverPid),
+      persistedToPublicSession: (p) => this.persistedToPublicSession(p),
+      getWorkerActivityState: (sessionId, workerId) => this.getWorkerActivityState(sessionId, workerId),
+      getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
+      getWebSocketCallbacks: () => this.webSocketCallbacks,
+      notificationManager: this.notificationManager,
+      messageService: this.messageService,
+      userRepository: this.userRepository,
+      resolveSpawnUsername,
+    });
   }
 
   /**
@@ -221,99 +286,9 @@ export class SessionManager {
    * Called by SessionManager.create() factory method.
    */
   private async initialize(): Promise<void> {
-    await this.initializeSessions();
-    await this.cleanupOrphanProcesses();
+    await this.sessionInitializationService.initialize();
   }
 
-  /**
-   * Process persisted sessions on startup.
-   * Sessions whose serverPid is dead (or missing) are marked as paused (serverPid = null)
-   * after killing any orphan worker processes. They are NOT loaded into memory.
-   * Sessions owned by other live servers are left untouched.
-   * Sessions whose locationPath no longer exists are removed as orphans.
-   */
-  private async initializeSessions(): Promise<void> {
-    const persistedSessions = await this.sessionRepository.findAll();
-    const currentServerPid = getServerPid();
-    const sessionsToSave: PersistedSession[] = [];
-    const orphanSessions: PersistedSession[] = [];
-    let markedPausedCount = 0;
-    let killedWorkerCount = 0;
-    let pathNotFoundCount = 0;
-
-    for (const session of persistedSessions) {
-      // Skip if already in memory (shouldn't happen, but safety check)
-      if (this.sessions.has(session.id)) continue;
-
-      // Paused sessions (serverPid === null) should remain paused until explicitly resumed
-      // Keep them in persistence unchanged, don't inherit into memory
-      if (session.serverPid === null) {
-        sessionsToSave.push(session);
-        continue;
-      }
-
-      // If serverPid is alive AND belongs to a different server, this session belongs to another active server
-      // Keep it in persistence unchanged
-      // Note: We must check serverPid !== currentServerPid to handle PID reuse by the OS.
-      // If a previous server died and the OS reused its PID for this server, we should inherit the sessions.
-      if (session.serverPid && session.serverPid !== currentServerPid && isProcessAlive(session.serverPid)) {
-        sessionsToSave.push(session);
-        continue;
-      }
-
-      // serverPid is dead or missing - validate path before inheriting
-      // Validate that locationPath still exists before inheriting session
-      const pathExistsResult = await this.pathExists(session.locationPath);
-      if (!pathExistsResult) {
-        logger.warn({ sessionId: session.id, locationPath: session.locationPath },
-          'Session path no longer exists, marking as orphan');
-        orphanSessions.push(session);
-        pathNotFoundCount++;
-        continue;
-      }
-
-      // Kill any orphan worker processes first
-      killedWorkerCount += SessionManager.killOrphanWorkers(session);
-
-      // Mark as paused in DB (not loaded into memory) - user can resume later
-      sessionsToSave.push({
-        ...session,
-        serverPid: null,
-        pausedAt: new Date().toISOString(),
-      });
-      markedPausedCount++;
-    }
-
-    // Delete orphan sessions (path no longer exists)
-    for (const orphan of orphanSessions) {
-      const resolver = this.getPathResolverForPersistedSession(orphan);
-      // Clean up worker output files
-      try {
-        await this.workerOutputFileManager.deleteSessionOutputs(orphan.id, resolver);
-      } catch (error) {
-        logger.error({ sessionId: orphan.id, err: error }, 'Failed to delete worker output files for orphan session');
-      }
-      // Delete from database
-      try {
-        await this.sessionRepository.delete(orphan.id);
-        logger.info({ sessionId: orphan.id }, 'Removed orphan session with non-existent path');
-      } catch (error) {
-        logger.error({ sessionId: orphan.id, err: error }, 'Failed to delete orphan session from database');
-      }
-    }
-
-    // Save all sessions (dead-server sessions marked as paused, others unchanged)
-    if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
-      await this.sessionRepository.saveAll(sessionsToSave);
-    }
-
-    logger.info({
-      markedPausedSessions: markedPausedCount,
-      killedWorkerProcesses: killedWorkerCount,
-      removedOrphanSessions: pathNotFoundCount,
-      serverPid: currentServerPid,
-    }, 'Initialized sessions from persistence');
-  }
 
   /**
    * Set a global callback for all activity state changes (for dashboard broadcast)
@@ -417,98 +392,6 @@ export class SessionManager {
     this.timerCleanupCallback = callback;
   }
 
-  /**
-   * Kill orphan processes from previous server run and remove orphan sessions.
-   * Sessions that have been loaded into this.sessions (by initializeSessions) are preserved.
-   * Only sessions from OTHER dead servers are considered orphans.
-   */
-  private async cleanupOrphanProcesses(): Promise<void> {
-    const persistedSessions = await this.sessionRepository.findAll();
-    const currentServerPid = getServerPid();
-    let killedCount = 0;
-    let preservedCount = 0;
-    const orphanSessions: PersistedSession[] = [];
-
-    for (const session of persistedSessions) {
-      // Skip sessions that this server has inherited (already in memory)
-      if (this.sessions.has(session.id)) {
-        preservedCount++;
-        continue;
-      }
-
-      if (!session.serverPid) {
-        logger.warn({ sessionId: session.id }, 'Session has no serverPid (legacy session), skipping cleanup');
-        preservedCount++;
-        continue;
-      }
-
-      if (isProcessAlive(session.serverPid)) {
-        preservedCount++;
-        continue;
-      }
-
-      // This session's server is dead AND not inherited by this server - mark for removal
-      orphanSessions.push(session);
-
-      // Kill all workers in this session (only PTY workers have pid)
-      killedCount += SessionManager.killOrphanWorkers(session);
-    }
-
-    // Remove orphan sessions from persistence and delete output files
-    if (orphanSessions.length > 0) {
-      // Verify jobQueue is available for cleanup operations
-      if (!this.jobQueue) {
-        throw new Error('JobQueue not available for orphan session cleanup. Ensure jobQueue is passed to SessionManager.create().');
-      }
-      for (const orphan of orphanSessions) {
-        const resolver = this.getPathResolverForPersistedSession(orphan);
-        await this.sessionRepository.delete(orphan.id);
-        // Delete output files for orphan session via job queue
-        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: orphan.id, repositoryName: resolver.getRepositoryName() });
-        logger.info({ sessionId: orphan.id }, 'Removed orphan session from persistence');
-      }
-    }
-
-    logger.info({
-      killedProcesses: killedCount,
-      removedSessions: orphanSessions.length,
-      preservedSessions: preservedCount,
-      serverPid: currentServerPid,
-    }, 'Orphan cleanup completed');
-  }
-
-  /**
-   * Kill orphan worker processes for a session.
-   * Returns the number of workers successfully killed.
-   */
-  private static killOrphanWorkers(session: PersistedSession): number {
-    let killedCount = 0;
-    for (const worker of session.workers) {
-      // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-      if (worker.type === 'git-diff' || worker.pid === null) continue;
-
-      if (isProcessAlive(worker.pid)) {
-        try {
-          processKill(worker.pid, 'SIGTERM');
-          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-          killedCount++;
-        } catch (error) {
-          logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
-          // Try SIGKILL as fallback for stubborn processes
-          try {
-            processKill(worker.pid, 'SIGKILL');
-            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
-            killedCount++;
-          } catch {
-            // Process may have exited between checks, log but continue
-            logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
-          }
-        }
-      }
-    }
-    return killedCount;
-  }
-
   // ========== Session Lifecycle ==========
 
   async createSession(request: CreateSessionRequest, context?: SessionCreationContext): Promise<Session> {
@@ -591,97 +474,11 @@ export class SessionManager {
    * while keeping the session recoverable if deletion fails.
    */
   async killSessionWorkers(id: string): Promise<void> {
-    const session = this.sessions.get(id);
-    if (!session) return;
-
-    const killPromises: Promise<void>[] = [];
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'git-diff') {
-        stopWatching(session.locationPath);
-      } else {
-        killPromises.push(this.workerManager.killWorker(worker, id));
-      }
-    }
-    await Promise.all(killPromises);
+    return this.sessionDeletionService.killSessionWorkers(id);
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    const session = this.sessions.get(id);
-    if (!session) return false;
-
-    // Notify all active Worker WebSocket connections that session is being deleted
-    // This must happen BEFORE killing workers so clients receive the notification
-    this.webSocketCallbacks?.notifySessionDeleted(id);
-
-    // Kill all workers first (before removing from memory)
-    const killPromises: Promise<void>[] = [];
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'git-diff') {
-        // Stop file watcher for git-diff workers
-        stopWatching(session.locationPath);
-      } else {
-        // Kill PTY for agent/terminal workers
-        killPromises.push(this.workerManager.killWorker(worker, id));
-      }
-    }
-    await Promise.all(killPromises);
-
-    // Verify jobQueue is available before proceeding
-    if (!this.jobQueue) {
-      throw new Error('JobQueue not available for session cleanup. Ensure SessionManager.create() was called with jobQueue.');
-    }
-
-    // Resolve path resolver before cleanup operations
-    const resolver = this.getPathResolverForSession(session);
-
-    // Perform all deletion operations atomically
-    // If any fail, restore in-memory state to maintain consistency
-    try {
-      // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical)
-      await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
-
-      // 2. Clean up notification state (throttle timers, debounce timers)
-      this.notificationManager?.cleanupSession(id);
-
-      // 2a. Clean up periodic timers associated with this session
-      this.timerCleanupCallback?.(id);
-
-      // 2b. Clean up inter-worker message history
-      this.messageService.clearSession(id);
-
-      // 2c. Clean up inter-session message files
-      try {
-        await this.interSessionMessageService.deleteSessionMessages(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
-      }
-
-      // 2d. Clean up memo file
-      try {
-        await this.memoService.deleteMemo(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
-      }
-
-      // 3. Remove from in-memory map
-      this.sessions.delete(id);
-
-      // 4. Delete from persistence (this is the critical operation)
-      await this.sessionRepository.delete(id);
-
-      logger.info({ sessionId: id }, 'Session deleted');
-
-      // 5. Only broadcast after all operations succeed
-      this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
-
-      return true;
-    } catch (err) {
-      // Restore in-memory session if it was removed
-      // This ensures UI and server state remain consistent
-      this.sessions.set(id, session);
-      logger.error({ sessionId: id, err }, 'Failed to delete session, restored in-memory state');
-      throw err;
-    }
+    return this.sessionDeletionService.deleteSession(id);
   }
 
   getAllSessions(): Session[] {
@@ -705,329 +502,24 @@ export class SessionManager {
     return trulyPaused.map((p) => this.persistedToPublicSession(p));
   }
 
-  /**
-   * Convert a persisted session to public Session format.
-   * Used for paused sessions that aren't in memory.
-   */
   private persistedToPublicSession(p: PersistedSession): Session {
-    const workers: Worker[] = p.workers.map((w) => {
-      if (w.type === 'agent') {
-        return {
-          id: w.id,
-          type: 'agent' as const,
-          name: w.name,
-          agentId: w.agentId,
-          createdAt: w.createdAt,
-          activated: false, // Paused sessions have no active PTY
-        };
-      } else if (w.type === 'terminal') {
-        return {
-          id: w.id,
-          type: 'terminal' as const,
-          name: w.name,
-          createdAt: w.createdAt,
-          activated: false, // Paused sessions have no active PTY
-        };
-      } else if (w.type === 'git-diff') {
-        return {
-          id: w.id,
-          type: 'git-diff' as const,
-          name: w.name,
-          createdAt: w.createdAt,
-          baseCommit: w.baseCommit,
-        };
-      } else {
-        const _exhaustive: never = w;
-        throw new Error(`Unknown worker type: ${(_exhaustive as PersistedWorker).type}`);
-      }
-    });
-
-    const base = {
-      id: p.id,
-      locationPath: p.locationPath,
-      status: 'active' as const, // Session exists, it's just paused
-      activationState: 'hibernated' as const, // Paused sessions are always hibernated
-      createdAt: p.createdAt,
-      workers,
-      initialPrompt: p.initialPrompt,
-      title: p.title,
-      pausedAt: p.pausedAt,
-      parentSessionId: p.parentSessionId,
-      parentWorkerId: p.parentWorkerId,
-      createdBy: p.createdBy,
-    };
-
-    if (p.type === 'worktree') {
-      // Get repository name via callback to avoid circular dependency
-      const repository = this.repositoryCallbacks?.isInitialized()
-        ? this.repositoryCallbacks.getRepository(p.repositoryId)
-        : undefined;
-
-      const worktreeSession: WorktreeSession = {
-        ...base,
-        type: 'worktree',
-        repositoryId: p.repositoryId,
-        repositoryName: repository?.name ?? 'Unknown',
-        worktreeId: p.worktreeId,
-        isMainWorktree: repository?.path === p.locationPath,
-      };
-      return worktreeSession;
-    }
-
-    const quickSession: QuickSession = { ...base, type: 'quick' };
-    return quickSession;
+    return this.sessionConverterService.persistedToPublicSession(p);
   }
 
   /**
    * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
-   * Only available for worktree sessions. Quick sessions should use deleteSession instead.
-   *
-   * @param id - Session ID to pause
-   * @returns true if session was paused, false if not found or is a quick session
+   * Delegates to SessionPauseResumeService.
    */
   async pauseSession(id: string): Promise<boolean> {
-    const session = this.sessions.get(id);
-    if (!session) {
-      logger.warn({ sessionId: id }, 'Cannot pause session: not found in memory');
-      return false;
-    }
-
-    // Quick sessions cannot be paused - they should be deleted instead
-    if (session.type === 'quick') {
-      logger.warn({ sessionId: id }, 'Cannot pause quick session: use delete instead');
-      return false;
-    }
-
-    // Notify all active Worker WebSocket connections that session is being paused
-    // This must happen BEFORE killing workers so clients receive the notification
-    this.webSocketCallbacks?.notifySessionPaused(id);
-
-    // Kill all PTY workers (preserve output files) and clear PTY references.
-    // killWorker awaits PTY exit and calls detachPty, ensuring PIDs are saved as null.
-    const killPromises: Promise<void>[] = [];
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'git-diff') {
-        // Stop file watcher for git-diff workers
-        stopWatching(session.locationPath);
-      } else {
-        // Kill PTY for agent/terminal workers (don't delete output files)
-        killPromises.push(this.workerManager.killWorker(worker, id));
-      }
-    }
-    await Promise.all(killPromises);
-
-    // Clean up notification state (throttle timers, debounce timers)
-    this.notificationManager?.cleanupSession(id);
-
-    // Clean up inter-worker message history
-    this.messageService.clearSession(id);
-
-    // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
-    // Using save() instead of update() to persist the full session state including worker PID changes
-    const persistedSession = this.toPersistedSessionWithServerPid(session, null);
-    const pausedAt = new Date().toISOString();
-    persistedSession.pausedAt = pausedAt;
-    await this.sessionRepository.save(persistedSession);
-
-    // Remove from in-memory sessions Map (after successful persistence)
-    this.sessions.delete(id);
-
-    logger.info({ sessionId: id }, 'Session paused');
-
-    // Call lifecycle callback with full public Session (includes activationState: 'hibernated')
-    // persistedToPublicSession always returns hibernated state for persisted sessions
-    const pausedPublicSession = this.persistedToPublicSession(persistedSession) as import('@agent-console/shared').PausedSession;
-    this.sessionLifecycleCallbacks?.onSessionPaused?.(pausedPublicSession);
-
-    return true;
+    return this.sessionPauseResumeService.pauseSession(id);
   }
 
   /**
    * Resume a paused session: load from DB, create in-memory session, restore workers.
-   *
-   * @param id - Session ID to resume
-   * @returns The resumed session, or null if not found in database or activation fails
+   * Delegates to SessionPauseResumeService.
    */
   async resumeSession(id: string): Promise<Session | null> {
-    // Check if session is already active in memory
-    const existingSession = this.sessions.get(id);
-    if (existingSession) {
-      logger.debug({ sessionId: id }, 'Session already active, returning existing');
-      return this.toPublicSession(existingSession);
-    }
-
-    // Prevent concurrent resume attempts for the same session
-    if (this.resumingSessionIds.has(id)) {
-      logger.warn({ sessionId: id }, 'Resume already in progress');
-      return null;
-    }
-
-    this.resumingSessionIds.add(id);
-
-    try {
-      return await this.resumeSessionInternal(id);
-    } finally {
-      this.resumingSessionIds.delete(id);
-    }
-  }
-
-  /**
-   * Internal implementation of resumeSession, called after concurrency guard.
-   */
-  private async resumeSessionInternal(id: string): Promise<Session | null> {
-    // Load from database
-    const persisted = await this.sessionRepository.findById(id);
-    if (!persisted) {
-      logger.warn({ sessionId: id }, 'Cannot resume session: not found in database');
-      return null;
-    }
-
-    // Validate that locationPath still exists
-    const pathExistsResult = await this.pathExists(persisted.locationPath);
-    if (!pathExistsResult) {
-      logger.warn({ sessionId: id, locationPath: persisted.locationPath },
-        'Cannot resume session: path no longer exists');
-      return null;
-    }
-
-    // Create in-memory InternalSession from persisted data
-    const workers = this.workerManager.restoreWorkersFromPersistence(persisted.workers);
-    const baseSession = {
-      id: persisted.id,
-      locationPath: persisted.locationPath,
-      status: 'active' as const,
-      createdAt: persisted.createdAt,
-      workers,
-      initialPrompt: persisted.initialPrompt,
-      title: persisted.title,
-      parentSessionId: persisted.parentSessionId,
-      parentWorkerId: persisted.parentWorkerId,
-      createdBy: persisted.createdBy,
-      templateVars: persisted.templateVars,
-    };
-
-    const internalSession: InternalSession = persisted.type === 'worktree'
-      ? {
-          ...baseSession,
-          type: 'worktree',
-          repositoryId: persisted.repositoryId,
-          worktreeId: persisted.worktreeId,
-        }
-      : {
-          ...baseSession,
-          type: 'quick',
-        };
-
-    // Add to sessions Map
-    this.sessions.set(id, internalSession);
-
-    // Track activated workers for cleanup on failure
-    const activatedWorkers: InternalPtyWorker[] = [];
-
-    // Restore all PTY workers with continueConversation: true
-    const repositoryEnvVars = await this.getRepositoryEnvVars(id);
-    const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
-    const resolver = this.getPathResolverForSession(internalSession);
-    try {
-      const username = await resolveSpawnUsername(internalSession.createdBy, this.userRepository);
-      for (const worker of workers.values()) {
-        if (worker.type === 'agent') {
-          await this.workerManager.activateAgentWorkerPty(worker, {
-            sessionId: id,
-            locationPath: persisted.locationPath,
-            repositoryEnvVars,
-            username,
-            resolver,
-            agentId: worker.agentId,
-            continueConversation: true,
-            repositoryId,
-            context: {
-              parentSessionId: internalSession.parentSessionId,
-              parentWorkerId: internalSession.parentWorkerId,
-              templateVars: internalSession.templateVars,
-            },
-          });
-          activatedWorkers.push(worker);
-        } else if (worker.type === 'terminal') {
-          this.workerManager.activateTerminalWorkerPty(worker, {
-            sessionId: id,
-            locationPath: persisted.locationPath,
-            repositoryEnvVars,
-            username,
-            resolver,
-          });
-          activatedWorkers.push(worker);
-        }
-        // git-diff workers don't need PTY activation
-      }
-    } catch (err) {
-      // PTY activation failed - clean up and return null
-      logger.error({ sessionId: id, err }, 'Failed to activate PTY workers during session resume');
-
-      // Kill all workers that were successfully activated
-      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker, id)));
-
-      // Remove session from memory
-      this.sessions.delete(id);
-
-      // Restore paused state in DB to allow future resume attempts
-      try {
-        await this.sessionRepository.update(id, {
-          serverPid: null,
-          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
-        });
-      } catch (updateErr) {
-        logger.error({ sessionId: id, err: updateErr }, 'Failed to restore paused state after resume failure');
-      }
-
-      return null;
-    }
-
-    // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
-    try {
-      await this.sessionRepository.update(id, { serverPid: getServerPid(), pausedAt: null });
-    } catch (err) {
-      logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
-
-      // Kill all workers that were successfully activated
-      await Promise.all(activatedWorkers.map((worker) => this.workerManager.killWorker(worker, id)));
-
-      // Remove session from memory
-      this.sessions.delete(id);
-
-      // Restore paused state in DB to allow future resume attempts
-      try {
-        await this.sessionRepository.update(id, {
-          serverPid: null,
-          pausedAt: persisted.pausedAt ?? new Date().toISOString(),
-        });
-      } catch (rollbackErr) {
-        logger.error({ sessionId: id, err: rollbackErr }, 'Failed to persist rollback after resume persistence failure');
-      }
-
-      return null;
-    }
-
-    logger.info({ sessionId: id }, 'Session resumed');
-
-    const publicSession = this.toPublicSession(internalSession);
-
-    // Collect activity states for resumed session's workers
-    const activityStates: import('@agent-console/shared').WorkerActivityInfo[] = [];
-    for (const worker of publicSession.workers) {
-      if (worker.type === 'agent') {
-        const state = this.getWorkerActivityState(id, worker.id);
-        if (state) {
-          activityStates.push({ sessionId: id, workerId: worker.id, activityState: state });
-        }
-      }
-    }
-
-    // Call lifecycle callback with activity states
-    // After resume, session is always in running state
-    this.sessionLifecycleCallbacks?.onSessionResumed?.(publicSession as import('@agent-console/shared').RunningSession, activityStates);
-
-    return publicSession;
+    return this.sessionPauseResumeService.resumeSession(id);
   }
 
   /**
@@ -1036,39 +528,7 @@ export class SessionManager {
    * @returns true if session was deleted, false if not found
    */
   async forceDeleteSession(id: string): Promise<boolean> {
-    // Try in-memory first (handles active sessions)
-    const deleted = await this.deleteSession(id);
-    if (deleted) {
-      return true;
-    }
-
-    // Check persistence for orphaned session
-    const persisted = await this.sessionRepository.findById(id);
-    if (persisted) {
-      const resolver = this.getPathResolverForPersistedSession(persisted);
-      // Enqueue cleanup of worker output files (same as deleteSession)
-      if (this.jobQueue) {
-        await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
-      } else {
-        logger.warn(
-          { sessionId: id, method: 'forceDeleteSession', skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS },
-          'JobQueue not available, skipping cleanup job for orphaned session'
-        );
-      }
-      await this.sessionRepository.delete(id);
-      // Clean up memo file
-      try {
-        await this.memoService.deleteMemo(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
-      }
-      // Broadcast deletion to connected clients
-      this.sessionLifecycleCallbacks?.onSessionDeleted?.(id);
-      logger.info({ sessionId: id }, 'Orphaned session deleted from persistence');
-      return true;
-    }
-
-    return false;
+    return this.sessionDeletionService.forceDeleteSession(id);
   }
 
   /**
@@ -1256,127 +716,7 @@ export class SessionManager {
     sessionId: string,
     updates: { title?: string; branch?: string }
   ): Promise<{ success: boolean; title?: string; branch?: string; error?: string }> {
-    const session = this.sessions.get(sessionId);
-
-    if (!session) {
-      // Check persisted metadata for inactive sessions
-      const metadata = await this.sessionRepository.findById(sessionId);
-      if (!metadata) {
-        return { success: false, error: 'session_not_found' };
-      }
-
-      // Build up the result and track whether persistence is needed
-      const result: { success: boolean; title?: string; branch?: string; error?: string } = { success: true };
-      let updatedTitle: string | undefined;
-      let updatedWorkers: PersistedWorker[] | undefined;
-      let updatedWorktreeId: string | undefined;
-
-      // For inactive sessions, title update is supported via database persistence
-      if (updates.title !== undefined) {
-        updatedTitle = updates.title;
-        result.title = updates.title;
-      }
-
-      // For inactive sessions, branch rename is also supported (no restart possible)
-      if (updates.branch) {
-        if (metadata.type !== 'worktree') {
-          return { success: false, error: 'Can only rename branch for worktree sessions' };
-        }
-
-        const currentBranch = await gitGetCurrentBranch(metadata.locationPath);
-
-        try {
-          await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          return { success: false, error: message };
-        }
-
-        // Update git-diff workers' base commit after successful branch rename.
-        // This is a secondary concern - failure should not abort the branch rename.
-        try {
-          const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
-          const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
-          updatedWorkers = metadata.workers.map(w => {
-            if (w.type === 'git-diff') {
-              return { ...w, baseCommit: resolvedBaseCommit };
-            }
-            return w;
-          });
-        } catch (diffUpdateError) {
-          logger.error(
-            { sessionId, err: diffUpdateError },
-            'Failed to update git-diff workers after branch rename for inactive session'
-          );
-        }
-
-        updatedWorktreeId = updates.branch;
-        result.branch = updates.branch;
-      }
-
-      // Persist all updates in a single save
-      if (updatedTitle !== undefined || updatedWorktreeId !== undefined) {
-        const toSave = { ...metadata } as PersistedSession;
-        if (updatedTitle !== undefined) {
-          toSave.title = updatedTitle;
-        }
-        if (updatedWorktreeId !== undefined && toSave.type === 'worktree') {
-          toSave.worktreeId = updatedWorktreeId;
-          // If calculateBaseCommit threw, updatedWorkers is undefined and we preserve
-          // the original metadata.workers via the ...metadata spread above.
-          if (updatedWorkers !== undefined) {
-            toSave.workers = updatedWorkers;
-          }
-        }
-        await this.sessionRepository.save(toSave);
-      }
-
-      return result;
-    }
-
-    // Handle title update
-    if (updates.title !== undefined) {
-      session.title = updates.title;
-    }
-
-    // Handle branch rename for active session
-    if (updates.branch) {
-      if (session.type !== 'worktree') {
-        return { success: false, error: 'Can only rename branch for worktree sessions' };
-      }
-
-      const currentBranch = await gitGetCurrentBranch(session.locationPath);
-
-      try {
-        await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
-        session.worktreeId = updates.branch;
-
-        // Update git-diff workers' base commit after successful branch rename.
-        // This is a secondary concern - failure should not abort the branch rename.
-        try {
-          await this.workerLifecycleManager.updateGitDiffWorkersAfterBranchRename(sessionId);
-        } catch (diffUpdateError) {
-          logger.error(
-            { sessionId, err: diffUpdateError },
-            'Failed to update git-diff workers after branch rename for active session'
-          );
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return { success: false, error: message };
-      }
-    }
-
-    await this.persistSession(session);
-
-    // Broadcast session update via WebSocket
-    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
-
-    return {
-      success: true,
-      title: updates.title,
-      branch: updates.branch,
-    };
+    return this.sessionMetadataService.updateSessionMetadata(sessionId, updates);
   }
 
   /**
@@ -1387,7 +727,7 @@ export class SessionManager {
     sessionId: string,
     newBranch: string
   ): Promise<{ success: boolean; branch?: string; error?: string }> {
-    return this.updateSessionMetadata(sessionId, { branch: newBranch });
+    return this.sessionMetadataService.renameBranch(sessionId, newBranch);
   }
 
   /**
@@ -1452,58 +792,13 @@ export class SessionManager {
     return result;
   }
 
-  /**
-   * Compute the activation state of a session based on its workers' PTY state.
-   * A session is 'running' if at least one PTY worker has an active PTY.
-   * A session is 'hibernated' if all PTY workers have no PTY (after server restart).
-   * Sessions with no PTY workers (only git-diff) are considered 'running'.
-   */
-  private computeActivationState(session: InternalSession): SessionActivationState {
-    const ptyWorkers = Array.from(session.workers.values()).filter(
-      (w): w is InternalAgentWorker | InternalTerminalWorker =>
-        w.type === 'agent' || w.type === 'terminal'
-    );
-    if (ptyWorkers.length === 0) return 'running';
-    const hasActivePty = ptyWorkers.some((w) => w.pty !== null);
-    return hasActivePty ? 'running' : 'hibernated';
-  }
-
   private async persistSession(session: InternalSession): Promise<void> {
-    const persisted = this.toPersistedSession(session);
+    const persisted = this.sessionConverterService.toPersistedSession(session);
     await this.sessionRepository.save(persisted);
   }
 
-  private toPersistedSession(session: InternalSession): PersistedSession {
-    return this.toPersistedSessionWithServerPid(session, getServerPid());
-  }
-
-  /**
-   * Convert an internal session to persisted format with a specific serverPid.
-   * Used by pauseSession to save with serverPid = null.
-   */
   private toPersistedSessionWithServerPid(session: InternalSession, serverPid: number | null): PersistedSession {
-    // session.workers is the source of truth (all workers loaded on init)
-    const workers: PersistedWorker[] = Array.from(session.workers.values()).map(w =>
-      this.workerManager.toPersistedWorker(w)
-    );
-
-    const base = {
-      id: session.id,
-      locationPath: session.locationPath,
-      serverPid,
-      createdAt: session.createdAt,
-      workers,
-      initialPrompt: session.initialPrompt,
-      title: session.title,
-      parentSessionId: session.parentSessionId,
-      parentWorkerId: session.parentWorkerId,
-      createdBy: session.createdBy,
-      templateVars: session.templateVars,
-    };
-
-    return session.type === 'worktree'
-      ? { ...base, type: 'worktree', repositoryId: session.repositoryId, worktreeId: session.worktreeId }
-      : { ...base, type: 'quick' };
+    return this.sessionConverterService.toPersistedSessionWithServerPid(session, serverPid);
   }
 
   /**
@@ -1528,43 +823,6 @@ export class SessionManager {
   }
 
   private toPublicSession(session: InternalSession): Session {
-    // session.workers is the source of truth (all workers loaded on init)
-    const workers = Array.from(session.workers.values())
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(w => this.workerManager.toPublicWorker(w));
-
-    const base = {
-      id: session.id,
-      locationPath: session.locationPath,
-      status: session.status,
-      activationState: this.computeActivationState(session),
-      createdAt: session.createdAt,
-      workers,
-      initialPrompt: session.initialPrompt,
-      title: session.title,
-      parentSessionId: session.parentSessionId,
-      parentWorkerId: session.parentWorkerId,
-      createdBy: session.createdBy,
-    };
-
-    if (session.type === 'worktree') {
-      // Get repository name via callback to avoid circular dependency
-      const repository = this.repositoryCallbacks?.isInitialized()
-        ? this.repositoryCallbacks.getRepository(session.repositoryId)
-        : undefined;
-
-      const worktreeSession: WorktreeSession = {
-        ...base,
-        type: 'worktree',
-        repositoryId: session.repositoryId,
-        repositoryName: repository?.name ?? 'Unknown',
-        worktreeId: session.worktreeId,
-        isMainWorktree: repository?.path === session.locationPath,
-      };
-      return worktreeSession;
-    }
-
-    const quickSession: QuickSession = { ...base, type: 'quick' };
-    return quickSession;
+    return this.sessionConverterService.toPublicSession(session);
   }
 }
