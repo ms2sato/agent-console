@@ -1,5 +1,15 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 
+const TEST_SKILLS = [
+  { name: '/commit', description: 'Create a git commit' },
+  { name: '/review-loop', description: 'Run automated review loop' },
+  { name: '/code-review', description: 'Review a pull request' },
+  { name: '/simplify', description: 'Review and simplify changed code' },
+  { name: '/orchestrator', description: 'Strategic task orchestration' },
+  { name: '/schedule', description: 'Manage scheduled agents' },
+  { name: '/loop', description: 'Run a command on recurring interval' },
+];
+
 const mockSendWorkerMessage = mock(() => Promise.resolve({
   message: {
     id: 'msg-1',
@@ -12,8 +22,10 @@ const mockSendWorkerMessage = mock(() => Promise.resolve({
     timestamp: new Date().toISOString(),
   },
 }));
+const mockFetchSkills = mock(() => Promise.resolve({ skills: TEST_SKILLS }));
 mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
+  fetchSkills: mockFetchSkills,
 }));
 
 const mockSendInput = mock(() => true);
@@ -22,8 +34,10 @@ mock.module('../../../lib/worker-websocket', () => ({
 }));
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { MessagePanel, canSend, validateFiles, SLASH_COMMANDS } from '../MessagePanel';
+import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
 import { _getDraftsMap } from '../../../hooks/useDraftMessage';
 
 describe('MessagePanel logic', () => {
@@ -111,6 +125,11 @@ const defaultProps = {
   newMessage: null,
 };
 
+/** Wrap component with QueryClientProvider for rerender calls (RTL's rerender loses the provider tree). */
+function withProviders(queryClient: QueryClient, ui: React.ReactNode) {
+  return <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>;
+}
+
 describe('MessagePanel', () => {
   beforeEach(() => {
     _getDraftsMap().clear();
@@ -119,6 +138,7 @@ describe('MessagePanel', () => {
   afterEach(() => {
     cleanup();
     mockSendWorkerMessage.mockClear();
+    mockFetchSkills.mockClear();
     mockSendInput.mockClear();
   });
 
@@ -190,7 +210,7 @@ describe('MessagePanel', () => {
   });
 
   it('clears content and files when targetWorkerId changes', async () => {
-    const { container, rerender } = await act(async () =>
+    const { container, rerender, queryClient } = await act(async () =>
       renderWithRouter(<MessagePanel {...defaultProps} />),
     );
     const view = within(container);
@@ -204,7 +224,7 @@ describe('MessagePanel', () => {
 
     // Change target worker
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} targetWorkerId="agent-2" />));
     });
 
     const updatedTextarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
@@ -223,20 +243,20 @@ describe('MessagePanel', () => {
       timestamp: new Date().toISOString(),
     };
 
-    const { container, rerender } = await act(async () =>
+    const { container, rerender, queryClient } = await act(async () =>
       renderWithRouter(<MessagePanel {...defaultProps} newMessage={null} />),
     );
 
     // Message to a different worker should NOT show indicator
     const otherMessage = { ...message, toWorkerId: 'agent-99' };
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} newMessage={otherMessage} />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} newMessage={otherMessage} />));
     });
     expect(container.querySelector('.bg-blue-500')).toBeNull();
 
     // Message to this target worker SHOULD show indicator
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} newMessage={message} />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} newMessage={message} />));
     });
     expect(container.querySelector('.bg-blue-500')).toBeTruthy();
   });
@@ -253,14 +273,14 @@ describe('MessagePanel', () => {
       timestamp: new Date().toISOString(),
     };
 
-    const { container, rerender } = await act(async () =>
+    const { container, rerender, queryClient } = await act(async () =>
       renderWithRouter(<MessagePanel {...defaultProps} newMessage={message} />),
     );
     expect(container.querySelector('.bg-blue-500')).toBeTruthy();
 
     // Switch target worker - should clear unread
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" newMessage={message} />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} targetWorkerId="agent-2" newMessage={message} />));
     });
     expect(container.querySelector('.bg-blue-500')).toBeNull();
   });
@@ -284,7 +304,7 @@ describe('MessagePanel', () => {
   });
 
   it('resets textarea height when targetWorkerId changes', async () => {
-    const { container, rerender } = await act(async () =>
+    const { container, rerender, queryClient } = await act(async () =>
       renderWithRouter(<MessagePanel {...defaultProps} />),
     );
     const view = within(container);
@@ -293,7 +313,7 @@ describe('MessagePanel', () => {
     textarea.style.height = '100px';
 
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} targetWorkerId="agent-2" />));
     });
 
     // Re-query after rerender since DOM element may be replaced
@@ -317,7 +337,7 @@ describe('MessagePanel', () => {
   });
 
   it('restores draft when switching back to a previous worker', async () => {
-    const { container, rerender } = await act(async () =>
+    const { container, rerender, queryClient } = await act(async () =>
       renderWithRouter(<MessagePanel {...defaultProps} />),
     );
     const view = within(container);
@@ -331,14 +351,14 @@ describe('MessagePanel', () => {
 
     // Switch to agent-2 -- content should be empty (no draft saved for agent-2)
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-2" />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} targetWorkerId="agent-2" />));
     });
     const textarea2 = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
     expect((textarea2 as HTMLTextAreaElement).value).toBe('');
 
     // Switch back to agent-1 -- draft should be restored
     await act(async () => {
-      rerender(<MessagePanel {...defaultProps} targetWorkerId="agent-1" />);
+      rerender(withProviders(queryClient, <MessagePanel {...defaultProps} targetWorkerId="agent-1" />));
     });
     const textarea3 = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
     expect((textarea3 as HTMLTextAreaElement).value).toBe('draft for agent-1');
@@ -473,7 +493,7 @@ describe('MessagePanel', () => {
       });
 
       const options = view.getAllByRole('option');
-      expect(options.length).toBe(SLASH_COMMANDS.length);
+      expect(options.length).toBe(TEST_SKILLS.length);
     });
 
     it('shows filtered results when typing /re', async () => {
@@ -609,7 +629,7 @@ describe('MessagePanel', () => {
         fireEvent.mouseDown(options[1]);
       });
 
-      expect(textarea.value).toBe(SLASH_COMMANDS[1].name + ' ');
+      expect(textarea.value).toBe(TEST_SKILLS[1].name + ' ');
     });
 
     it('does not show dropdown when no commands match filter', async () => {
@@ -619,6 +639,20 @@ describe('MessagePanel', () => {
       const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
       await act(async () => {
         fireEvent.change(textarea, { target: { value: '/xyz' } });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+    });
+
+    it('shows no dropdown when skills API returns empty', async () => {
+      mockFetchSkills.mockImplementation(() => Promise.resolve({ skills: [] }));
+
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
       });
 
       expect(view.queryByRole('listbox')).toBeNull();

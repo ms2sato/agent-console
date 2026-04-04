@@ -85,6 +85,11 @@ export const notificationKeys = {
   status: () => ['notification-status'] as const,
 } as const;
 
+export const skillKeys = {
+  /** All skills list */
+  all: () => ['skills'] as const,
+} as const;
+
 export const reviewQueueKeys = {
   /** Root key for invalidating all review queue queries */
   root: () => ['review-queue'] as const,

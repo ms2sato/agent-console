@@ -6,4 +6,10 @@ describe('shared index exports', () => {
     // InteractiveProcessInfo is a type-only export — verify the module loads successfully
     expect(mod).toBeDefined();
   });
+
+  it('should export SkillDefinition type', async () => {
+    const mod = await import('../index.js');
+    // SkillDefinition is a type-only export — verify the module loads successfully
+    expect(mod).toBeDefined();
+  });
 });
