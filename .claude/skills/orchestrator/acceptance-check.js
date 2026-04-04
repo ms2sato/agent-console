@@ -21,7 +21,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 
 // --- Utility functions ---
 
@@ -74,6 +74,9 @@ function getLocalChangedFiles() {
 // --- File categorization ---
 
 function categorizeFile(filePath) {
+  if (filePath.startsWith('packages/integration/')) {
+    return 'integration';
+  }
   if (filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/')) {
     return 'test';
   }
@@ -90,7 +93,7 @@ function categorizeFile(filePath) {
 }
 
 function categorizeFiles(files) {
-  const categories = { client: [], server: [], shared: [], test: [], other: [] };
+  const categories = { client: [], server: [], shared: [], integration: [], test: [], other: [] };
   for (const file of files) {
     const category = categorizeFile(file);
     categories[category].push(file);
@@ -159,6 +162,67 @@ function findTestFiles(changedFiles) {
   }
 
   return { testFiles, productionFiles, testCoverage };
+}
+
+// --- Integration test detection ---
+
+// Patterns that suggest integration test coverage is needed:
+// - Client components (may involve state transitions, forms, multi-phase UI)
+// - Server routes (API endpoints that clients consume)
+// - Shared types (cross-package contracts)
+const INTEGRATION_TRIGGER_PATTERNS = [
+  { pattern: /^packages\/client\/src\/components\/.+\.tsx$/, reason: 'UI component (may involve state transitions or forms)' },
+  { pattern: /^packages\/server\/src\/routes\/.+\.ts$/, reason: 'API route (client-server contract)' },
+  { pattern: /^packages\/shared\/src\/.+\.ts$/, reason: 'shared type (cross-package contract)' },
+];
+
+function getIntegrationTestDir() {
+  return 'packages/integration/src';
+}
+
+function listExistingIntegrationTests() {
+  const dir = getIntegrationTestDir();
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter(f => f.endsWith('.test.ts') || f.endsWith('.test.tsx'))
+      .map(f => dir + '/' + f);
+  } catch {
+    return [];
+  }
+}
+
+function detectIntegrationTestNeeds(changedFiles, categories) {
+  const triggers = [];
+
+  for (const file of changedFiles) {
+    if (isTestFile(file)) continue;
+    for (const { pattern, reason } of INTEGRATION_TRIGGER_PATTERNS) {
+      if (pattern.test(file)) {
+        triggers.push({ file, reason });
+        break;
+      }
+    }
+  }
+
+  if (triggers.length === 0) return null;
+
+  // Check if the PR includes integration test changes
+  const hasIntegrationTestInPr = changedFiles.some(
+    f => f.startsWith('packages/integration/') && isTestFile(f)
+  );
+
+  // Check cross-package indicator (stronger signal)
+  const isCrossPackage = categories.client.length > 0 && categories.server.length > 0;
+  const hasSharedChanges = categories.shared.length > 0;
+
+  return {
+    triggers,
+    hasIntegrationTestInPr,
+    isCrossPackage,
+    hasSharedChanges,
+    existingIntegrationTests: listExistingIntegrationTests(),
+  };
 }
 
 // --- Package boundary analysis ---
@@ -281,6 +345,8 @@ function runAutoDetection(prNumber) {
     acceptanceCriteria = getAcceptanceCriteria(linkedIssue);
   }
 
+  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
+
   return {
     changedFiles,
     categories,
@@ -291,13 +357,52 @@ function runAutoDetection(prNumber) {
     linkedIssue,
     acceptanceCriteria,
     ciStatus,
+    integrationTestNeeds,
   };
 }
 
 // --- Display functions ---
 
+function printIntegrationTestCoverage(integrationTestNeeds) {
+  console.log('[Integration Test Coverage (packages/integration)]');
+  if (!integrationTestNeeds) {
+    console.log('  No files triggering integration test check.');
+    console.log();
+    return;
+  }
+
+  const { triggers, hasIntegrationTestInPr, isCrossPackage, hasSharedChanges, existingIntegrationTests } = integrationTestNeeds;
+
+  console.log(`  Files triggering integration test review (${triggers.length}):`);
+  for (const { file, reason } of triggers) {
+    console.log(`    - ${file} (${reason})`);
+  }
+
+  if (isCrossPackage) {
+    console.log('  ⚠ Cross-package change detected (client + server) — integration test strongly recommended');
+  }
+  if (hasSharedChanges) {
+    console.log('  ⚠ Shared type changes detected — verify integration test covers the contract');
+  }
+
+  if (hasIntegrationTestInPr) {
+    console.log('  ✅ PR includes changes in packages/integration/');
+  } else {
+    console.log('  ❌ PR does NOT include integration test changes in packages/integration/');
+    console.log('     Consider adding an integration test for cross-component or state-transition behavior.');
+  }
+
+  if (existingIntegrationTests.length > 0) {
+    console.log(`  Existing integration tests (${existingIntegrationTests.length}):`);
+    for (const t of existingIntegrationTests) {
+      console.log(`    - ${t}`);
+    }
+  }
+  console.log();
+}
+
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, ciStatus } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, ciStatus, integrationTestNeeds } = autoDetection;
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
@@ -362,6 +467,9 @@ function printAutoDetection(autoDetection) {
     }
   }
   console.log();
+
+  // Integration test coverage
+  printIntegrationTestCoverage(integrationTestNeeds);
 
   // Package boundary analysis
   if (boundaries.length > 0) {
@@ -528,9 +636,14 @@ function printPostAcceptanceWorkflow() {
 
 function runCheckOnly(changedFiles) {
   const { testCoverage } = findTestFiles(changedFiles);
+  const categories = categorizeFiles(changedFiles);
+  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
 
   const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
-  if (filesNeedingCoverage.length === 0) {
+  const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
+  const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
+
+  if (filesNeedingCoverage.length === 0 && !integrationTestNeeds) {
     console.log('## Test Coverage Check\n');
     console.log('No production files matching coverage patterns were changed.\n');
     process.exit(0);
@@ -555,7 +668,31 @@ function runCheckOnly(changedFiles) {
       console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
     }
     console.log();
+  }
+
+  // Integration test coverage section
+  if (integrationTestNeeds) {
+    console.log('### Integration Test Coverage (packages/integration)\n');
+    if (integrationTestNeeds.hasIntegrationTestInPr) {
+      console.log('- ✅ PR includes integration test changes\n');
+    } else {
+      console.log('- ⚠ No integration test changes in PR\n');
+      console.log('Files triggering integration test review:\n');
+      for (const { file, reason } of integrationTestNeeds.triggers) {
+        console.log(`- \`${file}\` — ${reason}`);
+      }
+      if (integrationTestNeeds.isCrossPackage) {
+        console.log('\n⚠ Cross-package change (client + server) — integration test strongly recommended');
+      }
+      console.log();
+    }
+  }
+
+  if (hasUnitGaps) {
     console.log(`**${gaps.length} production file(s) missing test coverage.**`);
+    process.exit(1);
+  } else if (hasIntegrationGap) {
+    console.log('**Integration test gap detected — review recommended.** ⚠');
     process.exit(1);
   } else {
     console.log('**All production files have corresponding tests.** ✅');
@@ -563,7 +700,25 @@ function runCheckOnly(changedFiles) {
   }
 }
 
+// --- Exports for testing ---
+export {
+  categorizeFile,
+  categorizeFiles,
+  isTestFile,
+  requiresTestCoverage,
+  findTestFiles,
+  detectIntegrationTestNeeds,
+  listExistingIntegrationTests,
+  INTEGRATION_TRIGGER_PATTERNS,
+};
+
 // --- Main ---
+
+// Guard: skip main execution when imported as a module for testing
+const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('acceptance-check.js');
+if (!isMainModule) {
+  // Module is being imported for testing — do not execute main logic
+} else {
 
 const isCheckOnly = process.argv.includes('--check-only');
 
@@ -685,3 +840,5 @@ if (!state) {
     printAnswerCommand(prNumber, nextUnanswered.key);
   }
 }
+
+} // end isMainModule guard
