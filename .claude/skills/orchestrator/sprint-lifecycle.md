@@ -56,8 +56,11 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
 
 **Step 1: Update pending triage list**
 - Reflect issues discovered during the sprint in `memory/project_pending_triage_list.md`
-- Add notes to resolved items
-- Record Issue numbers for items that were converted to new Issues
+- **Triage list maintenance rules:**
+  1. **Issue化したらPendingから削除** — GitHub Issueが正のソース。triage listとの二重管理をしない
+  2. **Resolved欄は直近2スプリント分のみ保持** — 古いものは削除（git historyで追える）
+  3. **Pendingに残るのはIssue化前の「ネタ」のみ** — 具体化できたら即Issue化してPendingから削除
+- Issue化していないPending項目があれば、この時点でIssue化するか判断する
 
 **Step 2: Close completed worktrees**
 - Delete merged PR worktrees using `remove_worktree`
