@@ -240,6 +240,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 15) {
     await migrateToV15(database);
   }
+
+  if (currentVersion < 16) {
+    await migrateToV16(database);
+  }
 }
 
 /**
@@ -760,6 +764,32 @@ async function migrateToV15(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 15`.execute(database);
 
   logger.info('Migration to v15 completed');
+}
+
+async function migrateToV16(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v16: Creating timers table');
+
+  await database.schema
+    .createTable('timers')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('session_id', 'text', (col) => col.notNull())
+    .addColumn('worker_id', 'text', (col) => col.notNull())
+    .addColumn('interval_seconds', 'integer', (col) => col.notNull())
+    .addColumn('action', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await database.schema
+    .createIndex('idx_timers_session_id')
+    .ifNotExists()
+    .on('timers')
+    .column('session_id')
+    .execute();
+
+  await sql`PRAGMA user_version = 16`.execute(database);
+
+  logger.info('Migration to v16 completed');
 }
 
 /**

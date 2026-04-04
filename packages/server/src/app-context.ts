@@ -43,6 +43,7 @@ import { NotificationManager as NotificationManagerClass } from './services/noti
 import { SlackHandler } from './services/notifications/slack-handler.js';
 import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
+import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
@@ -104,7 +105,7 @@ export interface AppContext {
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
 
-  /** Periodic timer management (in-memory, volatile) */
+  /** Periodic timer management (persisted when repository is available) */
   timerManager: TimerManager;
 
   /** Interactive process management (in-memory, volatile) */
@@ -224,7 +225,8 @@ export async function createAppContext(
     jobQueue,
   });
 
-  // 6.5. Create timer manager (in-memory, volatile)
+  // 6.5. Create timer manager with persistence
+  const timerRepository = new SqliteTimerRepository(db);
   const timerManager = new TimerManagerClass((timer) => {
     try {
       const writeInput = (data: string) =>
@@ -246,12 +248,15 @@ export async function createAppContext(
         'Failed to deliver timer notification',
       );
     }
-  });
+  }, timerRepository);
 
   // 6.6. Wire timer cleanup into session lifecycle
   sessionManager.setTimerCleanupCallback((sessionId) => {
     timerManager.deleteTimersBySession(sessionId);
   });
+
+  // 6.6.1. Restore persisted timers
+  await timerManager.restoreTimers();
 
   // 6.7. Create interactive process manager (in-memory, volatile)
   const interactiveProcessManager = new InteractiveProcessManagerClass(
@@ -466,8 +471,9 @@ export async function createTestContext(
     sessionManager.getSession(sessionId) !== undefined
   );
 
-  // Create timer manager (no-op callback for tests)
-  const timerManager = new TimerManagerClass(() => {});
+  // Create timer manager with persistence (no-op callback for tests)
+  const timerRepository = new SqliteTimerRepository(db);
+  const timerManager = new TimerManagerClass(() => {}, timerRepository);
 
   // Wire timer cleanup into session lifecycle
   sessionManager.setTimerCleanupCallback((sessionId) => {

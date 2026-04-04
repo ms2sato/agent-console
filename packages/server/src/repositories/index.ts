@@ -8,3 +8,6 @@ export { SqliteRepositoryRepository } from './sqlite-repository-repository.js';
 
 export type { AgentRepository } from './agent-repository.js';
 export { SqliteAgentRepository } from './sqlite-agent-repository.js';
+
+export type { TimerRepository, TimerRecord } from './timer-repository.js';
+export { SqliteTimerRepository } from './sqlite-timer-repository.js';
