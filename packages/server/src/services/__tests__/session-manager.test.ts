@@ -441,6 +441,24 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('submitWorkerInput', () => {
+    it('should convert newlines to CR and append final CR', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        title: 'submit-test',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = manager.submitWorkerInput(session.id, agentWorker.id, 'line1\nline2');
+
+      expect(result).toBe(true);
+      expect(ptyFactory.instances[0].writtenData).toContain('line1\rline2\r');
+    });
+  });
+
   describe('sendMessage', () => {
     it('should inject content only when no files provided', async () => {
       const manager = await getSessionManager();

@@ -1444,6 +1444,22 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  describe('submitWorkerInput', () => {
+    it('should convert newlines to CR and append final CR', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'terminal',
+      });
+
+      const result = lifecycleManager.submitWorkerInput(session.id, worker!.id, 'line1\nline2');
+
+      expect(result).toBe(true);
+      expect(ptyFactory.instances[0].writtenData).toContain('line1\rline2\r');
+    });
+  });
+
   describe('resizeWorker', () => {
     it('should return true for valid resize', async () => {
       const session = createTestSession();
