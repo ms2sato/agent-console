@@ -294,15 +294,22 @@ describe('InteractiveProcessManager', () => {
       const result = await manager.writeResponse(process.id, 'hello world');
       expect(result).toBe(true);
 
-      // Wait for output
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Poll for output instead of fixed sleep (CI can be slow)
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const outputCalls = onOutput.mock.calls.filter(([, text]: [unknown, string]) =>
+          text.includes('received:'),
+        );
+        if (outputCalls.length > 0) {
+          expect(outputCalls[0][1]).toContain('hello world');
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
 
-      // The process should have received the input and echoed it
-      const outputCalls = onOutput.mock.calls.filter(([, text]) =>
-        text.includes('received:'),
-      );
-      expect(outputCalls.length).toBeGreaterThan(0);
-      expect(outputCalls[0][1]).toContain('hello world');
+      // If we reach here, output was never received
+      const allOutput = onOutput.mock.calls.map(([, text]: [unknown, string]) => text).join('');
+      throw new Error(`Expected output containing "received:" but got: ${allOutput}`);
     });
   });
 });
