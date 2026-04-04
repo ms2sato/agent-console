@@ -28,7 +28,7 @@ function validInput(): ReviewAnnotationInput {
   };
 }
 
-function createMockSessionManager(sessions: Record<string, { title?: string; workers: { id: string; type: string }[] }> = {}) {
+function createMockSessionManager(sessions: Record<string, { title?: string; parentSessionId?: string; workers: { id: string; type: string }[] }> = {}) {
   return {
     getSession: (id: string) => sessions[id],
     writeWorkerInput: mock(() => true),
@@ -105,6 +105,101 @@ describe('Review Queue API', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as ReviewQueueGroup[];
       expect(body).toEqual([]);
+    });
+
+    it('should include parentSessionId and parentSessionTitle when session has a parent', async () => {
+      // Override mock with sessions that have parentSessionId
+      const sessionsWithParent = createMockSessionManager({
+        'sess-1': {
+          title: 'Worker Session 1',
+          parentSessionId: 'orchestrator',
+          workers: [{ id: 'worker-1', type: 'git-diff' }],
+        },
+        'orchestrator': {
+          title: 'Orchestrator Session',
+          workers: [{ id: 'agent-w', type: 'agent' }],
+        },
+      });
+
+      const localApp = new Hono<AppBindings>();
+      localApp.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          sessionManager: sessionsWithParent as never,
+          annotationService,
+          broadcastToApp: mockBroadcastToApp,
+        }));
+        await next();
+      });
+      localApp.onError(onApiError);
+      localApp.route('/api/review-queue', reviewQueue);
+
+      annotationService.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const res = await localApp.request('/api/review-queue');
+      expect(res.status).toBe(200);
+      const body = await res.json() as ReviewQueueGroup[];
+      expect(body).toHaveLength(1);
+      const item = body[0].items[0];
+      expect(item.parentSessionId).toBe('orchestrator');
+      expect(item.parentSessionTitle).toBe('Orchestrator Session');
+    });
+
+    it('should use parentSessionId as fallback title when parent session has no title', async () => {
+      const sessionsWithUntitledParent = createMockSessionManager({
+        'sess-1': {
+          title: 'Worker Session 1',
+          parentSessionId: 'parent-no-title',
+          workers: [{ id: 'worker-1', type: 'git-diff' }],
+        },
+        'parent-no-title': {
+          workers: [],
+        },
+        'orchestrator': {
+          title: 'Orchestrator Session',
+          workers: [{ id: 'agent-w', type: 'agent' }],
+        },
+      });
+
+      const localApp = new Hono<AppBindings>();
+      localApp.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          sessionManager: sessionsWithUntitledParent as never,
+          annotationService,
+          broadcastToApp: mockBroadcastToApp,
+        }));
+        await next();
+      });
+      localApp.onError(onApiError);
+      localApp.route('/api/review-queue', reviewQueue);
+
+      annotationService.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const res = await localApp.request('/api/review-queue');
+      expect(res.status).toBe(200);
+      const body = await res.json() as ReviewQueueGroup[];
+      const item = body[0].items[0];
+      expect(item.parentSessionId).toBe('parent-no-title');
+      expect(item.parentSessionTitle).toBe('parent-no-title');
+    });
+
+    it('should not include parent fields when session has no parent', async () => {
+      annotationService.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+
+      const res = await app.request('/api/review-queue');
+      expect(res.status).toBe(200);
+      const body = await res.json() as ReviewQueueGroup[];
+      const item = body[0].items[0];
+      expect(item.parentSessionId).toBeUndefined();
+      expect(item.parentSessionTitle).toBeUndefined();
     });
 
     it('should not include annotations without sourceSessionId', async () => {

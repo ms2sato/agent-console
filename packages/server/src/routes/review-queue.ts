@@ -27,19 +27,28 @@ export const reviewQueue = new Hono<AppBindings>()
 
     const items = annotationService.listReviewQueue(getSessionTitle);
 
-    // Group by sourceSessionId
+    // Group by sourceSessionId, enriching with parent session info
     const groupMap = new Map<string, ReviewQueueGroup>();
     for (const item of items) {
-      let group = groupMap.get(item.sourceSessionId);
+      const session = sessionManager.getSession(item.sessionId);
+      const enrichedItem = {
+        ...item,
+        parentSessionId: session?.parentSessionId,
+        parentSessionTitle: session?.parentSessionId
+          ? (getSessionTitle(session.parentSessionId) ?? session.parentSessionId)
+          : undefined,
+      };
+
+      let group = groupMap.get(enrichedItem.sourceSessionId);
       if (!group) {
         group = {
-          sourceSessionId: item.sourceSessionId,
-          sourceSessionTitle: item.sourceSessionTitle,
+          sourceSessionId: enrichedItem.sourceSessionId,
+          sourceSessionTitle: enrichedItem.sourceSessionTitle,
           items: [],
         };
-        groupMap.set(item.sourceSessionId, group);
+        groupMap.set(enrichedItem.sourceSessionId, group);
       }
-      group.items.push(item);
+      group.items.push(enrichedItem);
     }
 
     return c.json(Array.from(groupMap.values()));

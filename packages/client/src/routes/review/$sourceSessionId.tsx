@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, type MouseEvent } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ReviewQueueItem } from '@agent-console/shared';
@@ -241,7 +241,30 @@ function ReviewDiffPage() {
         {/* Item info bar */}
         {currentItem && (
           <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
-            <span>Session: {currentItem.sessionTitle || currentItem.sessionId.slice(0, 8)}</span>
+            <span>
+              Session:{' '}
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId: currentItem.sessionId }}
+                className="text-slate-300 hover:text-white underline"
+                onClick={(e: MouseEvent) => e.stopPropagation()}
+              >
+                {currentItem.sessionTitle || currentItem.sessionId.slice(0, 8)}
+              </Link>
+            </span>
+            {currentItem.parentSessionId && (
+              <span>
+                Parent:{' '}
+                <Link
+                  to="/sessions/$sessionId"
+                  params={{ sessionId: currentItem.parentSessionId }}
+                  className="text-slate-300 hover:text-white underline"
+                  onClick={(e: MouseEvent) => e.stopPropagation()}
+                >
+                  {currentItem.parentSessionTitle || currentItem.parentSessionId.slice(0, 8)}
+                </Link>
+              </span>
+            )}
             <span>{currentItem.annotationCount} annotations</span>
             {currentItem.commentCount > 0 && (
               <span>{currentItem.commentCount} comments</span>
