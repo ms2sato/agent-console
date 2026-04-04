@@ -142,6 +142,8 @@ export interface ReviewQueueItem {
   sessionTitle: string;
   sourceSessionId: string;
   sourceSessionTitle: string;
+  parentSessionId?: string;
+  parentSessionTitle?: string;
   annotationCount: number;
   summary: AnnotationSummary;
   status: ReviewStatus;

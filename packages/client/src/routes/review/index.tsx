@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReviewQueueGroup } from '@agent-console/shared';
@@ -116,6 +117,11 @@ function ReviewGroupCard({ group }: { group: ReviewQueueGroup }) {
 
   const timeAgo = oldestCreatedAt ? formatRelativeTime(oldestCreatedAt) : '';
 
+  // Deduplicate worktree sessions across items
+  const uniqueWorktreeSessions = Array.from(
+    new Map(group.items.map((i) => [i.sessionId, { sessionId: i.sessionId, sessionTitle: i.sessionTitle }])).values()
+  );
+
   return (
     <Link
       to="/review/$sourceSessionId"
@@ -138,6 +144,23 @@ function ReviewGroupCard({ group }: { group: ReviewQueueGroup }) {
               <span>{totalComments} {totalComments === 1 ? 'comment' : 'comments'}</span>
             )}
             {timeAgo && <span>oldest: {timeAgo}</span>}
+          </div>
+          {/* Worktree session links */}
+          <div className="flex items-center gap-1 mt-1 text-xs text-gray-500 flex-wrap">
+            <span>Worktrees:</span>
+            {uniqueWorktreeSessions.map(({ sessionId, sessionTitle }, idx) => (
+              <span key={sessionId}>
+                {idx > 0 && <span className="mr-1">,</span>}
+                <Link
+                  to="/sessions/$sessionId"
+                  params={{ sessionId }}
+                  className="text-slate-400 hover:text-white underline"
+                  onClick={(e: MouseEvent) => e.stopPropagation()}
+                >
+                  {sessionTitle || sessionId.slice(0, 8)}
+                </Link>
+              </span>
+            ))}
           </div>
         </div>
         <svg className="w-5 h-5 text-gray-500 shrink-0 ml-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
