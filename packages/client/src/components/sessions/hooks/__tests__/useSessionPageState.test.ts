@@ -30,6 +30,8 @@ mock.module('../../../../hooks/useAppWs', () => ({
 
 // Must import AFTER mock.module
 import { renderHook, act } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
+import { SessionDataContext, type SessionDataContextValue } from '../../../../contexts/root-contexts'
 import { useSessionPageState, type UseSessionPageStateOptions } from '../useSessionPageState'
 
 // --- Fetch-level mocking ---
@@ -116,12 +118,28 @@ function createDefaultOptions(overrides: Partial<UseSessionPageStateOptions> = {
   }
 }
 
+/** Create a SessionDataContext wrapper for renderHook */
+function createContextWrapper(rootActivityStates: Record<string, Record<string, AgentActivityState>> = {}) {
+  const contextValue: SessionDataContextValue = {
+    sessions: [],
+    wsInitialized: true,
+    workerActivityStates: rootActivityStates,
+  }
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return createElement(SessionDataContext.Provider, { value: contextValue }, children)
+  }
+}
+
 /**
  * Mount the hook and wait for initial load to complete.
  * After mounting, capturedCallbacks contains the WS event handlers registered by the hook.
  */
-async function mountHook(options: UseSessionPageStateOptions) {
-  const hookResult = renderHook(() => useSessionPageState(options))
+async function mountHook(
+  options: UseSessionPageStateOptions,
+  rootActivityStates: Record<string, Record<string, AgentActivityState>> = {},
+) {
+  const wrapper = createContextWrapper(rootActivityStates)
+  const hookResult = renderHook(() => useSessionPageState(options), { wrapper })
 
   // Flush initial load fetch
   await act(async () => {})
@@ -191,6 +209,57 @@ describe('useSessionPageState', () => {
       const { result } = await mountHook(createDefaultOptions())
 
       expect(result.current.state.type).toBe('server_unavailable')
+    })
+
+    it('should initialize workerActivityStates from root context', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const rootActivityStates = {
+        'session-1': {
+          'agent-worker-1': 'active' as AgentActivityState,
+          'terminal-worker-1': 'idle' as AgentActivityState,
+        },
+      }
+
+      const { result } = await mountHook(createDefaultOptions(), rootActivityStates)
+
+      expect(result.current.workerActivityStates).toEqual({
+        'agent-worker-1': 'active',
+        'terminal-worker-1': 'idle',
+      })
+    })
+
+    it('should initialize activityState from root context for active tab', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const refs = createMockRefs()
+      refs.activeTabIdRef.current = 'agent-worker-1'
+      const options = createDefaultOptions({
+        updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+        activeTabIdRef: refs.activeTabIdRef,
+      })
+
+      const rootActivityStates = {
+        'session-1': {
+          'agent-worker-1': 'idle' as AgentActivityState,
+        },
+      }
+
+      const { result } = await mountHook(options, rootActivityStates)
+
+      expect(result.current.activityState).toBe('idle')
+    })
+
+    it('should default to unknown when root context has no data for session', async () => {
+      const session = createMockSession({ status: 'active' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions(), {})
+
+      expect(result.current.activityState).toBe('unknown')
+      expect(result.current.workerActivityStates).toEqual({})
     })
   })
 
@@ -800,7 +869,6 @@ describe('useSessionPageState', () => {
       })
 
       const { result } = await mountHook(options)
-      expect(result.current.activityState).toBe('unknown')
 
       act(() => {
         capturedCallbacks.onWorkerActivity?.('session-1', 'agent-worker-1', 'asking')

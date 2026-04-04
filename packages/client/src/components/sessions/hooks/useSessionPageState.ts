@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, type MutableRefObject } from 'react'
 import { getSession, ServerUnavailableError } from '../../../lib/api'
 import { useAppWsEvent } from '../../../hooks/useAppWs'
+import { useSessionDataContext } from '../../../contexts/root-contexts'
 import { resolveResumedState } from '../sessionResumedState'
 import { logger } from '../../../lib/logger'
 import type { Session, AgentActivityState, WorkerActivityInfo, WorkerMessage, Worker } from '@agent-console/shared'
@@ -58,8 +59,18 @@ export function useSessionPageState({
   // must read this ref because React 18 automatic batching defers setState updaters.
   const stateRef = useRef(state)
   stateRef.current = state
-  const [activityState, setActivityState] = useState<AgentActivityState>('unknown')
-  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>({})
+
+  // Initialize activity states from the root context (which already has synced data
+  // from the app-wide WebSocket). This prevents the "Starting Claude..." flash that
+  // occurs when activityState starts as 'unknown' and the per-worker WS connects
+  // before any worker-activity event arrives.
+  const { workerActivityStates: rootActivityStates } = useSessionDataContext()
+  const initialSessionActivities = rootActivityStates[sessionId] ?? {}
+  const [activityState, setActivityState] = useState<AgentActivityState>(() => {
+    const tabId = activeTabIdRef.current
+    return tabId ? (initialSessionActivities[tabId] ?? 'unknown') : 'unknown'
+  })
+  const [workerActivityStates, setWorkerActivityStates] = useState<Record<string, AgentActivityState>>(initialSessionActivities)
   const [lastMessage, setLastMessage] = useState<WorkerMessage | null>(null)
   const [resumeKey, setResumeKey] = useState(0)
   const [loadTrigger, setLoadTrigger] = useState(0)
