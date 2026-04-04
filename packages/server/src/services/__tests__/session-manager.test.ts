@@ -3421,4 +3421,13 @@ describe('SessionManager', () => {
       expect(persisted!.templateVars).toEqual({ env: 'staging' });
     });
   });
+
+  describe('setProcessCleanupCallback', () => {
+    it('should accept a cleanup callback without error', async () => {
+      const sm = await getSessionManager();
+      const callback = mock(() => {});
+      sm.setProcessCleanupCallback(callback);
+      // Callback is stored and will be called on session deletion (tested in session-deletion-service.test.ts)
+    });
+  });
 });
