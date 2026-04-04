@@ -71,6 +71,29 @@ describe('InteractiveProcessManager', () => {
       expect(process.sessionId).toBe('session-2');
     });
 
+    it('should run process in specified cwd when provided', async () => {
+      // Use the real current directory as cwd to avoid memfs/symlink issues in CI
+      const cwd = process.cwd();
+
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'pwd',
+        cwd,
+      });
+
+      // Poll until output is received (CI can be slower than 500ms)
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (onOutput.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(onOutput).toHaveBeenCalled();
+      const [, output] = onOutput.mock.calls[0];
+      expect(output.trim()).toBe(cwd);
+    });
+
     it('should call onOutput when process writes to stdout', async () => {
       await manager.runProcess({
         sessionId: 'session-1',
