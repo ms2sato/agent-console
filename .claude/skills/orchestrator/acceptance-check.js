@@ -112,12 +112,18 @@ const COVERAGE_PATTERNS = [
   /^packages\/shared\/src\/.+\.ts$/,
 ];
 
+// Files excluded from coverage requirements (no runtime logic to test)
+const COVERAGE_EXCLUSIONS = [
+  /^packages\/shared\/src\/types\/.+\.ts$/,
+];
+
 function isTestFile(filePath) {
   return filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/');
 }
 
 function requiresTestCoverage(filePath) {
   if (isTestFile(filePath)) return false;
+  if (COVERAGE_EXCLUSIONS.some(pattern => pattern.test(filePath))) return false;
   return COVERAGE_PATTERNS.some(pattern => pattern.test(filePath));
 }
 
