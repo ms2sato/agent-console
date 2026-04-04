@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 /**
- * Orchestrator Acceptance Check Support Script (Wizard Mode)
+ * Orchestrator Acceptance Check Support Script (Interactive STDIN/STDOUT Mode)
  *
  * Automatically analyzes PR changes and guides the Orchestrator through Q1-Q7
- * in a step-by-step wizard. State is persisted to a JSON file
- * so answers carry over across invocations.
+ * in an interactive session. The script outputs each question to STDOUT and
+ * blocks on STDIN (null-byte delimited) for the answer.
  *
  * Features:
  * - File categorization by package (client/server/shared/test)
@@ -15,25 +15,22 @@
  *
  * Usage:
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number>
- *   node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only
  *   node .claude/skills/orchestrator/acceptance-check.js --check-only  (uses local git diff against main)
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 
 // --- Utility functions ---
 
 function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> q1 "answer"');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only');
   console.error('Example:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 q1 "Read worker-service.ts..."');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 --check-only');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only  # uses local git diff');
   process.exit(1);
@@ -297,27 +294,20 @@ function getAcceptanceCriteria(issueNumber) {
   return criteria;
 }
 
-// --- State management ---
+// --- STDIN reading (null-byte delimited) ---
 
-function getStateFilePath(prNumber) {
-  return `.acceptance-check-${prNumber}.json`;
-}
-
-function loadState(prNumber) {
-  const path = getStateFilePath(prNumber);
-  if (existsSync(path)) {
-    try {
-      return JSON.parse(readFileSync(path, 'utf-8'));
-    } catch {
-      return null;
+async function readResponse(stdin = process.stdin) {
+  const chunks = [];
+  for await (const chunk of stdin) {
+    const str = Buffer.from(chunk).toString();
+    const nullIdx = str.indexOf('\0');
+    if (nullIdx !== -1) {
+      chunks.push(str.slice(0, nullIdx));
+      break;
     }
+    chunks.push(str);
   }
-  return null;
-}
-
-function saveState(state) {
-  const path = getStateFilePath(state.prNumber);
-  writeFileSync(path, JSON.stringify(state, null, 2) + '\n', 'utf-8');
+  return chunks.join('').trim();
 }
 
 // --- CI status check ---
@@ -608,17 +598,10 @@ function printQuestion(question) {
   console.log();
 }
 
-function printAnswerCommand(prNumber, questionKey) {
-  console.log(`Answer: node .claude/skills/orchestrator/acceptance-check.js ${prNumber} ${questionKey} "your answer here"`);
-  console.log();
-}
-
-function printSummary(state) {
-  const questions = getQuestions(state.autoDetection.acceptanceCriteria.length > 0);
-
+function printSummary(answers, questions) {
   console.log('=== Answer Summary ===');
   for (const q of questions) {
-    const answer = state.answers[q.key];
+    const answer = answers[q.key];
     if (answer) {
       const display = answer.length > 100 ? answer.substring(0, 100) + '...' : answer;
       console.log(`${q.key.toUpperCase()}: OK ${display}`);
@@ -636,6 +619,30 @@ function printPostAcceptanceWorkflow() {
   console.log('2. WARNING: Do NOT delete the worktree until the PR is merged');
   console.log('3. After merge: conflict check -> worktree cleanup -> update memo');
   console.log();
+}
+
+// --- Interactive wizard mode ---
+
+async function runWizard(prNumber, { stdin = process.stdin } = {}) {
+  console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
+
+  const autoDetection = runAutoDetection(prNumber);
+  printAutoDetection(autoDetection);
+
+  const hasAcceptanceCriteria = autoDetection.acceptanceCriteria.length > 0;
+  const questions = getQuestions(hasAcceptanceCriteria);
+  const answers = {};
+
+  for (const question of questions) {
+    printQuestion(question);
+    const answer = await readResponse(stdin);
+    answers[question.key] = answer;
+    console.log(`OK ${question.key.toUpperCase()} answered`);
+    console.log();
+  }
+
+  printSummary(answers, questions);
+  printPostAcceptanceWorkflow();
 }
 
 // --- Check-only mode ---
@@ -716,6 +723,12 @@ export {
   detectIntegrationTestNeeds,
   listExistingIntegrationTests,
   INTEGRATION_TRIGGER_PATTERNS,
+  readResponse,
+  runWizard,
+  getQuestions,
+  printQuestion,
+  printSummary,
+  printPostAcceptanceWorkflow,
 };
 
 // --- Main ---
@@ -742,109 +755,7 @@ if (!prNumber || !/^\d+$/.test(prNumber)) {
   usage();
 }
 
-const questionArg = process.argv[3];
-const answerArg = process.argv[4];
-
-const VALID_QUESTIONS = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7'];
-if (questionArg && !VALID_QUESTIONS.includes(questionArg.toLowerCase())) {
-  console.error(`Error: Invalid question key "${questionArg}". Must be one of: ${VALID_QUESTIONS.join(', ')}`);
-  process.exit(1);
-}
-
-if (questionArg && !answerArg) {
-  console.error(`Error: Answer is required when specifying a question key.`);
-  console.error(`Usage: node .claude/skills/orchestrator/acceptance-check.js ${prNumber} ${questionArg} "your answer here"`);
-  process.exit(1);
-}
-
-// Load or create state
-let state = loadState(prNumber);
-
-if (!state) {
-  // First run: perform auto-detection
-  console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
-  const autoDetection = runAutoDetection(prNumber);
-
-  state = {
-    prNumber,
-    startedAt: new Date().toISOString(),
-    autoDetection,
-    answers: {
-      q1: null,
-      q2: null,
-      q3: null,
-      q4: null,
-      q5: null,
-      q6: null,
-      q7: null,
-    },
-  };
-  saveState(state);
-
-  // Print auto-detection results
-  printAutoDetection(autoDetection);
-
-  // Show Q1
-  const questions = getQuestions(autoDetection.acceptanceCriteria.length > 0);
-  printQuestion(questions[0]);
-  printAnswerCommand(prNumber, 'q1');
-} else if (questionArg) {
-  // Answer a specific question
-  const qKey = questionArg.toLowerCase();
-  const qIndex = VALID_QUESTIONS.indexOf(qKey);
-
-  console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
-
-  // Save the answer
-  state.answers[qKey] = answerArg;
-  saveState(state);
-
-  console.log(`OK ${qKey.toUpperCase()} answered`);
-  console.log();
-
-  const hasAcceptanceCriteria = state.autoDetection.acceptanceCriteria.length > 0;
-  const questions = getQuestions(hasAcceptanceCriteria);
-
-  if (qIndex < VALID_QUESTIONS.length - 1) {
-    // Show next question
-    const nextQuestion = questions[qIndex + 1];
-    printQuestion(nextQuestion);
-    printAnswerCommand(prNumber, nextQuestion.key);
-  } else {
-    // Last question answered: show summary + post-acceptance workflow
-    printSummary(state);
-    printPostAcceptanceWorkflow();
-  }
-} else {
-  // Re-run without question arg: show auto-detection + current progress + next unanswered question
-  console.log(`=== PR #${prNumber} Acceptance Check (resumed) ===\n`);
-  printAutoDetection(state.autoDetection);
-
-  const hasAcceptanceCriteria = state.autoDetection.acceptanceCriteria.length > 0;
-  const questions = getQuestions(hasAcceptanceCriteria);
-
-  // Show answered questions summary
-  let allAnswered = true;
-  let nextUnanswered = null;
-  for (const q of questions) {
-    if (state.answers[q.key]) {
-      console.log(`OK ${q.key.toUpperCase()}: ${state.answers[q.key].length > 80 ? state.answers[q.key].substring(0, 80) + '...' : state.answers[q.key]}`);
-    } else {
-      if (!nextUnanswered) {
-        nextUnanswered = q;
-      }
-      allAnswered = false;
-    }
-  }
-  console.log();
-
-  if (allAnswered) {
-    printSummary(state);
-    printPostAcceptanceWorkflow();
-  } else if (nextUnanswered) {
-    printQuestion(nextUnanswered);
-    printAnswerCommand(prNumber, nextUnanswered.key);
-  }
-}
+// Interactive wizard mode: outputs questions to STDOUT, reads answers from STDIN
+await runWizard(prNumber);
 
 } // end isMainModule guard
