@@ -208,7 +208,9 @@ function detectIntegrationTestNeeds(changedFiles, categories) {
   if (triggers.length === 0) return null;
 
   // Check if the PR includes integration test changes
-  const hasIntegrationTestInPr = changedFiles.some(f => f.startsWith('packages/integration/'));
+  const hasIntegrationTestInPr = changedFiles.some(
+    f => f.startsWith('packages/integration/') && isTestFile(f)
+  );
 
   // Check cross-package indicator (stronger signal)
   const isCrossPackage = categories.client.length > 0 && categories.server.length > 0;

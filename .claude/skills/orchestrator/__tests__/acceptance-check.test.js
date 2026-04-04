@@ -160,6 +160,18 @@ describe('detectIntegrationTestNeeds', () => {
     expect(result).toBeNull();
   });
 
+  it('does not count non-test files in packages/integration as integration test', () => {
+    const files = [
+      'packages/client/src/components/AgentForm.tsx',
+      'packages/integration/src/setup.ts',
+      'packages/integration/src/test-utils.ts',
+    ];
+    const categories = categorizeFiles(files);
+    const result = detectIntegrationTestNeeds(files, categories);
+    expect(result).not.toBeNull();
+    expect(result.hasIntegrationTestInPr).toBe(false);
+  });
+
   it('does not trigger for client hooks (not in trigger patterns)', () => {
     const files = [
       'packages/client/src/hooks/useWorker.ts',
