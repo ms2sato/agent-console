@@ -16,6 +16,7 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
+import type { InteractiveProcessManager } from '../services/interactive-process-manager.js';
 import type { WorktreeService } from '../services/worktree-service.js';
 import type { AnnotationService } from '../services/annotation-service.js';
 import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
@@ -157,6 +158,7 @@ export interface McpDependencies {
   repositoryManager: RepositoryManager;
   agentManager: AgentManager;
   timerManager: TimerManager;
+  interactiveProcessManager: InteractiveProcessManager;
   worktreeService: WorktreeService;
   annotationService: AnnotationService;
   interSessionMessageService: InterSessionMessageService;
@@ -176,7 +178,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp, findOpenPullRequest } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -932,6 +934,137 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err }, 'list_timers failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: run_process ----------
+
+  mcpServer.tool(
+    'run_process',
+    'Start an interactive script connected to a session. ' +
+      'The script drives workflow via STDOUT (sent as [internal:process] PTY notifications), ' +
+      'and blocks on STDIN waiting for responses via write_process_response. ' +
+      'Processes are volatile and will not survive server restarts.',
+    {
+      command: z
+        .string()
+        .min(1, 'Command is required')
+        .describe('Command to execute (e.g., "node acceptance-check.js 526")'),
+      sessionId: z.string().describe(
+        'The session to receive STDOUT notifications. ' +
+          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+      ),
+      workerId: z.string().describe(
+        'The worker to receive STDOUT notifications. ' +
+          'Use AGENT_CONSOLE_WORKER_ID environment variable for your own worker.',
+      ),
+    },
+    async ({ command, sessionId, workerId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session ${sessionId} not found`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type === 'git-diff') {
+          return errorResult(
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+          );
+        }
+
+        const process = await interactiveProcessManager.runProcess({
+          sessionId,
+          workerId,
+          command,
+        });
+
+        return textResult({
+          processId: process.id,
+          sessionId: process.sessionId,
+          workerId: process.workerId,
+          command: process.command,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'run_process failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: write_process_response ----------
+
+  mcpServer.tool(
+    'write_process_response',
+    'Send a response to a waiting interactive process. ' +
+      'Writes content to the process STDIN followed by a null byte to unblock reading. ' +
+      'The process may then produce more STDOUT output.',
+    {
+      processId: z.string().describe('The process ID returned by run_process'),
+      content: z.string().describe('Response content to send to the process'),
+    },
+    async ({ processId, content }) => {
+      try {
+        const process = interactiveProcessManager.getProcess(processId);
+        if (!process) {
+          return errorResult(`Process not found: ${processId}`);
+        }
+
+        const written = await interactiveProcessManager.writeResponse(processId, content);
+        if (!written) {
+          return errorResult(`Failed to write to process ${processId} (process may have exited)`);
+        }
+
+        return textResult({ written: true, processId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, processId }, 'write_process_response failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: kill_process ----------
+
+  mcpServer.tool(
+    'kill_process',
+    'Terminate a running interactive process. Sends SIGTERM and cleans up resources.',
+    {
+      processId: z.string().describe('The process ID returned by run_process'),
+    },
+    async ({ processId }) => {
+      try {
+        const killed = interactiveProcessManager.killProcess(processId);
+        if (!killed) {
+          return errorResult(`Process not found: ${processId}`);
+        }
+        return textResult({ killed: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, processId }, 'kill_process failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: list_processes ----------
+
+  mcpServer.tool(
+    'list_processes',
+    'List all interactive processes. Use this after agent restart to rediscover running processes.',
+    {},
+    async () => {
+      try {
+        const processes = interactiveProcessManager.listProcesses();
+        return textResult({ processes });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err }, 'list_processes failed');
         return errorResult(message);
       }
     },

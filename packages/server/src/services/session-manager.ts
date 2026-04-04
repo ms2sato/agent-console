@@ -144,6 +144,7 @@ export class SessionManager {
   private sessionPauseResumeService: SessionPauseResumeService;
   private sessionConverterService: SessionConverterService;
   private timerCleanupCallback?: (sessionId: string) => void;
+  private processCleanupCallback?: (sessionId: string) => void;
 
   /**
    * Create a SessionManager instance with async initialization.
@@ -251,6 +252,7 @@ export class SessionManager {
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       getWebSocketCallbacks: () => this.webSocketCallbacks,
       getTimerCleanupCallback: () => this.timerCleanupCallback,
+      getProcessCleanupCallback: () => this.processCleanupCallback,
       stopWatching,
     });
 
@@ -395,6 +397,15 @@ export class SessionManager {
    */
   setTimerCleanupCallback(callback: (sessionId: string) => void): void {
     this.timerCleanupCallback = callback;
+  }
+
+  /**
+   * Set a callback to clean up interactive processes when a session is deleted.
+   * Wired in app-context to connect SessionManager with InteractiveProcessManager
+   * without creating a direct dependency.
+   */
+  setProcessCleanupCallback(callback: (sessionId: string) => void): void {
+    this.processCleanupCallback = callback;
   }
 
   // ========== Session Lifecycle ==========

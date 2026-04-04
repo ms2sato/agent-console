@@ -23,6 +23,7 @@ import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-rep
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
+import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
 import { createMcpApp } from '../mcp-server.js';
@@ -141,6 +142,7 @@ describe('MCP Server Tools', () => {
   let agentManager: AgentManager;
   let repositoryManager: RepositoryManager;
   let timerManager: TimerManager;
+  let interactiveProcessManager: InteractiveProcessManager;
   let worktreeService: WorktreeService;
   let annotationService: AnnotationService;
   let testJobQueue: JobQueue;
@@ -154,7 +156,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -228,6 +230,9 @@ describe('MCP Server Tools', () => {
     // Create TimerManager (no-op callback for tests)
     timerManager = new TimerManager(() => {});
 
+    // Create InteractiveProcessManager (no-op callbacks for tests)
+    interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
+
     // Create WorktreeService with in-memory database
     worktreeService = new WorktreeService({ db });
 
@@ -238,6 +243,7 @@ describe('MCP Server Tools', () => {
 
   afterEach(async () => {
     timerManager.disposeAll();
+    interactiveProcessManager.disposeAll();
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
@@ -2553,6 +2559,160 @@ describe('MCP Server Tools', () => {
 
         expect(response.result?.isError).toBe(true);
         expect(data.error).toContain('Timer not found');
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Interactive process tools (run_process, write_process_response, kill_process, list_processes)
+  // ===========================================================================
+
+  describe('interactive process tools', () => {
+    async function createSessionWithWorker(): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers[0].id;
+      return { sessionId: session.id, workerId };
+    }
+
+    afterEach(() => {
+      interactiveProcessManager.disposeAll();
+    });
+
+    describe('run_process', () => {
+      it('should start a process and return process details', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        const data = parseToolResult(response) as {
+          processId: string;
+          sessionId: string;
+          workerId: string;
+          command: string;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.processId).toBeDefined();
+        expect(typeof data.processId).toBe('string');
+        expect(data.sessionId).toBe(sessionId);
+        expect(data.workerId).toBe(workerId);
+        expect(data.command).toBe('echo hello');
+      });
+
+      it('should return error for non-existent session', async () => {
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId: 'non-existent-session',
+          workerId: 'some-worker',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Session non-existent-session not found');
+      });
+
+      it('should return error for non-existent worker', async () => {
+        const { sessionId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId: 'non-existent-worker',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Worker non-existent-worker not found');
+      });
+    });
+
+    describe('list_processes', () => {
+      it('should return empty array when no processes exist', async () => {
+        const response = await callTool(app, mcpSessionId, 'list_processes', {}, nextId++);
+        const data = parseToolResult(response) as { processes: unknown[] };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.processes).toEqual([]);
+      });
+
+      it('should list running processes', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        await callTool(app, mcpSessionId, 'run_process', {
+          command: 'sleep 60',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        const response = await callTool(app, mcpSessionId, 'list_processes', {}, nextId++);
+        const data = parseToolResult(response) as {
+          processes: Array<{ sessionId: string; command: string }>;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.processes).toHaveLength(1);
+        expect(data.processes[0].command).toBe('sleep 60');
+      });
+    });
+
+    describe('kill_process', () => {
+      it('should kill a running process', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const createResponse = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'sleep 60',
+          sessionId,
+          workerId,
+        }, nextId++);
+        const created = parseToolResult(createResponse) as { processId: string };
+
+        const killResponse = await callTool(app, mcpSessionId, 'kill_process', {
+          processId: created.processId,
+        }, nextId++);
+        const data = parseToolResult(killResponse) as { killed: boolean };
+
+        expect(killResponse.result?.isError).toBeUndefined();
+        expect(data.killed).toBe(true);
+
+        // Verify it no longer appears in list as running
+        const listResponse = await callTool(app, mcpSessionId, 'list_processes', {}, nextId++);
+        const listData = parseToolResult(listResponse) as { processes: unknown[] };
+        expect(listData.processes).toHaveLength(0);
+      });
+
+      it('should return error for non-existent process', async () => {
+        const response = await callTool(app, mcpSessionId, 'kill_process', {
+          processId: 'non-existent-process-id',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Process not found');
+      });
+    });
+
+    describe('write_process_response', () => {
+      it('should return error for non-existent process', async () => {
+        const response = await callTool(app, mcpSessionId, 'write_process_response', {
+          processId: 'non-existent-process-id',
+          content: 'hello',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Process not found');
       });
     });
   });
