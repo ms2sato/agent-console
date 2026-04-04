@@ -399,4 +399,11 @@ describe('TimerManager', () => {
       expect(onTick).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('restoreTimers (without repository)', () => {
+    it('should return 0 when no repository is provided', async () => {
+      const count = await manager.restoreTimers();
+      expect(count).toBe(0);
+    });
+  });
 });
