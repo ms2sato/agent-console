@@ -138,10 +138,9 @@ describe('terminal-utils', () => {
       expect(stripSystemMessages(input)).toBe(input);
     });
 
-    it('should not strip [internal:*] at the very beginning without leading newline', () => {
-      // The regex requires a leading \n, so a line at position 0 is not stripped
+    it('should strip [internal:*] at the very beginning without leading newline', () => {
       const input = '[internal:timer] first line\nnormal line';
-      expect(stripSystemMessages(input)).toBe('[internal:timer] first line\nnormal line');
+      expect(stripSystemMessages(input)).toBe('normal line');
     });
 
     it('should handle empty string', () => {
@@ -186,9 +185,24 @@ describe('terminal-utils', () => {
       expect(stripSystemMessages(input)).toBe('start\nend');
     });
 
-    it('should not strip [Reply Instructions] at position 0 without leading newline', () => {
+    it('should strip [Reply Instructions] at position 0 without leading newline', () => {
       const input = '[Reply Instructions] first line\nnormal line';
-      expect(stripSystemMessages(input)).toBe('[Reply Instructions] first line\nnormal line');
+      expect(stripSystemMessages(input)).toBe('normal line');
+    });
+
+    it('should strip [internal:*] with non-SGR CSI sequences (e.g. \\x1b[2K erase line)', () => {
+      const input = 'before\n\x1b[1m\x1b[33m\x1b[2K[internal:timer]\x1b[0m timestamp=123\nafter';
+      expect(stripSystemMessages(input)).toBe('before\nafter');
+    });
+
+    it('should strip [internal:*] with \\r\\n line endings', () => {
+      const input = 'normal output\r\n[internal:timer] some timer info\r\nmore output';
+      expect(stripSystemMessages(input)).toBe('normal output\r\nmore output');
+    });
+
+    it('should strip [internal:*] at start of chunk with ANSI codes', () => {
+      const input = '\x1b[1m\x1b[33m[internal:message]\x1b[0m incoming from=sess1\nnormal line';
+      expect(stripSystemMessages(input)).toBe('normal line');
     });
   });
 

@@ -58,15 +58,24 @@ export function isScrolledToBottom(terminal: TerminalScrollInfo): boolean {
  * so the patterns tolerate optional ANSI SGR sequences (`\x1b[...m`) before the bracket.
  */
 
-/** Matches any number of ANSI SGR sequences (e.g. `\x1b[0m`, `\x1b[1;33m`). */
-const ANSI = '(?:\\x1b\\[[0-9;]*m)*';
+/** Matches any number of ANSI CSI sequences (SGR like `\x1b[0m`, and non-SGR like `\x1b[2K`). */
+const ANSI = '(?:\\x1b\\[[0-9;]*[A-Za-z])*';
 
-/** Matches a newline-prefixed `[internal:*]` line, with optional ANSI codes before the bracket. */
-const INTERNAL_RE = new RegExp(`\\n${ANSI}\\[internal:[^\\]]*\\][^\\n]*`, 'g');
+/**
+ * Matches an `[internal:*]` line with optional ANSI codes before the bracket.
+ * Two alternations:
+ *   1. Mid-string: consumes leading \r?\n (removes the line separator before the system line)
+ *   2. Start-of-string: consumes trailing \r?\n (removes the line separator after the system line)
+ * Uses [^\r\n]* to avoid eating \r from \r\n line endings.
+ */
+const INTERNAL_RE = new RegExp(
+  `\\r?\\n${ANSI}\\[internal:[^\\]]*\\][^\\r\\n]*|^${ANSI}\\[internal:[^\\]]*\\][^\\r\\n]*\\r?\\n?`,
+  'g',
+);
 
-/** Matches a newline-prefixed `[Reply Instructions]` block including continuation lines (`- ...`). */
+/** Matches a `[Reply Instructions]` block including continuation lines (`- ...`). */
 const REPLY_INSTRUCTIONS_RE = new RegExp(
-  `\\n${ANSI}\\[Reply Instructions\\][^\\n]*(?:\\n${ANSI}- [^\\n]*)*`,
+  `\\r?\\n${ANSI}\\[Reply Instructions\\][^\\r\\n]*(?:\\r?\\n${ANSI}- [^\\r\\n]*)*|^${ANSI}\\[Reply Instructions\\][^\\r\\n]*(?:\\r?\\n${ANSI}- [^\\r\\n]*)*\\r?\\n?`,
   'g',
 );
 
