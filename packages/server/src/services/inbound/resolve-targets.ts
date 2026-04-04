@@ -56,6 +56,11 @@ export async function resolveTargets(
       }
 
       targets.push({ sessionId: session.id });
+
+      // Also notify the parent session (e.g., orchestrator)
+      if (session.parentSessionId) {
+        targets.push({ sessionId: session.parentSessionId });
+      }
     } catch (error) {
       // Distinguish between expected errors (session doesn't match criteria)
       // and unexpected errors (filesystem issues, git corruption, etc.)
@@ -76,7 +81,9 @@ export async function resolveTargets(
     }
   }
 
-  return targets;
+  // Deduplicate: a parent may appear multiple times if several children match
+  const uniqueTargets = [...new Map(targets.map(t => [t.sessionId, t])).values()];
+  return uniqueTargets;
 }
 
 function isMatchingRepository(left: string, right: string): boolean {
