@@ -90,6 +90,67 @@ describe('resolveTargets', () => {
     expect(targets).toEqual([{ sessionId: 'session-2' }]);
   });
 
+  it('includes parent session when child matches', async () => {
+    const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature', parentSessionId: 'parent-1' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [child],
+      getRepository: () => defaultRepository,
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'child-1' },
+      { sessionId: 'parent-1' },
+    ]);
+  });
+
+  it('does not include parent when parentSessionId is absent', async () => {
+    const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [child],
+      getRepository: () => defaultRepository,
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([{ sessionId: 'child-1' }]);
+  });
+
+  it('deduplicates parent when multiple children share the same parent', async () => {
+    const child1 = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
+    const child2 = buildWorktreeSession({ id: 'child-2', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [child1, child2],
+      getRepository: () => defaultRepository,
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    const parentTargets = targets.filter(t => t.sessionId === 'parent-1');
+    expect(parentTargets).toHaveLength(1);
+    expect(targets).toHaveLength(3); // child-1, parent-1, child-2
+  });
+
+  it('does not duplicate parent that is also a direct match', async () => {
+    const parent = buildWorktreeSession({ id: 'parent-1', repositoryId: 'repo-1', worktreeId: 'main' });
+    const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [parent, child],
+      getRepository: () => defaultRepository,
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    const parentTargets = targets.filter(t => t.sessionId === 'parent-1');
+    expect(parentTargets).toHaveLength(1);
+    expect(targets).toHaveLength(2); // parent-1, child-1
+  });
+
   it('returns empty array when repositoryName is missing', async () => {
     const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1' });
     const deps: TargetResolverDependencies = {
