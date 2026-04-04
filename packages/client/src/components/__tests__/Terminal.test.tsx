@@ -4,48 +4,6 @@
  * Note: Full component rendering tests are avoided because mocking xterm.js
  * via mock.module() pollutes global state and breaks other tests.
  * The xterm.js integration is verified via manual testing.
- *
- * ## Scroll-to-Bottom Button Manual Verification Checklist
- *
- * The following scenarios require manual testing because they depend on actual
- * xterm.js rendering, scroll events, and DOM interactions that cannot be
- * reliably unit tested:
- *
- * ### Button Visibility
- * - [ ] Button is hidden when terminal loads (at bottom by default)
- * - [ ] Button appears when user scrolls up (mouse wheel or scroll gesture)
- * - [ ] Button disappears when user scrolls back to bottom manually
- * - [ ] Button disappears after clicking it to scroll to bottom
- *
- * ### Scroll Behavior
- * - [ ] Clicking button scrolls terminal to the very bottom
- * - [ ] Button works correctly after new output is appended
- * - [ ] Button state updates correctly during rapid output streaming
- * - [ ] Scroll position is preserved during tab switches when scrolled up
- *
- * ### Visual/UX
- * - [ ] Button has smooth opacity/translate transition animation
- * - [ ] Button is positioned in bottom-right corner of terminal
- * - [ ] Button does not interfere with terminal interaction
- * - [ ] Button is visible against various terminal backgrounds
- * - [ ] ChevronDownIcon is clearly visible and properly sized
- *
- * ### Accessibility
- * - [ ] Button is keyboard focusable
- * - [ ] Screen reader announces "Scroll to bottom" when focused
- * - [ ] Button tooltip appears on hover
- *
- * ### Paste Focus Isolation (#523)
- * - [ ] Paste in Terminal when Terminal has focus: only Terminal receives content
- * - [ ] Paste in MessagePanel when it has focus: only MessagePanel receives content
- * - [ ] Image paste in Terminal forwards to MessagePanel (when Terminal focused)
- * - [ ] Image paste in MessagePanel adds files directly (no Terminal involvement)
- *
- * ### Edge Cases
- * - [ ] Button behaves correctly when terminal is resized
- * - [ ] Button works with very long terminal output (large buffer)
- * - [ ] Button state is correct when switching between workers
- * - [ ] No visual glitches during worker reconnection
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as workerWs from '../../lib/worker-websocket';
