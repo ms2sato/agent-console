@@ -178,8 +178,18 @@ function printSummary(responses, steps) {
 
 async function runRetro({ stdin = process.stdin } = {}) {
   console.log('=== Sprint Retrospective ===');
+  console.log();
+  console.log('Before starting, create a TaskCreate checklist for tracking progress:');
 
   const steps = getSteps();
+
+  for (const step of steps) {
+    console.log(`  - ${step.title}`);
+  }
+  console.log();
+  console.log('Use TaskCreate for each step, then mark them in_progress/completed as you go.');
+  console.log();
+
   const responses = {};
   const readResponse = createStdinReader(stdin);
 

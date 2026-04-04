@@ -193,8 +193,9 @@ describe('runRetro', () => {
     await runRetro({ stdin });
     const output = logs.join('\n');
 
-    // Verify header
+    // Verify header and TaskCreate instruction
     expect(output).toContain('=== Sprint Retrospective ===');
+    expect(output).toContain('TaskCreate');
 
     // Verify all step titles appear
     const steps = getSteps();
