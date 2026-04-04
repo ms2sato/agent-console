@@ -304,9 +304,9 @@ export async function createAppContext(
         );
       }
     },
-    // PTY echo writer: echo process response content to the worker's PTY
-    (sessionId, workerId, data) => {
-      sessionManager.writeWorkerInput(sessionId, workerId, data);
+    // PTY echo writer: echo process response content to the worker's PTY as submitted input
+    (sessionId, workerId, content) => {
+      sessionManager.submitWorkerInput(sessionId, workerId, content);
     },
   );
 

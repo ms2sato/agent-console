@@ -381,7 +381,7 @@ describe('InteractiveProcessManager', () => {
       }
 
       expect(result).toBe(true);
-      expect(ptyEchoWriter).toHaveBeenCalledWith('session-1', 'worker-1', 'hello\r');
+      expect(ptyEchoWriter).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
     });
   });
 });

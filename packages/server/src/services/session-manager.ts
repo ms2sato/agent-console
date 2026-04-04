@@ -626,6 +626,11 @@ export class SessionManager {
     return this.workerLifecycleManager.writeWorkerInput(sessionId, workerId, data);
   }
 
+  /** Write content to a worker's PTY as submitted input (newlines → CR, final CR appended). */
+  submitWorkerInput(sessionId: string, workerId: string, content: string): boolean {
+    return this.workerLifecycleManager.submitWorkerInput(sessionId, workerId, content);
+  }
+
   /** Resize a worker's PTY. */
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     return this.workerLifecycleManager.resizeWorker(sessionId, workerId, cols, rows);

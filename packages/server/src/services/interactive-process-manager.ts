@@ -137,10 +137,9 @@ export class InteractiveProcessManager {
       stored.stdin.write(content + '\0');
       stored.stdin.flush();
 
-      // Echo to worker PTY so the response appears as submitted input in the terminal
-      // (same pattern as pty-message-injection-service for sendWorkerMessage).
+      // Echo to worker PTY so the response appears as submitted input in the terminal.
       if (this.ptyEchoWriter) {
-        this.ptyEchoWriter(stored.info.sessionId, stored.info.workerId, content.replace(/\r?\n/g, '\r') + '\r');
+        this.ptyEchoWriter(stored.info.sessionId, stored.info.workerId, content);
       }
 
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
