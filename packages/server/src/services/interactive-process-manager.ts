@@ -20,14 +20,19 @@ export interface ProcessExitCallback {
   (process: InteractiveProcessInfo): void;
 }
 
+/** Callback to echo content to a worker's PTY for visual feedback. */
+export type PtyEchoWriter = (sessionId: string, workerId: string, data: string) => void;
+
 export class InteractiveProcessManager {
   private processes = new Map<string, StoredProcess>();
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
+  private ptyEchoWriter?: PtyEchoWriter;
 
-  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback) {
+  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyEchoWriter?: PtyEchoWriter) {
     this.onOutput = onOutput;
     this.onExit = onExit;
+    this.ptyEchoWriter = ptyEchoWriter;
   }
 
   async runProcess(params: {
@@ -128,12 +133,16 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Write content followed by null byte (\0) to unblock `read -d ''` in bash,
-      // then a newline to visually complete the input in the PTY terminal.
-      // The \n after \0 does not affect the script's read — it will be consumed
-      // as the start of the next read buffer and trimmed.
-      stored.stdin.write(content + '\0\n');
+      // Write content followed by null byte (\0) to unblock the script's stdin reader.
+      stored.stdin.write(content + '\0');
       stored.stdin.flush();
+
+      // Echo to worker PTY so the response appears as submitted input in the terminal
+      // (same pattern as pty-message-injection-service for sendWorkerMessage).
+      if (this.ptyEchoWriter) {
+        this.ptyEchoWriter(stored.info.sessionId, stored.info.workerId, content.replace(/\r?\n/g, '\r') + '\r');
+      }
+
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
       return true;
     } catch (err) {

@@ -1027,10 +1027,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Failed to write to process ${processId} (process may have exited)`);
         }
 
-        // Echo the response content to the worker's PTY so it appears as
-        // submitted input in the terminal (same pattern as message injection).
-        sessionManager.writeWorkerInput(process.sessionId, process.workerId, content.replace(/\r?\n/g, '\r') + '\r');
-
         return textResult({ written: true, processId });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
