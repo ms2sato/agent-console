@@ -35,6 +35,12 @@
  * - [ ] Screen reader announces "Scroll to bottom" when focused
  * - [ ] Button tooltip appears on hover
  *
+ * ### Paste Focus Isolation (#523)
+ * - [ ] Paste in Terminal when Terminal has focus: only Terminal receives content
+ * - [ ] Paste in MessagePanel when it has focus: only MessagePanel receives content
+ * - [ ] Image paste in Terminal forwards to MessagePanel (when Terminal focused)
+ * - [ ] Image paste in MessagePanel adds files directly (no Terminal involvement)
+ *
  * ### Edge Cases
  * - [ ] Button behaves correctly when terminal is resized
  * - [ ] Button works with very long terminal output (large buffer)

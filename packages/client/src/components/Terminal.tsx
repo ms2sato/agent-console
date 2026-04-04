@@ -663,6 +663,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     // Handle paste with image detection
     const handlePaste = (event: ClipboardEvent) => {
+      // Only handle paste when this terminal has focus
+      if (!container.contains(document.activeElement)) return;
+
       const items = event.clipboardData?.items;
       if (!items || !onFilesReceivedRef.current) return;
 
