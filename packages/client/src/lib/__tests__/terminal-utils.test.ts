@@ -152,6 +152,44 @@ describe('terminal-utils', () => {
       const input = 'output\n[internal:reviewed] review done\n[internal:review-comment] comment here\nmore';
       expect(stripSystemMessages(input)).toBe('output\nmore');
     });
+
+    it('should strip [internal:*] with ANSI codes before the bracket', () => {
+      const input = 'normal\n\x1b[1m\x1b[33m[internal:timer]\x1b[0m timestamp=123 intent=inform\nmore';
+      expect(stripSystemMessages(input)).toBe('normal\nmore');
+    });
+
+    it('should strip [internal:*] wrapped entirely in ANSI codes', () => {
+      const input = 'normal\n\x1b[90m[internal:timer] timestamp=123 intent=inform\x1b[0m\nmore';
+      expect(stripSystemMessages(input)).toBe('normal\nmore');
+    });
+
+    it('should strip [internal:*] with complex ANSI SGR sequences', () => {
+      const input = 'before\n\x1b[1;33m[internal:process]\x1b[0m process started pid=42\nafter';
+      expect(stripSystemMessages(input)).toBe('before\nafter');
+    });
+
+    it('should strip [Reply Instructions] block (plain text)', () => {
+      const input =
+        'output\n[Reply Instructions] To reply, use the send_session_message MCP tool with:\n- toSessionId: "abc"\n- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable\nmore';
+      expect(stripSystemMessages(input)).toBe('output\nmore');
+    });
+
+    it('should strip [Reply Instructions] block with ANSI codes', () => {
+      const input =
+        'output\n\x1b[90m[Reply Instructions] To reply, use the send_session_message MCP tool with:\x1b[0m\n\x1b[90m- toSessionId: "abc"\x1b[0m\n\x1b[90m- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable\x1b[0m\nmore';
+      expect(stripSystemMessages(input)).toBe('output\nmore');
+    });
+
+    it('should strip combined [internal:*] and [Reply Instructions] block', () => {
+      const input =
+        'start\n\x1b[33m[internal:message]\x1b[0m incoming from=sess1\n\x1b[90m[Reply Instructions] To reply:\x1b[0m\n\x1b[90m- toSessionId: "sess1"\x1b[0m\n\x1b[90m- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable\x1b[0m\nend';
+      expect(stripSystemMessages(input)).toBe('start\nend');
+    });
+
+    it('should not strip [Reply Instructions] at position 0 without leading newline', () => {
+      const input = '[Reply Instructions] first line\nnormal line';
+      expect(stripSystemMessages(input)).toBe('[Reply Instructions] first line\nnormal line');
+    });
   });
 
   describe('stripScrollbackClear', () => {

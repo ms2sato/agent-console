@@ -47,15 +47,31 @@ export function isScrolledToBottom(terminal: TerminalScrollInfo): boolean {
  * than honoring scrollback-clear requests.
  */
 /**
- * Strip system messages (`[internal:*]`) from terminal output.
+ * Strip system messages from terminal output.
  *
- * These messages are intended for the AI agent, not the human viewer.
- * The pattern matches newline-prefixed `[internal:...]` followed by any
- * content until the next newline, so they are removed from xterm.js display
- * while remaining available to the agent via PTY.
+ * Removes two kinds of messages that are intended for the AI agent, not the human viewer:
+ *
+ * 1. `[internal:*]` lines — e.g. `[internal:timer] timestamp=... intent=inform`
+ * 2. `[Reply Instructions]` blocks — multi-line blocks with `- toSessionId:` / `- fromSessionId:` continuation lines
+ *
+ * Claude Code renders these with ANSI escape codes (e.g. `\x1b[1m\x1b[33m[internal:timer]\x1b[0m ...`),
+ * so the patterns tolerate optional ANSI SGR sequences (`\x1b[...m`) before the bracket.
  */
+
+/** Matches any number of ANSI SGR sequences (e.g. `\x1b[0m`, `\x1b[1;33m`). */
+const ANSI = '(?:\\x1b\\[[0-9;]*m)*';
+
+/** Matches a newline-prefixed `[internal:*]` line, with optional ANSI codes before the bracket. */
+const INTERNAL_RE = new RegExp(`\\n${ANSI}\\[internal:[^\\]]*\\][^\\n]*`, 'g');
+
+/** Matches a newline-prefixed `[Reply Instructions]` block including continuation lines (`- ...`). */
+const REPLY_INSTRUCTIONS_RE = new RegExp(
+  `\\n${ANSI}\\[Reply Instructions\\][^\\n]*(?:\\n${ANSI}- [^\\n]*)*`,
+  'g',
+);
+
 export function stripSystemMessages(data: string): string {
-  return data.replace(/\n\[internal:[^\]]*\][^\n]*/g, '');
+  return data.replace(INTERNAL_RE, '').replace(REPLY_INSTRUCTIONS_RE, '');
 }
 
 export function stripScrollbackClear(data: string): string {
