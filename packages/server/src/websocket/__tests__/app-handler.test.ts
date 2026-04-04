@@ -8,6 +8,7 @@ import {
   type AppHandlerDependencies,
 } from '../app-handler.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
+import { buildQuickSession, buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 
 describe('App Handler', () => {
   describe('isValidClientMessage', () => {
@@ -58,29 +59,23 @@ describe('App Handler', () => {
 
     it('should build message with sessions and activity states', async () => {
       const sessions: Session[] = [
-        {
+        buildQuickSession({
           id: 'session-1',
-          type: 'quick',
           locationPath: '/path/1',
-          status: 'active',
-          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
             { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent 1', createdAt: '2024-01-01', activated: true },
             { id: 'worker-2', type: 'terminal', name: 'Terminal 1', createdAt: '2024-01-01', activated: true },
           ],
-        },
-        {
+        }),
+        buildQuickSession({
           id: 'session-2',
-          type: 'quick',
           locationPath: '/path/2',
-          status: 'active',
-          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
             { id: 'worker-3', type: 'agent', agentId: 'claude', name: 'Agent 2', createdAt: '2024-01-01', activated: true },
           ],
-        },
+        }),
       ];
 
       const deps = {
@@ -112,17 +107,13 @@ describe('App Handler', () => {
 
     it('should skip terminal workers', async () => {
       const sessions: Session[] = [
-        {
-          id: 'session-1',
-          type: 'quick',
+        buildQuickSession({
           locationPath: '/path/1',
-          status: 'active',
-          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
             { id: 'worker-1', type: 'terminal', name: 'Terminal', createdAt: '2024-01-01', activated: true },
           ],
-        },
+        }),
       ];
 
       const deps = {
@@ -138,17 +129,13 @@ describe('App Handler', () => {
 
     it('should skip workers with undefined activity state', async () => {
       const sessions: Session[] = [
-        {
-          id: 'session-1',
-          type: 'quick',
+        buildQuickSession({
           locationPath: '/path/1',
-          status: 'active',
-          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
             { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-01', activated: true },
           ],
-        },
+        }),
       ];
 
       const deps = {
@@ -164,35 +151,28 @@ describe('App Handler', () => {
 
     it('should include paused sessions from database', async () => {
       const activeSessions: Session[] = [
-        {
+        buildQuickSession({
           id: 'active-session',
-          type: 'quick',
           locationPath: '/path/active',
-          status: 'active',
-          activationState: 'running',
           createdAt: '2024-01-01',
           workers: [
             { id: 'worker-1', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-01', activated: true },
           ],
-        },
+        }),
       ];
 
       const pausedSessions: Session[] = [
-        {
+        buildWorktreeSession({
           id: 'paused-session',
-          type: 'worktree',
           locationPath: '/path/paused',
-          status: 'active',
           activationState: 'hibernated',
           createdAt: '2024-01-02',
           workers: [
             { id: 'worker-2', type: 'agent', agentId: 'claude', name: 'Agent', createdAt: '2024-01-02', activated: false },
           ],
-          repositoryId: 'repo-1',
           repositoryName: 'Test Repo',
           worktreeId: 'feature-branch',
-          isMainWorktree: false,
-        },
+        }),
       ];
 
       const deps = {
@@ -244,9 +224,9 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => [
-          { id: '1', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
-          { id: '2', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
-        ] as Session[],
+          buildQuickSession({ id: '1', locationPath: '/', createdAt: '' }),
+          buildQuickSession({ id: '2', locationPath: '/', createdAt: '' }),
+        ],
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         logger: { debug: mockDebug, warn: mock(), error: mock() },
@@ -263,11 +243,11 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => [
-          { id: '1', type: 'quick', locationPath: '/', status: 'active', activationState: 'running', createdAt: '', workers: [] },
-        ] as Session[],
+          buildQuickSession({ id: '1', locationPath: '/', createdAt: '' }),
+        ],
         getAllPausedSessions: async () => [
-          { id: '2', type: 'quick', locationPath: '/', status: 'active', activationState: 'hibernated', createdAt: '', workers: [] },
-        ] as Session[],
+          buildQuickSession({ id: '2', locationPath: '/', activationState: 'hibernated', createdAt: '' }),
+        ],
         getWorkerActivityState: () => undefined,
         logger: { debug: mockDebug, warn: mock(), error: mock() },
       };

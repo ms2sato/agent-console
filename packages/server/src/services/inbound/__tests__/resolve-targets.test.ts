@@ -1,7 +1,12 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { resolveTargets, type TargetResolverDependencies } from '../resolve-targets.js';
 import { GitError } from '../../../lib/git.js';
-import type { Session, InboundSystemEvent, Repository } from '@agent-console/shared';
+import type { InboundSystemEvent, Repository } from '@agent-console/shared';
+import {
+  buildWorktreeSession,
+  buildQuickSession,
+  buildPersistedRepository,
+} from '../../../__tests__/utils/build-test-data.js';
 
 function createEvent(metadata: Partial<InboundSystemEvent['metadata']> = {}): InboundSystemEvent {
   return {
@@ -17,25 +22,11 @@ function createEvent(metadata: Partial<InboundSystemEvent['metadata']> = {}): In
   } as InboundSystemEvent;
 }
 
-function createSession(overrides: Partial<Session> = {}): Session {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    repositoryId: 'repo-1',
-    worktreeId: 'main',
-    title: 'Test Session',
-    ...overrides,
-  } as Session;
-}
-
-const defaultRepository: Repository = {
-  id: 'repo-1',
-  path: '/path/to/repo',
-} as Repository;
+const defaultRepository = buildPersistedRepository({ id: 'repo-1', path: '/path/to/repo' });
 
 describe('resolveTargets', () => {
   it('matches repository names case-insensitively', async () => {
-    const session = createSession();
+    const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'main' });
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,
@@ -48,8 +39,8 @@ describe('resolveTargets', () => {
   });
 
   it('filters by branch when event specifies a branch', async () => {
-    const mainSession = createSession({ id: 'session-main', worktreeId: 'main' });
-    const featureSession = createSession({ id: 'session-feature', worktreeId: 'feature-branch' });
+    const mainSession = buildWorktreeSession({ id: 'session-main', worktreeId: 'main' });
+    const featureSession = buildWorktreeSession({ id: 'session-feature', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
       getSessions: () => [mainSession, featureSession],
       getRepository: () => defaultRepository,
@@ -62,7 +53,7 @@ describe('resolveTargets', () => {
   });
 
   it('skips non-worktree sessions', async () => {
-    const session = createSession({ type: 'quick' });
+    const session = buildQuickSession();
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,
@@ -75,11 +66,11 @@ describe('resolveTargets', () => {
   });
 
   it('swallows GitError and continues processing remaining sessions', async () => {
-    const session1 = createSession({ id: 'session-1', repositoryId: 'repo-1' });
-    const session2 = createSession({ id: 'session-2', repositoryId: 'repo-2' });
+    const session1 = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1' });
+    const session2 = buildWorktreeSession({ id: 'session-2', repositoryId: 'repo-2' });
     const repositories: Record<string, Repository> = {
-      'repo-1': { id: 'repo-1', path: '/path/to/repo1' } as Repository,
-      'repo-2': { id: 'repo-2', path: '/path/to/repo2' } as Repository,
+      'repo-1': buildPersistedRepository({ id: 'repo-1', path: '/path/to/repo1' }),
+      'repo-2': buildPersistedRepository({ id: 'repo-2', path: '/path/to/repo2' }),
     };
     let callCount = 0;
     const deps: TargetResolverDependencies = {
@@ -100,7 +91,7 @@ describe('resolveTargets', () => {
   });
 
   it('returns empty array when repositoryName is missing', async () => {
-    const session = createSession();
+    const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1' });
     const deps: TargetResolverDependencies = {
       getSessions: () => [session],
       getRepository: () => defaultRepository,

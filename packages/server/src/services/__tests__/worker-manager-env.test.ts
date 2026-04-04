@@ -6,10 +6,10 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import { SingleUserMode } from '../user-mode.js';
-import type { InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import { buildInternalAgentWorker, buildInternalTerminalWorker } from '../../__tests__/utils/build-test-data.js';
 
 /**
  * Tests for AgentConsole context environment variable injection.
@@ -44,41 +44,6 @@ describe('WorkerManager - AgentConsole env var injection', () => {
   });
 
   /**
-   * Create a minimal agent worker for testing (pty: null, ready for activation).
-   */
-  function createTestAgentWorker(id: string = 'worker-1'): InternalAgentWorker {
-    return {
-      id,
-      type: 'agent',
-      name: 'Test Agent',
-      createdAt: new Date().toISOString(),
-      agentId: 'claude-code',
-      pty: null,
-      outputBuffer: '',
-      outputOffset: 0,
-      activityState: 'unknown',
-      activityDetector: null,
-      connectionCallbacks: new Map(),
-    };
-  }
-
-  /**
-   * Create a minimal terminal worker for testing (pty: null, ready for activation).
-   */
-  function createTestTerminalWorker(id: string = 'terminal-1'): InternalTerminalWorker {
-    return {
-      id,
-      type: 'terminal',
-      name: 'Test Terminal',
-      createdAt: new Date().toISOString(),
-      pty: null,
-      outputBuffer: '',
-      outputOffset: 0,
-      connectionCallbacks: new Map(),
-    };
-  }
-
-  /**
    * Extract the env object from the most recent PTY spawn call.
    * The mock spawn is called as spawn(command, args, options).
    */
@@ -90,7 +55,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
 
   describe('agent worker PTY processes', () => {
     it('should include AGENT_CONSOLE_BASE_URL with server port', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -109,7 +74,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include AGENT_CONSOLE_SESSION_ID', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-abc-123',
@@ -126,7 +91,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include AGENT_CONSOLE_WORKER_ID matching the worker id', async () => {
-      const worker = createTestAgentWorker('worker-xyz-789');
+      const worker = buildInternalAgentWorker({ id: 'worker-xyz-789' });
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -143,7 +108,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include AGENT_CONSOLE_REPOSITORY_ID for worktree sessions', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -161,7 +126,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should NOT include AGENT_CONSOLE_REPOSITORY_ID for quick sessions', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -179,7 +144,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include all four env vars for worktree sessions', async () => {
-      const worker = createTestAgentWorker('wkr-all-four');
+      const worker = buildInternalAgentWorker({ id: 'wkr-all-four' });
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'sess-all-four',
@@ -200,7 +165,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should use the exact port from serverConfig for AGENT_CONSOLE_BASE_URL', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -220,7 +185,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include AGENT_CONSOLE_REPOSITORY_ID when repositoryId contains special characters', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -238,7 +203,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should not overwrite AGENT_CONSOLE vars with repository env vars', async () => {
-      const worker = createTestAgentWorker('real-worker');
+      const worker = buildInternalAgentWorker({ id: 'real-worker' });
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'real-session',
@@ -265,7 +230,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
 
   describe('parent session env vars for agent workers', () => {
     it('should include AGENT_CONSOLE_PARENT_SESSION_ID when parentSessionId is provided', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -283,7 +248,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should include AGENT_CONSOLE_PARENT_WORKER_ID when parentWorkerId is provided', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -301,7 +266,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should NOT include parent env vars when context is not provided', async () => {
-      const worker = createTestAgentWorker();
+      const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'session-123',
@@ -320,7 +285,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     });
 
     it('should not allow repository env vars to overwrite parent env vars', async () => {
-      const worker = createTestAgentWorker('secure-worker');
+      const worker = buildInternalAgentWorker({ id: 'secure-worker' });
 
       await workerManager.activateAgentWorkerPty(worker, {
         sessionId: 'secure-session',
@@ -349,7 +314,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
 
   describe('terminal worker PTY processes', () => {
     it('should NOT include any AGENT_CONSOLE env vars', () => {
-      const worker = createTestTerminalWorker();
+      const worker = buildInternalTerminalWorker();
 
       workerManager.activateTerminalWorkerPty(worker, {
         sessionId: 'session-123',

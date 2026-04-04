@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import type { HookCommandResult, Worktree, Session } from '@agent-console/shared';
+import type { HookCommandResult, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
+import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
 const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
@@ -58,20 +59,13 @@ const WORKTREE: Worktree = {
   index: 2,
 };
 
-const MOCK_SESSION: Session = {
+const MOCK_SESSION = buildWorktreeSession({
   id: 'sess-new',
-  type: 'worktree',
-  repositoryId: 'repo-1',
   repositoryName: 'my-repo',
   worktreeId: 'feature-new',
-  isMainWorktree: false,
   locationPath: CREATED_PATH,
-  status: 'active',
-  activationState: 'running',
-  workers: [],
-  agentId: 'claude',
   createdAt: '2026-01-01T00:00:00Z',
-} as Session;
+});
 
 function createMockSessionManager(): SessionManager & {
   createSession: ReturnType<typeof mock>;

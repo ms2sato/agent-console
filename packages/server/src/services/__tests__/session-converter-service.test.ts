@@ -1,84 +1,21 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import type { Worker } from '@agent-console/shared';
-import type { PersistedSession, PersistedWorker } from '../persistence-service.js';
-import type { InternalWorktreeSession, InternalQuickSession } from '../internal-types.js';
-import type { InternalWorker, InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
+import type { PersistedWorker } from '../persistence-service.js';
+import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
 import type { SessionRepositoryCallbacks } from '../session-manager.js';
 import { SessionConverterService, type SessionConverterDeps } from '../session-converter-service.js';
-
-// --- Helpers to build test fixtures ---
-
-function makeAgentWorker(overrides: Partial<InternalAgentWorker> = {}): InternalAgentWorker {
-  return {
-    id: 'w-agent-1',
-    type: 'agent',
-    name: 'Agent',
-    agentId: 'agent-def-1',
-    createdAt: '2026-01-01T00:00:00Z',
-    pty: { pid: 100 } as InternalAgentWorker['pty'],
-    outputBuffer: '',
-    outputOffset: 0,
-    connectionCallbacks: new Map(),
-    activityState: 'idle',
-    activityDetector: null,
-    ...overrides,
-  };
-}
-
-function makeTerminalWorker(overrides: Partial<InternalTerminalWorker> = {}): InternalTerminalWorker {
-  return {
-    id: 'w-term-1',
-    type: 'terminal',
-    name: 'Terminal',
-    createdAt: '2026-01-01T00:01:00Z',
-    pty: { pid: 200 } as InternalTerminalWorker['pty'],
-    outputBuffer: '',
-    outputOffset: 0,
-    connectionCallbacks: new Map(),
-    ...overrides,
-  };
-}
-
-function makeGitDiffWorker(overrides: Partial<InternalGitDiffWorker> = {}): InternalGitDiffWorker {
-  return {
-    id: 'w-gitdiff-1',
-    type: 'git-diff',
-    name: 'Git Diff',
-    createdAt: '2026-01-01T00:02:00Z',
-    baseCommit: 'abc123',
-    ...overrides,
-  };
-}
-
-function makeWorktreeSession(workers: InternalWorker[], overrides: Partial<InternalWorktreeSession> = {}): InternalWorktreeSession {
-  const workerMap = new Map<string, InternalWorker>();
-  for (const w of workers) workerMap.set(w.id, w);
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    locationPath: '/repos/my-repo/wt-001',
-    repositoryId: 'repo-1',
-    worktreeId: 'wt-1',
-    status: 'active',
-    createdAt: '2026-01-01T00:00:00Z',
-    workers: workerMap,
-    ...overrides,
-  };
-}
-
-function makeQuickSession(workers: InternalWorker[], overrides: Partial<InternalQuickSession> = {}): InternalQuickSession {
-  const workerMap = new Map<string, InternalWorker>();
-  for (const w of workers) workerMap.set(w.id, w);
-  return {
-    id: 'session-2',
-    type: 'quick',
-    locationPath: '/tmp/quick',
-    status: 'active',
-    createdAt: '2026-01-01T00:00:00Z',
-    workers: workerMap,
-    ...overrides,
-  };
-}
+import {
+  buildInternalAgentWorker,
+  buildInternalTerminalWorker,
+  buildInternalGitDiffWorker,
+  buildInternalWorktreeSession,
+  buildInternalQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedQuickSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+  buildPersistedGitDiffWorker,
+} from '../../__tests__/utils/build-test-data.js';
 
 // --- Test suite ---
 
@@ -106,7 +43,6 @@ describe('SessionConverterService', () => {
       toPublicWorker: (w: InternalWorker): Worker => {
         const existing = toPublicWorkerResults.get(w.id);
         if (existing) return existing;
-        // Default conversion for tests
         if (w.type === 'agent') {
           return { id: w.id, type: 'agent', name: w.name, agentId: w.agentId, createdAt: w.createdAt, activated: w.pty !== null };
         } else if (w.type === 'terminal') {
@@ -136,35 +72,35 @@ describe('SessionConverterService', () => {
 
   describe('computeActivationState', () => {
     it('returns running when at least one PTY worker has an active PTY', () => {
-      const session = makeWorktreeSession([
-        makeAgentWorker({ pty: { pid: 100 } as InternalAgentWorker['pty'] }),
-        makeTerminalWorker({ pty: null }),
+      const session = buildInternalWorktreeSession([
+        buildInternalAgentWorker({ pty: { pid: 100 } as InternalAgentWorker['pty'] }),
+        buildInternalTerminalWorker({ pty: null }),
       ]);
       expect(service.computeActivationState(session)).toBe('running');
     });
 
     it('returns hibernated when all PTY workers have null PTY', () => {
-      const session = makeWorktreeSession([
-        makeAgentWorker({ pty: null }),
-        makeTerminalWorker({ pty: null }),
+      const session = buildInternalWorktreeSession([
+        buildInternalAgentWorker({ pty: null }),
+        buildInternalTerminalWorker({ pty: null }),
       ]);
       expect(service.computeActivationState(session)).toBe('hibernated');
     });
 
     it('returns running when there are no PTY workers (only git-diff)', () => {
-      const session = makeWorktreeSession([makeGitDiffWorker()]);
+      const session = buildInternalWorktreeSession([buildInternalGitDiffWorker()]);
       expect(service.computeActivationState(session)).toBe('running');
     });
 
     it('returns running when there are no workers at all', () => {
-      const session = makeWorktreeSession([]);
+      const session = buildInternalWorktreeSession([]);
       expect(service.computeActivationState(session)).toBe('running');
     });
 
     it('returns running when mix of PTY and non-PTY workers with at least one active PTY', () => {
-      const session = makeWorktreeSession([
-        makeAgentWorker({ pty: { pid: 100 } as InternalAgentWorker['pty'] }),
-        makeGitDiffWorker(),
+      const session = buildInternalWorktreeSession([
+        buildInternalAgentWorker({ pty: { pid: 100 } as InternalAgentWorker['pty'] }),
+        buildInternalGitDiffWorker(),
       ]);
       expect(service.computeActivationState(session)).toBe('running');
     });
@@ -174,8 +110,10 @@ describe('SessionConverterService', () => {
 
   describe('toPublicSession', () => {
     it('converts a worktree session with correct fields', () => {
-      const agent = makeAgentWorker();
-      const session = makeWorktreeSession([agent], {
+      const agent = buildInternalAgentWorker({ agentId: 'agent-def-1', pty: { pid: 100 } as InternalAgentWorker['pty'] });
+      const session = buildInternalWorktreeSession([agent], {
+        locationPath: '/repos/my-repo/wt-001',
+        worktreeId: 'wt-1',
         initialPrompt: 'do something',
         title: 'My Session',
         parentSessionId: 'parent-1',
@@ -205,7 +143,7 @@ describe('SessionConverterService', () => {
     });
 
     it('sets isMainWorktree to true when locationPath matches repository path', () => {
-      const session = makeWorktreeSession([], {
+      const session = buildInternalWorktreeSession([], {
         locationPath: '/repos/my-repo', // matches the mock repository path
       });
 
@@ -216,8 +154,8 @@ describe('SessionConverterService', () => {
     });
 
     it('converts a quick session correctly', () => {
-      const terminal = makeTerminalWorker();
-      const session = makeQuickSession([terminal]);
+      const terminal = buildInternalTerminalWorker();
+      const session = buildInternalQuickSession([terminal]);
 
       const result = service.toPublicSession(session);
 
@@ -227,10 +165,10 @@ describe('SessionConverterService', () => {
     });
 
     it('sorts workers by createdAt', () => {
-      const later = makeAgentWorker({ id: 'w-later', createdAt: '2026-01-01T00:10:00Z' });
-      const earlier = makeTerminalWorker({ id: 'w-earlier', createdAt: '2026-01-01T00:01:00Z' });
+      const later = buildInternalAgentWorker({ id: 'w-later', createdAt: '2026-01-01T00:10:00Z' });
+      const earlier = buildInternalTerminalWorker({ id: 'w-earlier', createdAt: '2026-01-01T00:01:00Z' });
       // Insert in reverse order
-      const session = makeQuickSession([later, earlier]);
+      const session = buildInternalQuickSession([later, earlier]);
 
       const result = service.toPublicSession(session);
 
@@ -244,7 +182,7 @@ describe('SessionConverterService', () => {
         isInitialized: () => false,
       };
 
-      const session = makeWorktreeSession([]);
+      const session = buildInternalWorktreeSession([]);
       const result = service.toPublicSession(session);
       if (result.type === 'worktree') {
         expect(result.repositoryName).toBe('Unknown');
@@ -256,21 +194,19 @@ describe('SessionConverterService', () => {
 
   describe('persistedToPublicSession', () => {
     it('converts a persisted worktree session with agent worker', () => {
-      const persisted: PersistedSession = {
+      const persisted = buildPersistedWorktreeSession({
         id: 'ps-1',
-        type: 'worktree',
         locationPath: '/repos/my-repo/wt-001',
-        repositoryId: 'repo-1',
         worktreeId: 'wt-1',
         serverPid: null,
         createdAt: '2026-01-01T00:00:00Z',
         workers: [
-          { id: 'pw-1', type: 'agent', name: 'Agent', agentId: 'agent-1', createdAt: '2026-01-01T00:00:00Z', pid: null },
+          buildPersistedAgentWorker({ id: 'pw-1', agentId: 'agent-1', createdAt: '2026-01-01T00:00:00Z' }),
         ],
         initialPrompt: 'hello',
         title: 'Persisted Session',
         pausedAt: '2026-01-02T00:00:00Z',
-      };
+      });
 
       const result = service.persistedToPublicSession(persisted);
 
@@ -290,16 +226,15 @@ describe('SessionConverterService', () => {
     });
 
     it('converts a persisted quick session with terminal worker', () => {
-      const persisted: PersistedSession = {
+      const persisted = buildPersistedQuickSession({
         id: 'ps-2',
-        type: 'quick',
         locationPath: '/tmp/quick',
         serverPid: null,
         createdAt: '2026-01-01T00:00:00Z',
         workers: [
-          { id: 'pw-2', type: 'terminal', name: 'Terminal', createdAt: '2026-01-01T00:00:00Z', pid: null },
+          buildPersistedTerminalWorker({ id: 'pw-2', createdAt: '2026-01-01T00:00:00Z' }),
         ],
-      };
+      });
 
       const result = service.persistedToPublicSession(persisted);
 
@@ -311,16 +246,15 @@ describe('SessionConverterService', () => {
     });
 
     it('converts a persisted session with git-diff worker', () => {
-      const persisted: PersistedSession = {
+      const persisted = buildPersistedQuickSession({
         id: 'ps-3',
-        type: 'quick',
         locationPath: '/tmp/quick',
         serverPid: null,
         createdAt: '2026-01-01T00:00:00Z',
         workers: [
-          { id: 'pw-3', type: 'git-diff', name: 'Diff', createdAt: '2026-01-01T00:00:00Z', baseCommit: 'abc123' },
+          buildPersistedGitDiffWorker({ id: 'pw-3', name: 'Diff', baseCommit: 'abc123', createdAt: '2026-01-01T00:00:00Z' }),
         ],
-      };
+      });
 
       const result = service.persistedToPublicSession(persisted);
 
@@ -331,17 +265,15 @@ describe('SessionConverterService', () => {
     });
 
     it('includes parentSessionId and parentWorkerId from persisted data', () => {
-      const persisted: PersistedSession = {
+      const persisted = buildPersistedQuickSession({
         id: 'ps-4',
-        type: 'quick',
         locationPath: '/tmp/quick',
         serverPid: null,
         createdAt: '2026-01-01T00:00:00Z',
-        workers: [],
         parentSessionId: 'parent-s',
         parentWorkerId: 'parent-w',
         createdBy: 'user-42',
-      };
+      });
 
       const result = service.persistedToPublicSession(persisted);
 
@@ -355,8 +287,10 @@ describe('SessionConverterService', () => {
 
   describe('toPersistedSession', () => {
     it('converts an internal worktree session to persisted format with current server PID', () => {
-      const agent = makeAgentWorker();
-      const session = makeWorktreeSession([agent], {
+      const agent = buildInternalAgentWorker({ agentId: 'agent-def-1' });
+      const session = buildInternalWorktreeSession([agent], {
+        locationPath: '/repos/my-repo/wt-001',
+        worktreeId: 'wt-1',
         initialPrompt: 'prompt',
         title: 'title',
         parentSessionId: 'ps',
@@ -385,7 +319,7 @@ describe('SessionConverterService', () => {
     });
 
     it('converts an internal quick session to persisted format', () => {
-      const session = makeQuickSession([makeTerminalWorker()]);
+      const session = buildInternalQuickSession([buildInternalTerminalWorker()]);
 
       const result = service.toPersistedSession(session);
 
@@ -396,7 +330,7 @@ describe('SessionConverterService', () => {
 
   describe('toPersistedSessionWithServerPid', () => {
     it('uses the provided serverPid instead of the current one', () => {
-      const session = makeWorktreeSession([]);
+      const session = buildInternalWorktreeSession([]);
 
       const result = service.toPersistedSessionWithServerPid(session, null);
 
@@ -404,10 +338,10 @@ describe('SessionConverterService', () => {
     });
 
     it('maps all workers through toPersistedWorker', () => {
-      const agent = makeAgentWorker();
-      const terminal = makeTerminalWorker();
-      const gitDiff = makeGitDiffWorker();
-      const session = makeQuickSession([agent, terminal, gitDiff]);
+      const agent = buildInternalAgentWorker();
+      const terminal = buildInternalTerminalWorker();
+      const gitDiff = buildInternalGitDiffWorker();
+      const session = buildInternalQuickSession([agent, terminal, gitDiff]);
 
       const result = service.toPersistedSessionWithServerPid(session, 999);
 

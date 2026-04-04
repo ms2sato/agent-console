@@ -1,70 +1,20 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../session-pause-resume-service.js';
-import type { InternalSession, InternalWorktreeSession, InternalQuickSession } from '../internal-types.js';
-import type { InternalWorker } from '../worker-types.js';
+import type { InternalSession } from '../internal-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
+import {
+  buildInternalAgentWorker,
+  buildInternalTerminalWorker,
+  buildInternalGitDiffWorker,
+  buildInternalWorktreeSession,
+  buildInternalQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+} from '../../__tests__/utils/build-test-data.js';
 
 const mockStopWatching = mock(() => {});
-
-function createMockWorker(overrides: Partial<InternalWorker> & { id: string; type: InternalWorker['type'] }): InternalWorker {
-  const base = {
-    createdAt: new Date().toISOString(),
-    name: overrides.type === 'agent' ? 'Agent' : overrides.type === 'terminal' ? 'Terminal' : 'Diff',
-    ...overrides,
-  };
-  if (base.type === 'git-diff') {
-    return { ...base, baseCommit: 'abc123' } as InternalWorker;
-  }
-  return {
-    ...base,
-    pty: null,
-    callbacks: null,
-    exitReason: null,
-    ...(base.type === 'agent' ? { agentId: 'test-agent' } : {}),
-  } as unknown as InternalWorker;
-}
-
-function createMockWorktreeSession(overrides?: Partial<InternalWorktreeSession>): InternalWorktreeSession {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    locationPath: '/test/worktree',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    workers: new Map(),
-    repositoryId: 'repo-1',
-    worktreeId: 'wt-1',
-    ...overrides,
-  };
-}
-
-function createMockQuickSession(overrides?: Partial<InternalQuickSession>): InternalQuickSession {
-  return {
-    id: 'session-2',
-    type: 'quick',
-    locationPath: '/test/quick',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    workers: new Map(),
-    ...overrides,
-  };
-}
-
-function createMockPersistedSession(overrides?: Partial<PersistedSession>): PersistedSession {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    locationPath: '/test/worktree',
-    createdAt: new Date().toISOString(),
-    workers: [],
-    repositoryId: 'repo-1',
-    worktreeId: 'wt-1',
-    serverPid: null,
-    pausedAt: '2026-01-01T00:00:00.000Z',
-    ...overrides,
-  } as PersistedSession;
-}
 
 function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPauseResumeDeps {
   const sessions = new Map<string, InternalSession>();
@@ -152,7 +102,7 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should return false for quick sessions', async () => {
-      const session = createMockQuickSession();
+      const session = buildInternalQuickSession();
       const deps = createMockDeps({
         getSession: () => session,
       });
@@ -164,14 +114,9 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should pause a worktree session successfully', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
-      const gitDiffWorker = createMockWorker({ id: 'w2', type: 'git-diff' });
-      const session = createMockWorktreeSession({
-        workers: new Map([
-          ['w1', agentWorker],
-          ['w2', gitDiffWorker],
-        ]),
-      });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const gitDiffWorker = buildInternalGitDiffWorker({ id: 'w2' });
+      const session = buildInternalWorktreeSession([agentWorker, gitDiffWorker]);
 
       const notifySessionPaused = mock(() => {});
       const onSessionPaused = mock(() => {});
@@ -210,14 +155,9 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should kill both agent and terminal workers', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
-      const terminalWorker = createMockWorker({ id: 'w2', type: 'terminal' });
-      const session = createMockWorktreeSession({
-        workers: new Map([
-          ['w1', agentWorker],
-          ['w2', terminalWorker],
-        ]),
-      });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+      const session = buildInternalWorktreeSession([agentWorker, terminalWorker]);
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -232,7 +172,7 @@ describe('SessionPauseResumeService', () => {
 
   describe('resumeSession', () => {
     it('should return existing session if already active', async () => {
-      const session = createMockWorktreeSession();
+      const session = buildInternalWorktreeSession();
       const mockPublicSession = { id: 'session-1' } as unknown as Session;
 
       const deps = createMockDeps({
@@ -258,7 +198,7 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should return null if path no longer exists', async () => {
-      const persisted = createMockPersistedSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-1', serverPid: null, pausedAt: '2026-01-01T00:00:00.000Z' });
       const deps = createMockDeps({
         sessionRepository: {
           ...createMockDeps().sessionRepository,
@@ -274,10 +214,13 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should resume a paused session successfully', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);
-      const persisted = createMockPersistedSession({
-        workers: [{ id: 'w1', type: 'agent', name: 'Agent', createdAt: new Date().toISOString(), agentId: 'test-agent', pid: null }],
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' })],
       });
 
       const onSessionResumed = mock(() => {});
@@ -320,7 +263,7 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should prevent concurrent resume attempts for the same session', async () => {
-      const persisted = createMockPersistedSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-1', serverPid: null, pausedAt: '2026-01-01T00:00:00.000Z' });
 
       // Create a slow resume that we can control
       let resolveResume: () => void;
@@ -357,9 +300,11 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should roll back on PTY activation failure', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);
-      const persisted = createMockPersistedSession({
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
         pausedAt: '2026-01-01T00:00:00.000Z',
       });
 
@@ -391,9 +336,11 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should roll back on DB persistence failure after successful PTY activation', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);
-      const persisted = createMockPersistedSession({
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
         pausedAt: '2026-01-01T00:00:00.000Z',
       });
 
@@ -430,10 +377,13 @@ describe('SessionPauseResumeService', () => {
     });
 
     it('should restore terminal workers during resume', async () => {
-      const terminalWorker = createMockWorker({ id: 'w1', type: 'terminal' });
+      const terminalWorker = buildInternalTerminalWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', terminalWorker]]);
-      const persisted = createMockPersistedSession({
-        workers: [{ id: 'w1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), pid: null }],
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedTerminalWorker({ id: 'w1' })],
       });
 
       const deps = createMockDeps({

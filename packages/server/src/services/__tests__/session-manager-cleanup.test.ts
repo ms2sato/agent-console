@@ -4,6 +4,11 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import {
+  buildPersistedQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedAgentWorker,
+} from '../../__tests__/utils/build-test-data.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
@@ -75,23 +80,20 @@ describe('SessionManager cleanup on initialization', () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
-    const legacySession: PersistedSession = {
+    const legacySession = buildPersistedQuickSession({
       id: 'legacy-session',
-      type: 'quick',
       locationPath: '/path/to/worktree',
       workers: [
-        {
+        buildPersistedAgentWorker({
           id: 'worker-1',
-          type: 'agent',
           name: 'Claude',
           agentId: 'claude-code',
           pid: 11111,
           createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        }),
       ],
-      serverPid: undefined,
       createdAt: '2024-01-01T00:00:00.000Z',
-    };
+    });
     persistSessions([legacySession]);
     persistAgents();
 
@@ -115,25 +117,21 @@ describe('SessionManager cleanup on initialization', () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
-    const activeSession: PersistedSession = {
+    const activeSession = buildPersistedWorktreeSession({
       id: 'active-session',
-      type: 'worktree',
       locationPath: '/path/to/worktree',
-      repositoryId: 'repo-1',
-      worktreeId: 'main',
       workers: [
-        {
+        buildPersistedAgentWorker({
           id: 'worker-1',
-          type: 'agent',
           name: 'Claude',
           agentId: 'claude-code',
           pid: 22222,
           createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        }),
       ],
       serverPid: 33333, // Parent server PID
       createdAt: '2024-01-01T00:00:00.000Z',
-    };
+    });
     persistSessions([activeSession]);
     persistAgents();
 
@@ -151,23 +149,21 @@ describe('SessionManager cleanup on initialization', () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
-    const orphanSession: PersistedSession = {
+    const orphanSession = buildPersistedQuickSession({
       id: 'orphan-session',
-      type: 'quick',
       locationPath: '/path/to/worktree',
       workers: [
-        {
+        buildPersistedAgentWorker({
           id: 'worker-1',
-          type: 'agent',
           name: 'Claude',
           agentId: 'claude-code',
           pid: 44444,
           createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        }),
       ],
       serverPid: 55555, // Dead parent server
       createdAt: '2024-01-01T00:00:00.000Z',
-    };
+    });
     persistSessions([orphanSession]);
     persistAgents();
 
@@ -194,59 +190,50 @@ describe('SessionManager cleanup on initialization', () => {
     fs.mkdirSync('/path/3', { recursive: true });
 
     const sessions: PersistedSession[] = [
-      {
+      buildPersistedQuickSession({
         id: 'legacy-session',
-        type: 'quick',
         locationPath: '/path/1',
         workers: [
-          {
+          buildPersistedAgentWorker({
             id: 'worker-1',
-            type: 'agent',
             name: 'Claude',
             agentId: 'claude-code',
             pid: 10001,
             createdAt: '2024-01-01T00:00:00.000Z',
-          },
+          }),
         ],
-        serverPid: undefined,
         createdAt: '2024-01-01T00:00:00.000Z',
-      },
-      {
+      }),
+      buildPersistedWorktreeSession({
         id: 'active-session',
-        type: 'worktree',
         locationPath: '/path/2',
-        repositoryId: 'repo-1',
-        worktreeId: 'main',
         workers: [
-          {
+          buildPersistedAgentWorker({
             id: 'worker-2',
-            type: 'agent',
             name: 'Claude',
             agentId: 'claude-code',
             pid: 10002,
             createdAt: '2024-01-01T00:00:00.000Z',
-          },
+          }),
         ],
         serverPid: 20001, // Alive server
         createdAt: '2024-01-01T00:00:00.000Z',
-      },
-      {
+      }),
+      buildPersistedQuickSession({
         id: 'orphan-session',
-        type: 'quick',
         locationPath: '/path/3',
         workers: [
-          {
+          buildPersistedAgentWorker({
             id: 'worker-3',
-            type: 'agent',
             name: 'Claude',
             agentId: 'claude-code',
             pid: 10003,
             createdAt: '2024-01-01T00:00:00.000Z',
-          },
+          }),
         ],
         serverPid: 20002, // Dead server
         createdAt: '2024-01-01T00:00:00.000Z',
-      },
+      }),
     ];
     persistSessions(sessions);
     persistAgents();

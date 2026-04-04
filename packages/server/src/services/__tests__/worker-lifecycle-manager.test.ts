@@ -11,6 +11,7 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { resetGitMocks, mockGit } from '../../__tests__/utils/mock-git-helper.js';
+import { buildInternalWorktreeSession, buildInternalQuickSession } from '../../__tests__/utils/build-test-data.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
@@ -48,30 +49,12 @@ describe('WorkerLifecycleManager', () => {
   let mockOnDiffBaseCommitChanged: ReturnType<typeof mock>;
   let originalAgentConsoleHome: string | undefined;
 
-  function createTestSession(overrides: Partial<InternalSession> = {}): InternalSession {
-    return {
-      id: crypto.randomUUID(),
-      type: 'worktree',
-      locationPath: '/test/project',
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      workers: new Map(),
-      repositoryId: 'repo-1',
-      worktreeId: 'main',
-      ...overrides,
-    } as InternalSession;
+  function createTestSession(overrides?: Parameters<typeof buildInternalWorktreeSession>[1]) {
+    return buildInternalWorktreeSession([], { locationPath: '/test/project', ...overrides });
   }
 
-  function createQuickSession(overrides: Partial<InternalSession> = {}): InternalSession {
-    return {
-      type: 'quick',
-      id: crypto.randomUUID(),
-      locationPath: '/test/project',
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      workers: new Map(),
-      ...overrides,
-    } as InternalSession;
+  function createQuickSession(overrides?: Parameters<typeof buildInternalQuickSession>[1]) {
+    return buildInternalQuickSession([], { locationPath: '/test/project', ...overrides });
   }
 
   function createDeps(overrides: Partial<WorkerLifecycleDeps> = {}): WorkerLifecycleDeps {

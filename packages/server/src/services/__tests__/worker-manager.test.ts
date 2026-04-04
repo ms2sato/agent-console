@@ -9,6 +9,12 @@
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import {
+  buildInternalGitDiffWorker,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+  buildPersistedGitDiffWorker,
+} from '../../__tests__/utils/build-test-data.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
@@ -17,7 +23,6 @@ import { SingleUserMode } from '../user-mode.js';
 import type {
   InternalAgentWorker,
   InternalTerminalWorker,
-  InternalGitDiffWorker,
 } from '../worker-types.js';
 import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../persistence-service.js';
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
@@ -478,13 +483,7 @@ describe('WorkerManager', () => {
     });
 
     it('should be safe to call on a git-diff worker (no PTY)', async () => {
-      const worker: InternalGitDiffWorker = {
-        id: 'git-diff-1',
-        type: 'git-diff',
-        name: 'Diff',
-        createdAt: new Date().toISOString(),
-        baseCommit: 'abc123',
-      };
+      const worker = buildInternalGitDiffWorker({ id: 'git-diff-1', name: 'Diff' });
 
       // Should not throw
       await workerManager.killWorker(worker, 'test-session');
@@ -646,13 +645,7 @@ describe('WorkerManager', () => {
     });
 
     it('should convert a git-diff worker', () => {
-      const worker: InternalGitDiffWorker = {
-        id: 'pub-diff',
-        type: 'git-diff',
-        name: 'Diff',
-        createdAt: '2024-01-01T00:00:00Z',
-        baseCommit: 'abc123',
-      };
+      const worker = buildInternalGitDiffWorker({ id: 'pub-diff', name: 'Diff', baseCommit: 'abc123' });
 
       const publicWorker = workerManager.toPublicWorker(worker);
 
@@ -702,13 +695,7 @@ describe('WorkerManager', () => {
     });
 
     it('should persist git-diff worker with baseCommit', () => {
-      const worker: InternalGitDiffWorker = {
-        id: 'diff-1',
-        type: 'git-diff',
-        name: 'Diff',
-        createdAt: '2024-01-01T00:00:00Z',
-        baseCommit: 'def456',
-      };
+      const worker = buildInternalGitDiffWorker({ id: 'diff-1', name: 'Diff', baseCommit: 'def456' });
 
       const persisted = workerManager.toPersistedWorker(worker);
 
@@ -723,14 +710,9 @@ describe('WorkerManager', () => {
 
   describe('restoreWorkersFromPersistence', () => {
     it('should restore agent workers with pty: null', () => {
-      const persistedWorkers: PersistedAgentWorker[] = [{
-        id: 'restored-agent',
-        type: 'agent',
-        name: 'Agent',
-        createdAt: '2024-01-01T00:00:00Z',
-        agentId: 'claude-code',
-        pid: 12345,
-      }];
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({ id: 'restored-agent', name: 'Agent', agentId: 'claude-code', pid: 12345 }),
+      ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
 
@@ -746,13 +728,9 @@ describe('WorkerManager', () => {
     });
 
     it('should restore terminal workers with pty: null', () => {
-      const persistedWorkers: PersistedTerminalWorker[] = [{
-        id: 'restored-term',
-        type: 'terminal',
-        name: 'Terminal',
-        createdAt: '2024-01-01T00:00:00Z',
-        pid: null,
-      }];
+      const persistedWorkers: PersistedTerminalWorker[] = [
+        buildPersistedTerminalWorker({ id: 'restored-term', name: 'Terminal' }),
+      ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
 
@@ -765,13 +743,9 @@ describe('WorkerManager', () => {
     });
 
     it('should restore git-diff workers fully (no PTY needed)', () => {
-      const persistedWorkers: PersistedGitDiffWorker[] = [{
-        id: 'restored-diff',
-        type: 'git-diff',
-        name: 'Diff',
-        createdAt: '2024-01-01T00:00:00Z',
-        baseCommit: 'xyz789',
-      }];
+      const persistedWorkers: PersistedGitDiffWorker[] = [
+        buildPersistedGitDiffWorker({ id: 'restored-diff', name: 'Diff', baseCommit: 'xyz789' }),
+      ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
 
@@ -784,9 +758,9 @@ describe('WorkerManager', () => {
 
     it('should restore multiple workers of different types', () => {
       const persistedWorkers = [
-        { id: 'a1', type: 'agent' as const, name: 'A', createdAt: '2024-01-01T00:00:00Z', agentId: 'claude-code', pid: 100 },
-        { id: 't1', type: 'terminal' as const, name: 'T', createdAt: '2024-01-01T00:00:00Z', pid: null },
-        { id: 'd1', type: 'git-diff' as const, name: 'D', createdAt: '2024-01-01T00:00:00Z', baseCommit: 'head' },
+        buildPersistedAgentWorker({ id: 'a1', name: 'A', agentId: 'claude-code', pid: 100 }),
+        buildPersistedTerminalWorker({ id: 't1', name: 'T' }),
+        buildPersistedGitDiffWorker({ id: 'd1', name: 'D', baseCommit: 'head' }),
       ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
@@ -799,8 +773,8 @@ describe('WorkerManager', () => {
 
     it('should give each worker its own connectionCallbacks Map', () => {
       const persistedWorkers = [
-        { id: 'a1', type: 'agent' as const, name: 'A', createdAt: '2024-01-01T00:00:00Z', agentId: 'claude-code', pid: null },
-        { id: 'a2', type: 'agent' as const, name: 'B', createdAt: '2024-01-01T00:00:00Z', agentId: 'claude-code', pid: null },
+        buildPersistedAgentWorker({ id: 'a1', name: 'A', agentId: 'claude-code' }),
+        buildPersistedAgentWorker({ id: 'a2', name: 'B', agentId: 'claude-code' }),
       ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);

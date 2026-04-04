@@ -6,6 +6,12 @@ import type { JobQueue } from '../../jobs/index.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
+import {
+  buildPersistedQuickSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+  buildPersistedGitDiffWorker,
+} from '../../__tests__/utils/build-test-data.js';
 
 const TEST_SERVER_PID = 99999;
 
@@ -77,14 +83,11 @@ describe('SessionInitializationService', () => {
 
   describe('initializeSessions (via initialize)', () => {
     it('should mark sessions with dead serverPid as paused', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
-        workers: [],
         serverPid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
       // serverPid 12345 is dead (not marked alive)
 
       const { service, sessionRepository } = createService({ sessions: [session] });
@@ -98,14 +101,11 @@ describe('SessionInitializationService', () => {
     });
 
     it('should preserve sessions owned by live servers', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
-        workers: [],
         serverPid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
       mockProcess.markAlive(12345);
 
       const { service, sessionRepository } = createService({ sessions: [session] });
@@ -118,15 +118,12 @@ describe('SessionInitializationService', () => {
     });
 
     it('should keep paused sessions (serverPid === null) unchanged', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
-        workers: [],
         serverPid: null,
-        createdAt: '2024-01-01T00:00:00.000Z',
         pausedAt: '2024-01-01T01:00:00.000Z',
-      };
+      });
 
       const { service, sessionRepository } = createService({ sessions: [session] });
       await service.initialize();
@@ -138,14 +135,11 @@ describe('SessionInitializationService', () => {
     });
 
     it('should remove sessions whose locationPath no longer exists', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'orphan-session',
-        type: 'quick',
         locationPath: '/nonexistent/path',
-        workers: [],
         serverPid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
       // serverPid 12345 is dead (not marked alive)
 
       const { service, sessionRepository, workerOutputFileManager } = createService({
@@ -163,23 +157,19 @@ describe('SessionInitializationService', () => {
     });
 
     it('should kill orphan worker processes before marking session as paused', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          {
+          buildPersistedAgentWorker({
             id: 'worker-1',
-            type: 'agent',
             name: 'Claude',
             agentId: 'claude-code',
             pid: 11111,
-            createdAt: '2024-01-01T00:00:00.000Z',
-          },
+          }),
         ],
         serverPid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
       mockProcess.markAlive(11111);
       // serverPid 12345 is dead
 
@@ -190,23 +180,19 @@ describe('SessionInitializationService', () => {
     });
 
     it('should skip sessions already in memory', async () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'in-memory-session',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          {
+          buildPersistedAgentWorker({
             id: 'worker-1',
-            type: 'agent',
             name: 'Claude',
             agentId: 'claude-code',
             pid: 11111,
-            createdAt: '2024-01-01T00:00:00.000Z',
-          },
+          }),
         ],
         serverPid: 12345,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
       mockProcess.markAlive(11111);
 
       const { service } = createService({
@@ -225,17 +211,15 @@ describe('SessionInitializationService', () => {
       mockProcess.markAlive(1001);
       mockProcess.markAlive(1002);
 
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', pid: 1001, createdAt: '2024-01-01T00:00:00.000Z' },
-          { id: 'w2', type: 'terminal', name: 'Term', pid: 1002, createdAt: '2024-01-01T00:00:00.000Z' },
+          buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 1001 }),
+          buildPersistedTerminalWorker({ id: 'w2', name: 'Term', pid: 1002 }),
         ],
         serverPid: 999,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const count = SessionInitializationService.killOrphanWorkers(session);
       expect(count).toBe(2);
@@ -244,32 +228,28 @@ describe('SessionInitializationService', () => {
     });
 
     it('should skip git-diff workers', () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          { id: 'w1', type: 'git-diff', name: 'Diff', baseCommit: 'abc123', createdAt: '2024-01-01T00:00:00.000Z' },
+          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'abc123' }),
         ],
         serverPid: 999,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const count = SessionInitializationService.killOrphanWorkers(session);
       expect(count).toBe(0);
     });
 
     it('should skip workers with no pid', () => {
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', pid: null, createdAt: '2024-01-01T00:00:00.000Z' },
+          buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: null }),
         ],
         serverPid: 999,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const count = SessionInitializationService.killOrphanWorkers(session);
       expect(count).toBe(0);
@@ -277,16 +257,14 @@ describe('SessionInitializationService', () => {
 
     it('should skip workers whose process is already dead', () => {
       // pid 2001 is not marked alive
-      const session: PersistedSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/some/path',
         workers: [
-          { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', pid: 2001, createdAt: '2024-01-01T00:00:00.000Z' },
+          buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 2001 }),
         ],
         serverPid: 999,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const count = SessionInitializationService.killOrphanWorkers(session);
       expect(count).toBe(0);

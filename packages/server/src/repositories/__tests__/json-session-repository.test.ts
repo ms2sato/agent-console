@@ -1,59 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { PersistedSession, PersistedWorker } from '../../services/persistence-service.js';
+import type { PersistedSession } from '../../services/persistence-service.js';
 import { JsonSessionRepository } from '../json-session-repository.js';
 import {
   setupTestConfigDir,
   cleanupTestConfigDir,
 } from '../../__tests__/utils/mock-fs-helper.js';
-
-/**
- * Creates a test quick session with default values.
- */
-function createTestSession(overrides: Partial<PersistedSession> = {}): PersistedSession {
-  return {
-    id: overrides.id ?? 'test-session-id',
-    type: 'quick',
-    locationPath: '/test/path',
-    serverPid: process.pid,
-    createdAt: new Date().toISOString(),
-    workers: [],
-    ...overrides,
-  } as PersistedSession;
-}
-
-/**
- * Creates a test worktree session with default values.
- */
-function createTestWorktreeSession(overrides: Partial<PersistedSession> = {}): PersistedSession {
-  return {
-    id: overrides.id ?? 'test-worktree-session-id',
-    type: 'worktree',
-    locationPath: '/test/worktree/path',
-    repositoryId: 'test-repo-id',
-    worktreeId: 'test-branch',
-    serverPid: process.pid,
-    createdAt: new Date().toISOString(),
-    workers: [],
-    ...overrides,
-  } as PersistedSession;
-}
-
-/**
- * Creates a test worker with default values.
- */
-function createTestWorker(overrides: Partial<PersistedWorker> = {}): PersistedWorker {
-  return {
-    id: 'test-worker-id',
-    type: 'agent',
-    name: 'Test Agent',
-    agentId: 'claude-code-builtin',
-    pid: 12345,
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  } as PersistedWorker;
-}
+import {
+  buildPersistedQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+} from '../../__tests__/utils/build-test-data.js';
 
 describe('JsonSessionRepository', () => {
   const TEST_CONFIG_DIR = '/test/config';
@@ -85,9 +44,9 @@ describe('JsonSessionRepository', () => {
 
     it('should return all sessions from file', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1' }),
-        createTestSession({ id: 'session-2' }),
-        createTestWorktreeSession({ id: 'session-3' }),
+        buildPersistedQuickSession({ id: 'session-1' }),
+        buildPersistedQuickSession({ id: 'session-2' }),
+        buildPersistedWorktreeSession({ id: 'session-3' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -100,17 +59,11 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should return sessions with workers', async () => {
-      const testSession = createTestSession({
+      const testSession = buildPersistedQuickSession({
         id: 'session-with-workers',
         workers: [
-          createTestWorker({ id: 'worker-1', name: 'Agent Worker' }),
-          {
-            id: 'worker-2',
-            type: 'terminal',
-            name: 'Terminal',
-            pid: 54321,
-            createdAt: new Date().toISOString(),
-          } as PersistedWorker,
+          buildPersistedAgentWorker({ id: 'worker-1', name: 'Agent Worker' }),
+          buildPersistedTerminalWorker({ id: 'worker-2', name: 'Terminal', pid: 54321 }),
         ],
       });
       fs.writeFileSync(sessionsFilePath, JSON.stringify([testSession], null, 2));
@@ -127,8 +80,8 @@ describe('JsonSessionRepository', () => {
   describe('findById', () => {
     it('should return session if exists', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1' }),
-        createTestWorktreeSession({ id: 'session-2', repositoryId: 'repo-1' }),
+        buildPersistedQuickSession({ id: 'session-1' }),
+        buildPersistedWorktreeSession({ id: 'session-2', repositoryId: 'repo-1' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -143,7 +96,7 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should return null if session not found', async () => {
-      const testSessions = [createTestSession({ id: 'session-1' })];
+      const testSessions = [buildPersistedQuickSession({ id: 'session-1' })];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
       const session = await repository.findById('non-existent');
@@ -161,10 +114,10 @@ describe('JsonSessionRepository', () => {
   describe('findByServerPid', () => {
     it('should return sessions matching the given PID', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1', serverPid: 1000 }),
-        createTestSession({ id: 'session-2', serverPid: 2000 }),
-        createTestSession({ id: 'session-3', serverPid: 1000 }),
-        createTestWorktreeSession({ id: 'session-4', serverPid: 3000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-3', serverPid: 1000 }),
+        buildPersistedWorktreeSession({ id: 'session-4', serverPid: 3000 }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -176,8 +129,8 @@ describe('JsonSessionRepository', () => {
 
     it('should return empty array if no sessions match', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1', serverPid: 1000 }),
-        createTestSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -196,10 +149,10 @@ describe('JsonSessionRepository', () => {
   describe('findPaused', () => {
     it('should return sessions with null serverPid', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1', serverPid: 1000 }),
-        createTestSession({ id: 'session-2', serverPid: undefined }),
-        createTestWorktreeSession({ id: 'session-3', serverPid: undefined }),
-        createTestSession({ id: 'session-4', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: undefined }),
+        buildPersistedWorktreeSession({ id: 'session-3', serverPid: undefined }),
+        buildPersistedQuickSession({ id: 'session-4', serverPid: 2000 }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -211,8 +164,8 @@ describe('JsonSessionRepository', () => {
 
     it('should return empty array if no paused sessions', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1', serverPid: 1000 }),
-        createTestSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -228,11 +181,11 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should include workers in paused sessions', async () => {
-      const testSession = createTestWorktreeSession({
+      const testSession = buildPersistedWorktreeSession({
         id: 'paused-session',
         serverPid: undefined,
         workers: [
-          createTestWorker({ id: 'worker-1', name: 'Agent Worker' }),
+          buildPersistedAgentWorker({ id: 'worker-1', name: 'Agent Worker' }),
         ],
       });
       fs.writeFileSync(sessionsFilePath, JSON.stringify([testSession], null, 2));
@@ -247,7 +200,7 @@ describe('JsonSessionRepository', () => {
 
   describe('save', () => {
     it("should create new session when it doesn't exist", async () => {
-      const newSession = createTestSession({ id: 'new-session' });
+      const newSession = buildPersistedQuickSession({ id: 'new-session' });
 
       await repository.save(newSession);
 
@@ -258,10 +211,10 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should update existing session when it exists', async () => {
-      const initialSession = createTestSession({ id: 'session-1', title: 'Original Title' });
+      const initialSession = buildPersistedQuickSession({ id: 'session-1', title: 'Original Title' });
       fs.writeFileSync(sessionsFilePath, JSON.stringify([initialSession], null, 2));
 
-      const updatedSession = createTestSession({ id: 'session-1', title: 'Updated Title' });
+      const updatedSession = buildPersistedQuickSession({ id: 'session-1', title: 'Updated Title' });
       await repository.save(updatedSession);
 
       const fileContent = fs.readFileSync(sessionsFilePath, 'utf-8');
@@ -272,12 +225,12 @@ describe('JsonSessionRepository', () => {
 
     it('should preserve other sessions when saving', async () => {
       const existingSessions = [
-        createTestSession({ id: 'session-1' }),
-        createTestSession({ id: 'session-2' }),
+        buildPersistedQuickSession({ id: 'session-1' }),
+        buildPersistedQuickSession({ id: 'session-2' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(existingSessions, null, 2));
 
-      const newSession = createTestSession({ id: 'session-3' });
+      const newSession = buildPersistedQuickSession({ id: 'session-3' });
       await repository.save(newSession);
 
       const fileContent = fs.readFileSync(sessionsFilePath, 'utf-8');
@@ -293,7 +246,7 @@ describe('JsonSessionRepository', () => {
     it("should create file if it doesn't exist", async () => {
       expect(fs.existsSync(sessionsFilePath)).toBe(false);
 
-      const newSession = createTestSession({ id: 'first-session' });
+      const newSession = buildPersistedQuickSession({ id: 'first-session' });
       await repository.save(newSession);
 
       expect(fs.existsSync(sessionsFilePath)).toBe(true);
@@ -303,11 +256,11 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should save session with workers', async () => {
-      const sessionWithWorkers = createTestSession({
+      const sessionWithWorkers = buildPersistedQuickSession({
         id: 'session-with-workers',
         workers: [
-          createTestWorker({ id: 'worker-1' }),
-          createTestWorker({ id: 'worker-2', type: 'terminal' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
 
@@ -322,15 +275,15 @@ describe('JsonSessionRepository', () => {
   describe('saveAll', () => {
     it('should replace all sessions in file', async () => {
       const initialSessions = [
-        createTestSession({ id: 'old-1' }),
-        createTestSession({ id: 'old-2' }),
+        buildPersistedQuickSession({ id: 'old-1' }),
+        buildPersistedQuickSession({ id: 'old-2' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(initialSessions, null, 2));
 
       const newSessions = [
-        createTestSession({ id: 'new-1' }),
-        createTestWorktreeSession({ id: 'new-2' }),
-        createTestSession({ id: 'new-3' }),
+        buildPersistedQuickSession({ id: 'new-1' }),
+        buildPersistedWorktreeSession({ id: 'new-2' }),
+        buildPersistedQuickSession({ id: 'new-3' }),
       ];
       await repository.saveAll(newSessions);
 
@@ -345,7 +298,7 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should handle empty array', async () => {
-      const initialSessions = [createTestSession({ id: 'session-1' })];
+      const initialSessions = [buildPersistedQuickSession({ id: 'session-1' })];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(initialSessions, null, 2));
 
       await repository.saveAll([]);
@@ -358,7 +311,7 @@ describe('JsonSessionRepository', () => {
     it("should create file if it doesn't exist", async () => {
       expect(fs.existsSync(sessionsFilePath)).toBe(false);
 
-      const sessions = [createTestSession({ id: 'session-1' })];
+      const sessions = [buildPersistedQuickSession({ id: 'session-1' })];
       await repository.saveAll(sessions);
 
       expect(fs.existsSync(sessionsFilePath)).toBe(true);
@@ -371,9 +324,9 @@ describe('JsonSessionRepository', () => {
   describe('delete', () => {
     it('should remove session by id', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1' }),
-        createTestSession({ id: 'session-2' }),
-        createTestSession({ id: 'session-3' }),
+        buildPersistedQuickSession({ id: 'session-1' }),
+        buildPersistedQuickSession({ id: 'session-2' }),
+        buildPersistedQuickSession({ id: 'session-3' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -390,8 +343,8 @@ describe('JsonSessionRepository', () => {
 
     it('should not affect other sessions', async () => {
       const testSessions = [
-        createTestSession({ id: 'session-1', title: 'First' }),
-        createTestWorktreeSession({ id: 'session-2', repositoryId: 'repo-1' }),
+        buildPersistedQuickSession({ id: 'session-1', title: 'First' }),
+        buildPersistedWorktreeSession({ id: 'session-2', repositoryId: 'repo-1' }),
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
@@ -406,7 +359,7 @@ describe('JsonSessionRepository', () => {
     });
 
     it("should not fail if session doesn't exist", async () => {
-      const testSessions = [createTestSession({ id: 'session-1' })];
+      const testSessions = [buildPersistedQuickSession({ id: 'session-1' })];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
       // Should not throw
@@ -426,7 +379,7 @@ describe('JsonSessionRepository', () => {
 
   describe('atomic write behavior', () => {
     it('should not leave temp files on successful write', async () => {
-      await repository.save(createTestSession({ id: 'test' }));
+      await repository.save(buildPersistedQuickSession({ id: 'test' }));
 
       const files = fs.readdirSync(TEST_CONFIG_DIR);
       const tempFiles = files.filter((f: string) => f.endsWith('.tmp'));
@@ -434,7 +387,7 @@ describe('JsonSessionRepository', () => {
     });
 
     it('should write formatted JSON', async () => {
-      await repository.save(createTestSession({ id: 'test' }));
+      await repository.save(buildPersistedQuickSession({ id: 'test' }));
 
       const content = fs.readFileSync(sessionsFilePath, 'utf-8');
       // Should be formatted with indentation (2 spaces)

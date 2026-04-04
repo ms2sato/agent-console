@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import {
+  buildInternalWorktreeSession,
+  buildInternalQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedQuickSession,
+  buildPersistedAgentWorker,
+  buildPersistedGitDiffWorker,
+} from '../../__tests__/utils/build-test-data.js';
 import { SessionMetadataService, type SessionMetadataDeps } from '../session-metadata-service.js';
-import type { InternalWorktreeSession, InternalQuickSession } from '../internal-types.js';
 import type { InternalSession } from '../internal-types.js';
-import type { PersistedSession, PersistedWorktreeSession, PersistedQuickSession, PersistedGitDiffWorker } from '../persistence-service.js';
+import type { PersistedSession, PersistedWorktreeSession, PersistedGitDiffWorker } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
 import type { SessionRepository } from '../../repositories/session-repository.js';
 
@@ -33,45 +40,6 @@ function createMockDeps(overrides?: Partial<SessionMetadataDeps>): SessionMetada
   };
 }
 
-function createActiveWorktreeSession(overrides?: Partial<InternalWorktreeSession>): InternalWorktreeSession {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    repositoryId: 'repo-1',
-    worktreeId: 'old-branch',
-    locationPath: '/test/path',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    workers: new Map(),
-    ...overrides,
-  };
-}
-
-function createActiveQuickSession(overrides?: Partial<InternalQuickSession>): InternalQuickSession {
-  return {
-    id: 'session-2',
-    type: 'quick',
-    locationPath: '/test/quick-path',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    workers: new Map(),
-    ...overrides,
-  };
-}
-
-function createPersistedWorktreeSession(overrides?: Partial<PersistedWorktreeSession>): PersistedWorktreeSession {
-  return {
-    id: 'session-3',
-    type: 'worktree',
-    repositoryId: 'repo-1',
-    worktreeId: 'old-branch',
-    locationPath: '/test/path',
-    createdAt: new Date().toISOString(),
-    workers: [],
-    ...overrides,
-  };
-}
-
 describe('SessionMetadataService', () => {
   let deps: SessionMetadataDeps;
   let service: SessionMetadataService;
@@ -86,7 +54,7 @@ describe('SessionMetadataService', () => {
 
   describe('updateSessionMetadata - active session', () => {
     it('should update title for active session', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       const onSessionUpdated = mock(() => {});
       deps = createMockDeps({
         getSession: mock(() => session),
@@ -104,7 +72,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should rename branch for active worktree session', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
       });
@@ -121,7 +89,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should fail branch rename for quick session', async () => {
-      const session = createActiveQuickSession();
+      const session = buildInternalQuickSession([], { locationPath: '/test/quick-path' });
       deps = createMockDeps({
         getSession: mock(() => session),
       });
@@ -134,7 +102,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should handle git rename failure for active session', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
       });
@@ -148,7 +116,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should succeed even when git-diff update fails for active session', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
         updateGitDiffWorkersAfterBranchRename: mock(() => Promise.reject(new Error('diff error'))),
@@ -162,7 +130,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should update both title and branch for active session', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
       });
@@ -190,7 +158,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should update title for inactive session', async () => {
-      const persisted = createPersistedWorktreeSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
       deps = createMockDeps({
         sessionRepository: createMockSessionRepository({
@@ -210,7 +178,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should rename branch for inactive worktree session', async () => {
-      const persisted = createPersistedWorktreeSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
       deps = createMockDeps({
         sessionRepository: createMockSessionRepository({
@@ -230,13 +198,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should fail branch rename for inactive quick session', async () => {
-      const persisted: PersistedQuickSession = {
-        id: 'session-4',
-        type: 'quick',
-        locationPath: '/test/quick-path',
-        createdAt: new Date().toISOString(),
-        workers: [],
-      };
+      const persisted = buildPersistedQuickSession({ id: 'session-4', locationPath: '/test/quick-path' });
       deps = createMockDeps({
         sessionRepository: createMockSessionRepository({
           findById: mock(() => Promise.resolve(persisted)),
@@ -251,10 +213,13 @@ describe('SessionMetadataService', () => {
     });
 
     it('should update git-diff workers base commit for inactive session', async () => {
-      const persisted = createPersistedWorktreeSession({
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-3',
+        worktreeId: 'old-branch',
+        locationPath: '/test/path',
         workers: [
-          { id: 'w1', type: 'agent', name: 'Claude', agentId: 'claude-code-builtin', pid: null, createdAt: new Date().toISOString() },
-          { id: 'w2', type: 'git-diff', name: 'Diff', baseCommit: 'old-commit', createdAt: new Date().toISOString() },
+          buildPersistedAgentWorker({ id: 'w1', name: 'Claude' }),
+          buildPersistedGitDiffWorker({ id: 'w2', name: 'Diff', baseCommit: 'old-commit' }),
         ],
       });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
@@ -279,9 +244,12 @@ describe('SessionMetadataService', () => {
     });
 
     it('should succeed branch rename even when calculateBaseCommit fails for inactive session', async () => {
-      const persisted = createPersistedWorktreeSession({
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-3',
+        worktreeId: 'old-branch',
+        locationPath: '/test/path',
         workers: [
-          { id: 'w1', type: 'git-diff', name: 'Diff', baseCommit: 'old-commit', createdAt: new Date().toISOString() },
+          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'old-commit' }),
         ],
       });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
@@ -305,7 +273,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should update both title and branch for inactive session in single save', async () => {
-      const persisted = createPersistedWorktreeSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
       deps = createMockDeps({
         sessionRepository: createMockSessionRepository({
@@ -331,9 +299,12 @@ describe('SessionMetadataService', () => {
     });
 
     it('should use HEAD as fallback when calculateBaseCommit returns null', async () => {
-      const persisted = createPersistedWorktreeSession({
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-3',
+        worktreeId: 'old-branch',
+        locationPath: '/test/path',
         workers: [
-          { id: 'w1', type: 'git-diff', name: 'Diff', baseCommit: 'old-commit', createdAt: new Date().toISOString() },
+          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'old-commit' }),
         ],
       });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
@@ -357,7 +328,7 @@ describe('SessionMetadataService', () => {
 
   describe('renameBranch', () => {
     it('should delegate to updateSessionMetadata with branch parameter', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
       });
@@ -374,7 +345,7 @@ describe('SessionMetadataService', () => {
   describe('callback broadcasting', () => {
     it('should not broadcast for inactive session updates', async () => {
       const onSessionUpdated = mock(() => {});
-      const persisted = createPersistedWorktreeSession();
+      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         sessionRepository: createMockSessionRepository({
           findById: mock(() => Promise.resolve(persisted)),
@@ -389,7 +360,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should broadcast for active session updates', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       const onSessionUpdated = mock(() => {});
       deps = createMockDeps({
         getSession: mock(() => session),
@@ -403,7 +374,7 @@ describe('SessionMetadataService', () => {
     });
 
     it('should handle missing lifecycle callbacks gracefully', async () => {
-      const session = createActiveWorktreeSession();
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
       deps = createMockDeps({
         getSession: mock(() => session),
         getSessionLifecycleCallbacks: () => undefined,

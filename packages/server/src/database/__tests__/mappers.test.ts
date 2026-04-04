@@ -17,26 +17,30 @@ import type {
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
   PersistedWorktreeSession,
-  PersistedQuickSession,
-  PersistedRepository,
 } from '../../services/persistence-service.js';
-import type { AgentDefinition } from '@agent-console/shared';
+import {
+  buildPersistedWorktreeSession,
+  buildPersistedQuickSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+  buildPersistedGitDiffWorker,
+  buildPersistedRepository,
+  buildAgentDefinition,
+} from '../../__tests__/utils/build-test-data.js';
 
 describe('mappers', () => {
   describe('toSessionRow', () => {
     it('should convert worktree session with all fields', () => {
-      const session: PersistedWorktreeSession = {
+      const session = buildPersistedWorktreeSession({
         id: 'session-1',
-        type: 'worktree',
         locationPath: '/path/to/worktree',
         repositoryId: 'repo-1',
         worktreeId: 'feature-branch',
         serverPid: 1234,
         createdAt: '2024-01-01T00:00:00.000Z',
-        workers: [],
         initialPrompt: 'Test prompt',
         title: 'Test Session',
-      };
+      });
 
       const row = toSessionRow(session);
 
@@ -51,15 +55,13 @@ describe('mappers', () => {
     });
 
     it('should convert worktree session with optional fields undefined', () => {
-      const session: PersistedWorktreeSession = {
+      const session = buildPersistedWorktreeSession({
         id: 'session-1',
-        type: 'worktree',
         locationPath: '/path/to/worktree',
         repositoryId: 'repo-1',
         worktreeId: 'feature-branch',
         createdAt: '2024-01-01T00:00:00.000Z',
-        workers: [],
-      };
+      });
 
       const row = toSessionRow(session);
 
@@ -69,16 +71,14 @@ describe('mappers', () => {
     });
 
     it('should convert quick session with all fields', () => {
-      const session: PersistedQuickSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/path/to/project',
         serverPid: 5678,
         createdAt: '2024-01-01T00:00:00.000Z',
-        workers: [],
         initialPrompt: 'Quick prompt',
         title: 'Quick Session',
-      };
+      });
 
       const row = toSessionRow(session);
 
@@ -89,14 +89,12 @@ describe('mappers', () => {
     });
 
     it('should map pausedAt to paused_at', () => {
-      const session: PersistedQuickSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/path/to/project',
         createdAt: '2024-01-01T00:00:00.000Z',
-        workers: [],
         pausedAt: '2025-06-15T12:00:00.000Z',
-      };
+      });
 
       const row = toSessionRow(session);
 
@@ -104,13 +102,11 @@ describe('mappers', () => {
     });
 
     it('should map undefined pausedAt to null paused_at', () => {
-      const session: PersistedQuickSession = {
+      const session = buildPersistedQuickSession({
         id: 'session-1',
-        type: 'quick',
         locationPath: '/path/to/project',
         createdAt: '2024-01-01T00:00:00.000Z',
-        workers: [],
-      };
+      });
 
       const row = toSessionRow(session);
 
@@ -120,14 +116,13 @@ describe('mappers', () => {
 
   describe('toWorkerRow', () => {
     it('should convert agent worker with pid', () => {
-      const worker: PersistedAgentWorker = {
+      const worker = buildPersistedAgentWorker({
         id: 'worker-1',
-        type: 'agent',
         name: 'Claude',
         agentId: 'claude-code-builtin',
         pid: 9999,
         createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const row = toWorkerRow(worker, 'session-1');
 
@@ -140,13 +135,12 @@ describe('mappers', () => {
     });
 
     it('should convert terminal worker', () => {
-      const worker: PersistedTerminalWorker = {
+      const worker = buildPersistedTerminalWorker({
         id: 'worker-1',
-        type: 'terminal',
         name: 'Terminal',
         pid: 8888,
         createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const row = toWorkerRow(worker, 'session-1');
 
@@ -156,13 +150,12 @@ describe('mappers', () => {
     });
 
     it('should convert git-diff worker', () => {
-      const worker: PersistedGitDiffWorker = {
+      const worker = buildPersistedGitDiffWorker({
         id: 'worker-1',
-        type: 'git-diff',
         name: 'Git Diff',
         baseCommit: 'abc123',
         createdAt: '2024-01-01T00:00:00.000Z',
-      };
+      });
 
       const row = toWorkerRow(worker, 'session-1');
 
@@ -378,15 +371,14 @@ describe('mappers', () => {
         created_by: null,
       };
 
-      const workers: PersistedAgentWorker[] = [
-        {
+      const workers = [
+        buildPersistedAgentWorker({
           id: 'worker-1',
-          type: 'agent',
           name: 'Claude',
           agentId: 'claude-code-builtin',
           pid: 1234,
           createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        }),
       ];
 
       const session = toPersistedSession(dbSession, workers);
@@ -527,12 +519,12 @@ describe('mappers', () => {
 
   describe('toRepositoryRow', () => {
     it('should convert Repository to database row', () => {
-      const repository: PersistedRepository = {
+      const repository = buildPersistedRepository({
         id: 'repo-1',
         name: 'my-project',
         path: '/home/user/projects/my-project',
         createdAt: '2024-01-15T10:30:00.000Z',
-      };
+      });
 
       const row = toRepositoryRow(repository);
 
@@ -547,13 +539,13 @@ describe('mappers', () => {
     });
 
     it('should map defaultAgentId to default_agent_id', () => {
-      const repository: PersistedRepository = {
+      const repository = buildPersistedRepository({
         id: 'repo-default-agent',
         name: 'default-agent-project',
         path: '/home/user/projects/default-agent-project',
         createdAt: '2024-01-15T10:30:00.000Z',
         defaultAgentId: 'custom-agent-1',
-      };
+      });
 
       const row = toRepositoryRow(repository);
 
@@ -561,13 +553,13 @@ describe('mappers', () => {
     });
 
     it('should map cleanupCommand to cleanup_command', () => {
-      const repository: PersistedRepository = {
+      const repository = buildPersistedRepository({
         id: 'repo-cleanup',
         name: 'cleanup-project',
         path: '/home/user/projects/cleanup-project',
         createdAt: '2024-01-15T10:30:00.000Z',
         cleanupCommand: 'docker compose down',
-      };
+      });
 
       const row = toRepositoryRow(repository);
 
@@ -682,7 +674,7 @@ describe('mappers', () => {
 
   describe('toAgentRow', () => {
     it('should convert AgentDefinition to database row', () => {
-      const agent: AgentDefinition = {
+      const agent = buildAgentDefinition({
         id: 'custom-agent-1',
         name: 'My Custom Agent',
         commandTemplate: 'my-agent --prompt {{prompt}} --dir {{cwd}}',
@@ -696,7 +688,7 @@ describe('mappers', () => {
           supportsHeadlessMode: true,
           supportsActivityDetection: false,
         },
-      };
+      });
 
       const row = toAgentRow(agent);
 
@@ -713,7 +705,7 @@ describe('mappers', () => {
     });
 
     it('should serialize activityPatterns as JSON', () => {
-      const agent: AgentDefinition = {
+      const agent = buildAgentDefinition({
         id: 'agent-with-patterns',
         name: 'Agent With Patterns',
         commandTemplate: 'agent-cmd {{prompt}}',
@@ -727,7 +719,7 @@ describe('mappers', () => {
           supportsHeadlessMode: false,
           supportsActivityDetection: true,
         },
-      };
+      });
 
       const row = toAgentRow(agent);
 
@@ -737,19 +729,18 @@ describe('mappers', () => {
     });
 
     it('should handle null optional fields', () => {
-      const agent: AgentDefinition = {
+      const agent = buildAgentDefinition({
         id: 'minimal-agent',
         name: 'Minimal Agent',
         commandTemplate: 'minimal-cmd {{prompt}}',
         isBuiltIn: false,
         createdAt: '2024-03-10T09:00:00.000Z',
-        // No optional fields
         capabilities: {
           supportsContinue: false,
           supportsHeadlessMode: false,
           supportsActivityDetection: false,
         },
-      };
+      });
 
       const row = toAgentRow(agent);
 
