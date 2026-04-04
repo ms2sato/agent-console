@@ -387,6 +387,45 @@ describe('MessagePanel', () => {
     expect(mockSendWorkerMessage).not.toHaveBeenCalled();
   });
 
+  it('paste with image files adds them to file list', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    const mockFile = new File(['image-data'], 'test.png', { type: 'image/png' });
+
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [
+            { type: 'image/png', getAsFile: () => mockFile },
+          ],
+        },
+      });
+    });
+
+    expect(container.querySelector('[aria-label="Remove test.png"]')).toBeTruthy();
+  });
+
+  it('paste without images does not affect file list', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [
+            { type: 'text/plain', getAsFile: () => null },
+          ],
+        },
+      });
+    });
+
+    expect(container.querySelector('[aria-label^="Remove"]')).toBeNull();
+  });
+
   it('clears draft on successful send', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);

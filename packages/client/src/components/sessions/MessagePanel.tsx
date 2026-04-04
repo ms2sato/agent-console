@@ -129,6 +129,24 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     }
   }, [addFiles]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles: File[] = [];
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) imageFiles.push(blob);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      addFiles(imageFiles);
+    }
+    // If no images, let textarea handle normal text paste
+  }, [addFiles]);
+
   return (
     <div
       className="bg-slate-800 border-t border-slate-700 px-3 py-2"
@@ -150,6 +168,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
             handleResize(e.target);
           }}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="Send message to worker... (Ctrl+Enter to send)"
           rows={1}
           className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"
