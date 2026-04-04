@@ -1,6 +1,7 @@
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
+import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 
 const logger = createLogger('interactive-process-manager');
 
@@ -135,15 +136,20 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Write content followed by null byte (\0) to unblock the script's stdin reader.
-      stored.stdin.write(content + '\0');
-      stored.stdin.flush();
-
-      // Echo to worker PTY so the response appears as submitted input in the terminal
-      // (same mechanism as MessagePanel's sendMessage).
+      // Echo to worker PTY first so the response appears as submitted input
+      // BEFORE the process outputs its next step.
+      // injectMessage sends content immediately, then \r after 150ms delay.
       if (this.ptyMessageInjector) {
         this.ptyMessageInjector.injectPtyMessage(stored.info.sessionId, stored.info.workerId, content);
       }
+
+      // Delay STDIN write to allow PTY injection (content + delayed \r) to complete
+      // before the process outputs its response.
+      await new Promise(resolve => setTimeout(resolve, PtyMessageInjectionService.DELAY_MS + 50));
+
+      // Write content followed by null byte (\0) to unblock the script's stdin reader.
+      stored.stdin.write(content + '\0');
+      stored.stdin.flush();
 
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
       return true;
