@@ -7,7 +7,7 @@ import {
   requiresTestCoverage,
   findTestFiles,
   detectIntegrationTestNeeds,
-  readResponse,
+  createStdinReader,
   getQuestions,
   printQuestion,
   printSummary,
@@ -209,21 +209,22 @@ describe('detectIntegrationTestNeeds', () => {
 
 // --- New tests for STDIN/STDOUT wizard mode ---
 
-describe('readResponse', () => {
+describe('createStdinReader', () => {
   it('reads a single null-byte terminated response', async () => {
     const stdin = createMockStdin(['hello world']);
-    const result = await readResponse(stdin);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
     expect(result).toBe('hello world');
   });
 
   it('trims whitespace from response', async () => {
     const stdin = createMockStdin(['  answer with spaces  ']);
-    const result = await readResponse(stdin);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
     expect(result).toBe('answer with spaces');
   });
 
   it('reads multi-chunk response before null byte', async () => {
-    // Simulate data arriving in multiple chunks before the null byte
     let pushCount = 0;
     const stdin = new Readable({
       read() {
@@ -238,25 +239,48 @@ describe('readResponse', () => {
         }
       },
     });
-    const result = await readResponse(stdin);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
     expect(result).toBe('first part second part');
   });
 
-  it('handles data after null byte (ignores it)', async () => {
-    const stdin = new Readable({
-      read() {
-        this.push(Buffer.from('answer\0extra data'));
-        this.push(null);
-      },
-    });
-    const result = await readResponse(stdin);
-    expect(result).toBe('answer');
+  it('handles data after null byte by buffering for next read', async () => {
+    // Single chunk contains two answers separated by null byte
+    const stdin = createMockStdin(['first answer', 'second answer']);
+    const readResponse = createStdinReader(stdin);
+    const first = await readResponse();
+    const second = await readResponse();
+    expect(first).toBe('first answer');
+    expect(second).toBe('second answer');
   });
 
   it('handles empty response before null byte', async () => {
     const stdin = createMockStdin(['']);
-    const result = await readResponse(stdin);
+    const readResponse = createStdinReader(stdin);
+    const result = await readResponse();
     expect(result).toBe('');
+  });
+
+  it('reads multiple sequential answers from same stream', async () => {
+    const stdin = createMockStdin(['answer1', 'answer2', 'answer3']);
+    const readResponse = createStdinReader(stdin);
+    expect(await readResponse()).toBe('answer1');
+    expect(await readResponse()).toBe('answer2');
+    expect(await readResponse()).toBe('answer3');
+  });
+
+  it('handles multiple answers arriving in a single chunk', async () => {
+    // Simulate all data arriving at once with multiple null bytes
+    const stdin = new Readable({
+      read() {
+        this.push(Buffer.from('a1\0a2\0a3\0'));
+        this.push(null);
+      },
+    });
+    const readResponse = createStdinReader(stdin);
+    expect(await readResponse()).toBe('a1');
+    expect(await readResponse()).toBe('a2');
+    expect(await readResponse()).toBe('a3');
   });
 });
 
@@ -362,6 +386,15 @@ describe('printSummary', () => {
     printSummary(answers, questions);
     const output = logs.join('\n');
     expect(output).toContain('Q1: -- Not answered');
+  });
+
+  it('treats empty string answer as answered (not unanswered)', () => {
+    const questions = [{ key: 'q1' }];
+    const answers = { q1: '' };
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: OK');
+    expect(output).not.toContain('Not answered');
   });
 });
 

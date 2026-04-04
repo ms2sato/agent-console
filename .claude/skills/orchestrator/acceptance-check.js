@@ -296,18 +296,31 @@ function getAcceptanceCriteria(issueNumber) {
 
 // --- STDIN reading (null-byte delimited) ---
 
-async function readResponse(stdin = process.stdin) {
-  const chunks = [];
-  for await (const chunk of stdin) {
-    const str = Buffer.from(chunk).toString();
-    const nullIdx = str.indexOf('\0');
-    if (nullIdx !== -1) {
-      chunks.push(str.slice(0, nullIdx));
-      break;
+/**
+ * Creates a reader that reads null-byte delimited responses from a stream.
+ * Uses a raw async iterator (via .next()) instead of for-await-of to avoid
+ * destroying the stream on break — allowing multiple sequential reads.
+ */
+function createStdinReader(stdin = process.stdin) {
+  let buffer = '';
+  const iterator = stdin[Symbol.asyncIterator]();
+
+  return async function readResponse() {
+    while (true) {
+      const nullIdx = buffer.indexOf('\0');
+      if (nullIdx !== -1) {
+        const answer = buffer.slice(0, nullIdx);
+        buffer = buffer.slice(nullIdx + 1);
+        return answer.trim();
+      }
+      const { value, done } = await iterator.next();
+      if (done) break;
+      buffer += Buffer.from(value).toString();
     }
-    chunks.push(str);
-  }
-  return chunks.join('').trim();
+    const answer = buffer;
+    buffer = '';
+    return answer.trim();
+  };
 }
 
 // --- CI status check ---
@@ -601,8 +614,8 @@ function printQuestion(question) {
 function printSummary(answers, questions) {
   console.log('=== Answer Summary ===');
   for (const q of questions) {
-    const answer = answers[q.key];
-    if (answer) {
+    if (q.key in answers) {
+      const answer = answers[q.key];
       const display = answer.length > 100 ? answer.substring(0, 100) + '...' : answer;
       console.log(`${q.key.toUpperCase()}: OK ${display}`);
     } else {
@@ -632,10 +645,11 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
   const hasAcceptanceCriteria = autoDetection.acceptanceCriteria.length > 0;
   const questions = getQuestions(hasAcceptanceCriteria);
   const answers = {};
+  const readResponse = createStdinReader(stdin);
 
   for (const question of questions) {
     printQuestion(question);
-    const answer = await readResponse(stdin);
+    const answer = await readResponse();
     answers[question.key] = answer;
     console.log(`OK ${question.key.toUpperCase()} answered`);
     console.log();
@@ -723,7 +737,7 @@ export {
   detectIntegrationTestNeeds,
   listExistingIntegrationTests,
   INTEGRATION_TRIGGER_PATTERNS,
-  readResponse,
+  createStdinReader,
   runWizard,
   getQuestions,
   printQuestion,
