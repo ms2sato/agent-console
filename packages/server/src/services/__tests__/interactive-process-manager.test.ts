@@ -101,6 +101,40 @@ describe('InteractiveProcessManager', () => {
       expect(exitInfo.status).toBe('exited');
       expect(exitInfo.exitCode).toBe(0);
     });
+
+    it('should detect exit when a stdin-reading script calls process.exit(0)', async () => {
+      // Simulates the fix for #546: a script that reads from stdin via async iterator
+      // must call process.exit(0) after completing work, otherwise stdin keeps it alive.
+      const script = `
+        const iter = process.stdin[Symbol.asyncIterator]();
+        const { value } = await iter.next();
+        const input = Buffer.from(value).toString().replace('\\0', '').trim();
+        console.log('received: ' + input);
+        process.exit(0);
+      `;
+      const processInfo = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: `bun -e "${script.replace(/"/g, '\\"')}"`,
+      });
+
+      // Send input to unblock the script
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await manager.writeResponse(processInfo.id, 'test-input');
+
+      // Wait for exit
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (onExit.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(onExit).toHaveBeenCalled();
+      const [exitInfo] = onExit.mock.calls[0];
+      expect(exitInfo.status).toBe('exited');
+      expect(exitInfo.exitCode).toBe(0);
+    });
+
   });
 
   describe('killProcess', () => {
