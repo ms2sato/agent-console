@@ -179,6 +179,51 @@ describe('useTabManagement', () => {
       // The initialization effect redirects to the default worker
       expect(navigateToWorker).toHaveBeenCalledWith('agent-1', true);
     });
+
+    it('sets activityState from workerActivityStates when urlWorkerId is valid', () => {
+      const workers = [createAgentWorker('agent-1'), createTerminalWorker('terminal-1')];
+      const setActivityState = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        workerActivityStates: { 'agent-1': 'idle' as AgentActivityState },
+        setActivityState,
+      });
+
+      renderHook(() => useTabManagement(options));
+
+      expect(setActivityState).toHaveBeenCalledWith('idle');
+    });
+
+    it('sets activityState from workerActivityStates when redirecting to default tab', () => {
+      const workers = [createAgentWorker('agent-1')];
+      const setActivityState = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: undefined,
+        workerActivityStates: { 'agent-1': 'active' as AgentActivityState },
+        setActivityState,
+      });
+
+      renderHook(() => useTabManagement(options));
+
+      expect(setActivityState).toHaveBeenCalledWith('active');
+    });
+
+    it('sets activityState to unknown when worker has no known state on init', () => {
+      const workers = [createAgentWorker('agent-1')];
+      const setActivityState = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        workerActivityStates: {},
+        setActivityState,
+      });
+
+      renderHook(() => useTabManagement(options));
+
+      expect(setActivityState).toHaveBeenCalledWith('unknown');
+    });
   });
 
   describe('URL sync', () => {

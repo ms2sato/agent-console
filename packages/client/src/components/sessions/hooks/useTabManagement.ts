@@ -75,13 +75,15 @@ export function useTabManagement({
 
       if (urlWorkerExists) {
         setActiveTabId(urlWorkerId);
+        setActivityState(workerActivityStates[urlWorkerId] ?? 'unknown');
       } else {
         // Calculate default tab
         const defaultTabId = findFirstAgentWorker(workers)?.id ?? newTabs[0]?.id ?? null;
         setActiveTabId(defaultTabId);
 
-        // Redirect to the default worker URL
         if (defaultTabId) {
+          setActivityState(workerActivityStates[defaultTabId] ?? 'unknown');
+          // Redirect to the default worker URL
           navigateToWorker(defaultTabId, true);
         }
       }
