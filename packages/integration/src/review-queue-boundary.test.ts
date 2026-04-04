@@ -103,7 +103,6 @@ describe('Client-Server Boundary: Review Queue API', () => {
             startLine: 1,
             endLine: 10,
             reason: 'Needs review',
-            category: 'logic',
           },
         ],
         summary: {
@@ -111,7 +110,6 @@ describe('Client-Server Boundary: Review Queue API', () => {
           totalFiles: 1,
           reviewFiles: 1,
           mechanicalFiles: 0,
-          overview: 'Test review',
         },
       },
       { sessionId: childSessionId, sourceSessionId },
@@ -142,7 +140,6 @@ describe('Client-Server Boundary: Review Queue API', () => {
             startLine: 5,
             endLine: 15,
             reason: 'Check this logic',
-            category: 'logic',
           },
         ],
         summary: {
@@ -150,7 +147,6 @@ describe('Client-Server Boundary: Review Queue API', () => {
           totalFiles: 1,
           reviewFiles: 1,
           mechanicalFiles: 0,
-          overview: 'Another review',
         },
       },
       { sessionId: sourceSessionId, sourceSessionId },
