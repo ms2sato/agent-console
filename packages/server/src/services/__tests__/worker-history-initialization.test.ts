@@ -22,6 +22,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JobQueue } from '../../jobs/index.js';
+import { SingleUserMode } from '../user-mode.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -83,7 +84,7 @@ describe('Worker History File Initialization', () => {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     // Use the factory pattern for async initialization with jobQueue
     return module.SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,

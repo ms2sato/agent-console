@@ -20,6 +20,7 @@ import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
+import { SingleUserMode } from '../../services/user-mode.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -64,7 +65,7 @@ describe('WebSocket routes notifications', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });

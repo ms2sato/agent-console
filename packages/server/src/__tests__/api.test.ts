@@ -11,7 +11,7 @@ import type {
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
-import { MockPty } from './utils/mock-pty.js';
+import { MockPty, createMockPtyFactory } from './utils/mock-pty.js';
 import { mockGit, GitError } from './utils/mock-git-helper.js';
 
 // Set up test config directory BEFORE any service imports to ensure
@@ -115,6 +115,7 @@ import { SystemCapabilitiesService } from '../services/system-capabilities-servi
 import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
+import { SingleUserMode } from '../services/user-mode.js';
 
 // =============================================================================
 // Test Setup
@@ -122,6 +123,9 @@ import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
 
 // Import counter for cache busting
 let importCounter = 0;
+
+// Mock PTY factory for SessionManager
+const ptyFactory = createMockPtyFactory();
 
 // Test repository path
 const TEST_REPO_PATH = '/test/test-repo';
@@ -194,6 +198,7 @@ describe('API Routes Integration', () => {
     // Reset PTY tracking
     mockPtyInstances.length = 0;
     nextPtyPid = 10000;
+    ptyFactory.reset();
 
     // Reset process tracking
     resetProcessMock();
@@ -280,6 +285,7 @@ describe('API Routes Integration', () => {
       const sessionRepository = await createSessionRepository();
       testAgentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
       testSessionManager = await SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         sessionRepository,
         jobQueue: testJobQueue,
         agentManager: testAgentManager,
@@ -368,7 +374,7 @@ describe('API Routes Integration', () => {
         expect(body.session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
 
         // Verify PTY was spawned (only agent worker has PTY)
-        expect(mockPtyInstances.length).toBe(1);
+        expect(ptyFactory.instances.length).toBe(1);
       });
 
       it('should set createdBy to the authenticated user ID', async () => {
@@ -713,7 +719,7 @@ describe('API Routes Integration', () => {
         expect(body.worker.name).toBe('Shell');
 
         // Verify two PTYs spawned (agent + terminal)
-        expect(mockPtyInstances.length).toBe(2);
+        expect(ptyFactory.instances.length).toBe(2);
       });
     });
 

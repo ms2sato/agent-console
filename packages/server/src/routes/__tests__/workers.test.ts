@@ -10,6 +10,7 @@ import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-proces
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
+import { SingleUserMode } from '../../services/user-mode.js';
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
@@ -50,7 +51,7 @@ describe('Workers API', () => {
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
     sessionManager = await SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
