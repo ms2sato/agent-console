@@ -68,7 +68,11 @@
 ## 6. Acceptance Check
 - **Trigger**: When a coding agent reports CI green on a PR
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
-- **Run the acceptance check script**: `node .claude/skills/orchestrator/acceptance-check.js <PR number>` for every acceptance check. The script outputs Q1-Q7 questions — answer each one with concrete evidence (file names, line numbers, grep results). Do NOT start a check without running the script first.
+- **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
+  ```
+  run_process({ command: "node .claude/skills/orchestrator/acceptance-check.js <PR number>", sessionId: ..., workerId: ... })
+  ```
+  The script outputs auto-detection results and Q1 to STDOUT (delivered as `[internal:process]` notifications), then blocks on STDIN. Answer each question via `write_process_response` with concrete evidence (file names, line numbers, grep results). The script automatically advances to the next question after each answer. Do NOT start a check without running the script first.
 - **Purpose**: Verify that the delegated work meets the original Issue requirements and delegation instructions
 - **Key principles**:
   - List domain invariants yourself — "What must be true for this change to be correct?"
@@ -82,7 +86,7 @@
   - **Comment accuracy verification**: Verify that JSDoc comments, inline comments, and documentation added or modified in the PR accurately describe the actual code behavior. Misleading comments are worse than no comments — flag any discrepancy between comment text and implementation.
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
   0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
-  1. Run acceptance check script and answer Q1-Q7. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
+  1. Start the acceptance check via `run_process` (see above). Answer Q1-Q7 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> resolve before proceeding:
      a. Self-investigate (read more code, grep for context)
