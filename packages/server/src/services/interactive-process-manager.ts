@@ -1,7 +1,6 @@
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
-import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 
 const logger = createLogger('interactive-process-manager');
 
@@ -24,10 +23,16 @@ export interface ProcessExitCallback {
 /** Service that can inject content into a worker's PTY as submitted input. */
 export interface PtyMessageInjector {
   injectPtyMessage(sessionId: string, workerId: string, content: string): boolean;
+  /** Write raw data to a worker's PTY (no CR conversion, no delayed Enter). */
+  writePtyData(sessionId: string, workerId: string, data: string): boolean;
 }
 
 export class InteractiveProcessManager {
+  /** Debounce delay for sending Enter after process output settles. */
+  static readonly DEBOUNCE_ENTER_MS = 150;
+
   private processes = new Map<string, StoredProcess>();
+  private pendingEnters = new Map<string, ReturnType<typeof setTimeout>>();
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
   private ptyMessageInjector?: PtyMessageInjector;
@@ -118,6 +123,9 @@ export class InteractiveProcessManager {
           const stored = this.processes.get(processId);
           if (stored) {
             this.onOutput({ ...stored.info }, text);
+            // Reset debounced Enter: process output just wrote to PTY,
+            // wait for output to settle before sending \r
+            this.resetDebouncedEnter(processId);
           }
         }
       }
@@ -136,18 +144,22 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Echo to worker PTY first so the response appears as submitted input
-      // BEFORE the process outputs its next step.
-      // injectMessage sends content immediately, then \r after 150ms delay.
+      // Echo response content to worker PTY (CR-converted, no Enter yet).
+      // The Enter (\r) is sent via debounce after process output settles.
       if (this.ptyMessageInjector) {
-        this.ptyMessageInjector.injectPtyMessage(stored.info.sessionId, stored.info.workerId, content);
+        this.ptyMessageInjector.writePtyData(
+          stored.info.sessionId,
+          stored.info.workerId,
+          content.replace(/\r?\n/g, '\r'),
+        );
       }
 
-      // Delay STDIN write to allow PTY injection (content + delayed \r) to complete
-      // before the process outputs its response.
-      await new Promise(resolve => setTimeout(resolve, PtyMessageInjectionService.DELAY_MS + 50));
+      // Schedule debounced Enter — will be reset each time process output
+      // writes to the PTY, and fires once output settles.
+      this.scheduleDebouncedEnter(processId);
 
       // Write content followed by null byte (\0) to unblock the script's stdin reader.
+      // This must not be delayed — process output triggers PTY writes that reset the debounce.
       stored.stdin.write(content + '\0');
       stored.stdin.flush();
 
@@ -164,6 +176,8 @@ export class InteractiveProcessManager {
     if (!stored) {
       return false;
     }
+
+    this.clearPendingEnter(processId);
 
     try {
       stored.subprocess.kill(15); // SIGTERM
@@ -196,6 +210,7 @@ export class InteractiveProcessManager {
     let count = 0;
     for (const [id, stored] of this.processes) {
       if (stored.info.sessionId === sessionId) {
+        this.clearPendingEnter(id);
         try {
           stored.subprocess.kill(15);
         } catch {
@@ -212,6 +227,11 @@ export class InteractiveProcessManager {
   }
 
   disposeAll(): void {
+    for (const timer of this.pendingEnters.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingEnters.clear();
+
     for (const stored of this.processes.values()) {
       try {
         stored.subprocess.kill(15);
@@ -222,5 +242,35 @@ export class InteractiveProcessManager {
     const count = this.processes.size;
     this.processes.clear();
     logger.info({ count }, 'All processes disposed');
+  }
+
+  private scheduleDebouncedEnter(processId: string): void {
+    this.clearPendingEnter(processId);
+    const timer = setTimeout(() => {
+      this.pendingEnters.delete(processId);
+      const stored = this.processes.get(processId);
+      if (stored && this.ptyMessageInjector) {
+        this.ptyMessageInjector.writePtyData(
+          stored.info.sessionId,
+          stored.info.workerId,
+          '\r',
+        );
+      }
+    }, InteractiveProcessManager.DEBOUNCE_ENTER_MS);
+    this.pendingEnters.set(processId, timer);
+  }
+
+  private resetDebouncedEnter(processId: string): void {
+    if (this.pendingEnters.has(processId)) {
+      this.scheduleDebouncedEnter(processId);
+    }
+  }
+
+  private clearPendingEnter(processId: string): void {
+    const timer = this.pendingEnters.get(processId);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingEnters.delete(processId);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, jest } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
@@ -9,12 +9,17 @@ describe('InteractiveProcessManager', () => {
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
   let mockInjectPtyMessage: ReturnType<typeof mock>;
+  let mockWritePtyData: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
     mockInjectPtyMessage = mock(() => true);
-    manager = new InteractiveProcessManager(onOutput, onExit, { injectPtyMessage: mockInjectPtyMessage });
+    mockWritePtyData = mock(() => true);
+    manager = new InteractiveProcessManager(onOutput, onExit, {
+      injectPtyMessage: mockInjectPtyMessage,
+      writePtyData: mockWritePtyData,
+    });
   });
 
   afterEach(() => {
@@ -362,7 +367,7 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
     });
 
-    it('should call injectPtyMessage with content on successful write', async () => {
+    it('should call writePtyData with CR-converted content on successful write', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
@@ -381,7 +386,102 @@ describe('InteractiveProcessManager', () => {
       }
 
       expect(result).toBe(true);
-      expect(mockInjectPtyMessage).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+      // injectPtyMessage should NOT be called for writeResponse path
+      expect(mockInjectPtyMessage).not.toHaveBeenCalled();
+    });
+
+    it('should not call writePtyData when ptyMessageInjector is not provided', async () => {
+      const managerNoPty = new InteractiveProcessManager(onOutput, onExit);
+      const process = await managerNoPty.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = managerNoPty.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await managerNoPty.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      expect(mockWritePtyData).not.toHaveBeenCalled();
+      managerNoPty.disposeAll();
+    });
+  });
+
+  describe('debounced Enter for writeResponse', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should send \\r after DEBOUNCE_ENTER_MS when no process output arrives', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      // Wait for process to start
+      jest.useRealTimers();
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (manager.getProcess(process.id)?.status === 'running') break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      jest.useFakeTimers();
+
+      await manager.writeResponse(process.id, 'hello');
+
+      // Content should be written immediately
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+
+      // \r should not be sent yet
+      const callsBefore = mockWritePtyData.mock.calls.length;
+
+      // Advance past debounce
+      jest.advanceTimersByTime(InteractiveProcessManager.DEBOUNCE_ENTER_MS);
+
+      // \r should now be sent
+      expect(mockWritePtyData).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(mockWritePtyData.mock.calls[callsBefore]).toEqual(['session-1', 'worker-1', '\r']);
+    });
+
+    it('should not send \\r for a killed process', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      jest.useRealTimers();
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (manager.getProcess(process.id)?.status === 'running') break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      jest.useFakeTimers();
+
+      await manager.writeResponse(process.id, 'hello');
+      const callsAfterContent = mockWritePtyData.mock.calls.length;
+
+      // Kill before debounce fires
+      manager.killProcess(process.id);
+
+      jest.advanceTimersByTime(InteractiveProcessManager.DEBOUNCE_ENTER_MS);
+
+      // No \r should be sent
+      expect(mockWritePtyData).toHaveBeenCalledTimes(callsAfterContent);
     });
   });
 });

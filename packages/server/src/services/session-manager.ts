@@ -631,6 +631,11 @@ export class SessionManager {
     return this.ptyMessageInjectionService.injectMessage(sessionId, workerId, content);
   }
 
+  /** Write raw data to a worker's PTY (no CR conversion, no delayed Enter). */
+  writePtyData(sessionId: string, workerId: string, data: string): boolean {
+    return this.writeWorkerInput(sessionId, workerId, data);
+  }
+
   /** Resize a worker's PTY. */
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     return this.workerLifecycleManager.resizeWorker(sessionId, workerId, cols, rows);
