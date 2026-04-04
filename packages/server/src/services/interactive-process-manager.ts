@@ -128,9 +128,11 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Write content followed by null byte (\0) to unblock `read -d ''` in bash.
-      // Stdin stays open for subsequent writes.
-      stored.stdin.write(content + '\0');
+      // Write content followed by null byte (\0) to unblock `read -d ''` in bash,
+      // then a newline to visually complete the input in the PTY terminal.
+      // The \n after \0 does not affect the script's read — it will be consumed
+      // as the start of the next read buffer and trimmed.
+      stored.stdin.write(content + '\0\n');
       stored.stdin.flush();
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
       return true;
