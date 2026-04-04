@@ -771,5 +771,6 @@ if (!prNumber || !/^\d+$/.test(prNumber)) {
 
 // Interactive wizard mode: outputs questions to STDOUT, reads answers from STDIN
 await runWizard(prNumber);
+process.exit(0);
 
 } // end isMainModule guard
