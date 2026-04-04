@@ -17,7 +17,7 @@ Currently supports **[Claude Code](https://claude.ai/code)** as the default agen
 - **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI
 - **Real-time Updates**: WebSocket-based notifications for session and worker lifecycle changes
-- **Agent Self-Delegation (MCP)**: Agents can programmatically create worktrees and delegate tasks to new agents via [MCP](https://modelcontextprotocol.io) tools
+- **Orchestration via MCP**: Agents can delegate tasks, coordinate workflows, and manage other agents programmatically via [MCP](https://modelcontextprotocol.io) tools
 
 ## Key Concepts
 
@@ -216,30 +216,9 @@ API_PORT={{WORKTREE_NUM + 4000}}
 
 With this template, worktree 0 uses DEV_PORT=3000, worktree 1 uses DEV_PORT=3001, and so on.
 
-## Agent Self-Delegation (MCP)
+## Orchestration via MCP
 
-Agents running inside Agent Console can delegate work to new worktrees using [MCP (Model Context Protocol)](https://modelcontextprotocol.io) tools. For example, an agent working on a feature can say *"implement the tests in a new worktree"* and Agent Console will create the worktree, start a new session, and send the prompt — all programmatically.
-
-### How It Works
-
-```
-Agent (Claude Code in wt-001)
-    │
-    │  Calls MCP tool: delegate_to_worktree
-    │  (via Streamable HTTP → AgentConsole /mcp)
-    ▼
-AgentConsole Server
-    │
-    │  1. Creates worktree (wt-002)
-    │  2. Creates session + agent worker
-    │  3. Sends prompt to new agent
-    ▼
-New Agent (Claude Code in wt-002)
-    │
-    │  Executes the delegated task
-    ▼
-Agent (wt-001) polls status via: get_session_status
-```
+Agent Console exposes [MCP (Model Context Protocol)](https://modelcontextprotocol.io) tools that turn any AI agent into an **orchestrator**. A single agent can delegate tasks to new worktrees, monitor their progress, coordinate inter-agent communication, run review workflows, and manage timers — all programmatically through a unified tool interface.
 
 ### Setup
 
@@ -259,25 +238,117 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 
 ### Available MCP Tools
 
+#### Session Management
+
 | Tool | Description |
 |------|-------------|
-| `list_agents` | Discover available agents (built-in + custom) |
-| `list_sessions` | List all active sessions with worker states |
-| `get_session_status` | Check a specific session's status and activity |
-| `send_message_to_session` | Send a follow-up message to a worker |
-| `delegate_to_worktree` | Create a worktree + session + agent in one call |
+| `list_sessions` | List all active sessions with worker activity states |
+| `get_session_status` | Get a specific session's status, workers, and parent info |
+| `close_session` | Close a session and clean up its workers |
 
-### Example Interaction
+#### Worktree Delegation
 
-Once set up, you can ask an agent running in Agent Console:
+| Tool | Description |
+|------|-------------|
+| `delegate_to_worktree` | Create a worktree + session + agent and send a prompt — the primary orchestration tool |
+| `remove_worktree` | Remove a git worktree and its associated session |
 
-> *"Create a new worktree and implement unit tests for the authentication module"*
+#### Communication
 
-The agent will use the `delegate_to_worktree` MCP tool, which:
-1. Creates a new git worktree with an auto-generated branch name
-2. Starts a new session with an agent worker
-3. Sends the prompt to the new agent
-4. Returns the session ID so the parent agent can monitor progress
+| Tool | Description |
+|------|-------------|
+| `send_session_message` | Send a message to a worker in another session (file-based with PTY notification) |
+| `write_memo` | Write a Markdown memo for a session, visible in the UI |
+
+#### Timer
+
+| Tool | Description |
+|------|-------------|
+| `create_timer` | Create a periodic timer that sends notifications to a worker at specified intervals |
+| `delete_timer` | Delete a periodic timer |
+| `list_timers` | List active timers, optionally filtered by session |
+
+#### Interactive Process
+
+| Tool | Description |
+|------|-------------|
+| `run_process` | Start an interactive script that communicates via STDOUT/STDIN |
+| `write_process_response` | Send a response to a waiting interactive process |
+| `kill_process` | Terminate a running interactive process |
+| `list_processes` | List all interactive processes (useful after agent restart) |
+
+#### Review
+
+| Tool | Description |
+|------|-------------|
+| `write_review_annotations` | Write review annotations for a git-diff worker, pushed to the client in real-time |
+| `clear_review_annotations` | Clear all review annotations for a git-diff worker |
+
+#### Agent & Repository Registry
+
+| Tool | Description |
+|------|-------------|
+| `list_agents` | Discover available agents (built-in + custom) with capabilities |
+| `list_repositories` | Discover available repositories with IDs and remote URLs |
+
+### Patterns in Practice
+
+#### Parallel Delegation
+
+An orchestrator splits work across multiple worktrees and monitors progress:
+
+```
+Orchestrator (wt-000)
+    ├── delegate_to_worktree → Agent A (wt-001): "implement feature X"
+    ├── delegate_to_worktree → Agent B (wt-002): "write tests for module Y"
+    └── delegate_to_worktree → Agent C (wt-003): "fix bug Z"
+    
+    ... later ...
+    ├── get_session_status(wt-001) → "active, working"
+    ├── get_session_status(wt-002) → "idle, waiting for input"
+    └── get_session_status(wt-003) → "idle, task complete"
+```
+
+With `parentSessionId` and `parentWorkerId`, delegated agents automatically report results back via `send_session_message`.
+
+#### Timer-Based Monitoring
+
+Set up periodic check-ins to monitor long-running tasks:
+
+```
+create_timer(sessionId, workerId, intervalSeconds: 300, action: "check CI status and report")
+    → Timer fires every 5 minutes with [internal:timer] PTY notification
+    → Agent wakes up, checks status, takes action
+    
+delete_timer(timerId)  # Clean up when done
+```
+
+#### Interactive Process Workflow
+
+Drive scripts that require back-and-forth communication:
+
+```
+run_process(command: "node acceptance-check.js 526", sessionId, workerId)
+    → Process starts, sends STDOUT as [internal:process] PTY notifications
+    → Agent reads output, decides next action
+    
+write_process_response(processId, content: "approve")
+    → Process receives response, continues execution
+    
+kill_process(processId)  # Terminate if needed
+```
+
+#### Review and Memo
+
+Annotate diffs for human review and leave persistent notes:
+
+```
+write_review_annotations(workerId, sessionId, annotations: [...], summary: {...})
+    → Annotations appear in the git-diff viewer in real-time
+
+write_memo(sessionId, content: "## Status\n- Feature complete\n- Tests passing\n- Ready for review")
+    → Memo visible in the session UI panel
+```
 
 See [docs/design/self-worktree-delegation.md](docs/design/self-worktree-delegation.md) for the full design document.
 
