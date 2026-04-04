@@ -3,6 +3,7 @@ import type { HookCommandResult, Worktree, Session } from '@agent-console/shared
 import type { SessionManager } from '../session-manager.js';
 import type { DeleteWorktreeDeps } from '../worktree-deletion-service.js';
 import { getRepositoriesDir } from '../../lib/config.js';
+import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 
 // Use the real repositories directory path to avoid mocking config.js
 // (Bun's mock.module is global and pollutes other test files)
@@ -94,19 +95,12 @@ function createMockDeps(overrides: {
   };
 }
 
-const DEFAULT_WORKTREE_SESSION: Session = {
+const DEFAULT_WORKTREE_SESSION = buildWorktreeSession({
   id: 'sess-1',
-  type: 'worktree',
-  repositoryId: 'repo-1',
   repositoryName: 'my-repo',
   worktreeId: 'feature-1',
-  isMainWorktree: false,
   locationPath: WORKTREE_PATH,
-  status: 'active',
-  activationState: 'running',
-  createdAt: new Date().toISOString(),
-  workers: [],
-};
+});
 
 describe('deleteWorktree', () => {
   beforeEach(() => {
@@ -180,10 +174,13 @@ describe('deleteWorktree', () => {
   // --- Main worktree protection ---
 
   it('returns validation error when session is main worktree', async () => {
-    const mainSession: Session = {
-      ...DEFAULT_WORKTREE_SESSION,
+    const mainSession = buildWorktreeSession({
+      id: 'sess-1',
+      repositoryName: 'my-repo',
+      worktreeId: 'feature-1',
+      locationPath: WORKTREE_PATH,
       isMainWorktree: true,
-    };
+    });
 
     const deps = createMockDeps({ sessions: [mainSession] });
     const result = await deleteWorktree(
@@ -408,10 +405,12 @@ describe('deleteWorktree', () => {
   // --- Multiple sessions ---
 
   it('kills workers and deletes all sessions matching the worktree path', async () => {
-    const session2: Session = {
-      ...DEFAULT_WORKTREE_SESSION,
+    const session2 = buildWorktreeSession({
       id: 'sess-2',
-    };
+      repositoryName: 'my-repo',
+      worktreeId: 'feature-1',
+      locationPath: WORKTREE_PATH,
+    });
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
     const result = await deleteWorktree(
@@ -428,10 +427,12 @@ describe('deleteWorktree', () => {
   });
 
   it('captures errors from multiple session deletions', async () => {
-    const session2: Session = {
-      ...DEFAULT_WORKTREE_SESSION,
+    const session2 = buildWorktreeSession({
       id: 'sess-2',
-    };
+      repositoryName: 'my-repo',
+      worktreeId: 'feature-1',
+      locationPath: WORKTREE_PATH,
+    });
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
     deps.sessionManager.deleteSession.mockImplementation((id: string) => {
@@ -453,11 +454,12 @@ describe('deleteWorktree', () => {
   // --- Session filtering ---
 
   it('only includes sessions matching the worktree path', async () => {
-    const otherSession: Session = {
-      ...DEFAULT_WORKTREE_SESSION,
+    const otherSession = buildWorktreeSession({
       id: 'sess-other',
+      repositoryName: 'my-repo',
+      worktreeId: 'feature-1',
       locationPath: OTHER_WORKTREE_PATH,
-    };
+    });
 
     // getAllSessions returns all sessions, but only matching ones should be processed
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, otherSession] });

@@ -4,13 +4,13 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
 import type { Database } from '../../database/schema.js';
-import type {
-  PersistedAgentWorker,
-  PersistedTerminalWorker,
-  PersistedGitDiffWorker,
-  PersistedWorktreeSession,
-  PersistedQuickSession,
-} from '../../services/persistence-service.js';
+import {
+  buildPersistedQuickSession,
+  buildPersistedWorktreeSession,
+  buildPersistedAgentWorker,
+  buildPersistedTerminalWorker,
+  buildPersistedGitDiffWorker,
+} from '../../__tests__/utils/build-test-data.js';
 
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
@@ -70,74 +70,6 @@ describe('SqliteSessionRepository', () => {
     bunDb.close();
   });
 
-  // ========== Helper Functions ==========
-
-  function createQuickSession(overrides: Partial<PersistedQuickSession> = {}): PersistedQuickSession {
-    return {
-      id: overrides.id ?? 'test-session-id',
-      type: 'quick',
-      locationPath: '/test/path',
-      serverPid: process.pid,
-      createdAt: new Date().toISOString(),
-      workers: [],
-      ...overrides,
-    };
-  }
-
-  function createWorktreeSession(
-    overrides: Partial<PersistedWorktreeSession> = {}
-  ): PersistedWorktreeSession {
-    return {
-      id: overrides.id ?? 'test-worktree-session-id',
-      type: 'worktree',
-      locationPath: '/test/worktree/path',
-      repositoryId: 'test-repo-id',
-      worktreeId: 'test-branch',
-      serverPid: process.pid,
-      createdAt: new Date().toISOString(),
-      workers: [],
-      ...overrides,
-    };
-  }
-
-  function createAgentWorker(overrides: Partial<PersistedAgentWorker> = {}): PersistedAgentWorker {
-    return {
-      id: overrides.id ?? 'test-agent-worker-id',
-      type: 'agent',
-      name: 'Test Agent',
-      agentId: 'claude-code-builtin',
-      pid: 12345,
-      createdAt: new Date().toISOString(),
-      ...overrides,
-    };
-  }
-
-  function createTerminalWorker(
-    overrides: Partial<PersistedTerminalWorker> = {}
-  ): PersistedTerminalWorker {
-    return {
-      id: overrides.id ?? 'test-terminal-worker-id',
-      type: 'terminal',
-      name: 'Test Terminal',
-      pid: 54321,
-      createdAt: new Date().toISOString(),
-      ...overrides,
-    };
-  }
-
-  function createGitDiffWorker(
-    overrides: Partial<PersistedGitDiffWorker> = {}
-  ): PersistedGitDiffWorker {
-    return {
-      id: overrides.id ?? 'test-git-diff-worker-id',
-      type: 'git-diff',
-      name: 'Git Diff',
-      baseCommit: 'abc123def456',
-      createdAt: new Date().toISOString(),
-      ...overrides,
-    };
-  }
-
   // ========== Test Suites ==========
 
   describe('findAll', () => {
@@ -147,8 +79,8 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should return all sessions with their workers', async () => {
-      const session1 = createQuickSession({ id: 'session-1' });
-      const session2 = createWorktreeSession({ id: 'session-2' });
+      const session1 = buildPersistedQuickSession({ id: 'session-1' });
+      const session2 = buildPersistedWorktreeSession({ id: 'session-2' });
 
       await repository.save(session1);
       await repository.save(session2);
@@ -160,7 +92,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should correctly hydrate worktree sessions', async () => {
-      const worktreeSession = createWorktreeSession({
+      const worktreeSession = buildPersistedWorktreeSession({
         id: 'worktree-session',
         repositoryId: 'repo-123',
         worktreeId: 'feature-branch',
@@ -188,7 +120,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should correctly hydrate quick sessions', async () => {
-      const quickSession = createQuickSession({
+      const quickSession = buildPersistedQuickSession({
         id: 'quick-session',
         locationPath: '/home/user/project',
         title: 'Quick Task',
@@ -209,11 +141,11 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should return sessions with their workers', async () => {
-      const sessionWithWorkers = createQuickSession({
+      const sessionWithWorkers = buildPersistedQuickSession({
         id: 'session-with-workers',
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
 
@@ -229,7 +161,7 @@ describe('SqliteSessionRepository', () => {
 
   describe('findById', () => {
     it('should return session if exists', async () => {
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'find-me',
         repositoryId: 'repo-1',
         title: 'Find Me',
@@ -248,7 +180,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should return null if session not found', async () => {
-      const session = createQuickSession({ id: 'existing-session' });
+      const session = buildPersistedQuickSession({ id: 'existing-session' });
       await repository.save(session);
 
       const found = await repository.findById('non-existent');
@@ -262,11 +194,11 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should include workers in returned session', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'session-with-workers',
         workers: [
-          createAgentWorker({ id: 'agent-1', name: 'Claude' }),
-          createTerminalWorker({ id: 'terminal-1', name: 'Shell' }),
+          buildPersistedAgentWorker({ id: 'agent-1', name: 'Claude' }),
+          buildPersistedTerminalWorker({ id: 'terminal-1', name: 'Shell' }),
         ],
       });
 
@@ -284,10 +216,10 @@ describe('SqliteSessionRepository', () => {
   describe('findByServerPid', () => {
     it('should return sessions matching the given PID', async () => {
       const sessions = [
-        createQuickSession({ id: 'session-1', serverPid: 1000 }),
-        createQuickSession({ id: 'session-2', serverPid: 2000 }),
-        createQuickSession({ id: 'session-3', serverPid: 1000 }),
-        createWorktreeSession({ id: 'session-4', serverPid: 3000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-3', serverPid: 1000 }),
+        buildPersistedWorktreeSession({ id: 'session-4', serverPid: 3000 }),
       ];
 
       for (const session of sessions) {
@@ -302,8 +234,8 @@ describe('SqliteSessionRepository', () => {
 
     it('should return empty array if no sessions match', async () => {
       const sessions = [
-        createQuickSession({ id: 'session-1', serverPid: 1000 }),
-        createQuickSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
       ];
 
       for (const session of sessions) {
@@ -321,10 +253,10 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should include workers for matched sessions', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'session-with-workers',
         serverPid: 5000,
-        workers: [createAgentWorker({ id: 'worker-1' })],
+        workers: [buildPersistedAgentWorker({ id: 'worker-1' })],
       });
 
       await repository.save(session);
@@ -340,10 +272,10 @@ describe('SqliteSessionRepository', () => {
   describe('findPaused', () => {
     it('should return sessions with null serverPid', async () => {
       const sessions = [
-        createQuickSession({ id: 'session-1', serverPid: 1000 }),
-        createQuickSession({ id: 'session-2', serverPid: undefined }),
-        createWorktreeSession({ id: 'session-3', serverPid: undefined }),
-        createQuickSession({ id: 'session-4', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: undefined }),
+        buildPersistedWorktreeSession({ id: 'session-3', serverPid: undefined }),
+        buildPersistedQuickSession({ id: 'session-4', serverPid: 2000 }),
       ];
 
       for (const session of sessions) {
@@ -358,8 +290,8 @@ describe('SqliteSessionRepository', () => {
 
     it('should return empty array if no paused sessions', async () => {
       const sessions = [
-        createQuickSession({ id: 'session-1', serverPid: 1000 }),
-        createQuickSession({ id: 'session-2', serverPid: 2000 }),
+        buildPersistedQuickSession({ id: 'session-1', serverPid: 1000 }),
+        buildPersistedQuickSession({ id: 'session-2', serverPid: 2000 }),
       ];
 
       for (const session of sessions) {
@@ -377,12 +309,12 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should include workers for paused sessions', async () => {
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'paused-session',
         serverPid: undefined,
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
 
@@ -396,7 +328,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should correctly hydrate worktree session metadata', async () => {
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'paused-worktree',
         serverPid: undefined,
         repositoryId: 'repo-123',
@@ -422,7 +354,7 @@ describe('SqliteSessionRepository', () => {
 
   describe('save', () => {
     it('should insert new session', async () => {
-      const session = createQuickSession({ id: 'new-session', title: 'New Session' });
+      const session = buildPersistedQuickSession({ id: 'new-session', title: 'New Session' });
 
       await repository.save(session);
 
@@ -432,10 +364,10 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should update existing session', async () => {
-      const session = createQuickSession({ id: 'update-session', title: 'Original' });
+      const session = buildPersistedQuickSession({ id: 'update-session', title: 'Original' });
       await repository.save(session);
 
-      const updated = createQuickSession({ id: 'update-session', title: 'Updated' });
+      const updated = buildPersistedQuickSession({ id: 'update-session', title: 'Updated' });
       await repository.save(updated);
 
       const found = await repository.findById('update-session');
@@ -448,7 +380,7 @@ describe('SqliteSessionRepository', () => {
 
     it('should preserve created_at and update updated_at on update', async () => {
       const originalCreatedAt = '2024-01-01T00:00:00.000Z';
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'timestamp-test',
         title: 'Original',
         createdAt: originalCreatedAt,
@@ -470,7 +402,7 @@ describe('SqliteSessionRepository', () => {
 
       // Update with a different createdAt (simulating real-world scenario where
       // the domain object might have different timestamp)
-      const updated = createQuickSession({
+      const updated = buildPersistedQuickSession({
         id: 'timestamp-test',
         title: 'Updated',
         createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt
@@ -493,10 +425,10 @@ describe('SqliteSessionRepository', () => {
 
     it('should preserve worker created_at and update updated_at on session update', async () => {
       const originalWorkerCreatedAt = '2024-01-01T00:00:00.000Z';
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'worker-timestamp-test',
         workers: [
-          createAgentWorker({
+          buildPersistedAgentWorker({
             id: 'worker-1',
             name: 'Original Worker',
             createdAt: originalWorkerCreatedAt,
@@ -520,10 +452,10 @@ describe('SqliteSessionRepository', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Update session with modified worker (same ID, different data)
-      const updated = createQuickSession({
+      const updated = buildPersistedQuickSession({
         id: 'worker-timestamp-test',
         workers: [
-          createAgentWorker({
+          buildPersistedAgentWorker({
             id: 'worker-1', // Same ID
             name: 'Updated Worker',
             createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt (simulates domain object)
@@ -553,10 +485,10 @@ describe('SqliteSessionRepository', () => {
       // This test verifies the upsert strategy by checking that created_at is preserved
       // even when the worker is "updated" through a session save
       const originalCreatedAt = '2024-01-01T00:00:00.000Z';
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'upsert-test',
         workers: [
-          createAgentWorker({
+          buildPersistedAgentWorker({
             id: 'worker-1',
             name: 'Original',
             pid: 1111,
@@ -575,10 +507,10 @@ describe('SqliteSessionRepository', () => {
       expect(originalRow?.created_at).toBe(originalCreatedAt);
 
       // Update session with same worker ID but different data
-      const updated = createQuickSession({
+      const updated = buildPersistedQuickSession({
         id: 'upsert-test',
         workers: [
-          createAgentWorker({
+          buildPersistedAgentWorker({
             id: 'worker-1', // Same ID
             name: 'Updated',
             pid: 9999, // Different PID
@@ -603,11 +535,11 @@ describe('SqliteSessionRepository', () => {
 
     it('should delete all workers when session is updated to have no workers', async () => {
       // Create session with workers
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'delete-all-workers-test',
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
       await repository.save(session);
@@ -621,7 +553,7 @@ describe('SqliteSessionRepository', () => {
       expect(beforeWorkers.length).toBe(2);
 
       // Update to have no workers
-      const updated = createQuickSession({
+      const updated = buildPersistedQuickSession({
         id: 'delete-all-workers-test',
         workers: [], // Empty
       });
@@ -637,12 +569,12 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should save session with workers', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'session-with-workers',
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
-          createGitDiffWorker({ id: 'worker-3' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
+          buildPersistedGitDiffWorker({ id: 'worker-3' }),
         ],
       });
 
@@ -654,19 +586,19 @@ describe('SqliteSessionRepository', () => {
 
     it('should replace workers on update (not append)', async () => {
       // Initial save with 2 workers
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'worker-replace-test',
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
       await repository.save(session);
 
       // Update with different workers
-      const updated = createQuickSession({
+      const updated = buildPersistedQuickSession({
         id: 'worker-replace-test',
-        workers: [createGitDiffWorker({ id: 'worker-3' })],
+        workers: [buildPersistedGitDiffWorker({ id: 'worker-3' })],
       });
       await repository.save(updated);
 
@@ -680,9 +612,9 @@ describe('SqliteSessionRepository', () => {
 
     it('should handle transaction atomically', async () => {
       // Save a valid session first
-      const validSession = createQuickSession({
+      const validSession = buildPersistedQuickSession({
         id: 'valid-session',
-        workers: [createAgentWorker({ id: 'valid-worker' })],
+        workers: [buildPersistedAgentWorker({ id: 'valid-worker' })],
       });
       await repository.save(validSession);
 
@@ -692,11 +624,11 @@ describe('SqliteSessionRepository', () => {
       expect(before?.workers[0].id).toBe('valid-worker');
 
       // Now try to update with new workers - should succeed atomically
-      const updateSession = createQuickSession({
+      const updateSession = buildPersistedQuickSession({
         id: 'valid-session',
         workers: [
-          createTerminalWorker({ id: 'terminal-1' }),
-          createGitDiffWorker({ id: 'git-diff-1' }),
+          buildPersistedTerminalWorker({ id: 'terminal-1' }),
+          buildPersistedGitDiffWorker({ id: 'git-diff-1' }),
         ],
       });
       await repository.save(updateSession);
@@ -708,7 +640,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should preserve optional fields as undefined when null in database', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'minimal-session',
         title: undefined,
         initialPrompt: undefined,
@@ -725,14 +657,14 @@ describe('SqliteSessionRepository', () => {
   describe('saveAll', () => {
     it('should replace all sessions', async () => {
       // Save initial sessions
-      await repository.save(createQuickSession({ id: 'old-1' }));
-      await repository.save(createQuickSession({ id: 'old-2' }));
+      await repository.save(buildPersistedQuickSession({ id: 'old-1' }));
+      await repository.save(buildPersistedQuickSession({ id: 'old-2' }));
 
       // Replace with new sessions
       const newSessions = [
-        createQuickSession({ id: 'new-1' }),
-        createWorktreeSession({ id: 'new-2' }),
-        createQuickSession({ id: 'new-3' }),
+        buildPersistedQuickSession({ id: 'new-1' }),
+        buildPersistedWorktreeSession({ id: 'new-2' }),
+        buildPersistedQuickSession({ id: 'new-3' }),
       ];
 
       await repository.saveAll(newSessions);
@@ -750,8 +682,8 @@ describe('SqliteSessionRepository', () => {
 
     it('should handle empty array', async () => {
       // Save initial sessions
-      await repository.save(createQuickSession({ id: 'session-1' }));
-      await repository.save(createQuickSession({ id: 'session-2' }));
+      await repository.save(buildPersistedQuickSession({ id: 'session-1' }));
+      await repository.save(buildPersistedQuickSession({ id: 'session-2' }));
 
       // Replace with empty array
       await repository.saveAll([]);
@@ -762,10 +694,10 @@ describe('SqliteSessionRepository', () => {
 
     it('should preserve all session types', async () => {
       const sessions = [
-        createQuickSession({ id: 'quick-1' }),
-        createWorktreeSession({ id: 'worktree-1', repositoryId: 'repo-a' }),
-        createQuickSession({ id: 'quick-2' }),
-        createWorktreeSession({ id: 'worktree-2', repositoryId: 'repo-b' }),
+        buildPersistedQuickSession({ id: 'quick-1' }),
+        buildPersistedWorktreeSession({ id: 'worktree-1', repositoryId: 'repo-a' }),
+        buildPersistedQuickSession({ id: 'quick-2' }),
+        buildPersistedWorktreeSession({ id: 'worktree-2', repositoryId: 'repo-b' }),
       ];
 
       await repository.saveAll(sessions);
@@ -782,15 +714,15 @@ describe('SqliteSessionRepository', () => {
 
     it('should save sessions with workers', async () => {
       const sessions = [
-        createQuickSession({
+        buildPersistedQuickSession({
           id: 'session-1',
-          workers: [createAgentWorker({ id: 'worker-1' })],
+          workers: [buildPersistedAgentWorker({ id: 'worker-1' })],
         }),
-        createQuickSession({
+        buildPersistedQuickSession({
           id: 'session-2',
           workers: [
-            createTerminalWorker({ id: 'worker-2' }),
-            createGitDiffWorker({ id: 'worker-3' }),
+            buildPersistedTerminalWorker({ id: 'worker-2' }),
+            buildPersistedGitDiffWorker({ id: 'worker-3' }),
           ],
         }),
       ];
@@ -808,9 +740,9 @@ describe('SqliteSessionRepository', () => {
   describe('delete', () => {
     it('should remove session by id', async () => {
       const sessions = [
-        createQuickSession({ id: 'session-1' }),
-        createQuickSession({ id: 'session-2' }),
-        createQuickSession({ id: 'session-3' }),
+        buildPersistedQuickSession({ id: 'session-1' }),
+        buildPersistedQuickSession({ id: 'session-2' }),
+        buildPersistedQuickSession({ id: 'session-3' }),
       ];
 
       for (const session of sessions) {
@@ -825,11 +757,11 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should cascade delete workers', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'session-to-delete',
         workers: [
-          createAgentWorker({ id: 'worker-1' }),
-          createTerminalWorker({ id: 'worker-2' }),
+          buildPersistedAgentWorker({ id: 'worker-1' }),
+          buildPersistedTerminalWorker({ id: 'worker-2' }),
         ],
       });
 
@@ -852,7 +784,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should not fail if session does not exist', async () => {
-      await repository.save(createQuickSession({ id: 'existing' }));
+      await repository.save(buildPersistedQuickSession({ id: 'existing' }));
 
       // Should not throw
       await expect(repository.delete('non-existent')).resolves.toBeUndefined();
@@ -863,15 +795,15 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should not affect other sessions', async () => {
-      const session1 = createQuickSession({
+      const session1 = buildPersistedQuickSession({
         id: 'session-1',
         title: 'Session One',
-        workers: [createAgentWorker({ id: 'worker-1' })],
+        workers: [buildPersistedAgentWorker({ id: 'worker-1' })],
       });
-      const session2 = createWorktreeSession({
+      const session2 = buildPersistedWorktreeSession({
         id: 'session-2',
         repositoryId: 'repo-1',
-        workers: [createTerminalWorker({ id: 'worker-2' })],
+        workers: [buildPersistedTerminalWorker({ id: 'worker-2' })],
       });
 
       await repository.save(session1);
@@ -892,14 +824,14 @@ describe('SqliteSessionRepository', () => {
 
   describe('worker types', () => {
     it('should correctly save and retrieve agent workers', async () => {
-      const agentWorker = createAgentWorker({
+      const agentWorker = buildPersistedAgentWorker({
         id: 'agent-worker-test',
         name: 'Claude Agent',
         agentId: 'custom-agent-id',
         pid: 99999,
       });
 
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'agent-worker-session',
         workers: [agentWorker],
       });
@@ -921,13 +853,13 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should correctly save and retrieve terminal workers', async () => {
-      const terminalWorker = createTerminalWorker({
+      const terminalWorker = buildPersistedTerminalWorker({
         id: 'terminal-worker-test',
         name: 'Bash Terminal',
         pid: 88888,
       });
 
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'terminal-worker-session',
         workers: [terminalWorker],
       });
@@ -948,13 +880,13 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should correctly save and retrieve git-diff workers', async () => {
-      const gitDiffWorker = createGitDiffWorker({
+      const gitDiffWorker = buildPersistedGitDiffWorker({
         id: 'git-diff-worker-test',
         name: 'Diff Viewer',
         baseCommit: 'abcdef123456789',
       });
 
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'git-diff-worker-session',
         workers: [gitDiffWorker],
       });
@@ -975,17 +907,17 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should handle workers with null pid', async () => {
-      const agentWithNullPid = createAgentWorker({
+      const agentWithNullPid = buildPersistedAgentWorker({
         id: 'null-pid-agent',
         pid: null,
       });
 
-      const terminalWithNullPid = createTerminalWorker({
+      const terminalWithNullPid = buildPersistedTerminalWorker({
         id: 'null-pid-terminal',
         pid: null,
       });
 
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'null-pid-session',
         workers: [agentWithNullPid, terminalWithNullPid],
       });
@@ -1007,12 +939,12 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should handle mixed worker types in same session', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'mixed-workers-session',
         workers: [
-          createAgentWorker({ id: 'agent-1', name: 'Agent' }),
-          createTerminalWorker({ id: 'terminal-1', name: 'Terminal' }),
-          createGitDiffWorker({ id: 'git-diff-1', name: 'Git Diff' }),
+          buildPersistedAgentWorker({ id: 'agent-1', name: 'Agent' }),
+          buildPersistedTerminalWorker({ id: 'terminal-1', name: 'Terminal' }),
+          buildPersistedGitDiffWorker({ id: 'git-diff-1', name: 'Git Diff' }),
         ],
       });
 
@@ -1125,7 +1057,7 @@ describe('SqliteSessionRepository', () => {
 
   describe('update', () => {
     it('should update pausedAt field', async () => {
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'update-paused-test',
         serverPid: process.pid,
       });
@@ -1148,7 +1080,7 @@ describe('SqliteSessionRepository', () => {
 
     it('should clear pausedAt when set to null', async () => {
       // Save session with pausedAt set
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'clear-paused-test',
         serverPid: undefined,
         pausedAt: '2025-06-15T12:00:00.000Z',
@@ -1185,7 +1117,7 @@ describe('SqliteSessionRepository', () => {
 
   describe('edge cases', () => {
     it('should handle session with empty workers array', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'no-workers',
         workers: [],
       });
@@ -1197,7 +1129,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should handle sessions with special characters in paths', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'special-path-session',
         locationPath: '/path/with spaces/and-dashes/and_underscores',
       });
@@ -1209,7 +1141,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should handle sessions with unicode in title', async () => {
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'unicode-session',
         title: 'Session with unicode: Hello World',
       });
@@ -1222,7 +1154,7 @@ describe('SqliteSessionRepository', () => {
 
     it('should handle long initial prompts', async () => {
       const longPrompt = 'A'.repeat(10000);
-      const session = createQuickSession({
+      const session = buildPersistedQuickSession({
         id: 'long-prompt-session',
         initialPrompt: longPrompt,
       });
@@ -1234,7 +1166,7 @@ describe('SqliteSessionRepository', () => {
     });
 
     it('should handle worktree session without optional fields', async () => {
-      const session = createWorktreeSession({
+      const session = buildPersistedWorktreeSession({
         id: 'minimal-worktree',
         title: undefined,
         initialPrompt: undefined,

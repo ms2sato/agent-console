@@ -1,55 +1,16 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionDeletionService, type SessionDeletionDeps } from '../session-deletion-service.js';
-import type { InternalSession, InternalWorktreeSession } from '../internal-types.js';
-import type { InternalWorker } from '../worker-types.js';
-import type { PersistedSession } from '../persistence-service.js';
+import type { InternalSession } from '../internal-types.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import {
+  buildInternalAgentWorker,
+  buildInternalTerminalWorker,
+  buildInternalGitDiffWorker,
+  buildInternalWorktreeSession,
+  buildPersistedWorktreeSession,
+} from '../../__tests__/utils/build-test-data.js';
 
 const mockStopWatching = mock(() => {});
-
-function createMockWorker(overrides: Partial<InternalWorker> & { id: string; type: InternalWorker['type'] }): InternalWorker {
-  const base = {
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  };
-  if (base.type === 'git-diff') {
-    return base as InternalWorker;
-  }
-  return {
-    ...base,
-    pty: null,
-    callbacks: null,
-    exitReason: null,
-  } as unknown as InternalWorker;
-}
-
-function createMockSession(overrides?: Partial<InternalWorktreeSession>): InternalWorktreeSession {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    locationPath: '/test/worktree',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    workers: new Map(),
-    repositoryId: 'repo-1',
-    worktreeId: 'wt-1',
-    ...overrides,
-  };
-}
-
-function createMockPersistedSession(overrides?: Partial<PersistedSession>): PersistedSession {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    locationPath: '/test/worktree',
-    createdAt: new Date().toISOString(),
-    workers: [],
-    repositoryId: 'repo-1',
-    worktreeId: 'wt-1',
-    serverPid: 12345,
-    ...overrides,
-  } as PersistedSession;
-}
 
 function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeletionDeps {
   const sessions = new Map<string, InternalSession>();
@@ -112,17 +73,13 @@ describe('SessionDeletionService', () => {
     });
 
     it('should kill PTY workers but not git-diff workers', async () => {
-      const agentWorker = createMockWorker({ id: 'w1', type: 'agent' });
-      const terminalWorker = createMockWorker({ id: 'w2', type: 'terminal' });
-      const gitDiffWorker = createMockWorker({ id: 'w3', type: 'git-diff' });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+      const gitDiffWorker = buildInternalGitDiffWorker({ id: 'w3' });
 
-      const session = createMockSession({
-        workers: new Map([
-          ['w1', agentWorker],
-          ['w2', terminalWorker],
-          ['w3', gitDiffWorker],
-        ]),
-      });
+      const session = buildInternalWorktreeSession(
+        [agentWorker, terminalWorker, gitDiffWorker],
+      );
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -147,11 +104,9 @@ describe('SessionDeletionService', () => {
     });
 
     it('should delete session and clean up all resources', async () => {
-      const session = createMockSession({
-        workers: new Map([
-          ['w1', createMockWorker({ id: 'w1', type: 'agent' })],
-        ]),
-      });
+      const session = buildInternalWorktreeSession(
+        [buildInternalAgentWorker({ id: 'w1' })],
+      );
 
       const onSessionDeleted = mock(() => {});
       const notifySessionDeleted = mock(() => {});
@@ -187,7 +142,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should throw if jobQueue is not available', async () => {
-      const session = createMockSession();
+      const session = buildInternalWorktreeSession();
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -201,11 +156,9 @@ describe('SessionDeletionService', () => {
     });
 
     it('should restore in-memory session if persistence delete fails', async () => {
-      const session = createMockSession({
-        workers: new Map([
-          ['w1', createMockWorker({ id: 'w1', type: 'agent' })],
-        ]),
-      });
+      const session = buildInternalWorktreeSession(
+        [buildInternalAgentWorker({ id: 'w1' })],
+      );
 
       const setSession = mock(() => {});
 
@@ -230,7 +183,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should call timer cleanup callback if set', async () => {
-      const session = createMockSession();
+      const session = buildInternalWorktreeSession();
       const timerCleanup = mock(() => {});
 
       const deps = createMockDeps({
@@ -245,10 +198,9 @@ describe('SessionDeletionService', () => {
     });
 
     it('should stop watching git-diff workers during deletion', async () => {
-      const gitDiffWorker = createMockWorker({ id: 'w1', type: 'git-diff' });
-      const session = createMockSession({
-        workers: new Map([['w1', gitDiffWorker]]),
-      });
+      const session = buildInternalWorktreeSession(
+        [buildInternalGitDiffWorker({ id: 'w1' })],
+      );
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -262,7 +214,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should not fail if inter-session message cleanup throws', async () => {
-      const session = createMockSession();
+      const session = buildInternalWorktreeSession();
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -277,7 +229,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should not fail if memo cleanup throws', async () => {
-      const session = createMockSession();
+      const session = buildInternalWorktreeSession();
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -294,7 +246,7 @@ describe('SessionDeletionService', () => {
 
   describe('forceDeleteSession', () => {
     it('should delegate to deleteSession for in-memory sessions', async () => {
-      const session = createMockSession();
+      const session = buildInternalWorktreeSession();
 
       const deps = createMockDeps({
         getSession: (id) => id === 'session-1' ? session : undefined,
@@ -308,7 +260,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should delete from persistence for orphaned sessions', async () => {
-      const persisted = createMockPersistedSession({ id: 'orphan-1' });
+      const persisted = buildPersistedWorktreeSession({ id: 'orphan-1' });
       const onSessionDeleted = mock(() => {});
 
       const deps = createMockDeps({
@@ -345,7 +297,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should handle orphaned session without jobQueue', async () => {
-      const persisted = createMockPersistedSession({ id: 'orphan-1' });
+      const persisted = buildPersistedWorktreeSession({ id: 'orphan-1' });
 
       const deps = createMockDeps({
         jobQueue: null,
@@ -369,7 +321,7 @@ describe('SessionDeletionService', () => {
     });
 
     it('should not fail if memo cleanup throws for orphaned session', async () => {
-      const persisted = createMockPersistedSession({ id: 'orphan-1' });
+      const persisted = buildPersistedWorktreeSession({ id: 'orphan-1' });
 
       const deps = createMockDeps({
         sessionRepository: {

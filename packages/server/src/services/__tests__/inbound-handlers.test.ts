@@ -1,7 +1,8 @@
 import { describe, expect, it, mock, jest } from 'bun:test';
-import type { InboundSystemEvent, Session, InboundEventSummary } from '@agent-console/shared';
+import type { InboundSystemEvent, InboundEventSummary } from '@agent-console/shared';
 import { createInboundHandlers } from '../inbound/handlers.js';
 import type { InboundHandlerDependencies } from '../inbound/handlers.js';
+import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 
 function createReviewCommentEvent(): InboundSystemEvent {
   return {
@@ -47,23 +48,15 @@ function createPrCommentEvent(): InboundSystemEvent {
   };
 }
 
-function createMockSession(): Session {
-  return {
-    id: 'session-1',
-    type: 'worktree',
-    repositoryId: 'repo-1',
-    repositoryName: 'repo',
-    worktreeId: 'feature-branch',
-    isMainWorktree: false,
-    locationPath: '/worktrees/repo',
-    status: 'active',
-    activationState: 'running',
-    createdAt: '2024-01-01T00:00:00Z',
-    workers: [
-      { id: 'worker-1', type: 'agent', name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' },
-    ],
-  };
-}
+const mockSessionOverrides = {
+  repositoryName: 'repo',
+  worktreeId: 'feature-branch',
+  locationPath: '/worktrees/repo',
+  createdAt: '2024-01-01T00:00:00Z',
+  workers: [
+    { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' },
+  ],
+};
 
 function createAgentHandlerWithCapture(): {
   agentHandler: ReturnType<typeof createInboundHandlers>[number];
@@ -71,7 +64,7 @@ function createAgentHandlerWithCapture(): {
 } {
   let capturedMessage = '';
   const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
-    getSession: mock(() => createMockSession()),
+    getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
     writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
       capturedMessage = data;
       return true;
@@ -126,7 +119,7 @@ describe('AgentWorkerHandler', () => {
 
   it('returns false for unrecognized event type', async () => {
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
-      getSession: mock(() => createMockSession()),
+      getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
       writeWorkerInput: mock(),
     };
 
@@ -157,7 +150,7 @@ describe('AgentWorkerHandler', () => {
     try {
       const writtenData: string[] = [];
       const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
-        getSession: mock(() => createMockSession()),
+        getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
         writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
           writtenData.push(data);
           return true;

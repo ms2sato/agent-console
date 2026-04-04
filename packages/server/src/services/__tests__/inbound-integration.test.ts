@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import type { Repository, Session, InboundSystemEvent } from '@agent-console/shared';
 import { GitHubServiceParser } from '../inbound/github-service-parser.js';
 import { resolveTargets } from '../inbound/resolve-targets.js';
+import { buildWorktreeSession, buildPersistedRepository } from '../../__tests__/utils/build-test-data.js';
 
 describe('GitHubServiceParser', () => {
   const parser = new GitHubServiceParser('secret-token');
@@ -515,24 +516,14 @@ describe('GitHubServiceParser', () => {
 describe('resolveTargets', () => {
   it('matches worktree sessions by repository and branch', async () => {
     const sessions: Session[] = [
-      {
-        id: 'session-1',
-        type: 'worktree',
-        repositoryId: 'repo-1',
+      buildWorktreeSession({
         repositoryName: 'repo',
-        worktreeId: 'main',
-        isMainWorktree: false,
         locationPath: '/worktrees/repo',
-        status: 'active',
-        activationState: 'running',
-        createdAt: '2024-01-01T00:00:00Z',
-        workers: [],
-      },
+      }),
     ];
 
-    const repositories = new Map<string, Repository>([
-      ['repo-1', { id: 'repo-1', name: 'repo', path: '/worktrees/repo', createdAt: '2024-01-01T00:00:00Z' }],
-    ]);
+    const repo = buildPersistedRepository({ id: 'repo-1', name: 'repo', path: '/worktrees/repo' });
+    const repositories = new Map<string, Repository>([[repo.id, repo]]);
 
     const event: InboundSystemEvent = {
       type: 'ci:completed',
@@ -557,24 +548,15 @@ describe('resolveTargets', () => {
 
   it('returns no targets for branch mismatch', async () => {
     const sessions: Session[] = [
-      {
-        id: 'session-1',
-        type: 'worktree',
-        repositoryId: 'repo-1',
+      buildWorktreeSession({
         repositoryName: 'repo',
         worktreeId: 'develop',
-        isMainWorktree: false,
         locationPath: '/worktrees/repo',
-        status: 'active',
-        activationState: 'running',
-        createdAt: '2024-01-01T00:00:00Z',
-        workers: [],
-      },
+      }),
     ];
 
-    const repositories = new Map<string, Repository>([
-      ['repo-1', { id: 'repo-1', name: 'repo', path: '/worktrees/repo', createdAt: '2024-01-01T00:00:00Z' }],
-    ]);
+    const repo = buildPersistedRepository({ id: 'repo-1', name: 'repo', path: '/worktrees/repo' });
+    const repositories = new Map<string, Repository>([[repo.id, repo]]);
 
     const event: InboundSystemEvent = {
       type: 'ci:completed',

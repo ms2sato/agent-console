@@ -4,7 +4,8 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteAgentRepository } from '../sqlite-agent-repository.js';
 import type { Database } from '../../database/schema.js';
-import type { AgentDefinition, AgentActivityPatterns } from '@agent-console/shared';
+import type { AgentActivityPatterns } from '@agent-console/shared';
+import { buildAgentDefinition } from '../../__tests__/utils/build-test-data.js';
 
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
@@ -46,28 +47,6 @@ describe('SqliteAgentRepository', () => {
     bunDb.close();
   });
 
-  // ========== Helper Functions ==========
-
-  function createAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
-    return {
-      id: overrides.id ?? 'test-agent-id',
-      name: overrides.name ?? 'Test Agent',
-      commandTemplate: overrides.commandTemplate ?? 'agent start --prompt={{prompt}}',
-      continueTemplate: overrides.continueTemplate,
-      headlessTemplate: overrides.headlessTemplate,
-      description: overrides.description,
-      isBuiltIn: overrides.isBuiltIn ?? false,
-      createdAt: overrides.createdAt ?? new Date().toISOString(),
-      activityPatterns: overrides.activityPatterns,
-      baseAgentId: overrides.baseAgentId,
-      capabilities: overrides.capabilities ?? {
-        supportsContinue: false,
-        supportsHeadlessMode: false,
-        supportsActivityDetection: false,
-      },
-    };
-  }
-
   // ========== Test Suites ==========
 
   describe('findAll', () => {
@@ -77,8 +56,8 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should return all agents', async () => {
-      const agent1 = createAgent({ id: 'agent-1' });
-      const agent2 = createAgent({ id: 'agent-2' });
+      const agent1 = buildAgentDefinition({ id: 'agent-1' });
+      const agent2 = buildAgentDefinition({ id: 'agent-2' });
 
       await repository.save(agent1);
       await repository.save(agent2);
@@ -90,7 +69,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should correctly restore capabilities from templates', async () => {
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'capable-agent',
         commandTemplate: 'agent --prompt={{prompt}}',
         continueTemplate: 'agent --continue',
@@ -110,7 +89,7 @@ describe('SqliteAgentRepository', () => {
 
   describe('findById', () => {
     it('should return agent if exists', async () => {
-      const agent = createAgent({ id: 'find-me', name: 'Find Me Agent' });
+      const agent = buildAgentDefinition({ id: 'find-me', name: 'Find Me Agent' });
       await repository.save(agent);
 
       const found = await repository.findById('find-me');
@@ -121,7 +100,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should return null if agent not found', async () => {
-      const agent = createAgent({ id: 'existing' });
+      const agent = buildAgentDefinition({ id: 'existing' });
       await repository.save(agent);
 
       const found = await repository.findById('non-existent');
@@ -137,7 +116,7 @@ describe('SqliteAgentRepository', () => {
 
   describe('save', () => {
     it('should insert new agent', async () => {
-      const agent = createAgent({ id: 'new-agent', name: 'New Agent' });
+      const agent = buildAgentDefinition({ id: 'new-agent', name: 'New Agent' });
 
       await repository.save(agent);
 
@@ -147,10 +126,10 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should update existing agent', async () => {
-      const agent = createAgent({ id: 'update-agent', name: 'Original' });
+      const agent = buildAgentDefinition({ id: 'update-agent', name: 'Original' });
       await repository.save(agent);
 
-      const updated = createAgent({ id: 'update-agent', name: 'Updated' });
+      const updated = buildAgentDefinition({ id: 'update-agent', name: 'Updated' });
       await repository.save(updated);
 
       const found = await repository.findById('update-agent');
@@ -163,7 +142,7 @@ describe('SqliteAgentRepository', () => {
 
     it('should preserve created_at and update updated_at on update', async () => {
       const originalCreatedAt = '2024-01-01T00:00:00.000Z';
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'timestamp-test',
         name: 'Original',
         createdAt: originalCreatedAt,
@@ -184,7 +163,7 @@ describe('SqliteAgentRepository', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Update with a different createdAt (simulating real-world scenario)
-      const updated = createAgent({
+      const updated = buildAgentDefinition({
         id: 'timestamp-test',
         name: 'Updated',
         createdAt: '2024-06-01T00:00:00.000Z', // Different createdAt
@@ -206,7 +185,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should save built-in agents', async () => {
-      const builtInAgent = createAgent({ id: 'built-in', isBuiltIn: true });
+      const builtInAgent = buildAgentDefinition({ id: 'built-in', isBuiltIn: true });
 
       await repository.save(builtInAgent);
 
@@ -221,7 +200,7 @@ describe('SqliteAgentRepository', () => {
 
     it('should preserve all optional fields', async () => {
       const createdAt = '2024-01-15T10:30:00.000Z';
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'full-agent',
         name: 'Full Agent',
         commandTemplate: 'agent start --prompt={{prompt}}',
@@ -248,7 +227,7 @@ describe('SqliteAgentRepository', () => {
         askingPatterns: ['do you want to proceed\\?', 'confirm\\?'],
       };
 
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'patterns-agent',
         activityPatterns,
       });
@@ -260,7 +239,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should handle undefined optional fields', async () => {
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'minimal-agent',
         continueTemplate: undefined,
         headlessTemplate: undefined,
@@ -281,9 +260,9 @@ describe('SqliteAgentRepository', () => {
   describe('delete', () => {
     it('should remove agent by id', async () => {
       const agents = [
-        createAgent({ id: 'agent-1' }),
-        createAgent({ id: 'agent-2' }),
-        createAgent({ id: 'agent-3' }),
+        buildAgentDefinition({ id: 'agent-1' }),
+        buildAgentDefinition({ id: 'agent-2' }),
+        buildAgentDefinition({ id: 'agent-3' }),
       ];
 
       for (const agent of agents) {
@@ -298,7 +277,7 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should be idempotent for non-existent agent', async () => {
-      await repository.save(createAgent({ id: 'existing' }));
+      await repository.save(buildAgentDefinition({ id: 'existing' }));
 
       // Should not throw for non-existent agent
       await repository.delete('non-existent');
@@ -310,7 +289,7 @@ describe('SqliteAgentRepository', () => {
 
     it('should throw error for built-in agents', async () => {
       // First save a non-built-in agent
-      const customAgent = createAgent({ id: 'custom', isBuiltIn: false });
+      const customAgent = buildAgentDefinition({ id: 'custom', isBuiltIn: false });
       await repository.save(customAgent);
 
       // Then manually insert a built-in agent for testing the delete logic
@@ -344,8 +323,8 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should not affect other agents', async () => {
-      const agent1 = createAgent({ id: 'agent-1', name: 'Agent One' });
-      const agent2 = createAgent({ id: 'agent-2', name: 'Agent Two' });
+      const agent1 = buildAgentDefinition({ id: 'agent-1', name: 'Agent One' });
+      const agent2 = buildAgentDefinition({ id: 'agent-2', name: 'Agent Two' });
 
       await repository.save(agent1);
       await repository.save(agent2);
@@ -360,7 +339,7 @@ describe('SqliteAgentRepository', () => {
 
   describe('baseAgentId', () => {
     it('should save and retrieve agent with baseAgentId', async () => {
-      const agent = createAgent({ id: 'preset-1', baseAgentId: 'base-agent-id' });
+      const agent = buildAgentDefinition({ id: 'preset-1', baseAgentId: 'base-agent-id' });
       await repository.save(agent);
 
       const found = await repository.findById('preset-1');
@@ -368,10 +347,10 @@ describe('SqliteAgentRepository', () => {
     });
 
     it('should update baseAgentId on save', async () => {
-      const agent = createAgent({ id: 'preset-1', baseAgentId: 'old-base' });
+      const agent = buildAgentDefinition({ id: 'preset-1', baseAgentId: 'old-base' });
       await repository.save(agent);
 
-      const updated = createAgent({ id: 'preset-1', baseAgentId: 'new-base' });
+      const updated = buildAgentDefinition({ id: 'preset-1', baseAgentId: 'new-base' });
       await repository.save(updated);
 
       const found = await repository.findById('preset-1');
@@ -381,7 +360,7 @@ describe('SqliteAgentRepository', () => {
 
   describe('edge cases', () => {
     it('should handle unicode in name and description', async () => {
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'unicode-agent',
         name: 'Agent with unicode: Hello World',
         description: 'Description with special chars: @#$%',
@@ -396,7 +375,7 @@ describe('SqliteAgentRepository', () => {
 
     it('should handle long command templates', async () => {
       const longTemplate = 'command '.repeat(1000) + '--prompt={{prompt}}';
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'long-template',
         commandTemplate: longTemplate,
       });
@@ -418,7 +397,7 @@ describe('SqliteAgentRepository', () => {
         ],
       };
 
-      const agent = createAgent({
+      const agent = buildAgentDefinition({
         id: 'complex-patterns',
         activityPatterns: complexPatterns,
       });
