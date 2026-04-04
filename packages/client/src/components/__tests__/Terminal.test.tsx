@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as workerWs from '../../lib/worker-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
-import { isScrolledToBottom, type TerminalScrollInfo } from '../../lib/terminal-utils';
+import { isScrolledToBottom, stripSystemMessages, stripScrollbackClear, type TerminalScrollInfo } from '../../lib/terminal-utils';
 import { restoreScrollPosition, type ScrollableTerminal } from '../Terminal';
 
 describe('Terminal history handling integration', () => {
@@ -1027,6 +1027,44 @@ describe('Lazy history loading optimization', () => {
  * distanceFromBottom is used instead of absolute viewportY because it's stable
  * across xterm.js buffer trimming.
  */
+describe('processOutput pipeline (stripSystemMessages + stripScrollbackClear)', () => {
+  // Terminal.tsx's processOutput callback applies stripSystemMessages first,
+  // then optionally stripScrollbackClear. These tests verify the combined pipeline
+  // produces correct results by calling the functions in the same order.
+
+  function processOutput(data: string, applyScrollbackFilter: boolean): string {
+    let result = stripSystemMessages(data);
+    if (applyScrollbackFilter) {
+      result = stripScrollbackClear(result);
+    }
+    return result;
+  }
+
+  it('should strip system messages without scrollback filter', () => {
+    const input = 'hello\n[internal:timer] tick\nworld';
+    expect(processOutput(input, false)).toBe('hello\nworld');
+  });
+
+  it('should strip system messages with scrollback filter enabled', () => {
+    const input = 'hello\n[internal:process] started\nworld\x1b[3J';
+    // stripSystemMessages removes the [internal:process] line, then stripScrollbackClear removes \x1b[3J
+    expect(processOutput(input, true)).toBe('hello\nworld');
+  });
+
+  it('should apply both filters in correct order (system messages first, then scrollback)', () => {
+    const input = 'start\n[internal:message] msg\n\x1b[2Jend';
+    const result = processOutput(input, true);
+    // stripSystemMessages removes the [internal:message] line
+    // stripScrollbackClear replaces \x1b[2J with \x1b[H\x1b[J
+    expect(result).toBe('start\n\x1b[H\x1b[Jend');
+  });
+
+  it('should pass through normal output unchanged', () => {
+    const input = 'normal terminal output\nwith multiple lines';
+    expect(processOutput(input, false)).toBe(input);
+  });
+});
+
 describe('restoreScrollPosition', () => {
   /** Create a mock terminal with the given buffer state.
    * scrollToBottom and scrollLines are mock functions so we can assert on calls. */
