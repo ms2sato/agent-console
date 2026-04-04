@@ -64,6 +64,7 @@
   - Are tests included per test-standards?
   - Does the implementation align with the original Issue intent?
 - If issues are found, send feedback to the agent via `send_session_message`
+- **When an agent reports test failures as "pre-existing":** Do NOT accept this at face value. Ask the agent for the specific test names that failed. Then verify on main (`bun run test:only -- --filter "TestName"`). If they fail on main too, add them to the flaky test list in memory for planned remediation. If they pass on main, instruct the agent to fix them.
 - If satisfactory, summarize the result for the owner
 
 ## 6. Acceptance Check
@@ -113,7 +114,9 @@
   5. When the timer fires, post `@coderabbitai review` as a PR comment
   6. Delete the timer after the review is requested
   - **Never request re-review immediately** — always check rate limit first.
+  - **Parallel push strategy**: When 3+ PRs are pushed simultaneously, CodeRabbit often rate-limits. Set a 10-minute timer (`create_timer` with 600s) and request `@coderabbitai review` on each PR when the timer fires. Do not try to review-request immediately after push.
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
+- **MANDATORY: Every PR must go through acceptance-check.** At minimum, run `node .claude/skills/orchestrator/acceptance-check.js <PR> --check-only` for coverage check. For production code changes, run the full Interactive Process Q1-Q7. Never skip this — even when the diff looks trivial.
 
 ## 7. Post-Merge Flow
 
@@ -149,7 +152,14 @@ git rebase origin/main
 
 **Why:** The Orchestrator reads local files (skills, design docs) to make decisions. If its branch is stale, it may reference outdated procedures or miss recent changes — as happened when the acceptance check procedure was updated but the Orchestrator still saw the old version.
 
-### 7d. Worktree Cleanup
+### 7d. Rebase Remaining Agents
+After merging a PR that changes shared infrastructure (test utilities, shared types, build config), instruct all remaining active agents to rebase onto latest main and adopt the new patterns. Examples:
+- Test data builder consolidation → agents should use shared builders instead of inline construction
+- Shared type changes → agents should update their imports
+
+Send rebase instructions via `send_session_message` with specific guidance on what changed and what to adopt.
+
+### 7e. Worktree Cleanup
 Clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
 
 Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.
