@@ -72,13 +72,14 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should run process in specified cwd when provided', async () => {
-      const tmpDir = await import('os').then((os) => os.tmpdir());
+      // Use the real current directory as cwd to avoid memfs/symlink issues in CI
+      const cwd = process.cwd();
 
       await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'pwd',
-        cwd: tmpDir,
+        cwd,
       });
 
       // Poll until output is received (CI can be slower than 500ms)
@@ -90,10 +91,7 @@ describe('InteractiveProcessManager', () => {
 
       expect(onOutput).toHaveBeenCalled();
       const [, output] = onOutput.mock.calls[0];
-      // macOS resolves /tmp to /private/tmp, so use realpath for comparison
-      const { realpathSync } = await import('fs');
-      const realTmpDir = realpathSync(tmpDir);
-      expect(output.trim()).toBe(realTmpDir);
+      expect(output.trim()).toBe(cwd);
     });
 
     it('should call onOutput when process writes to stdout', async () => {
