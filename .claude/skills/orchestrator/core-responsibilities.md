@@ -139,7 +139,17 @@ git -C "$MAIN_DIR" pull origin main
 
 **Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code.
 
-### 7c. Worktree Cleanup
+### 7c. Orchestrator Branch Sync
+Rebase the Orchestrator session's own branch onto the updated `origin/main`:
+
+```bash
+git fetch origin main
+git rebase origin/main
+```
+
+**Why:** The Orchestrator reads local files (skills, design docs) to make decisions. If its branch is stale, it may reference outdated procedures or miss recent changes — as happened when the acceptance check procedure was updated but the Orchestrator still saw the old version.
+
+### 7d. Worktree Cleanup
 Clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
 
 Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.
