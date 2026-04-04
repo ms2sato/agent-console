@@ -46,6 +46,7 @@
   - `test-runner` — for running tests and analyzing failures
   - `code-quality-reviewer` — for evaluating design and maintainability
 - **Follow-up timer**: After delegating, create a timer (15-20 min interval) via `create_timer`. On each tick, run `get_session_status` — if the agent is idle/stuck, send a check-in via `send_session_message`. Delete the timer once the agent reports completion. If a timer fires 3+ times with no progress, escalate to the owner via memo.
+- **Timer cleanup on owner-wait**: When all agents have completed or are blocked waiting for owner action (e.g., asking state > 15 min), delete the timer. Update the memo with the current status so the owner can see the situation at a glance. Do not keep firing timers that only report "no change" — 3 consecutive "no change" reports means the timer should be deleted.
 - **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
 
 ## 4. First Responder for Dev Agent Questions
