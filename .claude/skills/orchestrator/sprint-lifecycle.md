@@ -67,6 +67,8 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
 - Leave pending/in-progress worktrees intact
 
 **Step 3: Retrospective (dialogue with owner)**
+
+**3a. Per-incident review + improvement proposals**
 - The Orchestrator reports the retrospective and aligns with the owner's perspective
 - **Present improvement proposals together with the merged PR list** (at the start of the retrospective, not the end). Presenting proposals early enables agreement during the owner dialogue and allows smooth transition to parallel execution in Step 4
 - Perspectives: what worked well / what needs improvement / time-consuming blockers
@@ -75,6 +77,15 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
   2. **Worked because owner drove it** — incorporate into Orchestrator skills so the Orchestrator can do it independently
   3. **Other** — analyze why it worked and consider if the conditions can be reproduced
 - Reach agreement on any skill/process improvement proposals on the spot
+
+**3b. Process-wide review**
+- After per-incident proposals, step back and review the overall process from a structural perspective
+- Items already addressed in 3a are valid answers, but the goal is to find **issues that 3a missed** — structural problems not tied to any single incident
+- Review the following 4 perspectives and present findings to the owner:
+  1. **Redundant information**: Is the same information duplicated across memory / GitHub Issues / skills / rules? Eliminate double-management
+  2. **Implicit knowledge**: Are there operational rules that only the owner knows? If the owner had to point something out during the sprint, it should become explicit in skills/rules
+  3. **Name-reality mismatch**: Do step names, file names, and section titles accurately describe their actual content and scope?
+  4. **Owner-dependent discoveries**: List improvements that only happened because the owner noticed and asked. For each, create a rule or checklist item so the Orchestrator catches it independently next time
 
 **Step 4: Apply process improvements**
 - Apply agreed-upon improvements to skill files, rules, agent definitions, and CLAUDE.md as appropriate. Merge after completion (Orchestrator can merge since it's non-production code)
