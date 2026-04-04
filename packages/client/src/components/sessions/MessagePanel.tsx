@@ -5,6 +5,16 @@ import { sendWorkerMessage } from '../../lib/api';
 import { sendInput as sendPtyInput } from '../../lib/worker-websocket';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
 
+export const SLASH_COMMANDS = [
+  { name: '/commit', description: 'Create a git commit' },
+  { name: '/review-loop', description: 'Run automated review loop' },
+  { name: '/code-review', description: 'Review a pull request' },
+  { name: '/simplify', description: 'Review and simplify changed code' },
+  { name: '/orchestrator', description: 'Strategic task orchestration' },
+  { name: '/schedule', description: 'Manage scheduled agents' },
+  { name: '/loop', description: 'Run a command on recurring interval' },
+] as const;
+
 interface MessagePanelProps {
   sessionId: string;
   targetWorkerId: string;
@@ -38,8 +48,21 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [completionDismissed, setCompletionDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Slash command completion - derived state
+  const isSlashPrefix = content.startsWith('/') && !content.includes(' ');
+  const filteredCommands = isSlashPrefix
+    ? SLASH_COMMANDS.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
+    : [];
+  const showCompletion = isSlashPrefix && filteredCommands.length > 0 && !completionDismissed;
+  // Clamp selectedIndex to valid range
+  const clampedIndex = filteredCommands.length > 0
+    ? Math.min(selectedIndex, filteredCommands.length - 1)
+    : 0;
 
   // Clear non-draft state when target worker changes
   useEffect(() => {
@@ -106,17 +129,49 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     }
   }, [sessionId, targetWorkerId, content, files, onError, clearDraft]);
 
+  const selectCommand = useCallback((command: typeof SLASH_COMMANDS[number]) => {
+    setContent(command.name + ' ');
+    setCompletionDismissed(false);
+    textareaRef.current?.focus();
+  }, [setContent]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd+Enter always sends, even with dropdown visible
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
       return;
     }
+
+    // Dropdown-specific key handling
+    if (showCompletion) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex(prev => Math.min(prev + 1, filteredCommands.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex(prev => Math.max(prev - 1, 0));
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(filteredCommands[clampedIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCompletionDismissed(true);
+        return;
+      }
+    }
+
     if (e.key === 'Escape') {
       e.preventDefault();
       sendPtyInput(sessionId, targetWorkerId, '\x1b');
     }
-  }, [handleSend, sessionId, targetWorkerId]);
+  }, [handleSend, sessionId, targetWorkerId, showCompletion, filteredCommands, clampedIndex, selectCommand]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -159,21 +214,49 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
           <span className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
         )}
 
-        {/* Message textarea */}
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={e => {
-            setContent(e.target.value);
-            handleResize(e.target);
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder="Send message to worker... (Ctrl+Enter to send)"
-          rows={1}
-          className="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"
-          style={{ maxHeight: '120px' }}
-        />
+        {/* Message textarea with completion dropdown */}
+        <div className="flex-1 relative">
+          {showCompletion && (
+            <ul
+              role="listbox"
+              className="absolute bottom-full left-0 mb-1 w-full bg-slate-800 border border-slate-600 rounded shadow-lg max-h-60 overflow-y-auto z-10"
+            >
+              {filteredCommands.map((cmd, index) => (
+                <li
+                  key={cmd.name}
+                  role="option"
+                  aria-selected={index === clampedIndex}
+                  className={`px-3 py-1.5 cursor-pointer text-sm ${
+                    index === clampedIndex ? 'bg-slate-700 text-white' : 'text-gray-300 hover:bg-slate-700'
+                  }`}
+                  onMouseDown={e => {
+                    e.preventDefault(); // prevent textarea blur
+                    selectCommand(cmd);
+                  }}
+                >
+                  <span className="font-medium text-blue-400">{cmd.name}</span>
+                  <span className="ml-2 text-gray-400">{cmd.description}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <textarea
+            ref={textareaRef}
+            value={content}
+            onChange={e => {
+              setContent(e.target.value);
+              setSelectedIndex(0);
+              setCompletionDismissed(false);
+              handleResize(e.target);
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder="Send message to worker... (Ctrl+Enter to send)"
+            rows={1}
+            className="w-full bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"
+            style={{ maxHeight: '120px' }}
+          />
+        </div>
 
         {/* Attach button */}
         <button
