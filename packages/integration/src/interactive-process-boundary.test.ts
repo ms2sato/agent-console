@@ -17,6 +17,7 @@ import { JobQueue } from '@agent-console/server/src/jobs/job-queue';
 import { registerJobHandlers } from '@agent-console/server/src/jobs/handlers';
 import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
 import { SessionManager } from '@agent-console/server/src/services/session-manager';
+import { SingleUserMode } from '@agent-console/server/src/services/user-mode';
 import { AgentManager } from '@agent-console/server/src/services/agent-manager';
 import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sqlite-agent-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
@@ -133,7 +134,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
     sessionManager = await SessionManager.create({
-      ptyProvider: ptyFactory.provider,
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
       jobQueue: testJobQueue,
