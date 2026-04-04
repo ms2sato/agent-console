@@ -20,21 +20,21 @@ export interface ProcessExitCallback {
   (process: InteractiveProcessInfo): void;
 }
 
-/** Service that can submit input to a worker's PTY. */
-export interface PtyInputSubmitter {
-  submitWorkerInput(sessionId: string, workerId: string, content: string): boolean;
+/** Service that can inject content into a worker's PTY as submitted input. */
+export interface PtyMessageInjector {
+  injectPtyMessage(sessionId: string, workerId: string, content: string): boolean;
 }
 
 export class InteractiveProcessManager {
   private processes = new Map<string, StoredProcess>();
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
-  private ptyInputSubmitter?: PtyInputSubmitter;
+  private ptyMessageInjector?: PtyMessageInjector;
 
-  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyInputSubmitter?: PtyInputSubmitter) {
+  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyMessageInjector?: PtyMessageInjector) {
     this.onOutput = onOutput;
     this.onExit = onExit;
-    this.ptyInputSubmitter = ptyInputSubmitter;
+    this.ptyMessageInjector = ptyMessageInjector;
   }
 
   async runProcess(params: {
@@ -139,9 +139,10 @@ export class InteractiveProcessManager {
       stored.stdin.write(content + '\0');
       stored.stdin.flush();
 
-      // Echo to worker PTY so the response appears as submitted input in the terminal.
-      if (this.ptyInputSubmitter) {
-        this.ptyInputSubmitter.submitWorkerInput(stored.info.sessionId, stored.info.workerId, content);
+      // Echo to worker PTY so the response appears as submitted input in the terminal
+      // (same mechanism as MessagePanel's sendMessage).
+      if (this.ptyMessageInjector) {
+        this.ptyMessageInjector.injectPtyMessage(stored.info.sessionId, stored.info.workerId, content);
       }
 
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');

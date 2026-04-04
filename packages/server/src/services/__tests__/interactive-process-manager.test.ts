@@ -8,13 +8,13 @@ describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
-  let mockSubmitWorkerInput: ReturnType<typeof mock>;
+  let mockInjectPtyMessage: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
-    mockSubmitWorkerInput = mock(() => true);
-    manager = new InteractiveProcessManager(onOutput, onExit, { submitWorkerInput: mockSubmitWorkerInput });
+    mockInjectPtyMessage = mock(() => true);
+    manager = new InteractiveProcessManager(onOutput, onExit, { injectPtyMessage: mockInjectPtyMessage });
   });
 
   afterEach(() => {
@@ -362,7 +362,7 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
     });
 
-    it('should call ptyEchoWriter with content on successful write', async () => {
+    it('should call injectPtyMessage with content on successful write', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
@@ -381,7 +381,7 @@ describe('InteractiveProcessManager', () => {
       }
 
       expect(result).toBe(true);
-      expect(mockSubmitWorkerInput).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+      expect(mockInjectPtyMessage).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
     });
   });
 });

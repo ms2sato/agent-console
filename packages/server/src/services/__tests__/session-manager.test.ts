@@ -441,21 +441,22 @@ describe('SessionManager', () => {
     });
   });
 
-  describe('submitWorkerInput', () => {
-    it('should convert newlines to CR and append final CR', async () => {
+  describe('injectPtyMessage', () => {
+    it('should delegate to ptyMessageInjectionService.injectMessage', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
         type: 'quick',
-        title: 'submit-test',
+        title: 'inject-test',
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const result = manager.submitWorkerInput(session.id, agentWorker.id, 'line1\nline2');
+      const result = manager.injectPtyMessage(session.id, agentWorker.id, 'hello');
 
       expect(result).toBe(true);
-      expect(ptyFactory.instances[0].writtenData).toContain('line1\rline2\r');
+      // injectMessage writes content (CR-converted) then delayed \r via ptyMessageInjectionService
+      expect(ptyFactory.instances[0].writtenData).toContain('hello');
     });
   });
 

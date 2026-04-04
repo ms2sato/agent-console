@@ -610,16 +610,6 @@ export class WorkerLifecycleManager {
     return this.deps.workerManager.writeInput(worker, data);
   }
 
-  /**
-   * Write content to a worker's PTY as submitted input.
-   * Converts newlines to carriage returns and appends a final CR to trigger submission.
-   * Use this instead of raw writeWorkerInput when the content should appear as
-   * "typed and submitted" in the terminal.
-   */
-  submitWorkerInput(sessionId: string, workerId: string, content: string): boolean {
-    return this.writeWorkerInput(sessionId, workerId, content.replace(/\r?\n/g, '\r') + '\r');
-  }
-
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return false;
