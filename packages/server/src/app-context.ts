@@ -19,6 +19,7 @@ import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
 import type { TimerManager } from './services/timer-manager.js';
+import type { InteractiveProcessManager } from './services/interactive-process-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { WorktreeService } from './services/worktree-service.js';
 import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
@@ -49,6 +50,7 @@ import { bunPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
+import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
@@ -104,6 +106,9 @@ export interface AppContext {
 
   /** Periodic timer management (in-memory, volatile) */
   timerManager: TimerManager;
+
+  /** Interactive process management (in-memory, volatile) */
+  interactiveProcessManager: InteractiveProcessManager;
 
   /** In-memory review annotation store */
   annotationService: AnnotationService;
@@ -248,6 +253,59 @@ export async function createAppContext(
     timerManager.deleteTimersBySession(sessionId);
   });
 
+  // 6.7. Create interactive process manager (in-memory, volatile)
+  const interactiveProcessManager = new InteractiveProcessManagerClass(
+    (process, output) => {
+      try {
+        const writeInput = (data: string) =>
+          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
+        writePtyNotification({
+          kind: 'internal-process',
+          tag: 'internal:process',
+          fields: {
+            processId: process.id,
+            command: process.command,
+            message: output,
+          },
+          intent: 'triage',
+          writeInput,
+        });
+      } catch (err) {
+        logger.warn(
+          { processId: process.id, sessionId: process.sessionId, err },
+          'Failed to deliver process output notification',
+        );
+      }
+    },
+    (process) => {
+      try {
+        const writeInput = (data: string) =>
+          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
+        writePtyNotification({
+          kind: 'internal-process',
+          tag: 'internal:process',
+          fields: {
+            processId: process.id,
+            command: process.command,
+            message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
+          },
+          intent: 'inform',
+          writeInput,
+        });
+      } catch (err) {
+        logger.warn(
+          { processId: process.id, sessionId: process.sessionId, err },
+          'Failed to deliver process exit notification',
+        );
+      }
+    },
+  );
+
+  // 6.8. Wire process cleanup into session lifecycle
+  sessionManager.setProcessCleanupCallback((sessionId) => {
+    interactiveProcessManager.deleteProcessesBySession(sessionId);
+  });
+
   // 7. Wire cross-dependencies between managers
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
@@ -296,6 +354,7 @@ export async function createAppContext(
     suggestSessionMetadata,
     userMode,
     timerManager,
+    interactiveProcessManager,
     inboundIntegration,
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
     fetchPullRequestUrl,
@@ -415,6 +474,14 @@ export async function createTestContext(
     timerManager.deleteTimersBySession(sessionId);
   });
 
+  // Create interactive process manager (no-op callbacks for tests)
+  const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {});
+
+  // Wire process cleanup into session lifecycle
+  sessionManager.setProcessCleanupCallback((sessionId) => {
+    interactiveProcessManager.deleteProcessesBySession(sessionId);
+  });
+
   // Initialize inbound integration
   const inboundIntegration = initializeInboundIntegration({
     db,
@@ -449,6 +516,7 @@ export async function createTestContext(
     suggestSessionMetadata,
     userMode,
     timerManager,
+    interactiveProcessManager,
     inboundIntegration,
     broadcastToApp: () => {},
     fetchPullRequestUrl,
@@ -467,8 +535,9 @@ export async function createTestContext(
 export async function shutdownAppContext(
   context: AppContext,
 ): Promise<void> {
-  // Dispose timer manager
+  // Dispose timer manager and interactive process manager
   context.timerManager.disposeAll();
+  context.interactiveProcessManager.disposeAll();
 
   // Stop job queue
   await context.jobQueue.stop();

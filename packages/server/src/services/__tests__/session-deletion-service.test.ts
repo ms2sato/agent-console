@@ -90,6 +90,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
     getTimerCleanupCallback: () => undefined,
+    getProcessCleanupCallback: () => undefined,
     stopWatching: mockStopWatching,
     ...overrides,
   };

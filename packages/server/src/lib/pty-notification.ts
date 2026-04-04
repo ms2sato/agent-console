@@ -97,12 +97,24 @@ export interface InternalReviewedPtyNotification extends BasePtyNotificationPara
   intent: PtyNotificationIntent;
 }
 
+export interface InternalProcessPtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-process';
+  tag: 'internal:process';
+  fields: {
+    processId: string;
+    command: string;
+    message: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
   | InternalTimerPtyNotification
   | InternalReviewCommentPtyNotification
-  | InternalReviewedPtyNotification;
+  | InternalReviewedPtyNotification
+  | InternalProcessPtyNotification;
 
 /**
  * Build and send a structured notification to a PTY process.

@@ -13,6 +13,7 @@ export * from './types/notification.js';
 export * from './types/worker-message.js';
 export * from './types/system-events.js';
 export * from './types/timer.js';
+export * from './types/interactive-process.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
 

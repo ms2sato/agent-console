@@ -30,6 +30,7 @@ export interface SessionDeletionDeps {
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
   getWebSocketCallbacks: () => { notifySessionDeleted: (sessionId: string) => void } | null;
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
+  getProcessCleanupCallback: () => ((sessionId: string) => void) | undefined;
   stopWatching: (locationPath: string) => void;
 }
 
@@ -101,6 +102,9 @@ export class SessionDeletionService {
 
       // 2a. Clean up periodic timers associated with this session
       this.deps.getTimerCleanupCallback()?.(id);
+
+      // 2a2. Clean up interactive processes associated with this session
+      this.deps.getProcessCleanupCallback()?.(id);
 
       // 2b. Clean up inter-worker message history
       this.deps.messageService.clearSession(id);
