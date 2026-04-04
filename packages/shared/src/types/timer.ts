@@ -1,8 +1,7 @@
 /**
  * Types for the periodic timer (cron-like callback) feature.
  *
- * Timers are persisted to the database and restored on server restart.
- * Runtime state (fireCount, lastFiredAt) remains in-memory only.
+ * Timers are in-memory volatile — they disappear on server restart.
  * Agents use timers to receive periodic callbacks for monitoring
  * delegated tasks, checking CI status, etc.
  */
