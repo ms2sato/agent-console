@@ -81,8 +81,12 @@ describe('InteractiveProcessManager', () => {
         cwd: tmpDir,
       });
 
-      // Wait for the process to produce output
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Poll until output is received (CI can be slower than 500ms)
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (onOutput.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
 
       expect(onOutput).toHaveBeenCalled();
       const [, output] = onOutput.mock.calls[0];
