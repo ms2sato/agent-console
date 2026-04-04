@@ -1,19 +1,11 @@
 import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
-import type { WorkerMessage } from '@agent-console/shared';
+import { useQuery } from '@tanstack/react-query';
+import type { WorkerMessage, SkillDefinition } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
-import { sendWorkerMessage } from '../../lib/api';
+import { sendWorkerMessage, fetchSkills } from '../../lib/api';
 import { sendInput as sendPtyInput } from '../../lib/worker-websocket';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
-
-export const SLASH_COMMANDS = [
-  { name: '/commit', description: 'Create a git commit' },
-  { name: '/review-loop', description: 'Run automated review loop' },
-  { name: '/code-review', description: 'Review a pull request' },
-  { name: '/simplify', description: 'Review and simplify changed code' },
-  { name: '/orchestrator', description: 'Strategic task orchestration' },
-  { name: '/schedule', description: 'Manage scheduled agents' },
-  { name: '/loop', description: 'Run a command on recurring interval' },
-] as const;
+import { skillKeys } from '../../lib/query-keys';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -53,10 +45,18 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Fetch slash commands from server
+  const { data: skillsData } = useQuery({
+    queryKey: skillKeys.all(),
+    queryFn: fetchSkills,
+    staleTime: 5 * 60 * 1000, // Skills rarely change
+  });
+  const slashCommands = skillsData?.skills ?? [];
+
   // Slash command completion - derived state
   const isSlashPrefix = content.startsWith('/') && !content.includes(' ');
   const filteredCommands = isSlashPrefix
-    ? SLASH_COMMANDS.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
+    ? slashCommands.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
     : [];
   const showCompletion = isSlashPrefix && filteredCommands.length > 0 && !completionDismissed;
   // Clamp selectedIndex to valid range
@@ -129,7 +129,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     }
   }, [sessionId, targetWorkerId, content, files, onError, clearDraft]);
 
-  const selectCommand = useCallback((command: typeof SLASH_COMMANDS[number]) => {
+  const selectCommand = useCallback((command: SkillDefinition) => {
     setContent(command.name + ' ');
     setCompletionDismissed(false);
     textareaRef.current?.focus();

@@ -29,6 +29,7 @@ import type {
   CurrentUserResponse,
   ReviewQueueGroup,
   ReviewComment,
+  SkillDefinition,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -497,6 +498,26 @@ export async function unregisterAgent(agentId: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister agent');
   }
+}
+
+// ===========================================================================
+// Skills API
+// ===========================================================================
+
+export interface SkillsResponse {
+  skills: SkillDefinition[];
+}
+
+/**
+ * Fetch available slash command skills.
+ * Uses raw fetch because the server route may not be in the Hono RPC client types yet.
+ */
+export async function fetchSkills(): Promise<SkillsResponse> {
+  const res = await fetch(`${API_BASE}/skills`);
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch skills');
+  }
+  return res.json() as Promise<SkillsResponse>;
 }
 
 export async function openPath(path: string): Promise<void> {
