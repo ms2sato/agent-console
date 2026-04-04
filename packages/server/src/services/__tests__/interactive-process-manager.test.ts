@@ -8,11 +8,13 @@ describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
+  let ptyEchoWriter: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
-    manager = new InteractiveProcessManager(onOutput, onExit);
+    ptyEchoWriter = mock(() => {});
+    manager = new InteractiveProcessManager(onOutput, onExit, ptyEchoWriter);
   });
 
   afterEach(() => {
@@ -360,10 +362,7 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
     });
 
-    it('should write content followed by null byte and newline', async () => {
-      // Verify writeResponse sends content + \0 + \n to the process stdin.
-      // The trailing \n after \0 provides visual completion in PTY terminals
-      // without breaking the null-byte delimiter protocol used by scripts.
+    it('should call ptyEchoWriter with content on successful write', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
@@ -375,15 +374,14 @@ describe('InteractiveProcessManager', () => {
       while (Date.now() < deadline) {
         const info = manager.getProcess(process.id);
         if (info?.status === 'running') {
-          result = await manager.writeResponse(process.id, 'content-with-newline');
+          result = await manager.writeResponse(process.id, 'hello');
           if (result) break;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
       expect(result).toBe(true);
-      // The actual \0\n protocol is verified by integration with sprint-retro.js
-      // and acceptance-check.js scripts which use createStdinReader (null-byte delimited)
+      expect(ptyEchoWriter).toHaveBeenCalledWith('session-1', 'worker-1', 'hello\r');
     });
   });
 });
