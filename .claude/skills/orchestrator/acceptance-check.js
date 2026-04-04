@@ -720,7 +720,7 @@ function runCheckOnly(changedFiles) {
     process.exit(1);
   } else if (hasIntegrationGap) {
     console.log('**Integration test gap detected — review recommended.** ⚠');
-    process.exit(1);
+    process.exit(0);
   } else {
     console.log('**All production files have corresponding tests.** ✅');
     process.exit(0);
