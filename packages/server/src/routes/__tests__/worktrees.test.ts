@@ -274,6 +274,24 @@ describe('Worktrees API', () => {
       expect(body.accepted).toBe(true);
     });
 
+    it('should return 202 even when background pull encounters an error', async () => {
+      // Simulate pullFastForward throwing — the fire-and-forget IIFE's
+      // internal try-catch handles it, and the outer .catch() guards
+      // against any unexpected escapes. Either way, the HTTP response
+      // is 202 Accepted because it returns before the async work runs.
+      mockGit.pullFastForward.mockImplementation(() => Promise.reject(new Error('network timeout')));
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(WORKTREE_PATH),
+      );
+
+      expect(res.status).toBe(202);
+
+      const body = (await res.json()) as { accepted: boolean };
+      expect(body.accepted).toBe(true);
+    });
+
     it('should allow pull on primary worktree (repo root)', async () => {
       // The primary worktree is the repo root itself, which may be outside
       // the managed worktrees subdirectory. The route skips the boundary

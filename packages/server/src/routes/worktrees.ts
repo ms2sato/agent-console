@@ -162,7 +162,9 @@ const worktrees = new Hono<AppBindings>()
           error: errorMessage,
         });
       }
-    })();
+    })().catch((err) => {
+      logger.error({ err, taskId, repoId }, 'Unhandled error in worktree creation');
+    });
 
     // Return accepted immediately (do not wait for worktree creation)
     return c.json({ accepted: true }, 202);
@@ -272,7 +274,9 @@ const worktrees = new Hono<AppBindings>()
       } finally {
         pullsInProgress.delete(worktreePath);
       }
-    })();
+    })().catch((err) => {
+      logger.error({ err, taskId, repoId, worktreePath }, 'Unhandled error in worktree pull');
+    });
 
     // Return accepted immediately
     return c.json({ accepted: true }, 202);
@@ -360,7 +364,9 @@ const worktrees = new Hono<AppBindings>()
             // If broadcast fails, we've already logged the error above
           }
         }
-      })();
+      })().catch((err) => {
+        logger.error({ err, taskId, repoId, worktreePath }, 'Unhandled error in worktree deletion');
+      });
 
       // Return accepted immediately (do not wait for deletion)
       return c.json({ accepted: true }, 202);
