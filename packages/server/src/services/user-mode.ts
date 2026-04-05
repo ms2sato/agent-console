@@ -15,7 +15,6 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { $ } from 'bun';
 import { SignJWT, type JWTPayload } from 'jose';
 import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
@@ -355,9 +354,17 @@ export class MultiUserMode implements UserMode {
 
   private async validateMacOs(username: string, password: string): Promise<boolean> {
     try {
-      // Use Bun.spawn with an args array (no shell) to prevent shell injection.
-      // dscl requires the password as a command-line argument (no stdin option).
-      // This avoids shell metacharacter issues even if the password contains special chars.
+      // SECURITY NOTE: dscl -authonly requires the password as a command-line argument.
+      // macOS dscl has no stdin option for password input, so the password is briefly
+      // visible in process listings (e.g., `ps aux`). This is a known macOS limitation.
+      // We use Bun.spawn with an args array (no shell) to at least prevent shell injection,
+      // but the process argument exposure remains.
+      //
+      // Alternative considered: `pamtester` reads passwords from stdin (like the Linux path)
+      // and would eliminate this exposure. However, pamtester is not installed by default on
+      // macOS and would require users to install it (e.g., via Homebrew). For now we accept
+      // the dscl limitation since the password is only transiently visible and the server
+      // process typically runs in a controlled environment.
       const proc = Bun.spawn(['dscl', '.', '-authonly', username, password], {
         stdout: 'ignore',
         stderr: 'ignore',
@@ -403,8 +410,13 @@ export class MultiUserMode implements UserMode {
 
   private async lookupMacOsUser(username: string): Promise<{ uid: number; homeDir: string } | null> {
     try {
-      const uidResult = await $`dscl . -read /Users/${username} UniqueID`.quiet().text();
-      const homeResult = await $`dscl . -read /Users/${username} NFSHomeDirectory`.quiet().text();
+      const uidProc = Bun.spawn(['dscl', '.', '-read', `/Users/${username}`, 'UniqueID'], { stdout: 'pipe', stderr: 'ignore' });
+      const uidResult = await new Response(uidProc.stdout).text();
+      await uidProc.exited;
+
+      const homeProc = Bun.spawn(['dscl', '.', '-read', `/Users/${username}`, 'NFSHomeDirectory'], { stdout: 'pipe', stderr: 'ignore' });
+      const homeResult = await new Response(homeProc.stdout).text();
+      await homeProc.exited;
 
       const uidMatch = uidResult.match(/UniqueID:\s*(\d+)/);
       const homeMatch = homeResult.match(/NFSHomeDirectory:\s*(.+)/);
@@ -422,11 +434,17 @@ export class MultiUserMode implements UserMode {
 
   private async lookupLinuxUser(username: string): Promise<{ uid: number; homeDir: string } | null> {
     try {
-      const result = await $`id -u ${username}`.quiet().text();
+      const idProc = Bun.spawn(['id', '-u', username], { stdout: 'pipe', stderr: 'ignore' });
+      const result = await new Response(idProc.stdout).text();
+      await idProc.exited;
+
       const uid = parseInt(result.trim(), 10);
       if (isNaN(uid)) return null;
 
-      const homeResult = await $`getent passwd ${username}`.quiet().text();
+      const getentProc = Bun.spawn(['getent', 'passwd', username], { stdout: 'pipe', stderr: 'ignore' });
+      const homeResult = await new Response(getentProc.stdout).text();
+      await getentProc.exited;
+
       const fields = homeResult.trim().split(':');
       // passwd format: username:x:uid:gid:gecos:home:shell
       if (fields.length < 6) return null;
