@@ -251,6 +251,91 @@ export function getAcceptanceCriteria(issueNumber) {
   return criteria;
 }
 
+// --- Proposed Behavior ---
+
+export function getProposedBehavior(issueNumber) {
+  const result = exec(`gh issue view ${issueNumber} --json body --jq .body`);
+  if (!result) return [];
+
+  const lines = result.split('\n');
+  const items = [];
+  let inSection = false;
+
+  for (const line of lines) {
+    // Detect "## Proposed Behavior" heading
+    if (/^##\s+Proposed Behavior\s*$/i.test(line)) {
+      inSection = true;
+      continue;
+    }
+    // Exit section on next heading
+    if (inSection && /^##\s+/.test(line)) {
+      break;
+    }
+    if (!inSection) continue;
+
+    // Parse list items: "- text", "- [ ] text", "- [x] text"
+    const match = line.match(/^- (?:\[[ x]\]\s+)?(.+)/);
+    if (match) {
+      items.push(match[1].trim());
+    }
+  }
+
+  return items;
+}
+
+/**
+ * Extract meaningful keywords from a proposed behavior item.
+ * Returns backtick-enclosed terms, uppercase abbreviations (2+ chars),
+ * and camelCase/PascalCase identifiers.
+ */
+export function extractKeywords(text) {
+  const keywords = [];
+
+  // Backtick-enclosed terms (code references)
+  const codeRefs = text.matchAll(/`([^`]+)`/g);
+  for (const m of codeRefs) {
+    keywords.push(m[1]);
+  }
+
+  // Remove backtick-enclosed terms for further processing
+  const plain = text.replace(/`[^`]+`/g, '');
+
+  // Uppercase abbreviations (2+ chars): UI, API, MCP, REST, WebSocket, etc.
+  const abbrevs = plain.matchAll(/\b([A-Z][A-Z0-9]+)\b/g);
+  for (const m of abbrevs) {
+    keywords.push(m[1]);
+  }
+
+  // camelCase / PascalCase identifiers
+  const camelCase = plain.matchAll(/\b([a-z]+(?:[A-Z][a-z]+)+|[A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g);
+  for (const m of camelCase) {
+    keywords.push(m[1]);
+  }
+
+  return [...new Set(keywords)];
+}
+
+export function getPrDiff(prNumber) {
+  return exec(`gh pr diff ${prNumber}`) || '';
+}
+
+/**
+ * Check each proposed behavior item against the PR diff using keyword matching.
+ * Returns an array of { item, keywords, matched, matchedKeywords }.
+ */
+export function checkProposedBehaviorCoverage(proposedItems, prDiff) {
+  return proposedItems.map(item => {
+    const keywords = extractKeywords(item);
+    const matchedKeywords = keywords.filter(kw => prDiff.includes(kw));
+    return {
+      item,
+      keywords,
+      matched: matchedKeywords.length > 0,
+      matchedKeywords,
+    };
+  });
+}
+
 // --- CI status check ---
 
 export function getCiStatus(prNumber) {

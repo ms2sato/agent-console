@@ -7,6 +7,9 @@ import {
   requiresTestCoverage,
   findTestFiles,
   detectIntegrationTestNeeds,
+  getProposedBehavior,
+  extractKeywords,
+  checkProposedBehaviorCoverage,
 } from '../check-utils.js';
 import {
   createStdinReader,
@@ -14,6 +17,7 @@ import {
   printQuestion,
   printSummary,
   printPostAcceptanceWorkflow,
+  printProposedBehaviorCoverage,
 } from '../acceptance-check.js';
 
 // --- Helper: create a readable stream that emits null-byte terminated data ---
@@ -420,5 +424,157 @@ describe('printPostAcceptanceWorkflow', () => {
     const output = logs.join('\n');
     expect(output).toContain('Post-Acceptance Workflow');
     expect(output).toContain('Do NOT delete the worktree');
+  });
+});
+
+// --- extractKeywords tests ---
+
+describe('extractKeywords', () => {
+  it('extracts backtick-enclosed terms', () => {
+    const keywords = extractKeywords('Use `gh issue view` to fetch body');
+    expect(keywords).toContain('gh issue view');
+  });
+
+  it('extracts uppercase abbreviations', () => {
+    const keywords = extractKeywords('Add UI and API support');
+    expect(keywords).toContain('UI');
+    expect(keywords).toContain('API');
+  });
+
+  it('extracts camelCase identifiers', () => {
+    const keywords = extractKeywords('Call getProposedBehavior from the check');
+    expect(keywords).toContain('getProposedBehavior');
+  });
+
+  it('extracts PascalCase identifiers', () => {
+    const keywords = extractKeywords('Use ProposedBehavior type');
+    expect(keywords).toContain('ProposedBehavior');
+  });
+
+  it('deduplicates keywords', () => {
+    const keywords = extractKeywords('API and API again');
+    const apiCount = keywords.filter(k => k === 'API').length;
+    expect(apiCount).toBe(1);
+  });
+
+  it('returns empty array for text with no extractable keywords', () => {
+    const keywords = extractKeywords('simple text with no special words');
+    expect(keywords).toEqual([]);
+  });
+
+  it('extracts MCP as keyword', () => {
+    const keywords = extractKeywords('Expose via MCP tool');
+    expect(keywords).toContain('MCP');
+  });
+});
+
+// --- checkProposedBehaviorCoverage tests ---
+
+describe('checkProposedBehaviorCoverage', () => {
+  it('marks items as matched when keywords appear in diff', () => {
+    const items = ['Add `getProposedBehavior` function'];
+    const diff = 'export function getProposedBehavior(issueNumber) {';
+    const result = checkProposedBehaviorCoverage(items, diff);
+    expect(result).toHaveLength(1);
+    expect(result[0].matched).toBe(true);
+    expect(result[0].matchedKeywords).toContain('getProposedBehavior');
+  });
+
+  it('marks items as unmatched when no keywords in diff', () => {
+    const items = ['Add UI component for dashboard'];
+    const diff = 'export function serverHandler() {}';
+    const result = checkProposedBehaviorCoverage(items, diff);
+    expect(result).toHaveLength(1);
+    expect(result[0].matched).toBe(false);
+  });
+
+  it('handles items with no extractable keywords', () => {
+    const items = ['do something simple'];
+    const diff = 'some diff content';
+    const result = checkProposedBehaviorCoverage(items, diff);
+    expect(result).toHaveLength(1);
+    expect(result[0].matched).toBe(false);
+    expect(result[0].keywords).toEqual([]);
+  });
+
+  it('handles multiple items with mixed coverage', () => {
+    const items = [
+      'Add API endpoint',
+      'Add UI component',
+    ];
+    const diff = 'app.get("/api/proposed", handler);\nAPI route added';
+    const result = checkProposedBehaviorCoverage(items, diff);
+    expect(result[0].matched).toBe(true);
+    expect(result[1].matched).toBe(false);
+  });
+
+  it('returns empty array for empty items', () => {
+    const result = checkProposedBehaviorCoverage([], 'some diff');
+    expect(result).toEqual([]);
+  });
+});
+
+// --- printProposedBehaviorCoverage tests ---
+
+describe('printProposedBehaviorCoverage', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints nothing when coverage array is empty', () => {
+    printProposedBehaviorCoverage([], '123');
+    expect(logs).toHaveLength(0);
+  });
+
+  it('prints matched items with checkmark', () => {
+    const coverage = [
+      { item: 'Add API support', keywords: ['API'], matched: true, matchedKeywords: ['API'] },
+    ];
+    printProposedBehaviorCoverage(coverage, '42');
+    const output = logs.join('\n');
+    expect(output).toContain('✅');
+    expect(output).toContain('Add API support');
+    expect(output).toContain('Matched keywords: API');
+  });
+
+  it('prints unmatched items with warning', () => {
+    const coverage = [
+      { item: 'Add UI component', keywords: ['UI'], matched: false, matchedKeywords: [] },
+    ];
+    printProposedBehaviorCoverage(coverage, '42');
+    const output = logs.join('\n');
+    expect(output).toContain('⚠');
+    expect(output).toContain('Add UI component');
+    expect(output).toContain('Expected keywords not found');
+  });
+
+  it('prints items with no keywords as manual verification needed', () => {
+    const coverage = [
+      { item: 'do something', keywords: [], matched: false, matchedKeywords: [] },
+    ];
+    printProposedBehaviorCoverage(coverage, '42');
+    const output = logs.join('\n');
+    expect(output).toContain('⬜');
+    expect(output).toContain('manual verification needed');
+  });
+
+  it('includes issue number in header', () => {
+    const coverage = [
+      { item: 'Add API', keywords: ['API'], matched: true, matchedKeywords: ['API'] },
+    ];
+    printProposedBehaviorCoverage(coverage, '612');
+    const output = logs.join('\n');
+    expect(output).toContain('Issue #612');
+    expect(output).toContain('Proposed Behavior');
   });
 });
