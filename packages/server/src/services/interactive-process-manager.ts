@@ -90,9 +90,13 @@ export class InteractiveProcessManager {
     this.processes.set(id, stored);
 
     // Read stdout asynchronously
-    this.readStream(id, subprocess.stdout);
+    void this.readStream(id, subprocess.stdout).catch((err) => {
+      logger.warn({ processId: id, err }, 'stdout read stream error');
+    });
     // Also capture stderr and send as output
-    this.readStream(id, subprocess.stderr);
+    void this.readStream(id, subprocess.stderr).catch((err) => {
+      logger.warn({ processId: id, err }, 'stderr read stream error');
+    });
 
     // Monitor process exit
     subprocess.exited.then((exitCode) => {
@@ -103,6 +107,8 @@ export class InteractiveProcessManager {
         logger.info({ processId: id, exitCode }, 'Process exited');
         this.onExit({ ...current.info });
       }
+    }).catch((err) => {
+      logger.error({ processId: id, err }, 'Process exit handler error');
     });
 
     logger.info(
