@@ -16,6 +16,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
+import type { JobType } from '@agent-console/shared';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -57,7 +58,7 @@ export const JOB_STATUSES = Object.values(JOB_STATUS);
  */
 export interface JobRecord {
   id: string;
-  type: string;
+  type: JobType;
   payload: string;
   status: JobStatus;
   priority: number;
@@ -89,7 +90,7 @@ export interface GetJobsOptions {
   /** Filter by status */
   status?: JobStatus;
   /** Filter by job type */
-  type?: string;
+  type?: JobType;
   /** Maximum number of jobs to return. Default: 50 */
   limit?: number;
   /** Number of jobs to skip. Default: 0 */
@@ -141,7 +142,7 @@ export interface JobQueueTestAPI {
  */
 export class JobQueue {
   private db: Kysely<Database>;
-  private handlers = new Map<string, JobHandler>();
+  private handlers = new Map<JobType, JobHandler>();
   private emitter = new EventEmitter();
   private processing = 0;
   private concurrency: number;
@@ -171,7 +172,7 @@ export class JobQueue {
    * @param type - The job type identifier
    * @param handler - The function to process jobs of this type
    */
-  registerHandler<T>(type: string, handler: JobHandler<T>): void {
+  registerHandler<T>(type: JobType, handler: JobHandler<T>): void {
     this.handlers.set(type, handler as JobHandler);
     logger.debug({ type }, 'Job handler registered');
   }
@@ -183,7 +184,7 @@ export class JobQueue {
    * @param options - Optional enqueue options
    * @returns The job ID
    */
-  async enqueue(type: string, payload: unknown, options?: EnqueueOptions): Promise<string> {
+  async enqueue(type: JobType, payload: unknown, options?: EnqueueOptions): Promise<string> {
     const id = options?.jobId ?? randomUUID();
     const now = Date.now();
 
