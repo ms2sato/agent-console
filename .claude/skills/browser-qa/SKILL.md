@@ -66,6 +66,53 @@ For each `manual verification` criterion:
 
 Stop the dev server when done (kill the background process or Ctrl+C).
 
+## Screenshot Persistence & PR Upload
+
+All screenshots should be saved to disk for later upload to the PR.
+
+### Setup
+
+Before starting QA, prepare the screenshot directory:
+```bash
+rm -rf .qa-screenshots && mkdir -p .qa-screenshots
+```
+
+### Taking Screenshots
+
+Always use `filePath` to save to `.qa-screenshots/`:
+```
+take_screenshot with filePath: ".qa-screenshots/{descriptive-name}.png"
+```
+
+Use descriptive, hyphenated names:
+- `restart-all-button.png`, `restart-result-toast.png`
+- `error-{description}.png` (for error states)
+
+### Selective Screenshot Policy
+
+Only take screenshots for areas **relevant to the PR's change scope**:
+- **Bug fix PRs**: Capture before/after states of the fixed behavior
+- **UI change PRs**: Capture the changed areas
+- **Always capture**: Error states encountered, regardless of relevance
+
+### Uploading to PR
+
+After QA, upload screenshots to the PR:
+```bash
+./scripts/upload-qa-screenshots.sh <PR_NUMBER>
+```
+
+This script:
+1. Auto-detects the repository from `git remote` (override with `GITHUB_REPOSITORY` env var)
+2. Creates a `qa-screenshots` GitHub Release if it doesn't exist (one-time, used as image hosting)
+3. Uploads all `.png` files from `.qa-screenshots/` with unique names
+4. Posts a PR comment with embedded thumbnail images (click for full size)
+
+If the PR number is not known, detect it:
+```bash
+gh pr view --json number -q '.number'
+```
+
 ## Common Issues
 
 - **Port conflict**: Check startup log for actual port. Vite auto-increments.
