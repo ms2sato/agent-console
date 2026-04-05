@@ -88,7 +88,7 @@ for file in "$SCREENSHOT_DIR"/*.png; do
   URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${UNIQUE_NAME}"
   # Convert filename to readable description (e.g., "restart-all-button" -> "restart all button")
   DESCRIPTION=$(echo "$BASENAME" | sed 's/[-_]/ /g')
-  UPLOADED_IMAGES+=("### ${DESCRIPTION}"$'\n'"<details>"$'\n'"<summary><img src=\"${URL}\" width=\"400\" alt=\"${DESCRIPTION}\"></summary>"$'\n\n'"<img src=\"${URL}\" alt=\"${DESCRIPTION}\">"$'\n'"</details>")
+  UPLOADED_IMAGES+=("### ${DESCRIPTION}"$'\n'"<img src=\"${URL}\" width=\"400\" alt=\"${DESCRIPTION}\">"$'\n\n'"<details>"$'\n'"<summary>View full size</summary>"$'\n\n'"<img src=\"${URL}\" alt=\"${DESCRIPTION}\">"$'\n'"</details>")
 done
 
 # Build PR comment body

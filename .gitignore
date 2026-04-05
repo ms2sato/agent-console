@@ -34,5 +34,8 @@ npm-debug.log*
 .claude/review-queue/*.jsonl
 .claude/review-queue/fixing.json
 
+# QA screenshots (temporary, uploaded to PR via script)
+.qa-screenshots/
+
 # Orchestrator acceptance check results
 .acceptance-check-*.json
