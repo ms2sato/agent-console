@@ -73,12 +73,6 @@ export class SessionInitializationService {
         continue;
       }
 
-      // Sessions with no serverPid (not paused, but unowned) should also be preserved
-      if (session.serverPid == null) {
-        sessionsToSave.push(session);
-        continue;
-      }
-
       // If serverPid is alive AND belongs to a different server, this session belongs to another active server
       // Keep it in persistence unchanged
       // Note: We must check serverPid !== currentServerPid to handle PID reuse by the OS.
