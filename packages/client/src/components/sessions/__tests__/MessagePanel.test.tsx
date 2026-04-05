@@ -39,6 +39,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
 import { _getDraftsMap } from '../../../hooks/useDraftMessage';
+import { _resetTemplates, _setTemplatesForTest } from '../../../hooks/useMessageTemplates';
 
 describe('MessagePanel logic', () => {
   describe('canSend', () => {
@@ -656,6 +657,84 @@ describe('MessagePanel', () => {
       });
 
       expect(view.queryByRole('listbox')).toBeNull();
+    });
+  });
+
+  describe('message templates', () => {
+    beforeEach(() => {
+      _resetTemplates();
+    });
+
+    afterEach(() => {
+      _resetTemplates();
+    });
+
+    it('renders the template button with correct aria-label', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      expect(view.getByLabelText('Message templates')).toBeTruthy();
+    });
+
+    it('toggles template selector when template button is clicked', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const templateButton = view.getByLabelText('Message templates');
+
+      // Click to open
+      await act(async () => {
+        fireEvent.click(templateButton);
+      });
+
+      expect(view.getByPlaceholderText('Search templates...')).toBeTruthy();
+
+      // Click again to close
+      await act(async () => {
+        fireEvent.click(templateButton);
+      });
+
+      expect(view.queryByPlaceholderText('Search templates...')).toBeNull();
+    });
+
+    it('Ctrl+/ toggles template selector', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+
+      // Press Ctrl+/ to open
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: '/', ctrlKey: true });
+      });
+
+      expect(view.getByPlaceholderText('Search templates...')).toBeTruthy();
+
+      // Press Ctrl+/ again to close
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: '/', ctrlKey: true });
+      });
+
+      expect(view.queryByPlaceholderText('Search templates...')).toBeNull();
+    });
+
+    it('shows save-as-template button when content exists', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'some message content' } });
+      });
+
+      expect(view.getByLabelText('Save as template')).toBeTruthy();
+    });
+
+    it('hides save-as-template button when content is empty', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      expect(view.queryByLabelText('Save as template')).toBeNull();
     });
   });
 
