@@ -10,6 +10,8 @@ import * as workerWs from '../../lib/worker-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import { isScrolledToBottom, stripSystemMessages, stripScrollbackClear, type TerminalScrollInfo } from '../../lib/terminal-utils';
 import { restoreScrollPosition, type ScrollableTerminal } from '../Terminal';
+import { render, screen, cleanup } from '@testing-library/react';
+import { TerminalLoadingBar } from '../ui/TerminalLoadingBar';
 
 describe('Terminal history handling integration', () => {
   let restoreWebSocket: () => void;
@@ -1282,6 +1284,29 @@ describe('restoreScrollPosition', () => {
       expect(terminal.scrollLines).toHaveBeenCalledWith(999); // targetY(999) - viewportY(0)
       expect(terminal.scrollToBottom).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * Tests for the loading indicator used in Terminal.
+ *
+ * Terminal.tsx passes `loadingHistory` state to `TerminalLoadingBar`.
+ * Full component rendering is avoided (xterm.js mock pollution),
+ * so we test the TerminalLoadingBar contract directly here.
+ */
+describe('Terminal loading indicator', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('should show loading bar when loadingHistory is true', () => {
+    render(<TerminalLoadingBar visible={true} />);
+    expect(screen.getByRole('progressbar')).toBeTruthy();
+  });
+
+  it('should hide loading bar when loadingHistory is false', () => {
+    render(<TerminalLoadingBar visible={false} />);
+    expect(screen.queryByRole('progressbar')).toBeNull();
   });
 });
 
