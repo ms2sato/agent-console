@@ -8,11 +8,18 @@ describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
+  let mockInjectPtyMessage: ReturnType<typeof mock>;
+  let mockWritePtyData: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
-    manager = new InteractiveProcessManager(onOutput, onExit);
+    mockInjectPtyMessage = mock(() => true);
+    mockWritePtyData = mock(() => true);
+    manager = new InteractiveProcessManager(onOutput, onExit, {
+      injectPtyMessage: mockInjectPtyMessage,
+      writePtyData: mockWritePtyData,
+    });
   });
 
   afterEach(() => {
@@ -360,10 +367,7 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
     });
 
-    it('should write content followed by null byte and newline', async () => {
-      // Verify writeResponse sends content + \0 + \n to the process stdin.
-      // The trailing \n after \0 provides visual completion in PTY terminals
-      // without breaking the null-byte delimiter protocol used by scripts.
+    it('should call writePtyData with CR-converted content on successful write', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
@@ -375,15 +379,152 @@ describe('InteractiveProcessManager', () => {
       while (Date.now() < deadline) {
         const info = manager.getProcess(process.id);
         if (info?.status === 'running') {
-          result = await manager.writeResponse(process.id, 'content-with-newline');
+          result = await manager.writeResponse(process.id, 'hello');
           if (result) break;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
       expect(result).toBe(true);
-      // The actual \0\n protocol is verified by integration with sprint-retro.js
-      // and acceptance-check.js scripts which use createStdinReader (null-byte delimited)
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
+      // injectPtyMessage should NOT be called for writeResponse path
+      expect(mockInjectPtyMessage).not.toHaveBeenCalled();
+    });
+
+    it('should not call writePtyData when ptyMessageInjector is not provided', async () => {
+      const managerNoPty = new InteractiveProcessManager(onOutput, onExit);
+      const process = await managerNoPty.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = managerNoPty.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await managerNoPty.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      expect(mockWritePtyData).not.toHaveBeenCalled();
+      managerNoPty.disposeAll();
+    });
+  });
+
+  describe('output buffering', () => {
+    it('should buffer rapid output and call onOutput once with combined text', async () => {
+      // Script outputs 10 lines rapidly with no delay between them.
+      // Without buffering, each chunk would trigger a separate onOutput call.
+      // With buffering, they are combined into one (or very few) calls.
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'for i in $(seq 1 10); do echo "rapid-line-$i"; done',
+      });
+
+      // Wait for output to be buffered and flushed (debounce + margin)
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 500));
+
+      // All 10 lines should be present in the combined output
+      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      for (let i = 1; i <= 10; i++) {
+        expect(allOutput).toContain(`rapid-line-${i}`);
+      }
+
+      // Buffering should reduce the number of onOutput calls significantly.
+      // Without buffering: up to 10+ calls. With buffering: typically 1-2.
+      // Use a generous threshold to avoid flakiness.
+      expect(onOutput.mock.calls.length).toBeLessThanOrEqual(3);
+    });
+
+    it('should not call onOutput for a killed process with pending buffer', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 60',
+      });
+
+      // Wait for process to start
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (manager.getProcess(process.id)?.status === 'running') break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      // Kill immediately — any buffered output should be discarded
+      manager.killProcess(process.id);
+
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 100));
+
+      // onOutput should not have been called (no output from sleep, and kill clears buffer)
+      expect(onOutput).not.toHaveBeenCalled();
+    });
+
+    it('should call onOutput exactly once per settled output burst for writeResponse flow', async () => {
+      // Simulates the writeResponse flow: script reads stdin, outputs multiple lines,
+      // and the output should be buffered into a single onOutput call.
+      const script = `
+        const iter = process.stdin[Symbol.asyncIterator]();
+        const { value } = await iter.next();
+        const input = Buffer.from(value).toString().replace('\\0', '').trim();
+        console.log('received: ' + input);
+        console.log('processing...');
+        console.log('done!');
+        process.exit(0);
+      `;
+      const processInfo = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: `bun -e "${script.replace(/"/g, '\\"')}"`,
+      });
+
+      // Wait for process to start
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // Send response — this writes content to PTY + STDIN
+      await manager.writeResponse(processInfo.id, 'test-input');
+
+      // Wait for output to be buffered and flushed
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 500));
+
+      // Content echo should have been written to PTY
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'test-input');
+
+      // The three console.log outputs should be combined into a single onOutput call
+      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      expect(allOutput).toContain('received: test-input');
+      expect(allOutput).toContain('processing...');
+      expect(allOutput).toContain('done!');
+
+      // Because output is buffered, the 3 lines result in very few onOutput calls
+      // (typically 1, at most 2 if stream timing splits them)
+      expect(onOutput.mock.calls.length).toBeLessThanOrEqual(2);
+    });
+
+    it('should handle large output without losing data', async () => {
+      // Generate a script that outputs 100 lines rapidly
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'for i in $(seq 1 100); do echo "bulk-$i"; done',
+      });
+
+      // Wait for all output to be buffered and flushed
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 1000));
+
+      // All 100 lines should be present
+      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      expect(allOutput).toContain('bulk-1');
+      expect(allOutput).toContain('bulk-50');
+      expect(allOutput).toContain('bulk-100');
+
+      // With buffering, 100 lines should be batched into very few onOutput calls
+      expect(onOutput.mock.calls.length).toBeLessThanOrEqual(5);
     });
   });
 });

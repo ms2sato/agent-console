@@ -304,6 +304,8 @@ export async function createAppContext(
         );
       }
     },
+    // PTY message injector: echo process response to the worker's PTY (same path as MessagePanel)
+    sessionManager,
   );
 
   // 6.8. Wire process cleanup into session lifecycle
@@ -480,8 +482,8 @@ export async function createTestContext(
     timerManager.deleteTimersBySession(sessionId);
   });
 
-  // Create interactive process manager (no-op callbacks for tests)
-  const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {});
+  // Create interactive process manager (no-op callbacks for tests, sessionManager for PTY message injection)
+  const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {}, sessionManager);
 
   // Wire process cleanup into session lifecycle
   sessionManager.setProcessCleanupCallback((sessionId) => {

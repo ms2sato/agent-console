@@ -441,6 +441,50 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('injectPtyMessage', () => {
+    it('should delegate to ptyMessageInjectionService.injectMessage', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        title: 'inject-test',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = manager.injectPtyMessage(session.id, agentWorker.id, 'hello');
+
+      expect(result).toBe(true);
+      // injectMessage writes content (CR-converted) then delayed \r via ptyMessageInjectionService
+      expect(ptyFactory.instances[0].writtenData).toContain('hello');
+    });
+  });
+
+  describe('writePtyData', () => {
+    it('should delegate to writeWorkerInput without CR conversion', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        title: 'pty-data-test',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = manager.writePtyData(session.id, agentWorker.id, 'raw\ndata');
+
+      expect(result).toBe(true);
+      // Data should be written as-is (no CR conversion)
+      expect(ptyFactory.instances[0].writtenData).toContain('raw\ndata');
+    });
+
+    it('should return false for non-existent session', async () => {
+      const manager = await getSessionManager();
+      const result = manager.writePtyData('no-session', 'no-worker', 'data');
+      expect(result).toBe(false);
+    });
+  });
+
   describe('sendMessage', () => {
     it('should inject content only when no files provided', async () => {
       const manager = await getSessionManager();

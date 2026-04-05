@@ -20,14 +20,32 @@ export interface ProcessExitCallback {
   (process: InteractiveProcessInfo): void;
 }
 
+/** Service that can inject content into a worker's PTY as submitted input. */
+export interface PtyMessageInjector {
+  injectPtyMessage(sessionId: string, workerId: string, content: string): boolean;
+  /** Write raw data to a worker's PTY (no CR conversion, no delayed Enter). */
+  writePtyData(sessionId: string, workerId: string, data: string): boolean;
+}
+
+interface OutputBuffer {
+  text: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class InteractiveProcessManager {
+  /** Debounce delay for buffering process output before calling onOutput. */
+  static readonly DEBOUNCE_OUTPUT_MS = 150;
+
   private processes = new Map<string, StoredProcess>();
+  private outputBuffers = new Map<string, OutputBuffer>();
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
+  private ptyMessageInjector?: PtyMessageInjector;
 
-  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback) {
+  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyMessageInjector?: PtyMessageInjector) {
     this.onOutput = onOutput;
     this.onExit = onExit;
+    this.ptyMessageInjector = ptyMessageInjector;
   }
 
   async runProcess(params: {
@@ -107,15 +125,14 @@ export class InteractiveProcessManager {
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         if (text) {
-          const stored = this.processes.get(processId);
-          if (stored) {
-            this.onOutput({ ...stored.info }, text);
-          }
+          this.bufferOutput(processId, text);
         }
       }
     } catch (err) {
       logger.debug({ processId, err }, 'Stream read ended');
     }
+    // Flush any remaining buffered output when stream ends
+    this.flushOutputBuffer(processId);
   }
 
   async writeResponse(processId: string, content: string): Promise<boolean> {
@@ -128,12 +145,23 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Write content followed by null byte (\0) to unblock `read -d ''` in bash,
-      // then a newline to visually complete the input in the PTY terminal.
-      // The \n after \0 does not affect the script's read — it will be consumed
-      // as the start of the next read buffer and trimmed.
-      stored.stdin.write(content + '\0\n');
+      // Echo response content to worker PTY (CR-converted, no Enter yet).
+      // The Enter (\r) will be sent by writePtyNotification when process
+      // output settles and onOutput is called.
+      if (this.ptyMessageInjector) {
+        this.ptyMessageInjector.writePtyData(
+          stored.info.sessionId,
+          stored.info.workerId,
+          content.replace(/\r?\n/g, '\r'),
+        );
+      }
+
+      // Write content followed by null byte (\0) to unblock the script's stdin reader.
+      // Process output will arrive via readStream → bufferOutput → debounce →
+      // flush → onOutput → writePtyNotification → \r
+      stored.stdin.write(content + '\0');
       stored.stdin.flush();
+
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
       return true;
     } catch (err) {
@@ -147,6 +175,8 @@ export class InteractiveProcessManager {
     if (!stored) {
       return false;
     }
+
+    this.clearOutputBuffer(processId);
 
     try {
       stored.subprocess.kill(15); // SIGTERM
@@ -179,6 +209,7 @@ export class InteractiveProcessManager {
     let count = 0;
     for (const [id, stored] of this.processes) {
       if (stored.info.sessionId === sessionId) {
+        this.clearOutputBuffer(id);
         try {
           stored.subprocess.kill(15);
         } catch {
@@ -195,6 +226,11 @@ export class InteractiveProcessManager {
   }
 
   disposeAll(): void {
+    for (const buffer of this.outputBuffers.values()) {
+      clearTimeout(buffer.timer);
+    }
+    this.outputBuffers.clear();
+
     for (const stored of this.processes.values()) {
       try {
         stored.subprocess.kill(15);
@@ -205,5 +241,41 @@ export class InteractiveProcessManager {
     const count = this.processes.size;
     this.processes.clear();
     logger.info({ count }, 'All processes disposed');
+  }
+
+  private bufferOutput(processId: string, text: string): void {
+    let buffer = this.outputBuffers.get(processId);
+    if (!buffer) {
+      buffer = { text: '', timer: setTimeout(() => this.flushOutputBuffer(processId), InteractiveProcessManager.DEBOUNCE_OUTPUT_MS) };
+      this.outputBuffers.set(processId, buffer);
+    } else {
+      clearTimeout(buffer.timer);
+      buffer.timer = setTimeout(() => this.flushOutputBuffer(processId), InteractiveProcessManager.DEBOUNCE_OUTPUT_MS);
+    }
+    buffer.text += text;
+  }
+
+  private flushOutputBuffer(processId: string): void {
+    const buffer = this.outputBuffers.get(processId);
+    if (!buffer) return;
+
+    clearTimeout(buffer.timer);
+    const text = buffer.text;
+    this.outputBuffers.delete(processId);
+
+    if (text) {
+      const stored = this.processes.get(processId);
+      if (stored) {
+        this.onOutput({ ...stored.info }, text);
+      }
+    }
+  }
+
+  private clearOutputBuffer(processId: string): void {
+    const buffer = this.outputBuffers.get(processId);
+    if (buffer) {
+      clearTimeout(buffer.timer);
+      this.outputBuffers.delete(processId);
+    }
   }
 }
