@@ -416,6 +416,60 @@ describe('InteractiveProcessManager', () => {
     });
   });
 
+  describe('error handling for fire-and-forget async patterns', () => {
+    it('should catch errors thrown by onExit callback without unhandled rejection', async () => {
+      const throwingOnExit = mock(() => {
+        throw new Error('onExit callback error');
+      });
+      const errorManager = new InteractiveProcessManager(onOutput, throwingOnExit);
+
+      await errorManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo done',
+      });
+
+      // Wait for the process to exit and the .catch() to handle the error
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (throwingOnExit.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // onExit was called (and threw), but no unhandled rejection occurred
+      expect(throwingOnExit).toHaveBeenCalled();
+
+      errorManager.disposeAll();
+    });
+
+    it('should handle readStream errors gracefully with .catch()', async () => {
+      // readStream internally catches stream read errors, so the outer .catch()
+      // acts as a safety net. Verify that a process with stdout/stderr
+      // completes without unhandled rejections even when the process exits abruptly.
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hello && exit 1',
+      });
+
+      // Wait for exit
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (onExit.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(onExit).toHaveBeenCalled();
+      const [exitInfo] = onExit.mock.calls[0];
+      expect(exitInfo.status).toBe('exited');
+      expect(exitInfo.exitCode).toBe(1);
+
+      // stdout output was still captured before the error exit
+      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      expect(allOutput).toContain('hello');
+    });
+  });
+
   describe('output buffering', () => {
     it('should buffer rapid output and call onOutput once with combined text', async () => {
       // Script outputs 10 lines rapidly with no delay between them.
