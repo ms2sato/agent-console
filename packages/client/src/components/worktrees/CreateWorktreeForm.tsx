@@ -75,7 +75,7 @@ export function CreateWorktreeForm({
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
     defaultValues: {
-      branchNameMode: prefillValues?.branchNameMode ?? 'prompt',
+      branchNameMode: prefillValues?.branchNameMode ?? (prefillValues?.initialPrompt?.trim() ? 'prompt' : 'custom'),
       initialPrompt: prefillValues?.initialPrompt ?? '',
       githubIssue: '',
       customBranch: '',
@@ -170,6 +170,22 @@ export function CreateWorktreeForm({
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
+
+  // Auto-switch branchNameMode based on initialPrompt content
+  // Keeps the radio selection consistent with available options
+  useEffect(() => {
+    const subscription = watch((value, { name }) => {
+      if (name === 'initialPrompt') {
+        const hasPrompt = !!value.initialPrompt?.trim();
+        if (!hasPrompt && value.branchNameMode === 'prompt') {
+          setValue('branchNameMode', 'custom');
+        } else if (hasPrompt && value.branchNameMode === 'custom' && !value.customBranch?.trim()) {
+          setValue('branchNameMode', 'prompt');
+        }
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [watch, setValue]);
 
   // Local state for refreshed default branch (overrides prop when set)
   const [refreshedDefaultBranch, setRefreshedDefaultBranch] = useState<string | null>(null);
@@ -285,7 +301,7 @@ export function CreateWorktreeForm({
             {/* Left column: prompt and title */}
             <div className="flex flex-col gap-2">
               {/* Initial prompt input (available for all modes) */}
-              <FormField label="Initial prompt (optional)" error={errors.initialPrompt}>
+              <FormField label={branchNameMode === 'prompt' ? 'Initial prompt' : 'Initial prompt (optional)'} error={errors.initialPrompt}>
                 <Textarea
                   {...register('initialPrompt')}
                   placeholder="What do you want to work on? (e.g., 'Add a dark mode toggle to the settings page')"

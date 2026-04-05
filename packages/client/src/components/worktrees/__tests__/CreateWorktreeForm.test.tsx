@@ -81,8 +81,8 @@ describe('CreateWorktreeForm', () => {
     mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
   });
 
-  describe('prompt mode (default)', () => {
-    it('should submit successfully with initial prompt', async () => {
+  describe('prompt mode', () => {
+    it('should auto-switch to prompt mode when typing a prompt and submit successfully', async () => {
       const user = userEvent.setup();
       const { props } = renderCreateWorktreeForm();
 
@@ -91,9 +91,19 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Fill in initial prompt
+      // Default mode is 'custom' (no prompt yet)
+      const customRadio = screen.getByLabelText(/Custom name \(new branch\)/) as HTMLInputElement;
+      expect(customRadio.checked).toBe(true);
+
+      // Fill in initial prompt - auto-switches to 'prompt' mode since customBranch is empty
       const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
       await user.type(promptInput, 'Add dark mode feature');
+
+      // Auto-generate radio should now be selected
+      await waitFor(() => {
+        const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
+        expect(promptRadio.checked).toBe(true);
+      });
 
       // Submit form
       const submitButton = screen.getByText('Create & Start Session');
@@ -112,7 +122,7 @@ describe('CreateWorktreeForm', () => {
       });
     });
 
-    it('should show validation error when prompt mode has no initial prompt', async () => {
+    it('should show validation error when submitting empty form in default custom mode', async () => {
       const user = userEvent.setup();
       const { props } = renderCreateWorktreeForm();
 
@@ -121,7 +131,7 @@ describe('CreateWorktreeForm', () => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      // Submit without filling anything (prompt mode is default)
+      // Default mode is 'custom' - submit without filling anything
       const submitButton = screen.getByText('Create & Start Session');
       await user.click(submitButton);
 
@@ -130,9 +140,9 @@ describe('CreateWorktreeForm', () => {
         expect(props.onSubmit).not.toHaveBeenCalled();
       });
 
-      // Error should be displayed
+      // Branch name required error should be displayed (custom mode requires branch)
       await waitFor(() => {
-        expect(screen.getByText(/Initial prompt is required/)).toBeTruthy();
+        expect(screen.getByText('Branch name is required')).toBeTruthy();
       });
     });
   });
@@ -428,6 +438,129 @@ describe('CreateWorktreeForm', () => {
       // "Auto-generate" radio should be disabled when no prompt
       const promptRadio = screen.getByLabelText(/Auto-generate/);
       expect((promptRadio as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('should default to custom mode when no prefill is provided', async () => {
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const customRadio = screen.getByLabelText(/Custom name \(new branch\)/) as HTMLInputElement;
+      expect(customRadio.checked).toBe(true);
+
+      // Branch name input should be visible in custom mode
+      expect(screen.getByPlaceholderText('New branch name')).toBeTruthy();
+    });
+
+    it('should show dynamic label based on branchNameMode', async () => {
+      const user = userEvent.setup();
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // In custom mode (default), label should say "(optional)"
+      expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
+
+      // Type a prompt to auto-switch to prompt mode
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Add feature');
+
+      // In prompt mode, label should NOT say "(optional)"
+      await waitFor(() => {
+        expect(screen.getByText('Initial prompt')).toBeTruthy();
+        expect(screen.queryByText('Initial prompt (optional)')).toBeNull();
+      });
+    });
+  });
+
+  describe('branchNameMode auto-switch', () => {
+    it('should switch from prompt to custom when prompt is cleared', async () => {
+      const user = userEvent.setup();
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Type a prompt to switch to prompt mode
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Add feature');
+
+      await waitFor(() => {
+        const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
+        expect(promptRadio.checked).toBe(true);
+      });
+
+      // Clear the prompt
+      await user.clear(promptInput);
+
+      // Should auto-switch back to custom mode
+      await waitFor(() => {
+        const customRadio = screen.getByLabelText(/Custom name \(new branch\)/) as HTMLInputElement;
+        expect(customRadio.checked).toBe(true);
+      });
+    });
+
+    it('should not auto-switch to prompt when custom branch is already filled', async () => {
+      const user = userEvent.setup();
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Fill in custom branch name first (in default custom mode)
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/my-branch');
+
+      // Now type a prompt - should NOT switch to prompt mode because customBranch is filled
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/);
+      await user.type(promptInput, 'Add feature');
+
+      // Should stay in custom mode
+      const customRadio = screen.getByLabelText(/Custom name \(new branch\)/) as HTMLInputElement;
+      expect(customRadio.checked).toBe(true);
+    });
+
+    it('should keep prompt mode when prefillValues includes initialPrompt', async () => {
+      renderCreateWorktreeForm({
+        prefillValues: {
+          initialPrompt: 'Fix the bug from issue #123',
+          branchNameMode: 'prompt',
+        },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Should be in prompt mode (from prefill)
+      const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
+      expect(promptRadio.checked).toBe(true);
+
+      // Prompt should be prefilled
+      const promptInput = screen.getByPlaceholderText(/What do you want to work on/) as HTMLTextAreaElement;
+      expect(promptInput.value).toBe('Fix the bug from issue #123');
+    });
+
+    it('should default to prompt mode when prefillValues has initialPrompt without explicit branchNameMode', async () => {
+      renderCreateWorktreeForm({
+        prefillValues: {
+          initialPrompt: 'Fix the bug',
+        },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // Should be in prompt mode (inferred from non-empty initialPrompt)
+      const promptRadio = screen.getByLabelText(/Auto-generate/) as HTMLInputElement;
+      expect(promptRadio.checked).toBe(true);
     });
   });
 
