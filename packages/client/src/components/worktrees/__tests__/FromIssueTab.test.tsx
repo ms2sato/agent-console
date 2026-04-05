@@ -175,7 +175,7 @@ describe('FromIssueTab', () => {
 
       // Wait for Phase 2: CreateWorktreeForm fields appear
       await waitFor(() => {
-        expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
+        expect(screen.getByText('Initial prompt')).toBeTruthy();
       });
     }
 
@@ -192,7 +192,7 @@ describe('FromIssueTab', () => {
       await fetchIssue(user);
 
       // CreateWorktreeForm fields should now be visible
-      expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
+      expect(screen.getByText('Initial prompt')).toBeTruthy();
       expect(screen.getByText('Title (optional)')).toBeTruthy();
       expect(screen.getByText('Branch name:')).toBeTruthy();
 
@@ -318,7 +318,7 @@ describe('FromIssueTab', () => {
 
       // Wait for Phase 2
       await waitFor(() => {
-        expect(screen.getByText('Initial prompt (optional)')).toBeTruthy();
+        expect(screen.getByText('Initial prompt')).toBeTruthy();
       });
 
       // The prompt should be prefilled with ref URL + title (since body is empty)
