@@ -106,7 +106,9 @@ This script:
 1. Auto-detects the repository from `git remote` (override with `GITHUB_REPOSITORY` env var)
 2. Creates a `qa-screenshots` GitHub Release if it doesn't exist (one-time, used as image hosting)
 3. Uploads all `.png` files from `.qa-screenshots/` with unique names
-4. Posts a PR comment with embedded thumbnail images (click for full size)
+4. Posts a PR comment with static thumbnails and expandable full-size images via `<details>`
+
+**Note:** GitHub Release assets are served with `Content-Disposition: attachment`, so `<a href>` links trigger downloads instead of displaying images. The script uses `<details><summary>` to work around this.
 
 If the PR number is not known, detect it:
 ```bash

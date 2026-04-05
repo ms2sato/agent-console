@@ -17,12 +17,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run coverage check
+      - name: Run preflight check
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node .claude/skills/orchestrator/acceptance-check.js ${{ github.event.pull_request.number }} --check-only > coverage-result.txt 2>&1 || true
+          node .claude/skills/orchestrator/preflight-check.js ${{ github.event.pull_request.number }} > coverage-result.txt 2>&1 || true
           cat coverage-result.txt
 
       - name: Post PR comment
@@ -34,4 +34,4 @@ jobs:
       - name: Fail if gaps detected
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node .claude/skills/orchestrator/acceptance-check.js ${{ github.event.pull_request.number }} --check-only
+        run: node .claude/skills/orchestrator/preflight-check.js ${{ github.event.pull_request.number }}

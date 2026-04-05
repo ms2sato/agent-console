@@ -7,6 +7,8 @@ import {
   requiresTestCoverage,
   findTestFiles,
   detectIntegrationTestNeeds,
+} from '../check-utils.js';
+import {
   createStdinReader,
   getQuestions,
   printQuestion,
