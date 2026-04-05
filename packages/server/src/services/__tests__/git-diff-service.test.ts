@@ -7,6 +7,7 @@ import {
   calculateBaseCommit,
   resolveRef,
   getDiffData,
+  getFileDiff,
   getFileLines,
 } from '../git-diff-service.js';
 
@@ -248,6 +249,67 @@ describe('GitDiffService', () => {
       // Should still process the valid file
       expect(result.summary.files).toHaveLength(1);
       expect(result.summary.files[0].path).toBe('valid-file.ts');
+    });
+  });
+
+  describe('getFileDiff', () => {
+    it('should use targeted git diff command with -- file path', async () => {
+      const expectedDiff = 'diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -1,3 +1,4 @@\n line1\n+new line\n line2\n';
+      mockGit.gitRaw.mockResolvedValue(expectedDiff);
+
+      const result = await getFileDiff('/repo/path', 'base-commit', 'src/file.ts');
+
+      expect(result).toBe(expectedDiff);
+      expect(mockGit.gitRaw).toHaveBeenCalledWith(
+        ['diff', 'base-commit', '--', 'src/file.ts'],
+        '/repo/path'
+      );
+      // Should NOT call getDiff (full repo diff)
+      expect(mockGit.getDiff).not.toHaveBeenCalled();
+    });
+
+    it('should return empty string for invalid file path', async () => {
+      const result = await getFileDiff('/repo/path', 'base-commit', '../etc/passwd');
+
+      expect(result).toBe('');
+      expect(mockGit.gitRaw).not.toHaveBeenCalled();
+    });
+
+    it('should fallback to untracked file diff when git diff returns empty', async () => {
+      // generateUntrackedFileDiff reads the actual file, so use a temp directory
+      const tmpDir = join('/tmp', `getFileDiff-test-${Date.now()}`);
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(join(tmpDir, 'new-file.ts'), 'console.log("hello");\n');
+
+      try {
+        mockGit.gitRaw.mockResolvedValue('');
+        mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+
+        const result = await getFileDiff(tmpDir, 'base-commit', 'new-file.ts');
+
+        expect(result).not.toBe('');
+        expect(result).toContain('diff --git a/new-file.ts b/new-file.ts');
+        expect(mockGit.getUntrackedFiles).toHaveBeenCalledWith(tmpDir);
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should return empty string when file has no changes and is not untracked', async () => {
+      mockGit.gitRaw.mockResolvedValue('');
+      mockGit.getUntrackedFiles.mockResolvedValue([]);
+
+      const result = await getFileDiff('/repo/path', 'base-commit', 'unchanged-file.ts');
+
+      expect(result).toBe('');
+    });
+
+    it('should return empty string on git error', async () => {
+      mockGit.gitRaw.mockRejectedValue(new Error('git error'));
+
+      const result = await getFileDiff('/repo/path', 'bad-commit', 'src/file.ts');
+
+      expect(result).toBe('');
     });
   });
 
