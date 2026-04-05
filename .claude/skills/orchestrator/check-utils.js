@@ -254,13 +254,13 @@ export function getAcceptanceCriteria(issueNumber) {
 // --- CI status check ---
 
 export function getCiStatus(prNumber) {
-  const result = exec(`gh pr checks ${prNumber} --json name,state,conclusion 2>/dev/null`);
+  const result = exec(`gh pr checks ${prNumber} --json name,state,bucket 2>/dev/null`);
   if (!result) return null;
   try {
     const checks = JSON.parse(result);
-    const failed = checks.filter(c => c.conclusion === 'FAILURE' || c.conclusion === 'failure');
-    const pending = checks.filter(c => c.state === 'PENDING' || c.state === 'pending' || c.state === 'IN_PROGRESS');
-    const passed = checks.filter(c => c.conclusion === 'SUCCESS' || c.conclusion === 'success');
+    const failed = checks.filter(c => c.bucket === 'fail');
+    const pending = checks.filter(c => c.bucket === 'pending');
+    const passed = checks.filter(c => c.bucket === 'pass');
     return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
   } catch {
     return null;

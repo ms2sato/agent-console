@@ -104,7 +104,11 @@ export { run };
 const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('preflight-check.js');
 if (isMainModule) {
   const prNumber = process.argv[2];
-  const changedFiles = (prNumber && /^\d+$/.test(prNumber))
+  if (prNumber && !/^\d+$/.test(prNumber)) {
+    console.error(`Invalid PR number: ${prNumber}`);
+    process.exit(1);
+  }
+  const changedFiles = prNumber
     ? getChangedFiles(prNumber)
     : getLocalChangedFiles();
   run(changedFiles);
