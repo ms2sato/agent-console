@@ -24,6 +24,9 @@ import {
   getAcceptanceCriteria,
   getCiStatus,
   detectIntegrationTestNeeds,
+  getProposedBehavior,
+  getPrDiff,
+  checkProposedBehaviorCoverage,
 } from './check-utils.js';
 
 // --- Utility ---
@@ -77,8 +80,14 @@ function runAutoDetection(prNumber) {
 
   const linkedIssue = getLinkedIssueNumber(prNumber);
   let acceptanceCriteria = [];
+  let proposedBehaviorCoverage = [];
   if (linkedIssue) {
     acceptanceCriteria = getAcceptanceCriteria(linkedIssue);
+    const proposedItems = getProposedBehavior(linkedIssue);
+    if (proposedItems.length > 0) {
+      const prDiff = getPrDiff(prNumber);
+      proposedBehaviorCoverage = checkProposedBehaviorCoverage(proposedItems, prDiff);
+    }
   }
 
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
@@ -92,6 +101,7 @@ function runAutoDetection(prNumber) {
     boundaries,
     linkedIssue,
     acceptanceCriteria,
+    proposedBehaviorCoverage,
     ciStatus,
     integrationTestNeeds,
   };
@@ -137,8 +147,39 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
   console.log();
 }
 
+function printProposedBehaviorCoverage(proposedBehaviorCoverage, linkedIssue) {
+  if (proposedBehaviorCoverage.length === 0) return;
+
+  console.log(`[Issue #${linkedIssue} Proposed Behavior -> PR Diff Keyword Check]`);
+  console.log();
+
+  let hasWarning = false;
+  for (let i = 0; i < proposedBehaviorCoverage.length; i++) {
+    const { item, keywords, matched, matchedKeywords } = proposedBehaviorCoverage[i];
+    const num = i + 1;
+    if (matched) {
+      console.log(`  ✅ ${num}. ${item}`);
+      console.log(`     Matched keywords: ${matchedKeywords.join(', ')}`);
+    } else if (keywords.length === 0) {
+      console.log(`  ⬜ ${num}. ${item}`);
+      console.log('     No extractable keywords — manual verification needed');
+    } else {
+      console.log(`  ⚠ ${num}. ${item}`);
+      console.log(`     Expected keywords not found in diff: ${keywords.join(', ')}`);
+      hasWarning = true;
+    }
+  }
+  console.log();
+
+  if (hasWarning) {
+    console.log('  ⚠ Some Proposed Behavior items may not be implemented in this PR.');
+    console.log('  Verify manually whether the PR addresses all proposed items.');
+    console.log();
+  }
+}
+
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, ciStatus, integrationTestNeeds } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, proposedBehaviorCoverage, ciStatus, integrationTestNeeds } = autoDetection;
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
@@ -239,6 +280,11 @@ function printAutoDetection(autoDetection) {
   } else {
     console.log('[No linked Issue] No "closed #NNN" pattern found in PR body.');
     console.log();
+  }
+
+  // Proposed behavior coverage
+  if (linkedIssue) {
+    printProposedBehaviorCoverage(proposedBehaviorCoverage, linkedIssue);
   }
 
   // Integration test adequacy prompt
@@ -394,6 +440,7 @@ export {
   printQuestion,
   printSummary,
   printPostAcceptanceWorkflow,
+  printProposedBehaviorCoverage,
 };
 
 // --- Main ---
