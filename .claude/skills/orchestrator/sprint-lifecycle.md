@@ -26,6 +26,7 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
 - Task progression, acceptance checks, merges
 - When new gotchas are discovered, append them to `memory/project_sprint_status.md` (Claude memory) immediately
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
+- **Idle time utilization**: When waiting for agent completion or owner approval and **active worktrees are ≤1**, consider running `review-loop` on the full codebase or specific packages. This catches systemic issues and makes productive use of wait time. Do NOT run review-loop when many worktrees are active — it competes for compute resources.
 
 ## Retrospective Collection and Process Improvement
 
