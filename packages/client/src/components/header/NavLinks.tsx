@@ -149,8 +149,11 @@ export function RestartAllAgentsButton() {
       }
       setTimeout(() => setResultMessage(null), 3000);
     },
-    onError: () => {
+    onError: (err) => {
       setConfirmOpen(false);
+      const message = err instanceof Error ? err.message : 'Failed to restart agents.';
+      setResultMessage(message);
+      setTimeout(() => setResultMessage(null), 5000);
     },
   });
 
