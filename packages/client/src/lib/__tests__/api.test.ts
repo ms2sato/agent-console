@@ -7,6 +7,7 @@ import {
   createWorker,
   deleteWorker,
   restartAgentWorker,
+  restartAllAgentWorkers,
   fetchRepositories,
   registerRepository,
   unregisterRepository,
@@ -276,6 +277,19 @@ describe('API Client', () => {
       const body = await getLastFetchBody();
       expect(body).toEqual({ continueConversation: false });
       expect(body).not.toHaveProperty('agentId');
+    });
+  });
+
+  describe('restartAllAgentWorkers', () => {
+    it('should call restart-all-agents endpoint', async () => {
+      const mockResult = { restarted: 2, failed: 0, results: [] };
+      mockFetch.mockResolvedValue(createMockResponse(mockResult));
+
+      const result = await restartAllAgentWorkers();
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/restart-all-agents');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual(mockResult);
     });
   });
 

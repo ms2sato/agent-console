@@ -2774,4 +2774,37 @@ describe('MCP Server Tools', () => {
       }
     });
   });
+
+  // ===========================================================================
+  // restart_all_agents
+  // ===========================================================================
+
+  describe('restart_all_agents', () => {
+    it('should restart all agent workers and return summary', async () => {
+      // Create a session with an agent worker
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++);
+      const data = parseToolResult(response) as { restarted: number; failed: number; results: unknown[] };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.restarted).toBe(1);
+      expect(data.failed).toBe(0);
+      expect(data.results).toHaveLength(1);
+    });
+
+    it('should return empty results when no sessions exist', async () => {
+      const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++);
+      const data = parseToolResult(response) as { restarted: number; failed: number; results: unknown[] };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.restarted).toBe(0);
+      expect(data.failed).toBe(0);
+      expect(data.results).toHaveLength(0);
+    });
+  });
 });
