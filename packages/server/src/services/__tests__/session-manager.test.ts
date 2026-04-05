@@ -3553,17 +3553,30 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      // Delete session1 from memory to simulate a failure scenario
-      // (restartAgentWorker returns null when session not found)
-      await manager.deleteSession(session1.id);
+      // Stub restartAgentWorker to fail for session1 and succeed for session2
+      const originalRestart = manager.restartAgentWorker.bind(manager);
+      manager.restartAgentWorker = mock(
+        async (...args: Parameters<typeof originalRestart>) => {
+          const [targetSessionId] = args;
+          if (targetSessionId === session1.id) {
+            throw new Error('simulated failure');
+          }
+          return originalRestart(...args);
+        },
+      );
 
       const result = await manager.restartAllAgentWorkers();
 
-      // Only session2's agent should be restarted
+      // One failure should not block other restarts
       expect(result.restarted).toBe(1);
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0].sessionId).toBe(session2.id);
-      expect(result.results[0].success).toBe(true);
+      expect(result.failed).toBe(1);
+      expect(result.results).toHaveLength(2);
+      expect(result.results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sessionId: session1.id, success: false }),
+          expect.objectContaining({ sessionId: session2.id, success: true }),
+        ]),
+      );
     });
   });
 });
