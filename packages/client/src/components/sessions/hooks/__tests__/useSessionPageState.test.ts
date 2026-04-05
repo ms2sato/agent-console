@@ -263,6 +263,95 @@ describe('useSessionPageState', () => {
     })
   })
 
+  describe('session switching', () => {
+    it('should reset activity states when sessionId changes', async () => {
+      // Start with session-1 which has known activity states
+      const session1 = createMockSession({ id: 'session-1', status: 'active' })
+      const session2 = createMockSession({ id: 'session-2', status: 'active' })
+      getSessionResponse = session1
+
+      const rootActivityStates = {
+        'session-1': {
+          'agent-worker-1': 'active' as AgentActivityState,
+        },
+        'session-2': {
+          'agent-worker-1': 'idle' as AgentActivityState,
+        },
+      }
+
+      const refs = createMockRefs()
+      refs.activeTabIdRef.current = 'agent-worker-1'
+
+      // Mount with session-1
+      const { result, rerender } = renderHook(
+        (props: { sessionId: string }) => useSessionPageState({
+          sessionId: props.sessionId,
+          updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+          activeTabIdRef: refs.activeTabIdRef,
+        }),
+        {
+          wrapper: createContextWrapper(rootActivityStates),
+          initialProps: { sessionId: 'session-1' },
+        },
+      )
+
+      await act(async () => {})
+
+      expect(result.current.activityState).toBe('active')
+
+      // Switch to session-2
+      getSessionResponse = session2
+      await act(async () => {
+        rerender({ sessionId: 'session-2' })
+      })
+
+      // Should show session-2's activity state, not session-1's
+      expect(result.current.activityState).toBe('idle')
+      expect(result.current.workerActivityStates).toEqual({
+        'agent-worker-1': 'idle',
+      })
+    })
+
+    it('should reset to unknown when new session has no activity data', async () => {
+      const session1 = createMockSession({ id: 'session-1', status: 'active' })
+      const session2 = createMockSession({ id: 'session-2', status: 'active' })
+      getSessionResponse = session1
+
+      const rootActivityStates = {
+        'session-1': {
+          'agent-worker-1': 'active' as AgentActivityState,
+        },
+      }
+
+      const refs = createMockRefs()
+      refs.activeTabIdRef.current = 'agent-worker-1'
+
+      const { result, rerender } = renderHook(
+        (props: { sessionId: string }) => useSessionPageState({
+          sessionId: props.sessionId,
+          updateTabsFromSessionRef: refs.updateTabsFromSessionRef,
+          activeTabIdRef: refs.activeTabIdRef,
+        }),
+        {
+          wrapper: createContextWrapper(rootActivityStates),
+          initialProps: { sessionId: 'session-1' },
+        },
+      )
+
+      await act(async () => {})
+      expect(result.current.activityState).toBe('active')
+
+      // Switch to session-2 (no activity data in root context)
+      getSessionResponse = session2
+      await act(async () => {
+        rerender({ sessionId: 'session-2' })
+      })
+
+      expect(result.current.activityState).toBe('unknown')
+      expect(result.current.workerActivityStates).toEqual({})
+    })
+  })
+
   describe('retryLoadSession', () => {
     it('should re-trigger session load on retryLoadSession', async () => {
       getSessionResponse = 'throw-server-unavailable'

@@ -619,7 +619,7 @@ export async function setupWebSocketRoutes(
         // Send current activity state on connection (for agent workers)
         if (workerType === 'agent') {
           const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
-          if (activityState && activityState !== 'unknown') {
+          if (activityState) {
             sender?.send({ type: 'activity', state: activityState });
           }
         }
