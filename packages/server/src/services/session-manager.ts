@@ -841,4 +841,45 @@ export class SessionManager {
   private toPublicSession(session: InternalSession): Session {
     return this.sessionConverterService.toPublicSession(session);
   }
+
+  // ========== Bulk Operations ==========
+
+  /**
+   * Restart all active agent workers across all in-memory sessions.
+   * Executes sequentially to avoid resource spikes.
+   * Each failure is logged and recorded but doesn't block other restarts.
+   */
+  async restartAllAgentWorkers(): Promise<{
+    restarted: number;
+    failed: number;
+    results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }>;
+  }> {
+    const results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }> = [];
+
+    for (const session of this.sessions.values()) {
+      for (const worker of session.workers.values()) {
+        if (worker.type !== 'agent') continue;
+
+        try {
+          const restarted = await this.restartAgentWorker(session.id, worker.id, false);
+          if (restarted) {
+            results.push({ sessionId: session.id, workerId: worker.id, success: true });
+          } else {
+            results.push({ sessionId: session.id, workerId: worker.id, success: false, error: 'restart returned null' });
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          logger.error({ sessionId: session.id, workerId: worker.id, err }, 'Failed to restart agent worker in bulk operation');
+          results.push({ sessionId: session.id, workerId: worker.id, success: false, error: message });
+        }
+      }
+    }
+
+    const restarted = results.filter((r) => r.success).length;
+    const failed = results.filter((r) => !r.success).length;
+
+    logger.info({ restarted, failed }, 'Bulk restart all agent workers completed');
+
+    return { restarted, failed, results };
+  }
 }

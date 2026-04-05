@@ -234,4 +234,48 @@ describe('Sessions API - Pause/Resume', () => {
       expect(body.session.id).toBe(session.id);
     });
   });
+
+  // ===========================================================================
+  // POST /api/sessions/restart-all-agents
+  // ===========================================================================
+
+  describe('POST /api/sessions/restart-all-agents', () => {
+    it('should restart all agent workers and return summary', async () => {
+      // Create two sessions with agent workers
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path1',
+        agentId: 'claude-code',
+      });
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path2',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request('/api/sessions/restart-all-agents', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { restarted: number; failed: number; results: unknown[] };
+      expect(body.restarted).toBe(2);
+      expect(body.failed).toBe(0);
+      expect(body.results).toHaveLength(2);
+    });
+
+    it('should return empty results when no sessions exist', async () => {
+      const res = await app.request('/api/sessions/restart-all-agents', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { restarted: number; failed: number; results: unknown[] };
+      expect(body.restarted).toBe(0);
+      expect(body.failed).toBe(0);
+      expect(body.results).toHaveLength(0);
+    });
+  });
 });

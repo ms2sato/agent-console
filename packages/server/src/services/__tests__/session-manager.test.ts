@@ -3475,4 +3475,95 @@ describe('SessionManager', () => {
       // Callback is stored and will be called on session deletion (tested in session-deletion-service.test.ts)
     });
   });
+
+  describe('restartAllAgentWorkers', () => {
+    it('should restart agent workers across multiple sessions', async () => {
+      const manager = await getSessionManager();
+
+      const session1 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path1',
+        agentId: 'claude-code',
+      });
+      const session2 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path2',
+        agentId: 'claude-code',
+      });
+
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const result = await manager.restartAllAgentWorkers();
+
+      expect(result.restarted).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(result.results).toHaveLength(2);
+      expect(result.results.every((r: { success: boolean }) => r.success)).toBe(true);
+      // Each restart should create a new PTY
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 2);
+
+      // Verify both sessions are represented
+      const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
+      expect(sessionIds).toContain(session1.id);
+      expect(sessionIds).toContain(session2.id);
+    });
+
+    it('should only restart agent workers, not terminal workers', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Add a terminal worker
+      await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+
+      const result = await manager.restartAllAgentWorkers();
+
+      // Only the agent worker should be restarted (not terminal, not git-diff)
+      expect(result.restarted).toBe(1);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].success).toBe(true);
+    });
+
+    it('should return empty results when no sessions exist', async () => {
+      const manager = await getSessionManager();
+
+      const result = await manager.restartAllAgentWorkers();
+
+      expect(result.restarted).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.results).toHaveLength(0);
+    });
+
+    it('should continue restarting when one fails', async () => {
+      const manager = await getSessionManager();
+
+      // Create two sessions
+      const session1 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path1',
+        agentId: 'claude-code',
+      });
+      const session2 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path2',
+        agentId: 'claude-code',
+      });
+
+      // Delete session1 from memory to simulate a failure scenario
+      // (restartAgentWorker returns null when session not found)
+      await manager.deleteSession(session1.id);
+
+      const result = await manager.restartAllAgentWorkers();
+
+      // Only session2's agent should be restarted
+      expect(result.restarted).toBe(1);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].sessionId).toBe(session2.id);
+      expect(result.results[0].success).toBe(true);
+    });
+  });
 });

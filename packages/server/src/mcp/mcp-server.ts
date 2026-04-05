@@ -1221,6 +1221,26 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: restart_all_agents ----------
+
+  mcpServer.tool(
+    'restart_all_agents',
+    'Restart all active agent workers across all sessions. ' +
+      'Useful when agents have been updated and need to be restarted in bulk. ' +
+      'Only agent workers are restarted; terminal workers are left untouched.',
+    {},
+    async () => {
+      try {
+        const result = await sessionManager.restartAllAgentWorkers();
+        return textResult(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err }, 'restart_all_agents failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Hono app ----------
 
   const mcpApp = new Hono();

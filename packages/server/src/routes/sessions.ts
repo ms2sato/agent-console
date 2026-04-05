@@ -12,6 +12,12 @@ import { getOrgRepoFromPath } from '../lib/git.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
+  // Restart all active agent workers across all sessions
+  .post('/restart-all-agents', async (c) => {
+    const { sessionManager } = c.get('appContext');
+    const result = await sessionManager.restartAllAgentWorkers();
+    return c.json(result);
+  })
   // Validate all sessions
   .get('/validate', async (c) => {
     const { sessionManager } = c.get('appContext');
