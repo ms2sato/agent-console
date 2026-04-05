@@ -470,6 +470,103 @@ describe('InteractiveProcessManager', () => {
     });
   });
 
+  describe('output flush before exit', () => {
+    it('should call onOutput before onExit when process exits with error after producing output', async () => {
+      // This tests the race condition fix for #611: subprocess.exited could resolve
+      // before readStream finished flushing output, causing onExit to fire before onOutput.
+      const callOrder: string[] = [];
+      const orderTrackingOnOutput = mock((..._args: unknown[]) => {
+        callOrder.push('onOutput');
+      });
+      const orderTrackingOnExit = mock((..._args: unknown[]) => {
+        callOrder.push('onExit');
+      });
+      const orderManager = new InteractiveProcessManager(
+        orderTrackingOnOutput,
+        orderTrackingOnExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+      );
+
+      await orderManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo "error-output" && exit 1',
+      });
+
+      // Wait for exit
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (orderTrackingOnExit.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(orderTrackingOnOutput).toHaveBeenCalled();
+      expect(orderTrackingOnExit).toHaveBeenCalled();
+
+      // Verify output was delivered before exit notification
+      const outputIndex = callOrder.indexOf('onOutput');
+      const exitIndex = callOrder.indexOf('onExit');
+      expect(outputIndex).toBeLessThan(exitIndex);
+
+      orderManager.disposeAll();
+    });
+
+    it('should call onOutput before onExit when process exits after writeResponse', async () => {
+      // Simulates the #611 scenario: writeResponse sends content, process errors and exits.
+      // The output from the process must be flushed (onOutput) before onExit.
+      const callOrder: string[] = [];
+      const orderTrackingOnOutput = mock((..._args: unknown[]) => {
+        callOrder.push('onOutput');
+      });
+      const orderTrackingOnExit = mock((..._args: unknown[]) => {
+        callOrder.push('onExit');
+      });
+      const orderManager = new InteractiveProcessManager(
+        orderTrackingOnOutput,
+        orderTrackingOnExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+      );
+
+      const script = `
+        const iter = process.stdin[Symbol.asyncIterator]();
+        const { value } = await iter.next();
+        const input = Buffer.from(value).toString().replace('\\0', '').trim();
+        console.log('received: ' + input);
+        process.exit(1);
+      `;
+      const processInfo = await orderManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: `bun -e "${script.replace(/"/g, '\\"')}"`,
+      });
+
+      // Wait for process to start, then send response
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await orderManager.writeResponse(processInfo.id, 'test-input');
+
+      // Wait for exit
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (orderTrackingOnExit.mock.calls.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(orderTrackingOnOutput).toHaveBeenCalled();
+      expect(orderTrackingOnExit).toHaveBeenCalled();
+
+      // Verify output was delivered before exit notification
+      const outputIndex = callOrder.indexOf('onOutput');
+      const exitIndex = callOrder.indexOf('onExit');
+      expect(outputIndex).toBeLessThan(exitIndex);
+
+      // Verify the exit code
+      const [exitInfo] = orderTrackingOnExit.mock.calls[0] as [{ exitCode: number }];
+      expect(exitInfo.exitCode).toBe(1);
+
+      orderManager.disposeAll();
+    });
+  });
+
   describe('output buffering', () => {
     it('should buffer rapid output and call onOutput once with combined text', async () => {
       // Script outputs 10 lines rapidly with no delay between them.

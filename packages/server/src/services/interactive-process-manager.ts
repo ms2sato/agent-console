@@ -10,6 +10,8 @@ interface StoredProcess {
   info: InteractiveProcessInfo;
   subprocess: Subprocess<'pipe', 'pipe', 'pipe'>;
   stdin: FileSink;
+  /** Resolves when both stdout and stderr have been fully read and flushed. */
+  streamsDone: Promise<void>;
 }
 
 export interface ProcessOutputCallback {
@@ -82,26 +84,32 @@ export class InteractiveProcessManager {
       cwd,
     });
 
+    // Track stream completion so the exit handler can wait for all output to flush.
+    const streamsDone = Promise.all([
+      this.readStream(id, subprocess.stdout).catch((err) => {
+        logger.warn({ processId: id, err }, 'stdout read stream error');
+      }),
+      this.readStream(id, subprocess.stderr).catch((err) => {
+        logger.warn({ processId: id, err }, 'stderr read stream error');
+      }),
+    ]).then(() => {});
+
     const stored: StoredProcess = {
       info,
       subprocess,
       stdin: subprocess.stdin,
+      streamsDone,
     };
     this.processes.set(id, stored);
 
-    // Read stdout asynchronously
-    void this.readStream(id, subprocess.stdout).catch((err) => {
-      logger.warn({ processId: id, err }, 'stdout read stream error');
-    });
-    // Also capture stderr and send as output
-    void this.readStream(id, subprocess.stderr).catch((err) => {
-      logger.warn({ processId: id, err }, 'stderr read stream error');
-    });
-
-    // Monitor process exit
-    subprocess.exited.then((exitCode) => {
+    // Monitor process exit — wait for streams to be fully read before calling onExit.
+    // This prevents the race where subprocess.exited resolves before readStream
+    // finishes flushing output, which would cause the delayed \r from
+    // writePtyNotification (sent by onOutput) to arrive after the exit notification.
+    subprocess.exited.then(async (exitCode) => {
       const current = this.processes.get(id);
       if (current) {
+        await current.streamsDone;
         current.info.status = 'exited';
         current.info.exitCode = exitCode;
         logger.info({ processId: id, exitCode }, 'Process exited');
