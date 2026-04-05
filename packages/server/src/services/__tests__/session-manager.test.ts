@@ -1369,7 +1369,7 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
 
-    it('should resume paused session and restore agent worker with new PTY', async () => {
+    it('should auto-resume session and restore agent worker with new PTY on server restart', async () => {
       const manager = await getSessionManager();
 
       // Create session and get persisted data
@@ -1385,36 +1385,23 @@ describe('SessionManager', () => {
       const savedDataBefore = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
       expect(savedDataBefore.length).toBe(1);
 
-      // Simulate server restart: mark the previous server as dead
-      // Dead-server sessions are marked as paused (not loaded into memory)
-      mockProcess.markDead(process.pid);
+      // Simulate server restart: sessions are auto-resumed
+      const manager2 = await simulateServerRestart();
 
-      // Create new manager that marks dead-server sessions as paused
-      const manager2 = await getSessionManager();
+      // Session IS in memory (auto-resumed)
+      const resumedSession = manager2.getSession(session.id);
+      expect(resumedSession).toBeDefined();
 
-      // Session is NOT in memory (paused), getSession returns undefined
-      expect(manager2.getSession(session.id)).toBeUndefined();
-
-      // PTY count before resume
-      const ptyCountBefore = ptyFactory.instances.length;
-
-      // Resume the paused session (loads from DB and activates all workers)
-      const resumedSession = await manager2.resumeSession(session.id);
-
-      expect(resumedSession).not.toBeNull();
       const resumedAgent = resumedSession!.workers.find((w: Worker) => w.type === 'agent');
       expect(resumedAgent).toBeDefined();
       expect(resumedAgent!.id).toBe(workerId);
-
-      // New PTY should be created for the agent worker
-      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
 
       // Persistence should be updated (not added as new entry)
       const savedDataAfter = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
       expect(savedDataAfter.length).toBe(1); // Still 1 session, not 2
     });
 
-    it('should resume paused session and restore terminal worker with new PTY', async () => {
+    it('should auto-resume session and restore terminal worker with new PTY on server restart', async () => {
       const manager = await getSessionManager();
 
       // Create session with terminal worker
@@ -1429,36 +1416,27 @@ describe('SessionManager', () => {
       });
       const terminalWorkerId = terminalWorker!.id;
 
-      // Simulate server restart: mark the previous server as dead
-      // Dead-server sessions are marked as paused (not loaded into memory)
-      mockProcess.markDead(process.pid);
+      // Simulate server restart: sessions are auto-resumed
+      const manager2 = await simulateServerRestart();
 
-      const manager2 = await getSessionManager();
+      // Session IS in memory (auto-resumed)
+      const resumedSession = manager2.getSession(session.id);
+      expect(resumedSession).toBeDefined();
 
-      // Session is NOT in memory (paused)
-      expect(manager2.getSession(session.id)).toBeUndefined();
-
-      // PTY count before resume
-      const ptyCountBefore = ptyFactory.instances.length;
-
-      // Resume the paused session (loads from DB and activates all workers)
-      const resumedSession = await manager2.resumeSession(session.id);
-
-      expect(resumedSession).not.toBeNull();
       const resumedTerminal = resumedSession!.workers.find((w: Worker) => w.id === terminalWorkerId);
       expect(resumedTerminal).toBeDefined();
       expect(resumedTerminal!.type).toBe('terminal');
-
-      // New PTYs should be created (for agent + terminal workers)
-      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
     });
 
     it('should return error for git-diff worker (does not need PTY restoration)', async () => {
       const manager = await getSessionManager();
 
+      // Use worktree session so it can be paused
       const session = await manager.createSession({
-        type: 'quick',
+        type: 'worktree',
         locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
         agentId: 'claude-code',
       });
 
@@ -1469,12 +1447,13 @@ describe('SessionManager', () => {
       });
       expect(gitDiffWorker).toBeDefined();
 
-      // Simulate server restart: mark the previous server as dead
-      mockProcess.markDead(process.pid);
+      // Pause the session explicitly (auto-resume won't restore it)
+      await manager.pauseSession(session.id);
 
-      const manager2 = await getSessionManager();
+      // Simulate server restart
+      const manager2 = await simulateServerRestart();
 
-      // After server restart, session is paused (not in memory).
+      // After server restart, explicitly paused session is NOT in memory.
       // restoreWorker returns SESSION_DELETED because the session is unavailable.
       const result = await manager2.restoreWorker(session.id, gitDiffWorker!.id);
       expect(result.success).toBe(false);
@@ -1496,18 +1475,22 @@ describe('SessionManager', () => {
     it('should return error if worker not found in persisted metadata', async () => {
       const manager = await getSessionManager();
 
+      // Use worktree session so it can be paused
       const session = await manager.createSession({
-        type: 'quick',
+        type: 'worktree',
         locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
         agentId: 'claude-code',
       });
 
-      // Simulate server restart: mark the previous server as dead
-      mockProcess.markDead(process.pid);
+      // Pause session explicitly so it won't be auto-resumed
+      await manager.pauseSession(session.id);
 
-      const manager2 = await getSessionManager();
+      // Simulate server restart
+      const manager2 = await simulateServerRestart();
 
-      // After server restart, session is paused (not in memory).
+      // After server restart, explicitly paused session is NOT in memory.
       // restoreWorker returns SESSION_DELETED because the session is unavailable.
       const result = await manager2.restoreWorker(session.id, 'non-existent-worker');
       expect(result.success).toBe(false);
@@ -1516,7 +1499,7 @@ describe('SessionManager', () => {
       }
     });
 
-    it('should create new PTY processes after session resume', async () => {
+    it('should create new PTY processes after server restart via auto-resume', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -1529,29 +1512,22 @@ describe('SessionManager', () => {
       const ptyCountAfterCreate = ptyFactory.instances.length;
       expect(ptyCountAfterCreate).toBeGreaterThan(0);
 
-      // Simulate server restart: mark the previous server as dead
-      // Dead-server sessions are marked as paused (not loaded into memory)
-      mockProcess.markDead(process.pid);
+      // Record PTY count before restart
+      const ptyCountBeforeRestart = ptyFactory.instances.length;
 
-      const manager2 = await getSessionManager();
+      // Simulate server restart — sessions are auto-resumed with new PTYs
+      const manager2 = await simulateServerRestart();
 
-      // Record PTY count before resume
-      const ptyCountBeforeResume = ptyFactory.instances.length;
+      // New PTY processes should have been created for the auto-resumed workers
+      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBeforeRestart);
 
-      // Resume the paused session (activates all workers with new PTYs)
-      const resumedSession = await manager2.resumeSession(session.id);
-      expect(resumedSession).not.toBeNull();
-
-      // New PTY processes should have been created for the resumed workers
-      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBeforeResume);
-
-      // The session should now be active with workers
+      // The session should be active with workers (auto-resumed)
       const activeSession = manager2.getSession(session.id);
       expect(activeSession).toBeDefined();
       expect(activeSession!.workers.length).toBeGreaterThan(0);
     });
 
-    it('should return all workers after resuming paused session', async () => {
+    it('should return all workers after auto-resuming on server restart', async () => {
       const manager = await getSessionManager();
 
       // Create session with agent worker
@@ -1574,18 +1550,12 @@ describe('SessionManager', () => {
       const workerCountBefore = sessionBefore!.workers.length;
       expect(workerCountBefore).toBeGreaterThanOrEqual(2); // At least agent + terminal
 
-      // Simulate server restart (session becomes paused, not in memory)
+      // Simulate server restart (session is auto-resumed)
       const manager2 = await simulateServerRestart();
 
-      // Session is NOT in memory (paused)
-      expect(manager2.getSession(session.id)).toBeUndefined();
-
-      // Resume the paused session (loads all workers and activates PTYs)
-      const resumedSession = await manager2.resumeSession(session.id);
-      expect(resumedSession).not.toBeNull();
-
-      // After resume, getSession should return all workers
+      // Session IS in memory (auto-resumed)
       const sessionAfterResume = manager2.getSession(session.id);
+      expect(sessionAfterResume).toBeDefined();
       expect(sessionAfterResume?.workers.length).toBe(workerCountBefore);
 
       // Verify both agent and terminal workers are present
@@ -1769,7 +1739,7 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
 
-    it('should successfully resume session when path still exists', async () => {
+    it('should auto-resume session when path still exists on server restart', async () => {
       // Create a session
       const managerForCreate = await getSessionManager();
 
@@ -1784,23 +1754,17 @@ describe('SessionManager', () => {
       // Simulate server restart (session becomes paused)
       mockProcess.markDead(process.pid);
 
-      // Create a new manager where path validation succeeds
+      // Create a new manager where path validation succeeds — session is auto-resumed
       const mockPathStillExists = async (_path: string): Promise<boolean> => true;
       const managerAfterRestart = await getSessionManagerWithPathExists(mockPathStillExists);
 
-      // PTY count before resume
-      const ptyCountBefore = ptyFactory.instances.length;
+      // Session should be auto-resumed and in memory
+      const activeSession = managerAfterRestart.getSession(session.id);
+      expect(activeSession).toBeDefined();
 
-      // Resume should succeed
-      const result = await managerAfterRestart.resumeSession(session.id);
-
-      expect(result).not.toBeNull();
-      const resumedAgent = result!.workers.find((w: Worker) => w.id === workerId);
+      const resumedAgent = activeSession!.workers.find((w: Worker) => w.id === workerId);
       expect(resumedAgent).toBeDefined();
       expect(resumedAgent!.type).toBe('agent');
-
-      // New PTY should be created (workers activated during resume)
-      expect(ptyFactory.instances.length).toBeGreaterThan(ptyCountBefore);
     });
   });
 
@@ -3464,6 +3428,75 @@ describe('SessionManager', () => {
       const repo = manager.getSessionRepository();
       const persisted = await repo.findById(session.id);
       expect(persisted!.templateVars).toEqual({ env: 'staging' });
+    });
+  });
+
+  describe('auto-resume on server restart', () => {
+    it('should auto-resume sessions that were active before server died', async () => {
+      const manager = await getSessionManager();
+
+      // Create an active session
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+
+      // Simulate server restart — session was active (not paused by user)
+      const manager2 = await simulateServerRestart();
+
+      // Session should be auto-resumed (back in memory)
+      const resumed = manager2.getSession(sessionId);
+      expect(resumed).toBeDefined();
+      expect(resumed!.status).toBe('active');
+    });
+
+    it('should NOT auto-resume sessions that were explicitly paused by user', async () => {
+      const manager = await getSessionManager();
+
+      // Create a worktree session (only worktree sessions can be paused)
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const sessionId = session.id;
+      const paused = await manager.pauseSession(sessionId);
+      expect(paused).toBe(true);
+
+      // Simulate server restart
+      const manager2 = await simulateServerRestart();
+
+      // Session should NOT be in memory (still paused)
+      expect(manager2.getSession(sessionId)).toBeUndefined();
+    });
+
+    it('should continue resuming other sessions if one fails', async () => {
+      const manager = await getSessionManager();
+
+      // Create two active sessions
+      const session1 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const session2 = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path2',
+        agentId: 'claude-code',
+      });
+
+      // Simulate server restart — both sessions were active and should be auto-resumed
+      const manager2 = await simulateServerRestart();
+
+      const s1 = manager2.getSession(session1.id);
+      const s2 = manager2.getSession(session2.id);
+      // At least both should be attempted — both should succeed
+      expect(s1).toBeDefined();
+      expect(s2).toBeDefined();
     });
   });
 

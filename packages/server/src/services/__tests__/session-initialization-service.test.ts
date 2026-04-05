@@ -82,7 +82,7 @@ describe('SessionInitializationService', () => {
   }
 
   describe('initializeSessions (via initialize)', () => {
-    it('should mark sessions with dead serverPid as paused', async () => {
+    it('should return sessions with dead serverPid as auto-resume targets', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
@@ -91,16 +91,20 @@ describe('SessionInitializationService', () => {
       // serverPid 12345 is dead (not marked alive)
 
       const { service, sessionRepository } = createService({ sessions: [session] });
-      await service.initialize();
+      const autoResumeIds = await service.initialize();
 
+      // Session should be returned as auto-resume target
+      expect(autoResumeIds).toContain('session-1');
+
+      // Session should have serverPid=null and pausedAt=undefined (ready for auto-resume)
       const saved = await sessionRepository.findAll();
       const updated = saved.find(s => s.id === 'session-1');
       expect(updated).toBeDefined();
       expect(updated!.serverPid).toBeNull();
-      expect(updated!.pausedAt).toBeDefined();
+      expect(updated!.pausedAt).toBeUndefined();
     });
 
-    it('should preserve sessions owned by live servers', async () => {
+    it('should preserve sessions owned by live servers and not return them as auto-resume targets', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
@@ -109,7 +113,9 @@ describe('SessionInitializationService', () => {
       mockProcess.markAlive(12345);
 
       const { service, sessionRepository } = createService({ sessions: [session] });
-      await service.initialize();
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('session-1');
 
       const saved = await sessionRepository.findAll();
       const preserved = saved.find(s => s.id === 'session-1');
@@ -117,7 +123,7 @@ describe('SessionInitializationService', () => {
       expect(preserved!.serverPid).toBe(12345);
     });
 
-    it('should keep paused sessions (serverPid === null) unchanged', async () => {
+    it('should keep paused sessions (serverPid === null) unchanged and not return them as auto-resume targets', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
@@ -126,12 +132,15 @@ describe('SessionInitializationService', () => {
       });
 
       const { service, sessionRepository } = createService({ sessions: [session] });
-      await service.initialize();
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('session-1');
 
       const saved = await sessionRepository.findAll();
       const preserved = saved.find(s => s.id === 'session-1');
       expect(preserved).toBeDefined();
       expect(preserved!.serverPid).toBeNull();
+      expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
     });
 
     it('should remove sessions whose locationPath no longer exists', async () => {
@@ -273,10 +282,10 @@ describe('SessionInitializationService', () => {
   });
 
   describe('initialize with empty data', () => {
-    it('should handle empty session list without errors', async () => {
+    it('should handle empty session list without errors and return empty array', async () => {
       const { service } = createService({ sessions: [] });
-      await service.initialize();
-      // Should complete without errors
+      const autoResumeIds = await service.initialize();
+      expect(autoResumeIds).toEqual([]);
     });
   });
 });

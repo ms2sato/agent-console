@@ -33,25 +33,31 @@ export class SessionInitializationService {
 
   /**
    * Initialize sessions from persistence and clean up orphan processes.
+   * @returns Session IDs that were previously active and should be auto-resumed.
    */
-  async initialize(): Promise<void> {
-    await this.initializeSessions();
+  async initialize(): Promise<string[]> {
+    const autoResumeSessionIds = await this.initializeSessions();
     await this.cleanupOrphanProcesses();
+    return autoResumeSessionIds;
   }
 
   /**
    * Process persisted sessions on startup.
-   * Sessions whose serverPid is dead (or missing) are marked as paused (serverPid = null)
-   * after killing any orphan worker processes. They are NOT loaded into memory.
+   * Sessions whose serverPid is dead (or missing) are prepared for auto-resume:
+   * orphan worker processes are killed, and the session is saved with serverPid=null
+   * but pausedAt=null so it can be auto-resumed.
+   * Sessions that were explicitly paused (serverPid === null) remain paused.
    * Sessions owned by other live servers are left untouched.
    * Sessions whose locationPath no longer exists are removed as orphans.
+   *
+   * @returns Session IDs that should be auto-resumed (were active before server died).
    */
-  private async initializeSessions(): Promise<void> {
+  private async initializeSessions(): Promise<string[]> {
     const persistedSessions = await this.deps.sessionRepository.findAll();
     const currentServerPid = this.deps.getServerPid();
     const sessionsToSave: PersistedSession[] = [];
     const orphanSessions: PersistedSession[] = [];
-    let markedPausedCount = 0;
+    const autoResumeSessionIds: string[] = [];
     let killedWorkerCount = 0;
     let pathNotFoundCount = 0;
 
@@ -89,13 +95,13 @@ export class SessionInitializationService {
       // Kill any orphan worker processes first
       killedWorkerCount += SessionInitializationService.killOrphanWorkers(session);
 
-      // Mark as paused in DB (not loaded into memory) - user can resume later
+      // Save with serverPid=null but pausedAt=undefined to indicate auto-resume target
+      const { pausedAt: _removed, ...sessionWithoutPausedAt } = session;
       sessionsToSave.push({
-        ...session,
+        ...sessionWithoutPausedAt,
         serverPid: null,
-        pausedAt: new Date().toISOString(),
       });
-      markedPausedCount++;
+      autoResumeSessionIds.push(session.id);
     }
 
     // Delete orphan sessions (path no longer exists)
@@ -116,17 +122,19 @@ export class SessionInitializationService {
       }
     }
 
-    // Save all sessions (dead-server sessions marked as paused, others unchanged)
+    // Save all sessions (dead-server sessions prepared for auto-resume, others unchanged)
     if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
       await this.deps.sessionRepository.saveAll(sessionsToSave);
     }
 
     logger.info({
-      markedPausedSessions: markedPausedCount,
+      autoResumeSessions: autoResumeSessionIds.length,
       killedWorkerProcesses: killedWorkerCount,
       removedOrphanSessions: pathNotFoundCount,
       serverPid: currentServerPid,
     }, 'Initialized sessions from persistence');
+
+    return autoResumeSessionIds;
   }
 
   /**

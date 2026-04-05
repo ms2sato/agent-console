@@ -76,7 +76,7 @@ describe('SessionManager cleanup on initialization', () => {
     return SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), agentManager: agentMgr });
   }
 
-  it('should mark legacy sessions as paused and kill worker processes', async () => {
+  it('should kill legacy session worker processes and auto-resume', async () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
@@ -100,17 +100,17 @@ describe('SessionManager cleanup on initialization', () => {
     // Mark the session process as alive
     mockProcess.markAlive(11111);
 
-    // Create SessionManager - cleanup runs during async initialization
+    // Create SessionManager - cleanup and auto-resume run during async initialization
     await createSessionManager();
 
-    // Legacy session worker should be killed (session is marked as paused)
+    // Legacy session worker should be killed before auto-resume
     expect(mockProcess.wasKilled(11111)).toBe(true);
 
-    // Session should be marked as paused
+    // Session should be auto-resumed (serverPid set to current process)
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-    const pausedSession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
-    expect(pausedSession).toBeDefined();
-    expect(pausedSession.serverPid).toBeNull();
+    const resumedSession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
+    expect(resumedSession).toBeDefined();
+    expect(resumedSession.serverPid).toBe(process.pid);
   });
 
   it('should preserve sessions when parent server is still alive', async () => {
@@ -145,7 +145,7 @@ describe('SessionManager cleanup on initialization', () => {
     expect(mockProcess.wasKilled(22222)).toBe(false);
   });
 
-  it('should kill orphan worker processes and mark session as paused when parent server is dead', async () => {
+  it('should kill orphan worker processes and auto-resume when parent server is dead', async () => {
     // Create the location path that the session references
     fs.mkdirSync('/path/to/worktree', { recursive: true });
 
@@ -173,14 +173,14 @@ describe('SessionManager cleanup on initialization', () => {
 
     await createSessionManager();
 
-    // Orphan worker process should be killed
+    // Orphan worker process should be killed before auto-resume
     expect(mockProcess.wasKilled(44444)).toBe(true);
 
-    // Session should be marked as paused (not removed)
+    // Session should be auto-resumed (serverPid set to current process)
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
-    const pausedSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
-    expect(pausedSession).toBeDefined();
-    expect(pausedSession.serverPid).toBeNull();
+    const resumedSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
+    expect(resumedSession).toBeDefined();
+    expect(resumedSession.serverPid).toBe(process.pid);
   });
 
   it('should handle mixed sessions correctly', async () => {
@@ -247,23 +247,23 @@ describe('SessionManager cleanup on initialization', () => {
 
     await createSessionManager();
 
-    // Legacy and orphan session workers should be killed before marking sessions as paused
-    expect(mockProcess.wasKilled(10001)).toBe(true);  // Legacy session (serverPid missing = marked paused)
+    // Legacy and orphan session workers should be killed before auto-resume
+    expect(mockProcess.wasKilled(10001)).toBe(true);  // Legacy session (serverPid missing = auto-resumed)
     expect(mockProcess.wasKilled(10002)).toBe(false); // Active session (serverPid alive = untouched)
-    expect(mockProcess.wasKilled(10003)).toBe(true);  // Orphan session (serverPid dead = marked paused)
+    expect(mockProcess.wasKilled(10003)).toBe(true);  // Orphan session (serverPid dead = auto-resumed)
 
-    // All sessions should remain in persistence (orphan and legacy marked as paused, active is untouched)
+    // All sessions should remain in persistence (orphan and legacy auto-resumed, active untouched)
     const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
     expect(savedData.find((s: PersistedSession) => s.id === 'legacy-session')).toBeDefined();
     expect(savedData.find((s: PersistedSession) => s.id === 'active-session')).toBeDefined();
     expect(savedData.find((s: PersistedSession) => s.id === 'orphan-session')).toBeDefined();
 
-    // Orphan and legacy sessions should be marked as paused
+    // Orphan and legacy sessions should be auto-resumed (serverPid = current process)
     const legacySession = savedData.find((s: PersistedSession) => s.id === 'legacy-session');
     const orphanSession = savedData.find((s: PersistedSession) => s.id === 'orphan-session');
     const activeSession = savedData.find((s: PersistedSession) => s.id === 'active-session');
-    expect(legacySession.serverPid).toBeNull();
-    expect(orphanSession.serverPid).toBeNull();
+    expect(legacySession.serverPid).toBe(process.pid);
+    expect(orphanSession.serverPid).toBe(process.pid);
     expect(activeSession.serverPid).toBe(20001); // Unchanged
   });
 
