@@ -279,11 +279,27 @@ export class SessionManager {
   }
 
   /**
-   * Initialize sessions from persistence and clean up orphan processes.
+   * Initialize sessions from persistence, clean up orphan processes,
+   * and auto-resume sessions that were active before the server stopped.
    * Called by SessionManager.create() factory method.
    */
   private async initialize(): Promise<void> {
-    await this.sessionInitializationService.initialize();
+    const autoResumeSessionIds = await this.sessionInitializationService.initialize();
+
+    // Auto-resume sessions that were active before the server died.
+    // Resume sequentially to avoid resource spikes.
+    for (const sessionId of autoResumeSessionIds) {
+      try {
+        await this.sessionPauseResumeService.resumeSession(sessionId);
+        logger.info({ sessionId }, 'Auto-resumed previously active session');
+      } catch (error) {
+        logger.error({ sessionId, err: error }, 'Failed to auto-resume session');
+      }
+    }
+
+    if (autoResumeSessionIds.length > 0) {
+      logger.info({ count: autoResumeSessionIds.length }, 'Auto-resume completed');
+    }
   }
 
 
