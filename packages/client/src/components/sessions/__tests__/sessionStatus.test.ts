@@ -18,6 +18,14 @@ describe('Session status helpers', () => {
     expect(getConnectionStatusColor('disconnected', 'unknown', 'git-diff')).toBe('bg-gray-500');
   });
 
+  it('returns green for connected agent with known activity state', () => {
+    expect(getConnectionStatusColor('connected', 'idle', 'agent')).toBe('bg-green-500');
+  });
+
+  it('returns Connected text for connected agent with known activity state', () => {
+    expect(getConnectionStatusText('connected', 'idle', null, 'agent')).toBe('Connected');
+  });
+
   it('renders exit details regardless of worker type', () => {
     expect(getConnectionStatusText('exited', 'idle', exitInfo, 'terminal')).toBe('Exited (code: 1)');
   });

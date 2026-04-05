@@ -76,6 +76,17 @@ export function useSessionPageState({
   const [loadTrigger, setLoadTrigger] = useState(0)
   const syncRequestIdRef = useRef(0)
 
+  // Reset activity states when navigating to a different session.
+  // useState initializers only run on first mount, so we need this effect
+  // to pick up the new session's activity data from the root context.
+  useEffect(() => {
+    const newSessionActivities = rootActivityStates[sessionId] ?? {}
+    setWorkerActivityStates(newSessionActivities)
+    const tabId = activeTabIdRef.current
+    setActivityState(tabId ? (newSessionActivities[tabId] ?? 'unknown') : 'unknown')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only reset when sessionId changes
+  }, [sessionId])
+
   const handleWorkerActivity = useCallback((eventSessionId: string, workerId: string, newState: AgentActivityState) => {
     if (eventSessionId !== sessionId) return
 
