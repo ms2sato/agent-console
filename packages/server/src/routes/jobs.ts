@@ -38,7 +38,7 @@ function toJobResponse(job: JobRecord): JobResponse {
 
   return {
     id: job.id,
-    type: job.type as JobType,
+    type: job.type,
     payload: parsedPayload,
     status: job.status,
     priority: job.priority,
@@ -81,8 +81,9 @@ const jobs = new Hono<AppBindings>()
     }
 
     const { jobQueue } = c.get('appContext');
-    const jobList = await jobQueue.getJobs({ status, type, limit, offset });
-    const total = await jobQueue.countJobs({ status, type });
+    const jobType = type as JobType | undefined;
+    const jobList = await jobQueue.getJobs({ status, type: jobType, limit, offset });
+    const total = await jobQueue.countJobs({ status, type: jobType });
 
     return c.json({
       jobs: jobList.map(toJobResponse),

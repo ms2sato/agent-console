@@ -1,4 +1,5 @@
 import type { Generated, Insertable, Selectable, Updateable } from 'kysely';
+import type { JobStatus, JobType } from '@agent-console/shared';
 
 /**
  * Database table definitions for Kysely.
@@ -171,11 +172,11 @@ export interface JobsTable {
   /** Primary key - UUID */
   id: string;
   /** Job type identifier (e.g., 'cleanup:session-outputs') */
-  type: string;
+  type: JobType;
   /** JSON-serialized job payload */
   payload: string;
   /** Job status: pending, processing, completed, stalled */
-  status: string;
+  status: JobStatus;
   /** Priority (higher = processed first). Default: 0 */
   priority: number;
   /** Number of processing attempts. Default: 0 */
@@ -271,7 +272,7 @@ export interface InboundEventNotificationsTable {
   /** Human-readable event summary */
   event_summary: string;
   /** Notification status ('pending' or 'delivered') */
-  status: string;
+  status: 'pending' | 'delivered';
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
   /** Timestamp when notification was delivered (null if pending) */
