@@ -163,6 +163,20 @@ export async function restartAgentWorker(
   return res.json() as Promise<{ worker: Worker }>;
 }
 
+export interface RestartAllAgentsResult {
+  restarted: number;
+  failed: number;
+  results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }>;
+}
+
+export async function restartAllAgentWorkers(): Promise<RestartAllAgentsResult> {
+  const res = await api.sessions['restart-all-agents'].$post();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to restart all agents');
+  }
+  return res.json() as Promise<RestartAllAgentsResult>;
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   const res = await api.sessions[':id'].$delete({ param: { id: sessionId } });
   if (!res.ok) {
