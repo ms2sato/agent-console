@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach, jest } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
@@ -416,72 +416,46 @@ describe('InteractiveProcessManager', () => {
     });
   });
 
-  describe('debounced Enter for writeResponse', () => {
-    beforeEach(() => {
-      jest.useFakeTimers();
+  describe('output buffering', () => {
+    it('should buffer process output and call onOutput once after debounce', async () => {
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo "line1"; echo "line2"',
+      });
+
+      // Wait for output to be buffered and flushed (debounce + margin)
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 500));
+
+      // onOutput should have been called with combined text (possibly 1-2 calls
+      // depending on stream chunking, but NOT one per echo)
+      expect(onOutput).toHaveBeenCalled();
+      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      expect(allOutput).toContain('line1');
+      expect(allOutput).toContain('line2');
     });
 
-    afterEach(() => {
-      jest.useRealTimers();
-    });
-
-    it('should send \\r after DEBOUNCE_ENTER_MS when no process output arrives', async () => {
+    it('should not call onOutput for a killed process with pending buffer', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
-        command: 'cat > /dev/null',
+        command: 'sleep 60',
       });
 
       // Wait for process to start
-      jest.useRealTimers();
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
         if (manager.getProcess(process.id)?.status === 'running') break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      jest.useFakeTimers();
 
-      await manager.writeResponse(process.id, 'hello');
-
-      // Content should be written immediately
-      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
-
-      // \r should not be sent yet
-      const callsBefore = mockWritePtyData.mock.calls.length;
-
-      // Advance past debounce
-      jest.advanceTimersByTime(InteractiveProcessManager.DEBOUNCE_ENTER_MS);
-
-      // \r should now be sent
-      expect(mockWritePtyData).toHaveBeenCalledTimes(callsBefore + 1);
-      expect(mockWritePtyData.mock.calls[callsBefore]).toEqual(['session-1', 'worker-1', '\r']);
-    });
-
-    it('should not send \\r for a killed process', async () => {
-      const process = await manager.runProcess({
-        sessionId: 'session-1',
-        workerId: 'worker-1',
-        command: 'cat > /dev/null',
-      });
-
-      jest.useRealTimers();
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        if (manager.getProcess(process.id)?.status === 'running') break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      jest.useFakeTimers();
-
-      await manager.writeResponse(process.id, 'hello');
-      const callsAfterContent = mockWritePtyData.mock.calls.length;
-
-      // Kill before debounce fires
+      // Kill immediately — any buffered output should be discarded
       manager.killProcess(process.id);
 
-      jest.advanceTimersByTime(InteractiveProcessManager.DEBOUNCE_ENTER_MS);
+      await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 100));
 
-      // No \r should be sent
-      expect(mockWritePtyData).toHaveBeenCalledTimes(callsAfterContent);
+      // onOutput should not have been called (no output from sleep, and kill clears buffer)
+      expect(onOutput).not.toHaveBeenCalled();
     });
   });
 });
