@@ -25,6 +25,7 @@
 - Think from the perspective: "If these tests pass, can I be confident the implementation is correct?"
 - **Include "why" for each criterion**: Each acceptance criterion must explain not just what to verify, but why it matters. This context enables coding agents to make correct judgment calls.
 - **If the Issue creator left acceptance criteria empty**: The Orchestrator must fill them in before delegating. Never delegate an Issue with empty acceptance criteria.
+- **Read to the end of the affected code path before writing criteria.** Trace the code from the entry point to the function that actually performs the operation (e.g., the function that writes to PTY, the function that sends the WebSocket message). Reviewing only the wiring/call chain is insufficient — the terminal function's behavior (e.g., does it schedule its own delayed side-effects?) directly shapes which acceptance criteria are needed. (Lesson: Sprint 2026-04-05a — missed `writePtyNotification`'s independent `\r` because only the call chain was reviewed, not the function body.)
 
 ## 3. Parallel Task Coordination
 - Plan which tasks can run in parallel without causing conflicts (file overlap, branch conflicts, dependent features)
@@ -65,10 +66,11 @@
   - Does the implementation align with the original Issue intent?
 - If issues are found, send feedback to the agent via `send_session_message`
 - **When an agent reports test failures as "pre-existing":** Do NOT accept this at face value. Ask the agent for the specific test names that failed. Then verify on main (`bun run test:only -- --filter "TestName"`). If they fail on main too, add them to the flaky test list in memory for planned remediation. If they pass on main, instruct the agent to fix them.
+- **When re-reviewing after agent fixes, always read the latest PR diff fresh** (`gh pr diff <number>`). Do not rely on your earlier reading — the code may have changed significantly between pushes.
 - If satisfactory, summarize the result for the owner
 
 ## 6. Acceptance Check
-- **Trigger**: When a coding agent reports CI green on a PR
+- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q7). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
 - **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
   ```
@@ -101,21 +103,7 @@
      b. Annotate sections where the owner's domain expertise adds value — not sections you were uncertain about (those should already be resolved per step 3)
      c. Write annotation `reason` fields in the user's preferred language (not English). Technical terms and code identifiers can remain in English.
      d. Update memo via `write_memo` to notify the owner
-- **CodeRabbit review strategy**: Two layers of CodeRabbit review are used:
-  1. **Pre-PR: CLI self-review by the coding agent** — delegation instructions include a step to run `coderabbit review --agent --base main` before creating the PR (if CLI is installed). This catches CRITICAL/HIGH issues early without rate limit concerns.
-  2. **Post-PR: GitHub bot auto-review** — triggered automatically when the PR is created. May hit rate limits.
-- **CodeRabbit Rate Limit handling** (for the GitHub bot): Before requesting a CodeRabbit re-review (`@coderabbitai review`), ALWAYS check the rate limit status first:
-  1. Check recent CodeRabbit comments on the PR:
-     ```bash
-     gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[] | select(.user.login == "coderabbitai[bot]") | {created_at, body: .body[:300]}'
-     ```
-  2. Look for "Rate limit exceeded" and "wait **XX minutes and YY seconds**" in the comment body
-  3. Calculate when the limit expires: `comment.created_at + wait_minutes`
-  4. Create a timer via `create_timer` for the remaining wait duration
-  5. When the timer fires, post `@coderabbitai review` as a PR comment
-  6. Delete the timer after the review is requested
-  - **Never request re-review immediately** — always check rate limit first.
-  - **Parallel push strategy**: When 3+ PRs are pushed simultaneously, CodeRabbit often rate-limits. Set a 10-minute timer (`create_timer` with 600s) and request `@coderabbitai review` on each PR when the timer fires. Do not try to review-request immediately after push.
+- **CodeRabbit review**: CodeRabbit auto-reviews PRs on push. No manual re-review requests needed — if rate-limited, it resolves naturally.
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 - **MANDATORY: Every PR must go through acceptance-check.** At minimum, run `node .claude/skills/orchestrator/acceptance-check.js <PR> --check-only` for coverage check. For production code changes, run the full Interactive Process Q1-Q7. Never skip this — even when the diff looks trivial.
 
