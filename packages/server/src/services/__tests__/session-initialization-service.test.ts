@@ -143,6 +143,27 @@ describe('SessionInitializationService', () => {
       expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
     });
 
+    it('should keep paused sessions with serverPid=undefined (from DB mapper) unchanged and not auto-resume them', async () => {
+      // DB mapper converts server_pid=null to serverPid=undefined
+      // Paused sessions must be detected by pausedAt, not just serverPid === null
+      const session = buildPersistedQuickSession({
+        id: 'session-paused',
+        locationPath: '/some/path',
+        serverPid: undefined,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+      });
+
+      const { service, sessionRepository } = createService({ sessions: [session] });
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('session-paused');
+
+      const saved = await sessionRepository.findAll();
+      const preserved = saved.find(s => s.id === 'session-paused');
+      expect(preserved).toBeDefined();
+      expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
+    });
+
     it('should remove sessions whose locationPath no longer exists', async () => {
       const session = buildPersistedQuickSession({
         id: 'orphan-session',
