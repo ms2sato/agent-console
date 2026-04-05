@@ -14,6 +14,12 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 
 ---
 
+## First Action
+
+**Before doing anything else**, read [sprint-lifecycle.md](sprint-lifecycle.md) and execute the applicable procedure (sprint start / sprint execution / sprint end). Use TaskCreate to track the steps. Do not proceed to status checks or prioritization until the startup procedure is complete.
+
+---
+
 ## Rules
 
 ### DO
