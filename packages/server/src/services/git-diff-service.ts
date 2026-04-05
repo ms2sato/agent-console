@@ -16,6 +16,7 @@ import {
   getDiffNumstat,
   getStatusPorcelain,
   getUntrackedFiles,
+  gitRaw,
   gitSafe,
 } from '../lib/git.js';
 import { readFile, stat } from 'fs/promises';
@@ -554,40 +555,11 @@ export async function getFileDiff(
   }
 
   try {
-    // Get diff for specific file
-    const rawDiff = await getDiff(baseCommit, undefined, repoPath);
+    // Use targeted git diff command for the specific file
+    const rawDiff = await gitRaw(['diff', baseCommit, '--', filePath], repoPath);
 
-    // Extract the portion for this file from the unified diff
-    // This is a simplified approach - we just filter the raw diff
-    const lines = rawDiff.split('\n');
-    const fileLines: string[] = [];
-    let inTargetFile = false;
-    let foundDiff = false;
-
-    for (const line of lines) {
-      if (line.startsWith('diff --git')) {
-        // Check if this is our target file
-        const match = line.match(/diff --git a\/(.*) b\/(.*)/);
-        if (match) {
-          const aPath = match[1];
-          const bPath = match[2];
-          inTargetFile = aPath === filePath || bPath === filePath;
-          if (inTargetFile) {
-            foundDiff = true;
-            fileLines.push(line);
-          }
-        }
-      } else if (inTargetFile) {
-        // Check if we've reached the next file
-        if (line.startsWith('diff --git')) {
-          break;
-        }
-        fileLines.push(line);
-      }
-    }
-
-    if (foundDiff) {
-      return fileLines.join('\n');
+    if (rawDiff) {
+      return rawDiff;
     }
 
     // File not found in regular diff - check if it's an untracked file
