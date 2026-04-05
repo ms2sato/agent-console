@@ -24,6 +24,7 @@ import { logger } from '../lib/logger';
 import { createRenderWatchdog, type RenderWatchdog } from '../lib/render-diagnostics.js';
 import { ChevronDownIcon, SpinnerIcon } from './Icons';
 import { WorkerErrorRecovery } from './WorkerErrorRecovery';
+import { TerminalLoadingBar } from './ui/TerminalLoadingBar';
 
 /**
  * State for conditional rendering support.
@@ -930,6 +931,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       )}
       <div className="flex-1 min-h-0 relative overflow-hidden">
         <div ref={containerRef} className="absolute inset-0 bg-slate-800 p-2" />
+        <TerminalLoadingBar visible={loadingHistory} />
         {workerError && (
           <WorkerErrorRecovery
             errorCode={workerError.code}
