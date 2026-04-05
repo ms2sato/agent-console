@@ -46,7 +46,7 @@ export class SessionInitializationService {
    * Sessions whose serverPid is dead (or missing) are prepared for auto-resume:
    * orphan worker processes are killed, and the session is saved with serverPid=null
    * but pausedAt=null so it can be auto-resumed.
-   * Sessions that were explicitly paused (serverPid === null) remain paused.
+   * Sessions that were explicitly paused (pausedAt is set) remain paused.
    * Sessions owned by other live servers are left untouched.
    * Sessions whose locationPath no longer exists are removed as orphans.
    *
@@ -65,9 +65,10 @@ export class SessionInitializationService {
       // Skip if already in memory (shouldn't happen, but safety check)
       if (this.deps.isSessionInMemory(session.id)) continue;
 
-      // Paused sessions (serverPid === null) should remain paused until explicitly resumed
-      // Keep them in persistence unchanged, don't inherit into memory
-      if (session.serverPid === null) {
+      // Paused sessions should remain paused until explicitly resumed.
+      // Check pausedAt (definitive pause indicator) rather than serverPid === null,
+      // because the DB mapper may convert null to undefined (#615).
+      if (session.pausedAt) {
         sessionsToSave.push(session);
         continue;
       }

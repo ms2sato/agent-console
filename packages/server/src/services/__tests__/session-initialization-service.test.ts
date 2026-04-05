@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import type { Kysely } from 'kysely';
 import type { PersistedSession } from '../persistence-service.js';
 import type { SessionRepository } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
@@ -140,6 +144,27 @@ describe('SessionInitializationService', () => {
       const preserved = saved.find(s => s.id === 'session-1');
       expect(preserved).toBeDefined();
       expect(preserved!.serverPid).toBeNull();
+      expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
+    });
+
+    it('should keep paused sessions with serverPid=undefined (from DB mapper) unchanged and not auto-resume them', async () => {
+      // DB mapper converts server_pid=null to serverPid=undefined
+      // Paused sessions must be detected by pausedAt, not just serverPid === null
+      const session = buildPersistedQuickSession({
+        id: 'session-paused',
+        locationPath: '/some/path',
+        serverPid: undefined,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+      });
+
+      const { service, sessionRepository } = createService({ sessions: [session] });
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('session-paused');
+
+      const saved = await sessionRepository.findAll();
+      const preserved = saved.find(s => s.id === 'session-paused');
+      expect(preserved).toBeDefined();
       expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
     });
 
@@ -287,5 +312,88 @@ describe('SessionInitializationService', () => {
       const autoResumeIds = await service.initialize();
       expect(autoResumeIds).toEqual([]);
     });
+  });
+});
+
+describe('SessionInitializationService integration (real DB → mapper → service)', () => {
+  let db: Kysely<Database>;
+  let sessionRepository: SqliteSessionRepository;
+
+  beforeEach(async () => {
+    resetProcessMock();
+    db = await createDatabaseForTest();
+    sessionRepository = new SqliteSessionRepository(db);
+  });
+
+  afterEach(async () => {
+    resetProcessMock();
+    await db.destroy();
+  });
+
+  function createServiceWithRealRepo() {
+    const workerOutputFileManager = {
+      deleteSessionOutputs: mock(async () => {}),
+    } as unknown as WorkerOutputFileManager;
+    const jobQueue = {
+      enqueue: mock(async () => 'job-id'),
+    } as unknown as JobQueue;
+
+    const service = new SessionInitializationService({
+      sessionRepository,
+      pathExists: async () => true,
+      isSessionInMemory: () => false,
+      workerOutputFileManager,
+      jobQueue,
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getServerPid: () => TEST_SERVER_PID,
+    });
+
+    return { service };
+  }
+
+  it('should not auto-resume a paused session read through real DB mapper (null→undefined conversion)', async () => {
+    // Save a paused session via the real repository (writes server_pid=null, paused_at=timestamp to DB)
+    const pausedSession = buildPersistedQuickSession({
+      id: 'paused-via-db',
+      locationPath: '/some/path',
+      serverPid: null,
+      pausedAt: '2024-01-01T01:00:00.000Z',
+    });
+    await sessionRepository.save(pausedSession);
+
+    // Verify the DB mapper converts server_pid=null → serverPid=undefined
+    const sessions = await sessionRepository.findAll();
+    const loaded = sessions.find(s => s.id === 'paused-via-db');
+    expect(loaded).toBeDefined();
+    expect(loaded!.serverPid).toBeUndefined(); // DB mapper converts null → undefined
+    expect(loaded!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
+
+    // Run initialization with the real repository — paused session must NOT be auto-resumed
+    const { service } = createServiceWithRealRepo();
+    const autoResumeIds = await service.initialize();
+
+    expect(autoResumeIds).not.toContain('paused-via-db');
+
+    // Session should still have pausedAt preserved
+    const afterInit = await sessionRepository.findAll();
+    const preserved = afterInit.find(s => s.id === 'paused-via-db');
+    expect(preserved).toBeDefined();
+    expect(preserved!.pausedAt).toBe('2024-01-01T01:00:00.000Z');
+  });
+
+  it('should auto-resume an active session with dead serverPid read through real DB mapper', async () => {
+    // Save an active (non-paused) session with a dead serverPid
+    const activeSession = buildPersistedQuickSession({
+      id: 'active-via-db',
+      locationPath: '/some/path',
+      serverPid: 12345,
+    });
+    await sessionRepository.save(activeSession);
+    // serverPid 12345 is dead (not marked alive)
+
+    const { service } = createServiceWithRealRepo();
+    const autoResumeIds = await service.initialize();
+
+    expect(autoResumeIds).toContain('active-via-db');
   });
 });
