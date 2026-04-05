@@ -31,7 +31,7 @@ else
     exit 1
   fi
   # Extract owner/repo from SSH or HTTPS URL
-  REPO=$(echo "$REMOTE_URL" | sed -E 's#.*[:/]([^/]+/[^/]+?)(\.git)?$#\1#')
+  REPO=$(echo "$REMOTE_URL" | sed -E 's#.*[:/]([^/]+/[^/]+)$#\1#' | sed 's/\.git$//')
 fi
 
 RELEASE_TAG="qa-screenshots"
