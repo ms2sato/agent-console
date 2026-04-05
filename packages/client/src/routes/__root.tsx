@@ -4,7 +4,7 @@ import { resumeSession } from '../lib/api';
 import { ChevronRightIcon, PlusIcon } from '../components/Icons';
 import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
-import { JobsNavLink, AgentsNavLink, RepositoriesNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator, RestartAllAgentsButton } from '../components/header/NavLinks';
+import { JobsNavLink, AgentsNavLink, RepositoriesNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { WebhookConfigBanner } from '../components/ui/WebhookConfigBanner';
@@ -204,7 +204,6 @@ function RootLayout() {
               >
                 <PlusIcon className="w-4 h-4" />
               </button>
-              <RestartAllAgentsButton />
               <ValidationWarningIndicator />
               <ReviewNavLink />
               <JobsNavLink />

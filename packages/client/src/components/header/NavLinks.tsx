@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from '@tanstack/react-router';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { validateSessions, logout as logoutApi, fetchReviewQueue, restartAllAgentWorkers } from '../../lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { validateSessions, logout as logoutApi, fetchReviewQueue } from '../../lib/api';
 import { sessionKeys, reviewQueueKeys } from '../../lib/query-keys';
-import { WarningIcon, RefreshIcon } from '../Icons';
-import { ConfirmDialog } from '../ui/confirm-dialog';
+import { WarningIcon } from '../Icons';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { useAuth, setCurrentUser } from '../../lib/auth';
 import { disconnect as disconnectAppWs } from '../../lib/app-websocket';
@@ -129,59 +128,6 @@ export function LogoutButton() {
     >
       {isLoggingOut ? 'Logging out...' : 'Logout'}
     </button>
-  );
-}
-
-export function RestartAllAgentsButton() {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [resultMessage, setResultMessage] = useState<string | null>(null);
-
-  const mutation = useMutation({
-    mutationFn: restartAllAgentWorkers,
-    onSuccess: (data) => {
-      setConfirmOpen(false);
-      if (data.restarted === 0 && data.failed === 0) {
-        setResultMessage('No active agent workers found.');
-      } else if (data.failed === 0) {
-        setResultMessage(`Restarted ${data.restarted} agent${data.restarted > 1 ? 's' : ''}.`);
-      } else {
-        setResultMessage(`Restarted ${data.restarted}, failed ${data.failed}.`);
-      }
-      setTimeout(() => setResultMessage(null), 3000);
-    },
-    onError: (err) => {
-      setConfirmOpen(false);
-      const message = err instanceof Error ? err.message : 'Failed to restart agents.';
-      setResultMessage(message);
-      setTimeout(() => setResultMessage(null), 5000);
-    },
-  });
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setConfirmOpen(true)}
-        className="text-slate-400 hover:text-white p-1 rounded hover:bg-white/10 transition-colors relative"
-        title="Restart all agents"
-      >
-        <RefreshIcon className="w-4 h-4" />
-        {resultMessage && (
-          <span className="absolute top-full right-0 mt-1 whitespace-nowrap text-xs bg-slate-800 text-slate-200 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
-            {resultMessage}
-          </span>
-        )}
-      </button>
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="Restart All Agents"
-        description="This will restart all active agent workers across all sessions. Terminal workers will not be affected."
-        confirmLabel="Restart All"
-        onConfirm={() => mutation.mutate()}
-        isLoading={mutation.isPending}
-      />
-    </>
   );
 }
 

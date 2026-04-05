@@ -10,7 +10,6 @@ import {
   ReviewNavLink,
   LogoutButton,
   ValidationWarningIndicator,
-  RestartAllAgentsButton,
 } from '../NavLinks';
 
 // --- Fetch-level mocking ---
@@ -269,54 +268,3 @@ describe('ValidationWarningIndicator', () => {
   });
 });
 
-let restartAllResponse: unknown = { restarted: 0, failed: 0, results: [] };
-
-describe('RestartAllAgentsButton', () => {
-  beforeEach(() => {
-    restartAllResponse = { restarted: 0, failed: 0, results: [] };
-    // Add restart-all-agents handler to mock fetch
-    const originalMock = mockFetch.getMockImplementation()!;
-    mockFetch.mockImplementation(async (input: RequestInfo | URL): Promise<Response> => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url.includes('/restart-all-agents')) {
-        return jsonResponse(restartAllResponse);
-      }
-      return originalMock(input);
-    });
-  });
-
-  it('should render a button with title "Restart all agents"', async () => {
-    await renderWithRouter(<RestartAllAgentsButton />);
-    const button = screen.getByTitle('Restart all agents');
-    expect(button).toBeTruthy();
-  });
-
-  it('should show confirmation dialog when clicked', async () => {
-    await renderWithRouter(<RestartAllAgentsButton />);
-    const user = userEvent.setup();
-    await user.click(screen.getByTitle('Restart all agents'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Restart All Agents')).toBeTruthy();
-      expect(screen.getByText(/This will restart all active agent workers/)).toBeTruthy();
-    });
-  });
-
-  it('should call API and show result message on confirm', async () => {
-    restartAllResponse = { restarted: 3, failed: 0, results: [] };
-    await renderWithRouter(<RestartAllAgentsButton />);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByTitle('Restart all agents'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Restart All')).toBeTruthy();
-    });
-
-    await user.click(screen.getByText('Restart All'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Restarted 3 agents.')).toBeTruthy();
-    });
-  });
-});

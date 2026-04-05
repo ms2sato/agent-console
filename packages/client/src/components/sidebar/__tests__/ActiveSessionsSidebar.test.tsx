@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar } from '../ActiveSessionsSidebar';
 import {
@@ -678,6 +679,69 @@ describe('ActiveSessionsSidebar', () => {
 
       expect(allButton.getAttribute('aria-pressed')).toBe('false');
       expect(mineButton.getAttribute('aria-pressed')).toBe('true');
+    });
+  });
+
+  describe('Restart All Agents button', () => {
+    const originalFetch = globalThis.fetch;
+    let restartAllResponse: unknown;
+
+    beforeEach(() => {
+      restartAllResponse = { restarted: 0, failed: 0, results: [] };
+      globalThis.fetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.includes('/restart-all-agents')) {
+          return new Response(JSON.stringify(restartAllResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('should render restart all agents button when expanded', async () => {
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+      const button = screen.getByTitle('Restart all agents');
+      expect(button).toBeTruthy();
+    });
+
+    it('should not render restart all agents button when collapsed', async () => {
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} collapsed={true} />);
+      expect(screen.queryByTitle('Restart all agents')).toBeNull();
+    });
+
+    it('should show confirmation dialog when clicked', async () => {
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Restart all agents'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Restart All Agents')).toBeTruthy();
+        expect(screen.getByText(/This will restart all active agent workers/)).toBeTruthy();
+      });
+    });
+
+    it('should call API and show result message on confirm', async () => {
+      restartAllResponse = { restarted: 3, failed: 0, results: [] };
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Restart all agents'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Restart All')).toBeTruthy();
+      });
+
+      await user.click(screen.getByText('Restart All'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Restarted 3 agents.')).toBeTruthy();
+      });
     });
   });
 });

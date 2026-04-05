@@ -1,9 +1,12 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
 import type { SessionFilterMode } from '../../types/session-filter';
+import { restartAllAgentWorkers } from '../../lib/api';
 import { logger } from '../../lib/logger';
-import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon } from '../Icons';
+import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon } from '../Icons';
+import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
@@ -466,6 +469,31 @@ export function ActiveSessionsSidebar({
   // Calculate the actual width to use
   const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : width;
 
+  // Restart all agents state
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [restartMessage, setRestartMessage] = useState<string | null>(null);
+
+  const restartMutation = useMutation({
+    mutationFn: restartAllAgentWorkers,
+    onSuccess: (data) => {
+      setRestartConfirmOpen(false);
+      if (data.restarted === 0 && data.failed === 0) {
+        setRestartMessage('No active agent workers found.');
+      } else if (data.failed === 0) {
+        setRestartMessage(`Restarted ${data.restarted} agent${data.restarted > 1 ? 's' : ''}.`);
+      } else {
+        setRestartMessage(`Restarted ${data.restarted}, failed ${data.failed}.`);
+      }
+      setTimeout(() => setRestartMessage(null), 3000);
+    },
+    onError: (err) => {
+      setRestartConfirmOpen(false);
+      const message = err instanceof Error ? err.message : 'Failed to restart agents.';
+      setRestartMessage(message);
+      setTimeout(() => setRestartMessage(null), 5000);
+    },
+  });
+
   return (
     <aside
       ref={sidebarRef}
@@ -482,9 +510,24 @@ export function ActiveSessionsSidebar({
         }`}
       >
         {!collapsed && (
-          <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">
-            Active Sessions
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-400 text-xs font-medium uppercase tracking-wider">
+              Active Sessions
+            </span>
+            <button
+              type="button"
+              onClick={() => setRestartConfirmOpen(true)}
+              className="p-0.5 text-gray-500 hover:text-white hover:bg-slate-800 rounded transition-colors relative"
+              title="Restart all agents"
+            >
+              <RefreshIcon className="w-3 h-3" />
+              {restartMessage && (
+                <span className="absolute top-full left-0 mt-1 whitespace-nowrap text-xs bg-slate-800 text-slate-200 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
+                  {restartMessage}
+                </span>
+              )}
+            </button>
+          </div>
         )}
         <button
           onClick={onToggle}
@@ -499,6 +542,15 @@ export function ActiveSessionsSidebar({
           )}
         </button>
       </div>
+      <ConfirmDialog
+        open={restartConfirmOpen}
+        onOpenChange={setRestartConfirmOpen}
+        title="Restart All Agents"
+        description="This will restart all active agent workers across all sessions. Terminal workers will not be affected."
+        confirmLabel="Restart All"
+        onConfirm={() => restartMutation.mutate()}
+        isLoading={restartMutation.isPending}
+      />
 
       {/* Session filter toggle (shown when sessionFilter is provided) */}
       {!collapsed && sessionFilter && (
