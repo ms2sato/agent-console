@@ -1,297 +1,40 @@
 #!/usr/bin/env node
 
 /**
- * Orchestrator Acceptance Check Support Script (Interactive STDIN/STDOUT Mode)
+ * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
- * Automatically analyzes PR changes and guides the Orchestrator through Q1-Q7
- * in an interactive session. The script outputs each question to STDOUT and
- * blocks on STDIN (null-byte delimited) for the answer.
+ * Full acceptance check requiring human judgment. Guides the Orchestrator
+ * through Q1-Q7 in an interactive session via run_process.
  *
- * Features:
- * - File categorization by package (client/server/shared/test)
- * - Test file detection and coverage analysis
- * - Issue acceptance criteria parsing
- * - Package boundary analysis
+ * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
  * Usage:
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number>
- *   node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only
- *   node .claude/skills/orchestrator/acceptance-check.js --check-only  (uses local git diff against main)
  */
 
-import { execSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import {
+  exec,
+  getChangedFiles,
+  categorizeFiles,
+  findTestFiles,
+  isTestFile,
+  analyzePackageBoundaries,
+  getLinkedIssueNumber,
+  getIssueInfo,
+  getAcceptanceCriteria,
+  getCiStatus,
+  detectIntegrationTestNeeds,
+} from './check-utils.js';
 
-// --- Utility functions ---
+// --- Utility ---
 
 function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --check-only');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only');
-  console.error('Example:');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js 42');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js 42 --check-only');
-  console.error('  node .claude/skills/orchestrator/acceptance-check.js --check-only  # uses local git diff');
+  console.error('');
+  console.error('This script runs a full interactive acceptance check (Q1-Q7).');
+  console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
-}
-
-function exec(cmd) {
-  try {
-    return execSync(cmd, { encoding: 'utf-8' }).trim();
-  } catch {
-    return null;
-  }
-}
-
-function getChangedFiles(prNumber) {
-  const result = exec(`gh pr diff ${prNumber} --name-only`);
-  if (result === null) {
-    console.error(`Error: Could not retrieve diff for PR #${prNumber}. Please verify the gh command and PR number.`);
-    process.exit(1);
-  }
-  return result.split('\n').filter(Boolean);
-}
-
-function getLocalChangedFiles() {
-  const baseBranch = process.env.BASE_BRANCH || 'origin/main';
-  const mergeBase = exec(`git merge-base ${baseBranch} HEAD`);
-  if (!mergeBase) {
-    console.error(`Error: Could not determine merge-base with ${baseBranch}. Ensure git is available and the branch exists.`);
-    process.exit(1);
-  }
-  const result = exec(`git diff --name-only ${mergeBase}...HEAD`);
-  if (result === null) {
-    console.error('Error: Could not retrieve local git diff.');
-    process.exit(1);
-  }
-  return result.split('\n').filter(Boolean);
-}
-
-// --- File categorization ---
-
-function categorizeFile(filePath) {
-  if (filePath.startsWith('packages/integration/')) {
-    return 'integration';
-  }
-  if (filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/')) {
-    return 'test';
-  }
-  if (filePath.startsWith('packages/client/')) {
-    return 'client';
-  }
-  if (filePath.startsWith('packages/server/')) {
-    return 'server';
-  }
-  if (filePath.startsWith('packages/shared/')) {
-    return 'shared';
-  }
-  return 'other';
-}
-
-function categorizeFiles(files) {
-  const categories = { client: [], server: [], shared: [], integration: [], test: [], other: [] };
-  for (const file of files) {
-    const category = categorizeFile(file);
-    categories[category].push(file);
-  }
-  return categories;
-}
-
-// --- Test file detection ---
-
-// Patterns that require test coverage (production code only)
-const COVERAGE_PATTERNS = [
-  /^packages\/server\/src\/routes\/.+\.ts$/,
-  /^packages\/server\/src\/services\/.+\.ts$/,
-  /^packages\/client\/src\/hooks\/.+\.ts$/,
-  /^packages\/client\/src\/components\/.+\.tsx$/,
-  /^packages\/shared\/src\/.+\.ts$/,
-];
-
-// Files excluded from coverage requirements (no runtime logic to test)
-const COVERAGE_EXCLUSIONS = [
-  /^packages\/shared\/src\/types\/.+\.ts$/,
-];
-
-function isTestFile(filePath) {
-  return filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/');
-}
-
-function requiresTestCoverage(filePath) {
-  if (isTestFile(filePath)) return false;
-  if (COVERAGE_EXCLUSIONS.some(pattern => pattern.test(filePath))) return false;
-  return COVERAGE_PATTERNS.some(pattern => pattern.test(filePath));
-}
-
-function findTestFiles(changedFiles) {
-  const testFiles = [];
-  const productionFiles = [];
-
-  for (const file of changedFiles) {
-    if (isTestFile(file)) {
-      testFiles.push(file);
-    } else if (file.match(/\.(ts|tsx|js|jsx)$/)) {
-      productionFiles.push(file);
-    }
-  }
-
-  // For each production file, check if a matching test exists in the PR
-  // Supports multiple naming conventions: __tests__/Name.test.ts, __tests__/Name.test.tsx,
-  // Name.test.ts (sibling), etc.
-  const testCoverage = [];
-  for (const prodFile of productionFiles) {
-    const ext = prodFile.match(/\.(ts|tsx|js|jsx)$/)[0];
-    const baseName = prodFile.replace(/\.(ts|tsx|js|jsx)$/, '');
-    const dir = baseName.substring(0, baseName.lastIndexOf('/'));
-    const fileName = baseName.substring(baseName.lastIndexOf('/') + 1);
-
-    // Check multiple possible test file patterns using full path matching
-    // to avoid false positives from basename collisions (e.g., routes/index.ts vs services/index.ts)
-    const testPattern = new RegExp(`\\.(test|spec)\\.(ts|tsx|js|jsx)$`);
-    const hasTest = testFiles.some(tf => {
-      if (!testPattern.test(tf)) return false;
-      const tfDir = tf.substring(0, tf.lastIndexOf('/'));
-      const tfFileName = tf.substring(tf.lastIndexOf('/') + 1);
-      const tfBaseName = tfFileName.replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/, '');
-      if (tfBaseName !== fileName) return false;
-      // Match: sibling test (same dir) or __tests__ subdirectory
-      return tfDir === dir || tfDir === dir + '/__tests__';
-    });
-
-    const needsCoverage = requiresTestCoverage(prodFile);
-    const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + (ext === '.tsx' ? '.tsx' : '.ts');
-    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, needsCoverage });
-  }
-
-  return { testFiles, productionFiles, testCoverage };
-}
-
-// --- Integration test detection ---
-
-// Patterns that suggest integration test coverage is needed:
-// - Client components (may involve state transitions, forms, multi-phase UI)
-// - Server routes (API endpoints that clients consume)
-// - Shared types (cross-package contracts)
-const INTEGRATION_TRIGGER_PATTERNS = [
-  { pattern: /^packages\/client\/src\/components\/.+\.tsx$/, reason: 'UI component (may involve state transitions or forms)' },
-  { pattern: /^packages\/server\/src\/routes\/.+\.ts$/, reason: 'API route (client-server contract)' },
-  { pattern: /^packages\/shared\/src\/.+\.ts$/, reason: 'shared type (cross-package contract)' },
-];
-
-function getIntegrationTestDir() {
-  return 'packages/integration/src';
-}
-
-function listExistingIntegrationTests() {
-  const dir = getIntegrationTestDir();
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir)
-      .filter(f => f.endsWith('.test.ts') || f.endsWith('.test.tsx'))
-      .map(f => dir + '/' + f);
-  } catch {
-    return [];
-  }
-}
-
-function detectIntegrationTestNeeds(changedFiles, categories) {
-  const triggers = [];
-
-  for (const file of changedFiles) {
-    if (isTestFile(file)) continue;
-    for (const { pattern, reason } of INTEGRATION_TRIGGER_PATTERNS) {
-      if (pattern.test(file)) {
-        triggers.push({ file, reason });
-        break;
-      }
-    }
-  }
-
-  if (triggers.length === 0) return null;
-
-  // Check if the PR includes integration test changes
-  const hasIntegrationTestInPr = changedFiles.some(
-    f => f.startsWith('packages/integration/') && isTestFile(f)
-  );
-
-  // Check cross-package indicator (stronger signal)
-  const isCrossPackage = categories.client.length > 0 && categories.server.length > 0;
-  const hasSharedChanges = categories.shared.length > 0;
-
-  return {
-    triggers,
-    hasIntegrationTestInPr,
-    isCrossPackage,
-    hasSharedChanges,
-    existingIntegrationTests: listExistingIntegrationTests(),
-  };
-}
-
-// --- Package boundary analysis ---
-
-function analyzePackageBoundaries(categories) {
-  const boundaries = [];
-
-  if (categories.shared.length > 0) {
-    boundaries.push({
-      type: 'shared-type-change',
-      message: 'Shared types/utilities changed — verify both client and server consumers are updated',
-      files: categories.shared,
-    });
-  }
-
-  if (categories.client.length > 0 && categories.server.length > 0) {
-    boundaries.push({
-      type: 'cross-package',
-      message: 'Changes span client and server — verify WebSocket/REST API contracts are consistent',
-      files: [...categories.client, ...categories.server],
-    });
-  }
-
-  if (categories.server.some((f) => f.includes('websocket') || f.includes('ws'))) {
-    boundaries.push({
-      type: 'websocket-change',
-      message: 'WebSocket handler changed — verify protocol compatibility with client',
-      files: categories.server.filter((f) => f.includes('websocket') || f.includes('ws')),
-    });
-  }
-
-  return boundaries;
-}
-
-// --- Issue and acceptance criteria ---
-
-function getLinkedIssueNumber(prNumber) {
-  const result = exec(`gh pr view ${prNumber} --json body --jq .body`);
-  if (!result) return null;
-
-  // Match: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved
-  const match = result.match(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/i);
-  return match ? match[1] : null;
-}
-
-function getIssueInfo(issueNumber) {
-  const title = exec(`gh issue view ${issueNumber} --json title --jq .title`);
-  const body = exec(`gh issue view ${issueNumber} --json body --jq .body`);
-  return { title: title || '', body: body || '' };
-}
-
-function getAcceptanceCriteria(issueNumber) {
-  const result = exec(`gh issue view ${issueNumber} --json body --jq .body`);
-  if (!result) return [];
-
-  const lines = result.split('\n');
-  const criteria = [];
-
-  for (const line of lines) {
-    const match = line.match(/^- \[ \]\s+(.+)/);
-    if (match) {
-      criteria.push(match[1].trim());
-    }
-  }
-
-  return criteria;
 }
 
 // --- STDIN reading (null-byte delimited) ---
@@ -321,22 +64,6 @@ function createStdinReader(stdin = process.stdin) {
     buffer = '';
     return answer.trim();
   };
-}
-
-// --- CI status check ---
-
-function getCiStatus(prNumber) {
-  const result = exec(`gh pr checks ${prNumber} --json name,state,conclusion 2>/dev/null`);
-  if (!result) return null;
-  try {
-    const checks = JSON.parse(result);
-    const failed = checks.filter(c => c.conclusion === 'FAILURE' || c.conclusion === 'failure');
-    const pending = checks.filter(c => c.state === 'PENDING' || c.state === 'pending' || c.state === 'IN_PROGRESS');
-    const passed = checks.filter(c => c.conclusion === 'SUCCESS' || c.conclusion === 'success');
-    return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
-  } catch {
-    return null;
-  }
 }
 
 // --- Auto-detection ---
@@ -659,84 +386,8 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
   printPostAcceptanceWorkflow();
 }
 
-// --- Check-only mode ---
-
-function runCheckOnly(changedFiles) {
-  const { testCoverage } = findTestFiles(changedFiles);
-  const categories = categorizeFiles(changedFiles);
-  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
-
-  const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
-  const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
-  const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
-
-  if (filesNeedingCoverage.length === 0 && !integrationTestNeeds) {
-    console.log('## Test Coverage Check\n');
-    console.log('No production files matching coverage patterns were changed.\n');
-    process.exit(0);
-  }
-
-  const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
-  const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
-
-  console.log('## Test Coverage Check\n');
-
-  if (covered.length > 0) {
-    console.log(`### Covered (${covered.length})\n`);
-    for (const { file } of covered) {
-      console.log(`- ✅ \`${file}\``);
-    }
-    console.log();
-  }
-
-  if (gaps.length > 0) {
-    console.log(`### Missing Tests (${gaps.length})\n`);
-    for (const { file, expectedTestPath } of gaps) {
-      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
-    }
-    console.log();
-  }
-
-  // Integration test coverage section
-  if (integrationTestNeeds) {
-    console.log('### Integration Test Coverage (packages/integration)\n');
-    if (integrationTestNeeds.hasIntegrationTestInPr) {
-      console.log('- ✅ PR includes integration test changes\n');
-    } else {
-      console.log('- ⚠ No integration test changes in PR\n');
-      console.log('Files triggering integration test review:\n');
-      for (const { file, reason } of integrationTestNeeds.triggers) {
-        console.log(`- \`${file}\` — ${reason}`);
-      }
-      if (integrationTestNeeds.isCrossPackage) {
-        console.log('\n⚠ Cross-package change (client + server) — integration test strongly recommended');
-      }
-      console.log();
-    }
-  }
-
-  if (hasUnitGaps) {
-    console.log(`**${gaps.length} production file(s) missing test coverage.**`);
-    process.exit(1);
-  } else if (hasIntegrationGap) {
-    console.log('**Integration test gap detected — review recommended.** ⚠');
-    process.exit(0);
-  } else {
-    console.log('**All production files have corresponding tests.** ✅');
-    process.exit(0);
-  }
-}
-
 // --- Exports for testing ---
 export {
-  categorizeFile,
-  categorizeFiles,
-  isTestFile,
-  requiresTestCoverage,
-  findTestFiles,
-  detectIntegrationTestNeeds,
-  listExistingIntegrationTests,
-  INTEGRATION_TRIGGER_PATTERNS,
   createStdinReader,
   runWizard,
   getQuestions,
@@ -747,30 +398,14 @@ export {
 
 // --- Main ---
 
-// Guard: skip main execution when imported as a module for testing
 const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('acceptance-check.js');
-if (!isMainModule) {
-  // Module is being imported for testing — do not execute main logic
-} else {
+if (isMainModule) {
+  const prNumber = process.argv[2];
 
-const isCheckOnly = process.argv.includes('--check-only');
+  if (!prNumber || !/^\d+$/.test(prNumber)) {
+    usage();
+  }
 
-const prNumber = process.argv[2];
-
-// --check-only can run without a PR number (uses local git diff)
-if (isCheckOnly) {
-  const changedFiles = (prNumber && /^\d+$/.test(prNumber))
-    ? getChangedFiles(prNumber)
-    : getLocalChangedFiles();
-  runCheckOnly(changedFiles);
+  await runWizard(prNumber);
+  process.exit(0);
 }
-
-if (!prNumber || !/^\d+$/.test(prNumber)) {
-  usage();
-}
-
-// Interactive wizard mode: outputs questions to STDOUT, reads answers from STDIN
-await runWizard(prNumber);
-process.exit(0);
-
-} // end isMainModule guard

@@ -30,10 +30,10 @@ Run the coverage check to verify all production files have corresponding tests:
 
 ```bash
 # With a PR number (uses gh pr diff):
-node .claude/skills/orchestrator/acceptance-check.js <PR-number> --check-only
+node .claude/skills/orchestrator/preflight-check.js <PR-number>
 
 # Without a PR number (uses local git diff against origin/main):
-node .claude/skills/orchestrator/acceptance-check.js --check-only
+node .claude/skills/orchestrator/preflight-check.js
 ```
 
 If any gaps are detected (non-zero exit code), add the missing tests before proceeding.
