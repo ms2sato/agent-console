@@ -29,6 +29,7 @@
 
 ## 3. Parallel Task Coordination
 - Plan which tasks can run in parallel without causing conflicts (file overlap, branch conflicts, dependent features)
+- **Before delegating, check for existing implementations.** Read the affected files on main and verify whether the desired behavior already exists (possibly hidden by flags, conditions, or UI configuration). This prevents wasting a delegation cycle on re-implementing something that already works. (Lesson: Sprint 2026-04-05b — #588 loading indicator already existed but was hidden by `hideStatusBar`.)
 - Use `delegate_to_worktree` to spawn coding agents
 - **Always set `useRemote: true`** when calling `delegate_to_worktree` to branch from `origin/main` instead of the (potentially stale) local main. This prevents worktrees from being based on outdated code.
 - Track active sessions via `list_sessions` and `get_session_status`
@@ -88,7 +89,7 @@
   - Verify test existence and layer adequacy per test-standards skill
   - **Acceptance criteria <-> test 1:1 verification**: For each acceptance criterion that specifies a test layer, explicitly confirm the corresponding test exists in the PR diff by file name and test case name. Do NOT pass the check if a criterion says "integration test" but only unit tests exist. This is a hard gate, not a judgment call.
   - **Comment accuracy verification**: Verify that JSDoc comments, inline comments, and documentation added or modified in the PR accurately describe the actual code behavior. Misleading comments are worse than no comments — flag any discrepancy between comment text and implementation.
-  - **Browser check for UI changes**: When the PR modifies client-side components (`packages/client/src/components/`), instruct the coding agent to perform manual browser verification via Chrome DevTools MCP before the acceptance check is complete. The agent should start the dev server in their worktree, navigate to the affected UI, and take screenshots confirming the feature works. Do NOT skip this — automated tests alone cannot catch visual/interaction regressions.
+  - **Browser check for UI changes**: When the PR modifies client-side components (`packages/client/src/components/`) or acceptance criteria include `manual verification`, the Orchestrator must verify via Chrome DevTools MCP. Start the dev server (`bun run dev`), check the startup log for the actual port (Vite may auto-increment if the default port is in use), navigate to the affected UI, and take screenshots. Use `/browser-qa` skill if available. Do NOT skip this — automated tests alone cannot catch visual/interaction regressions. (Lesson: Sprint 2026-04-05b — port 5173 was in use, Vite silently switched to 5174.)
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
   0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
   1. Start the acceptance check via `run_process` (see above). Answer Q1-Q7 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
