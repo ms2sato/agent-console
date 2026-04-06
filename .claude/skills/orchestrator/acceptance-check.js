@@ -315,7 +315,10 @@ function printIntegrationTestAdequacy(linkedIssue) {
   console.log();
 }
 
-function getQuestions(hasAcceptanceCriteria) {
+function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false } = {}) {
+  const q2Extra = integrationTestMissing
+    ? '\n  ⚠ Integration test が未追加です。この変更で integration test が不要な理由を説明してください。不要な場合はその根拠を、必要な場合はエージェントに追加指示してください。'
+    : '';
   return [
     {
       key: 'q1',
@@ -326,9 +329,9 @@ function getQuestions(hasAcceptanceCriteria) {
     },
     {
       key: 'q2',
-      text: 'Q2: Cross-Boundary Tests — Are WebSocket/REST/shared type contracts tested across package boundaries?',
-      focus: 'If the PR changes cross-package interfaces (shared types, WebSocket messages, REST endpoints), verify that integration tests exist to confirm both sides agree on the contract.',
-      insufficient: '"Tests exist" (without identifying specific cross-boundary test cases)',
+      text: 'Q2: Cross-Boundary Tests — Are WebSocket/REST/shared type contracts tested across package boundaries?' + q2Extra,
+      focus: 'If the PR changes cross-package interfaces (shared types, WebSocket messages, REST endpoints), verify that integration tests exist to confirm both sides agree on the contract.' + (integrationTestMissing ? ' You MUST justify why integration tests are not needed, or instruct the agent to add them.' : ''),
+      insufficient: '"Tests exist" (without identifying specific cross-boundary test cases)' + (integrationTestMissing ? '. Also insufficient: ignoring the ⚠ integration test warning without justification' : ''),
       sufficient: '"PR changes WorkerStateMessage in packages/shared. Found integration test in server/tests/worker-ws.test.ts L30 that sends a state update via WebSocket and verifies the client receives the correct shape. Also verified the client-side handler in client/src/hooks/useWorkerWs.ts matches the type."',
     },
     {
@@ -416,7 +419,10 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
   printAutoDetection(autoDetection);
 
   const hasAcceptanceCriteria = autoDetection.acceptanceCriteria.length > 0;
-  const questions = getQuestions(hasAcceptanceCriteria);
+  const integrationTestMissing = autoDetection.integrationTestNeeds
+    && (autoDetection.integrationTestNeeds.isCrossPackage || autoDetection.integrationTestNeeds.hasSharedChanges)
+    && !autoDetection.integrationTestNeeds.hasIntegrationTestInPr;
+  const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing });
   const answers = {};
   const readResponse = createStdinReader(stdin);
 

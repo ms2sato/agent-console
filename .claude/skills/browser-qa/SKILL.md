@@ -115,6 +115,22 @@ If the PR number is not known, detect it:
 gh pr view --json number -q '.number'
 ```
 
+### Re-taking Screenshots
+
+When re-taking screenshots (e.g., after implementation changes), **minimize the previous screenshot comment** on the PR before uploading new ones. This prevents reviewers from seeing outdated screenshots.
+
+```bash
+# 1. Find the previous screenshot comment's node ID
+gh api graphql -f query='query { repository(owner: "OWNER", name: "REPO") { pullRequest(number: PR_NUM) { comments(first: 50) { nodes { id body createdAt } } } } }' \
+  --jq '.data.repository.pullRequest.comments.nodes[] | select(.body | test("qa-screenshots")) | .id'
+
+# 2. Minimize it as OUTDATED
+gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "NODE_ID", classifier: OUTDATED}) { minimizedComment { isMinimized } } }'
+
+# 3. Upload new screenshots
+./scripts/upload-qa-screenshots.sh <PR_NUMBER>
+```
+
 ## Common Issues
 
 - **Port conflict**: Check startup log for actual port. Vite auto-increments.

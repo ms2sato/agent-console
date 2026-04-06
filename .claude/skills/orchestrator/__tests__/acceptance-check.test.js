@@ -318,6 +318,20 @@ describe('getQuestions', () => {
       expect(q.sufficient).toBeTruthy();
     }
   });
+
+  it('adds integration test warning to Q2 when integrationTestMissing is true', () => {
+    const questions = getQuestions(false, { integrationTestMissing: true });
+    const q2 = questions.find(q => q.key === 'q2');
+    expect(q2.text).toContain('Integration test が未追加です');
+    expect(q2.focus).toContain('MUST justify');
+    expect(q2.insufficient).toContain('integration test warning');
+  });
+
+  it('does not add integration test warning to Q2 when integrationTestMissing is false', () => {
+    const questions = getQuestions(false, { integrationTestMissing: false });
+    const q2 = questions.find(q => q.key === 'q2');
+    expect(q2.text).not.toContain('Integration test が未追加です');
+  });
 });
 
 describe('printQuestion', () => {
