@@ -23,9 +23,19 @@ const mockSendWorkerMessage = mock(() => Promise.resolve({
   },
 }));
 const mockFetchSkills = mock(() => Promise.resolve({ skills: TEST_SKILLS }));
+const mockFetchMessageTemplates = mock(() => Promise.resolve({ templates: [] }));
+const mockCreateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
+const mockUpdateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
+const mockDeleteMessageTemplate = mock(() => Promise.resolve({ success: true }));
+const mockReorderMessageTemplates = mock(() => Promise.resolve({ success: true }));
 mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
   fetchSkills: mockFetchSkills,
+  fetchMessageTemplates: mockFetchMessageTemplates,
+  createMessageTemplate: mockCreateMessageTemplate,
+  updateMessageTemplate: mockUpdateMessageTemplate,
+  deleteMessageTemplate: mockDeleteMessageTemplate,
+  reorderMessageTemplates: mockReorderMessageTemplates,
 }));
 
 const mockSendInput = mock(() => true);
@@ -140,6 +150,11 @@ describe('MessagePanel', () => {
     mockSendWorkerMessage.mockClear();
     mockFetchSkills.mockClear();
     mockSendInput.mockClear();
+    mockFetchMessageTemplates.mockClear();
+    mockCreateMessageTemplate.mockClear();
+    mockUpdateMessageTemplate.mockClear();
+    mockDeleteMessageTemplate.mockClear();
+    mockReorderMessageTemplates.mockClear();
   });
 
   it('renders send form with textarea and send button', async () => {
@@ -656,6 +671,76 @@ describe('MessagePanel', () => {
       });
 
       expect(view.queryByRole('listbox')).toBeNull();
+    });
+  });
+
+  describe('message templates', () => {
+    it('renders the template button with correct aria-label', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      expect(view.getByLabelText('Message templates')).toBeTruthy();
+    });
+
+    it('toggles template selector when template button is clicked', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const templateButton = view.getByLabelText('Message templates');
+
+      // Click to open
+      await act(async () => {
+        fireEvent.click(templateButton);
+      });
+
+      expect(view.getByPlaceholderText('Search templates...')).toBeTruthy();
+
+      // Click again to close
+      await act(async () => {
+        fireEvent.click(templateButton);
+      });
+
+      expect(view.queryByPlaceholderText('Search templates...')).toBeNull();
+    });
+
+    it('Ctrl+/ toggles template selector', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+
+      // Press Ctrl+/ to open
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: '/', ctrlKey: true });
+      });
+
+      expect(view.getByPlaceholderText('Search templates...')).toBeTruthy();
+
+      // Press Ctrl+/ again to close
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: '/', ctrlKey: true });
+      });
+
+      expect(view.queryByPlaceholderText('Search templates...')).toBeNull();
+    });
+
+    it('shows save-as-template button when content exists', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'some message content' } });
+      });
+
+      expect(view.getByLabelText('Save as template')).toBeTruthy();
+    });
+
+    it('hides save-as-template button when content is empty', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      expect(view.queryByLabelText('Save as template')).toBeNull();
     });
   });
 

@@ -30,6 +30,7 @@ import type {
   ReviewQueueGroup,
   ReviewComment,
   SkillDefinition,
+  MessageTemplate,
 } from '@agent-console/shared';
 import { api } from './api-client';
 
@@ -927,4 +928,63 @@ export async function updateReviewStatus(
     await handleApiError(res, 'Failed to update review status');
   }
   return res.json() as Promise<{ workerId: string; status: string }>;
+}
+
+// ===========================================================================
+// Message Templates
+// ===========================================================================
+
+export async function fetchMessageTemplates(): Promise<{ templates: MessageTemplate[] }> {
+  const res = await fetch(`${API_BASE}/message-templates`);
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch message templates');
+  }
+  return res.json() as Promise<{ templates: MessageTemplate[] }>;
+}
+
+export async function createMessageTemplate(title: string, content: string): Promise<{ template: MessageTemplate }> {
+  const res = await fetch(`${API_BASE}/message-templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, content }),
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create message template');
+  }
+  return res.json() as Promise<{ template: MessageTemplate }>;
+}
+
+export async function updateMessageTemplate(
+  id: string,
+  updates: { title?: string; content?: string }
+): Promise<{ template: MessageTemplate }> {
+  const res = await fetch(`${API_BASE}/message-templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update message template');
+  }
+  return res.json() as Promise<{ template: MessageTemplate }>;
+}
+
+export async function deleteMessageTemplate(id: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/message-templates/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete message template');
+  }
+  return res.json() as Promise<{ success: boolean }>;
+}
+
+export async function reorderMessageTemplates(orderedIds: string[]): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/message-templates/reorder`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderedIds }),
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to reorder message templates');
+  }
+  return res.json() as Promise<{ success: boolean }>;
 }

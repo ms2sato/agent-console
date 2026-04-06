@@ -1,6 +1,6 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate } from '@agent-console/shared';
 import { computeCapabilities } from '@agent-console/shared';
-import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow } from './schema.js';
+import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -360,5 +360,24 @@ export function toAgentDefinition(row: AgentRow): AgentDefinition {
   return {
     ...agentBase,
     capabilities: computeCapabilities(agentBase),
+  };
+}
+
+// ========== Message Template Mappers ==========
+
+/**
+ * Convert a database message template row to a MessageTemplate domain object.
+ *
+ * @param row - The database message template row
+ * @returns The MessageTemplate object
+ */
+export function toMessageTemplate(row: MessageTemplateRow): MessageTemplate {
+  return {
+    id: row.id,
+    title: row.title,
+    content: row.content,
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }

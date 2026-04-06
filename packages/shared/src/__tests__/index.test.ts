@@ -12,4 +12,9 @@ describe('shared index exports', () => {
     // SkillDefinition is a type-only export — verify the module loads successfully
     expect(mod).toBeDefined();
   });
+
+  it('should export MessageTemplate type', async () => {
+    const mod = await import('../index.js');
+    expect(mod).toBeDefined();
+  });
 });

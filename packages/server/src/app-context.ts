@@ -27,6 +27,7 @@ import type { AuthUser, AppServerMessage } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
+import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { OpenPrInfo } from './services/github-pr-service.js';
 import type { GenerateRepositoryDescriptionFn } from './services/repository-description-generator.js';
@@ -62,6 +63,7 @@ import { MemoService } from './services/memo-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
+import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 
 const logger = createLogger('app-context');
 
@@ -134,6 +136,9 @@ export interface AppContext {
 
   /** Generate AI-powered repository description */
   generateRepositoryDescription: GenerateRepositoryDescriptionFn;
+
+  /** Message template CRUD repository */
+  messageTemplateRepository: MessageTemplateRepository;
 }
 
 /**
@@ -185,6 +190,7 @@ export async function createAppContext(
   // 3. Create repositories and services that depend only on db
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -367,6 +373,7 @@ export async function createAppContext(
     fetchPullRequestUrl,
     findOpenPullRequest,
     generateRepositoryDescription,
+    messageTemplateRepository,
   };
 }
 
@@ -414,6 +421,7 @@ export async function createTestContext(
   const sessionRepository =
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -530,6 +538,7 @@ export async function createTestContext(
     fetchPullRequestUrl,
     findOpenPullRequest,
     generateRepositoryDescription,
+    messageTemplateRepository,
   };
 }
 

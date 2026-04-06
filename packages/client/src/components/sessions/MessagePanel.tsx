@@ -5,7 +5,10 @@ import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage, fetchSkills } from '../../lib/api';
 import { sendInput as sendPtyInput } from '../../lib/worker-websocket';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
+import { useMessageTemplates } from '../../hooks/useMessageTemplates';
 import { skillKeys } from '../../lib/query-keys';
+import { TemplateSelector } from './TemplateSelector';
+import { TemplateManager } from './TemplateManager';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -42,8 +45,12 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   const [files, setFiles] = useState<File[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [completionDismissed, setCompletionDismissed] = useState(false);
+  const [templateSelectorOpen, setTemplateSelectorOpen] = useState(false);
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
+  const [templateManagerInitialContent, setTemplateManagerInitialContent] = useState<string | undefined>(undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { templates, addTemplate, updateTemplate, deleteTemplate, reorderTemplates } = useMessageTemplates();
 
   // Fetch slash commands from server
   const { data: skillsData } = useQuery({
@@ -143,6 +150,19 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
       return;
     }
 
+    // Template selector toggle with Ctrl+/
+    if (e.ctrlKey && e.key === '/' && !showCompletion) {
+      e.preventDefault();
+      setTemplateSelectorOpen(prev => !prev);
+      return;
+    }
+
+    // Template selector key handling
+    if (templateSelectorOpen) {
+      // Let TemplateSelector handle its own keyboard events
+      return;
+    }
+
     // Dropdown-specific key handling
     if (showCompletion) {
       if (e.key === 'ArrowDown') {
@@ -171,7 +191,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
       e.preventDefault();
       sendPtyInput(sessionId, targetWorkerId, '\x1b');
     }
-  }, [handleSend, sessionId, targetWorkerId, showCompletion, filteredCommands, clampedIndex, selectCommand]);
+  }, [handleSend, sessionId, targetWorkerId, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -214,8 +234,27 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
           <span className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
         )}
 
-        {/* Message textarea with completion dropdown */}
+        {/* Message textarea with completion dropdown and template selector */}
         <div className="flex-1 relative">
+          {templateSelectorOpen && (
+            <TemplateSelector
+              templates={templates}
+              onSelect={templateContent => {
+                setContent(templateContent);
+                setTemplateSelectorOpen(false);
+                textareaRef.current?.focus();
+              }}
+              onClose={() => {
+                setTemplateSelectorOpen(false);
+                textareaRef.current?.focus();
+              }}
+              onManage={() => {
+                setTemplateSelectorOpen(false);
+                setTemplateManagerInitialContent(undefined);
+                setTemplateManagerOpen(true);
+              }}
+            />
+          )}
           {showCompletion && (
             <ul
               role="listbox"
@@ -257,6 +296,33 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
             style={{ maxHeight: '120px' }}
           />
         </div>
+
+        {/* Template button */}
+        <button
+          type="button"
+          onClick={() => setTemplateSelectorOpen(prev => !prev)}
+          className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0"
+          aria-label="Message templates"
+          title="Message templates (Ctrl+/)"
+        >
+          📋
+        </button>
+
+        {/* Save as template button - only visible when there's content */}
+        {content.trim() && (
+          <button
+            type="button"
+            onClick={() => {
+              setTemplateManagerInitialContent(content.trim());
+              setTemplateManagerOpen(true);
+            }}
+            className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0"
+            aria-label="Save as template"
+            title="Save current message as template"
+          >
+            💾
+          </button>
+        )}
 
         {/* Attach button */}
         <button
@@ -312,6 +378,18 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
           ))}
         </div>
       )}
+
+      {/* Template manager dialog */}
+      <TemplateManager
+        open={templateManagerOpen}
+        onOpenChange={setTemplateManagerOpen}
+        templates={templates}
+        onAdd={addTemplate}
+        onUpdate={updateTemplate}
+        onDelete={deleteTemplate}
+        onReorder={reorderTemplates}
+        initialContent={templateManagerInitialContent}
+      />
     </div>
   );
   }
