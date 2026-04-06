@@ -10,19 +10,19 @@ This document describes the design for automatically triggering Interactive Proc
 
 The Interactive Process mechanism (#530) enables scripts to drive agent workflows via STDOUT/STDIN bridge. However, the agent must call `run_process` itself — which it may skip or forget.
 
-This design adds **event-driven triggers** so that workflows start automatically without agent involvement. For example, when a PR's CI goes green, the acceptance-check script starts automatically against the appropriate session.
+This design adds **event reactions** so that workflows start automatically without agent involvement. For example, when a PR's CI goes green, the acceptance-check script starts automatically against the appropriate session.
 
 ## Design Decisions
 
 ### Configuration Location: Database (not repository files)
 
-Workflow trigger definitions are stored in the database, not in repository files (e.g., `.agent-console/workflows.yml`).
+Event reaction definitions are stored in the database, not in repository files (e.g., `.agent-console/workflows.yml`).
 
 **Rationale**: Avoid coupling repository code to the Agent Console platform. Repositories should remain platform-agnostic.
 
 ### Target Resolution: `self` / `top`
 
-Each workflow trigger specifies how to find the target session:
+Each event reaction specifies how to find the target session:
 
 | Target | Resolution |
 |--------|-----------|
@@ -53,14 +53,14 @@ Event-driven workflow is implemented as a new `InboundEventHandler` alongside th
 ┌──────────────────────────────────────────────────────────┐
 │                    Event Handlers                         │
 ├──────────────┬─────────────┬──────────────┬──────────────┤
-│ AgentWorker  │ DiffWorker  │ UI Notifier  │ Workflow     │
-│ (PTY write)  │ (refresh)   │ (WebSocket)  │ Trigger (new)│
+│ AgentWorker  │ DiffWorker  │ UI Notifier  │ Event        │
+│ (PTY write)  │ (refresh)   │ (WebSocket)  │ Reaction(new)│
 └──────────────┴─────────────┴──────────────┴──────────────┘
 ```
 
-The `WorkflowTriggerHandler`:
+The `EventReactionHandler`:
 1. Receives an `InboundSystemEvent` and `EventTarget`
-2. Looks up matching workflow triggers for the repository and event type
+2. Looks up matching event reactions for the repository and event type
 3. Resolves the target session based on `target` setting (`self` or `top`)
 4. Starts an Interactive Process (`run_process` equivalent) in the target session
 
@@ -71,11 +71,11 @@ GitHub Webhook
     ↓
 [Existing] Inbound Integration pipeline
     ↓
-WorkflowTriggerHandler.handle(event, target)
+EventReactionHandler.handle(event, target)
     ↓
-1. Query workflow_triggers WHERE repository_id AND event_type AND enabled
+1. Query event_reactions WHERE repository_id AND event_type AND enabled
     ↓
-2. For each matching trigger:
+2. For each matching reaction:
    a. Resolve target session (self → branch match, top → parent chain)
    b. Expand script template with event variables
    c. Start Interactive Process in target session
@@ -96,17 +96,17 @@ Scripts receive event context through template variables, following the same `{{
 | `{{COMMIT_SHA}}` | `event.metadata.commitSha` | `abc1234` |
 | `{{EVENT_URL}}` | `event.metadata.url` | `https://github.com/...` |
 
-Example trigger script:
+Example reaction script:
 ```
 node .agent-console/workflows/acceptance-check.js {{PR_NUMBER}}
 ```
 
 ## Database Schema
 
-### `workflow_triggers` Table
+### `event_reactions` Table
 
 ```typescript
-export interface WorkflowTriggersTable {
+export interface EventReactionsTable {
   /** Primary key - UUID */
   id: string;
   /** Reference to repositories.id */
@@ -117,7 +117,7 @@ export interface WorkflowTriggersTable {
   script: string;
   /** Target resolution strategy: 'self' | 'top' */
   target: string;
-  /** Whether this trigger is active */
+  /** Whether this reaction is active */
   enabled: number;  // SQLite boolean: 0 or 1
   /** ISO 8601 timestamps */
   created_at: string;
@@ -126,7 +126,7 @@ export interface WorkflowTriggersTable {
 ```
 
 ```sql
-CREATE TABLE workflow_triggers (
+CREATE TABLE event_reactions (
   id            TEXT PRIMARY KEY,
   repository_id TEXT NOT NULL,
   event_type    TEXT NOT NULL,
@@ -137,13 +137,13 @@ CREATE TABLE workflow_triggers (
   updated_at    TEXT NOT NULL
 );
 
-CREATE INDEX idx_workflow_triggers_repository
-  ON workflow_triggers (repository_id);
+CREATE INDEX idx_event_reactions_repository
+  ON event_reactions (repository_id);
 ```
 
 **Design notes**:
-- One repository can have multiple triggers (1:N)
-- Same event type can have multiple triggers (different scripts)
+- One repository can have multiple reactions (1:N)
+- Same event type can have multiple reactions (different scripts)
 - `enabled` allows temporary deactivation without deletion
 - No foreign key constraint on `repository_id` (consistent with existing schema style)
 
@@ -153,9 +153,9 @@ When starting the Interactive Process, the handler must choose which worker in t
 
 ## UI
 
-Workflow triggers are managed in the repository settings page, as a new **Workflow Triggers** section (similar to the existing Slack Notifications section). If the section becomes too crowded, it can be extracted to a linked sub-page.
+Event reactions are managed in the repository settings page, as a new **Event Reactions** section (similar to the existing Slack Notifications section). If the section becomes too crowded, it can be extracted to a linked sub-page.
 
-The UI provides CRUD for trigger definitions:
+The UI provides CRUD for reaction definitions:
 - Event type (dropdown of `InboundEventType` values)
 - Script command (text input with template variable documentation)
 - Target (`self` / `top` radio or select)
@@ -204,25 +204,25 @@ New Issue — prerequisite for Phase 2 but independently useful.
 4. Broadcast session updates to clients
 5. Remove manual branch rename requirement from UI
 
-### Phase 2: Workflow Trigger Infrastructure (#529)
+### Phase 2: Event Reaction Infrastructure (#529)
 
 Core event-driven workflow mechanism.
 
-1. Database migration: `workflow_triggers` table
-2. Repository layer: `WorkflowTriggerRepository` (CRUD)
-3. `WorkflowTriggerHandler` implementing `InboundEventHandler`
+1. Database migration: `event_reactions` table
+2. Repository layer: `EventReactionRepository` (CRUD)
+3. `EventReactionHandler` implementing `InboundEventHandler`
 4. Target resolution: `self` and `top` strategies
 5. Script template variable expansion
-6. REST API endpoints for trigger management
-7. UI: Workflow Triggers section in repository settings
+6. REST API endpoints for reaction management
+7. UI: Event Reactions section in repository settings
 
 ### Phase 3: Built-in Workflow Scripts (optional, future)
 
-Concrete workflow scripts that leverage the trigger infrastructure:
-- `acceptance-check.js` auto-triggered on `ci:completed`
-- `post-merge.js` auto-triggered on `pr:merged`
+Concrete workflow scripts that leverage the event reaction infrastructure:
+- `acceptance-check.js` auto-started on `ci:completed`
+- `post-merge.js` auto-started on `pr:merged`
 
-These already exist as manually-invoked scripts; Phase 3 wires them to automatic triggers.
+These already exist as manually-invoked scripts; Phase 3 wires them to automatic event reactions.
 
 ## Related
 
