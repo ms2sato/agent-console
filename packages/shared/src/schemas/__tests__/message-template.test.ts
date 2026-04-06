@@ -59,9 +59,9 @@ describe('UpdateMessageTemplateRequestSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('should accept empty object', () => {
+  it('should reject empty object', () => {
     const result = v.safeParse(UpdateMessageTemplateRequestSchema, {});
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('should reject empty title string', () => {

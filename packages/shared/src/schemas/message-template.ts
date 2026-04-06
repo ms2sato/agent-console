@@ -5,10 +5,16 @@ export const CreateMessageTemplateRequestSchema = v.object({
   content: v.pipe(v.string(), v.trim(), v.minLength(1, 'Content is required')),
 });
 
-export const UpdateMessageTemplateRequestSchema = v.object({
-  title: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Title is required'))),
-  content: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Content is required'))),
-});
+export const UpdateMessageTemplateRequestSchema = v.pipe(
+  v.object({
+    title: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Title is required'))),
+    content: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Content is required'))),
+  }),
+  v.check(
+    (val) => val.title !== undefined || val.content !== undefined,
+    'At least one of title or content is required',
+  ),
+);
 
 export const ReorderMessageTemplatesRequestSchema = v.object({
   orderedIds: v.pipe(
