@@ -23,4 +23,15 @@ describe('API route mounting', () => {
     const body = (await res.json()) as { skills: SkillDefinition[] };
     expect(Array.isArray(body.skills)).toBe(true);
   });
+
+  it('should mount message-templates route at /api/message-templates', async () => {
+    app = await createTestApp({
+      messageTemplateRepository: { findAll: async () => [] } as any,
+    });
+    const res = await app.request('/api/message-templates');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { templates: unknown[] };
+    expect(Array.isArray(body.templates)).toBe(true);
+  });
 });
