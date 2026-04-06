@@ -1,204 +1,158 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { renderHook, act, cleanup } from '@testing-library/react';
-import {
-  useMessageTemplates,
-  _resetTemplates,
-  _setTemplatesForTest,
-  type MessageTemplate,
-} from '../useMessageTemplates';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import type { MessageTemplate } from '@agent-console/shared';
 
-const STORAGE_KEY = 'agent-console:message-templates';
+const mockFetchMessageTemplates = mock(() => Promise.resolve({ templates: [] as MessageTemplate[] }));
+const mockCreateMessageTemplate = mock((_title: string, _content: string) =>
+  Promise.resolve({
+    template: { id: '1', title: 'Test', content: 'content', sortOrder: 0, createdAt: '', updatedAt: '' },
+  }),
+);
+const mockUpdateMessageTemplate = mock((_id: string, _updates: { title?: string; content?: string }) =>
+  Promise.resolve({
+    template: { id: '1', title: 'Updated', content: 'content', sortOrder: 0, createdAt: '', updatedAt: '' },
+  }),
+);
+const mockDeleteMessageTemplate = mock((_id: string) => Promise.resolve({ success: true }));
+const mockReorderMessageTemplates = mock((_orderedIds: string[]) => Promise.resolve({ success: true }));
+
+mock.module('../../lib/api', () => ({
+  fetchMessageTemplates: mockFetchMessageTemplates,
+  createMessageTemplate: mockCreateMessageTemplate,
+  updateMessageTemplate: mockUpdateMessageTemplate,
+  deleteMessageTemplate: mockDeleteMessageTemplate,
+  reorderMessageTemplates: mockReorderMessageTemplates,
+}));
+
+import { renderHook, act, cleanup, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createElement } from 'react';
+import { useMessageTemplates } from '../useMessageTemplates';
+
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  return {
+    queryClient,
+    wrapper: ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children),
+  };
+}
 
 describe('useMessageTemplates', () => {
   beforeEach(() => {
-    localStorage.clear();
-    _resetTemplates();
+    mockFetchMessageTemplates.mockClear();
+    mockCreateMessageTemplate.mockClear();
+    mockUpdateMessageTemplate.mockClear();
+    mockDeleteMessageTemplate.mockClear();
+    mockReorderMessageTemplates.mockClear();
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  it('starts with empty templates when localStorage is empty', () => {
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toEqual([]);
+  it('renders with empty templates by default', async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.templates).toEqual([]);
+    });
   });
 
-  it('adds a template', () => {
-    const { result } = renderHook(() => useMessageTemplates());
+  it('returns templates from the API', async () => {
+    const templates: MessageTemplate[] = [
+      { id: '1', title: 'Test', content: 'content', sortOrder: 0, createdAt: '', updatedAt: '' },
+    ];
+    mockFetchMessageTemplates.mockImplementation(() => Promise.resolve({ templates }));
 
-    act(() => {
-      result.current.addTemplate('Greeting', 'Hello, world!');
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.templates).toHaveLength(1);
+      expect(result.current.templates[0].title).toBe('Test');
     });
-
-    expect(result.current.templates).toHaveLength(1);
-    expect(result.current.templates[0].name).toBe('Greeting');
-    expect(result.current.templates[0].content).toBe('Hello, world!');
-    expect(result.current.templates[0].id).toBeTruthy();
   });
 
-  it('updates a template', () => {
-    const { result } = renderHook(() => useMessageTemplates());
+  it('calls createMessageTemplate when addTemplate is called', async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
 
-    act(() => {
-      result.current.addTemplate('Old Name', 'Old content');
+    await waitFor(() => {
+      expect(result.current.templates).toBeDefined();
     });
 
-    const id = result.current.templates[0].id;
-
     act(() => {
-      result.current.updateTemplate(id, { name: 'New Name', content: 'New content' });
+      result.current.addTemplate('New Title', 'New Content');
     });
 
-    expect(result.current.templates[0].name).toBe('New Name');
-    expect(result.current.templates[0].content).toBe('New content');
-    expect(result.current.templates[0].id).toBe(id);
+    await waitFor(() => {
+      expect(mockCreateMessageTemplate).toHaveBeenCalledWith('New Title', 'New Content');
+    });
   });
 
-  it('updates only the specified fields', () => {
-    const { result } = renderHook(() => useMessageTemplates());
+  it('calls updateMessageTemplate when updateTemplate is called', async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
 
-    act(() => {
-      result.current.addTemplate('Name', 'Content');
+    await waitFor(() => {
+      expect(result.current.templates).toBeDefined();
     });
 
-    const id = result.current.templates[0].id;
-
     act(() => {
-      result.current.updateTemplate(id, { name: 'Updated Name' });
+      result.current.updateTemplate('1', { title: 'Updated Title' });
     });
 
-    expect(result.current.templates[0].name).toBe('Updated Name');
-    expect(result.current.templates[0].content).toBe('Content');
+    await waitFor(() => {
+      expect(mockUpdateMessageTemplate).toHaveBeenCalledWith('1', { title: 'Updated Title' });
+    });
   });
 
-  it('deletes a template', () => {
-    const { result } = renderHook(() => useMessageTemplates());
+  it('calls deleteMessageTemplate when deleteTemplate is called', async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
 
-    act(() => {
-      result.current.addTemplate('Template 1', 'Content 1');
-      result.current.addTemplate('Template 2', 'Content 2');
+    await waitFor(() => {
+      expect(result.current.templates).toBeDefined();
     });
 
-    const idToDelete = result.current.templates[0].id;
-
     act(() => {
-      result.current.deleteTemplate(idToDelete);
+      result.current.deleteTemplate('1');
     });
 
-    expect(result.current.templates).toHaveLength(1);
-    expect(result.current.templates[0].name).toBe('Template 2');
+    await waitFor(() => {
+      expect(mockDeleteMessageTemplate).toHaveBeenCalledWith('1');
+    });
   });
 
-  it('reorders templates', () => {
-    const { result } = renderHook(() => useMessageTemplates());
+  it('calls reorderMessageTemplates with correct ordered IDs', async () => {
+    const templates: MessageTemplate[] = [
+      { id: 'a', title: 'A', content: 'Content A', sortOrder: 0, createdAt: '', updatedAt: '' },
+      { id: 'b', title: 'B', content: 'Content B', sortOrder: 1, createdAt: '', updatedAt: '' },
+      { id: 'c', title: 'C', content: 'Content C', sortOrder: 2, createdAt: '', updatedAt: '' },
+    ];
+    mockFetchMessageTemplates.mockImplementation(() => Promise.resolve({ templates }));
 
-    act(() => {
-      result.current.addTemplate('A', 'Content A');
-      result.current.addTemplate('B', 'Content B');
-      result.current.addTemplate('C', 'Content C');
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useMessageTemplates(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.templates).toHaveLength(3);
     });
 
+    // Move item at index 0 to index 2
     act(() => {
       result.current.reorderTemplates(0, 2);
     });
 
-    expect(result.current.templates[0].name).toBe('B');
-    expect(result.current.templates[1].name).toBe('C');
-    expect(result.current.templates[2].name).toBe('A');
-  });
-
-  it('ignores reorder with out-of-bounds indices', () => {
-    const { result } = renderHook(() => useMessageTemplates());
-
-    act(() => {
-      result.current.addTemplate('A', 'Content A');
-      result.current.addTemplate('B', 'Content B');
+    await waitFor(() => {
+      // After moving A from 0 to 2: [B, C, A]
+      expect(mockReorderMessageTemplates).toHaveBeenCalledWith(['b', 'c', 'a']);
     });
-
-    act(() => {
-      result.current.reorderTemplates(-1, 0);
-    });
-
-    expect(result.current.templates[0].name).toBe('A');
-    expect(result.current.templates[1].name).toBe('B');
-
-    act(() => {
-      result.current.reorderTemplates(0, 5);
-    });
-
-    expect(result.current.templates[0].name).toBe('A');
-    expect(result.current.templates[1].name).toBe('B');
-  });
-
-  it('persists templates to localStorage', () => {
-    const { result } = renderHook(() => useMessageTemplates());
-
-    act(() => {
-      result.current.addTemplate('Persisted', 'Saved content');
-    });
-
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
-    expect(stored).toHaveLength(1);
-    expect(stored[0].name).toBe('Persisted');
-    expect(stored[0].content).toBe('Saved content');
-  });
-
-  it('loads templates from localStorage on init', () => {
-    const existing: MessageTemplate[] = [
-      { id: 'test-id-1', name: 'Existing', content: 'From storage' },
-    ];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-    _setTemplatesForTest(existing);
-
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toHaveLength(1);
-    expect(result.current.templates[0].name).toBe('Existing');
-  });
-
-  it('handles empty localStorage gracefully', () => {
-    localStorage.setItem(STORAGE_KEY, '');
-    _resetTemplates();
-
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toEqual([]);
-  });
-
-  it('handles corrupt localStorage gracefully', () => {
-    localStorage.setItem(STORAGE_KEY, 'not valid json {{{');
-    _resetTemplates();
-
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toEqual([]);
-  });
-
-  it('handles non-array localStorage data gracefully', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ not: 'an array' }));
-    _resetTemplates();
-
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toEqual([]);
-  });
-
-  it('filters out invalid items from localStorage', () => {
-    const mixed = [
-      { id: 'valid', name: 'Valid', content: 'Good' },
-      { id: 123, name: 'Bad ID', content: 'Missing string id' },
-      { name: 'No ID', content: 'Missing id field' },
-      null,
-    ];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mixed));
-    _setTemplatesForTest(mixed.filter(
-      (item): item is MessageTemplate =>
-        typeof item === 'object' &&
-        item !== null &&
-        typeof item.id === 'string' &&
-        typeof item.name === 'string' &&
-        typeof item.content === 'string',
-    ));
-
-    const { result } = renderHook(() => useMessageTemplates());
-    expect(result.current.templates).toHaveLength(1);
-    expect(result.current.templates[0].name).toBe('Valid');
   });
 });

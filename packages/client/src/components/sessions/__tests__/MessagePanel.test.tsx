@@ -23,9 +23,19 @@ const mockSendWorkerMessage = mock(() => Promise.resolve({
   },
 }));
 const mockFetchSkills = mock(() => Promise.resolve({ skills: TEST_SKILLS }));
+const mockFetchMessageTemplates = mock(() => Promise.resolve({ templates: [] }));
+const mockCreateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
+const mockUpdateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
+const mockDeleteMessageTemplate = mock(() => Promise.resolve({ success: true }));
+const mockReorderMessageTemplates = mock(() => Promise.resolve({ success: true }));
 mock.module('../../../lib/api', () => ({
   sendWorkerMessage: mockSendWorkerMessage,
   fetchSkills: mockFetchSkills,
+  fetchMessageTemplates: mockFetchMessageTemplates,
+  createMessageTemplate: mockCreateMessageTemplate,
+  updateMessageTemplate: mockUpdateMessageTemplate,
+  deleteMessageTemplate: mockDeleteMessageTemplate,
+  reorderMessageTemplates: mockReorderMessageTemplates,
 }));
 
 const mockSendInput = mock(() => true);
@@ -39,7 +49,6 @@ import type { QueryClient } from '@tanstack/react-query';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MessagePanel, canSend, validateFiles } from '../MessagePanel';
 import { _getDraftsMap } from '../../../hooks/useDraftMessage';
-import { _resetTemplates, _setTemplatesForTest } from '../../../hooks/useMessageTemplates';
 
 describe('MessagePanel logic', () => {
   describe('canSend', () => {
@@ -661,14 +670,6 @@ describe('MessagePanel', () => {
   });
 
   describe('message templates', () => {
-    beforeEach(() => {
-      _resetTemplates();
-    });
-
-    afterEach(() => {
-      _resetTemplates();
-    });
-
     it('renders the template button with correct aria-label', async () => {
       const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
       const view = within(container);

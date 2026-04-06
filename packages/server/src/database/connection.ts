@@ -244,6 +244,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 16) {
     await migrateToV16(database);
   }
+
+  if (currentVersion < 17) {
+    await migrateToV17(database);
+  }
 }
 
 /**
@@ -790,6 +794,27 @@ async function migrateToV16(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 16`.execute(database);
 
   logger.info('Migration to v16 completed');
+}
+
+/**
+ * Migration v17: Create message_templates table.
+ */
+async function migrateToV17(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v17: Creating message_templates table');
+
+  await database.schema
+    .createTable('message_templates')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('content', 'text', (col) => col.notNull())
+    .addColumn('sort_order', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(sql`(datetime('now'))`))
+    .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(sql`(datetime('now'))`))
+    .execute();
+
+  await sql`PRAGMA user_version = 17`.execute(database);
+
+  logger.info('Migration to v17 completed');
 }
 
 /**

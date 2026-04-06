@@ -4,9 +4,9 @@ import { TemplateSelector } from '../TemplateSelector';
 import type { MessageTemplate } from '../../../hooks/useMessageTemplates';
 
 const TEMPLATES: MessageTemplate[] = [
-  { id: '1', name: 'Bug Report', content: 'Steps to reproduce:\n1.\n2.\n3.' },
-  { id: '2', name: 'Feature Request', content: 'As a user, I want to...' },
-  { id: '3', name: 'Code Review', content: 'Please review the following changes...' },
+  { id: '1', title: 'Bug Report', content: 'Steps to reproduce:\n1.\n2.\n3.', sortOrder: 0, createdAt: '', updatedAt: '' },
+  { id: '2', title: 'Feature Request', content: 'As a user, I want to...', sortOrder: 1, createdAt: '', updatedAt: '' },
+  { id: '3', title: 'Code Review', content: 'Please review the following changes...', sortOrder: 2, createdAt: '', updatedAt: '' },
 ];
 
 describe('TemplateSelector', () => {

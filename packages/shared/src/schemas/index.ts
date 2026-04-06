@@ -109,3 +109,13 @@ export {
   RepositorySlackIntegrationInputSchema,
   type RepositorySlackIntegrationInput,
 } from './notification.js';
+
+// Message template schemas
+export {
+  CreateMessageTemplateRequestSchema,
+  UpdateMessageTemplateRequestSchema,
+  ReorderMessageTemplatesRequestSchema,
+  type CreateMessageTemplateRequest,
+  type UpdateMessageTemplateRequest,
+  type ReorderMessageTemplatesRequest,
+} from './message-template.js';

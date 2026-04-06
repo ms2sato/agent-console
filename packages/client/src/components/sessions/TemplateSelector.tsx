@@ -18,7 +18,7 @@ export function TemplateSelector({ templates, onSelect, onClose, onManage }: Tem
   const filtered = filter
     ? templates.filter(
         t =>
-          t.name.toLowerCase().includes(filter.toLowerCase()) ||
+          t.title.toLowerCase().includes(filter.toLowerCase()) ||
           t.content.toLowerCase().includes(filter.toLowerCase()),
       )
     : templates;
@@ -108,7 +108,7 @@ export function TemplateSelector({ templates, onSelect, onClose, onManage }: Tem
               }}
               onMouseEnter={() => setSelectedIndex(index)}
             >
-              <span className="font-medium text-blue-400">{template.name}</span>
+              <span className="font-medium text-blue-400">{template.title}</span>
               <span className="ml-2 text-gray-400">{truncate(template.content.replace(/\n/g, ' '), 60)}</span>
             </li>
           ))}

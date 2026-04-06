@@ -13,8 +13,8 @@ interface TemplateManagerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   templates: MessageTemplate[];
-  onAdd: (name: string, content: string) => void;
-  onUpdate: (id: string, updates: Partial<Pick<MessageTemplate, 'name' | 'content'>>) => void;
+  onAdd: (title: string, content: string) => void;
+  onUpdate: (id: string, updates: Partial<Pick<MessageTemplate, 'title' | 'content'>>) => void;
   onDelete: (id: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
   initialContent?: string;
@@ -57,13 +57,13 @@ export function TemplateManager({
 
   function startEdit(template: MessageTemplate) {
     setEditingId(template.id);
-    setEditName(template.name);
+    setEditName(template.title);
     setEditContent(template.content);
   }
 
   function saveEdit() {
     if (!editingId || !editName.trim() || !editContent.trim()) return;
-    onUpdate(editingId, { name: editName.trim(), content: editContent.trim() });
+    onUpdate(editingId, { title: editName.trim(), content: editContent.trim() });
     setEditingId(null);
   }
 
@@ -161,7 +161,7 @@ export function TemplateManager({
                     <>
                       <div className="flex items-start justify-between">
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-white">{template.name}</div>
+                          <div className="text-sm font-medium text-white">{template.title}</div>
                           <div className="text-xs text-gray-400 mt-0.5 truncate">{template.content}</div>
                         </div>
                         <div className="flex items-center gap-1 ml-2 shrink-0">
@@ -175,7 +175,7 @@ export function TemplateManager({
                                 ? 'text-gray-600 cursor-not-allowed'
                                 : 'text-gray-400 hover:text-white hover:bg-slate-600',
                             )}
-                            aria-label={`Move ${template.name} up`}
+                            aria-label={`Move ${template.title} up`}
                           >
                             ↑
                           </button>
@@ -189,7 +189,7 @@ export function TemplateManager({
                                 ? 'text-gray-600 cursor-not-allowed'
                                 : 'text-gray-400 hover:text-white hover:bg-slate-600',
                             )}
-                            aria-label={`Move ${template.name} down`}
+                            aria-label={`Move ${template.title} down`}
                           >
                             ↓
                           </button>
@@ -197,7 +197,7 @@ export function TemplateManager({
                             type="button"
                             onClick={() => startEdit(template)}
                             className="text-gray-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-slate-600"
-                            aria-label={`Edit ${template.name}`}
+                            aria-label={`Edit ${template.title}`}
                           >
                             Edit
                           </button>
@@ -223,7 +223,7 @@ export function TemplateManager({
                               type="button"
                               onClick={() => setDeleteConfirmId(template.id)}
                               className="text-gray-400 hover:text-red-400 text-xs px-1.5 py-0.5 rounded hover:bg-slate-600"
-                              aria-label={`Delete ${template.name}`}
+                              aria-label={`Delete ${template.title}`}
                             >
                               Delete
                             </button>

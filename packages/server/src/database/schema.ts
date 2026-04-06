@@ -16,6 +16,7 @@ export interface Database {
   inbound_event_notifications: InboundEventNotificationsTable;
   users: UsersTable;
   timers: TimersTable;
+  message_templates: MessageTemplatesTable;
 }
 
 /**
@@ -334,3 +335,29 @@ export interface TimersTable {
 export type TimerRow = Selectable<TimersTable>;
 /** Timer data for INSERT queries */
 export type NewTimer = Insertable<TimersTable>;
+
+/**
+ * Message Templates table schema.
+ * Stores saved message templates for quick insertion into the message input.
+ */
+export interface MessageTemplatesTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Display title for the template */
+  title: string;
+  /** Template content text */
+  content: string;
+  /** Sort order for display (lower = first) */
+  sort_order: number;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
+}
+
+/** Message template row as returned from SELECT queries */
+export type MessageTemplateRow = Selectable<MessageTemplatesTable>;
+/** Message template data for INSERT queries */
+export type NewMessageTemplate = Insertable<MessageTemplatesTable>;
+/** Message template data for UPDATE queries */
+export type MessageTemplateUpdate = Updateable<MessageTemplatesTable>;

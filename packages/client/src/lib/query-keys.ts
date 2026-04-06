@@ -96,3 +96,8 @@ export const reviewQueueKeys = {
   /** Full queue list */
   list: () => ['review-queue', 'list'] as const,
 } as const;
+
+export const messageTemplateKeys = {
+  /** All message templates list */
+  all: () => ['message-templates'] as const,
+} as const;
