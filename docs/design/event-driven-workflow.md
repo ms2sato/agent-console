@@ -4,7 +4,7 @@ This document describes the design for automatically triggering Interactive Proc
 
 > **Prerequisites**:
 > - [Inbound Integration](./integration-inbound.md) — Event reception and routing
-> - [Interactive Process MCP tools](#530) — `run_process` / `write_process_response` mechanism
+> - Interactive Process MCP tools (#530) — `run_process` / `write_process_response` mechanism
 
 ## Motivation
 
@@ -49,7 +49,7 @@ See [Dynamic Branch Tracking](#dynamic-branch-tracking) section for details.
 
 Event-driven workflow is implemented as a new `InboundEventHandler` alongside the existing three:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │                    Event Handlers                         │
 ├──────────────┬─────────────┬──────────────┬──────────────┤
@@ -66,7 +66,7 @@ The `EventReactionHandler`:
 
 ### Data Flow
 
-```
+```text
 GitHub Webhook
     ↓
 [Existing] Inbound Integration pipeline
@@ -97,9 +97,17 @@ Scripts receive event context through template variables, following the same `{{
 | `{{EVENT_URL}}` | `event.metadata.url` | `https://github.com/...` |
 
 Example reaction script:
-```
+```bash
 node .agent-console/workflows/acceptance-check.js {{PR_NUMBER}}
 ```
+
+### Security: Template Variable Escaping
+
+Template variables are expanded into shell commands, so command injection must be prevented. All variable values are shell-escaped before substitution, following the same `shellEscape()` function used by existing agent command template expansion (`packages/server/src/lib/template.ts`).
+
+Additionally, variables sourced from git metadata (branch names, repository names) are inherently constrained by git's naming rules, which prohibit most shell metacharacters. PR numbers and commit SHAs are validated as alphanumeric before expansion.
+
+If a variable value fails validation or escaping, the reaction is skipped and the failure is logged.
 
 ## Database Schema
 
