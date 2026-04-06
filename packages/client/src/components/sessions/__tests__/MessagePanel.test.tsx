@@ -150,6 +150,11 @@ describe('MessagePanel', () => {
     mockSendWorkerMessage.mockClear();
     mockFetchSkills.mockClear();
     mockSendInput.mockClear();
+    mockFetchMessageTemplates.mockClear();
+    mockCreateMessageTemplate.mockClear();
+    mockUpdateMessageTemplate.mockClear();
+    mockDeleteMessageTemplate.mockClear();
+    mockReorderMessageTemplates.mockClear();
   });
 
   it('renders send form with textarea and send button', async () => {

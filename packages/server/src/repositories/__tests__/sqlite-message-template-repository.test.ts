@@ -147,22 +147,23 @@ describe('SqliteMessageTemplateRepository', () => {
       expect(results[2].sortOrder).toBe(2);
     });
 
-    it('should handle partial reorder (subset of IDs)', async () => {
+    it('should reject partial reorder (subset of IDs)', async () => {
       await repository.create('tpl-a', 'A', 'a', 0);
       await repository.create('tpl-b', 'B', 'b', 1);
       await repository.create('tpl-c', 'C', 'c', 2);
 
-      // Only reorder two of three
-      await repository.reorder(['tpl-b', 'tpl-a']);
+      await expect(repository.reorder(['tpl-b', 'tpl-a'])).rejects.toThrow(
+        'orderedIds must contain each message template exactly once',
+      );
+    });
 
-      const tplA = await repository.findById('tpl-a');
-      const tplB = await repository.findById('tpl-b');
-      const tplC = await repository.findById('tpl-c');
+    it('should reject duplicate IDs', async () => {
+      await repository.create('tpl-a', 'A', 'a', 0);
+      await repository.create('tpl-b', 'B', 'b', 1);
 
-      expect(tplB!.sortOrder).toBe(0);
-      expect(tplA!.sortOrder).toBe(1);
-      // tpl-c retains original sort_order since it wasn't in the reorder list
-      expect(tplC!.sortOrder).toBe(2);
+      await expect(repository.reorder(['tpl-a', 'tpl-a'])).rejects.toThrow(
+        'orderedIds must contain each message template exactly once',
+      );
     });
   });
 });

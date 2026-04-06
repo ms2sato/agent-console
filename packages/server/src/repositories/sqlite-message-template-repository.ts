@@ -88,10 +88,24 @@ export class SqliteMessageTemplateRepository implements MessageTemplateRepositor
 
   async reorder(orderedIds: string[]): Promise<void> {
     await this.db.transaction().execute(async (trx) => {
+      const existingIds = new Set(
+        (await trx.selectFrom('message_templates').select('id').execute()).map((row) => row.id),
+      );
+      const orderedIdSet = new Set(orderedIds);
+
+      if (
+        existingIds.size !== orderedIds.length ||
+        orderedIdSet.size !== orderedIds.length ||
+        [...orderedIdSet].some((id) => !existingIds.has(id))
+      ) {
+        throw new Error('orderedIds must contain each message template exactly once');
+      }
+
+      const now = new Date().toISOString();
       for (let i = 0; i < orderedIds.length; i++) {
         await trx
           .updateTable('message_templates')
-          .set({ sort_order: i, updated_at: new Date().toISOString() })
+          .set({ sort_order: i, updated_at: now })
           .where('id', '=', orderedIds[i])
           .execute();
       }

@@ -804,6 +804,7 @@ async function migrateToV17(database: Kysely<Database>): Promise<void> {
 
   await database.schema
     .createTable('message_templates')
+    .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
     .addColumn('title', 'text', (col) => col.notNull())
     .addColumn('content', 'text', (col) => col.notNull())
