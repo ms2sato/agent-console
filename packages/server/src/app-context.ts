@@ -340,7 +340,7 @@ export async function createAppContext(
   const branchWatcherService = new BranchWatcherService(async (sessionId, newBranch) => {
     await sessionManager.syncBranchFromGit(sessionId, newBranch);
   });
-  sessionManager.setBranchWatcherCallbacks({
+  await sessionManager.setBranchWatcherCallbacks({
     startWatching: (sessionId, locationPath, currentBranch) =>
       branchWatcherService.startWatching(sessionId, locationPath, currentBranch),
     stopWatching: (sessionId) => branchWatcherService.stopWatching(sessionId),

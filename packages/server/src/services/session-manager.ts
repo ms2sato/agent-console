@@ -448,12 +448,22 @@ export class SessionManager {
    * Set callbacks for branch watcher lifecycle.
    * Wired in app-context to connect SessionManager with BranchWatcherService
    * without creating a direct dependency.
+   *
+   * Backfills watchers for any worktree sessions that were already restored
+   * by initialize() before this setter was called.
    */
-  setBranchWatcherCallbacks(callbacks: {
+  async setBranchWatcherCallbacks(callbacks: {
     startWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
     stopWatching: (sessionId: string) => void;
-  }): void {
+  }): Promise<void> {
     this.branchWatcherCallbacks = callbacks;
+
+    // Backfill watchers for already-live worktree sessions (auto-resumed during initialize)
+    for (const [sessionId, session] of this.sessions) {
+      if (session.type === 'worktree') {
+        await callbacks.startWatching(sessionId, session.locationPath, session.worktreeId);
+      }
+    }
   }
 
   // ========== Session Lifecycle ==========

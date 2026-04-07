@@ -51,8 +51,9 @@ export class SessionDeletionService {
     const session = this.deps.getSession(id);
     if (!session) return;
 
-    // Stop branch watcher
-    this.deps.stopBranchWatching(id);
+    // NOTE: Do NOT stop branch watching here. This method keeps the session
+    // recoverable — branch tracking should continue for surviving sessions.
+    // stopBranchWatching is called in deleteSession() which is the final teardown.
 
     const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {

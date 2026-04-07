@@ -315,4 +315,91 @@ describe('BranchWatcherService', () => {
     service.stopWatching('unknown-session');
     expect(service.isWatching('unknown-session')).toBe(false);
   });
+
+  it('should reconcile stale branch on startWatching', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      // HEAD says 'feature-branch' but caller passes 'stale-branch'
+      await Bun.write(path.join(gitDir, 'HEAD'), 'ref: refs/heads/feature-branch\n');
+
+      const onBranchChanged = mock(async (_sid: string, _branch: string) => {});
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+
+      await service.startWatching('session-1', tmpDir, 'stale-branch');
+
+      // Should have immediately called onBranchChanged to reconcile
+      expect(onBranchChanged).toHaveBeenCalledWith('session-1', 'feature-branch');
+      expect(service.isWatching('session-1')).toBe(true);
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
+
+  it('should not reconcile when actual HEAD matches stored branch', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      await Bun.write(path.join(gitDir, 'HEAD'), 'ref: refs/heads/main\n');
+
+      const onBranchChanged = mock(async (_sid: string, _branch: string) => {});
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+
+      await service.startWatching('session-1', tmpDir, 'main');
+
+      // No reconciliation needed
+      expect(onBranchChanged).not.toHaveBeenCalled();
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
+
+  it('should only update currentBranch after successful sync', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      const headPath = path.join(gitDir, 'HEAD');
+      await Bun.write(headPath, 'ref: refs/heads/main\n');
+
+      // First call succeeds, second call fails
+      let callCount = 0;
+      const onBranchChanged = mock(async (_sid: string, _branch: string) => {
+        callCount++;
+        if (callCount === 2) throw new Error('sync failed');
+      });
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+      await service.startWatching('session-1', tmpDir, 'main');
+
+      // First change: succeeds
+      await Bun.write(headPath, 'ref: refs/heads/branch-a\n');
+      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(onBranchChanged).toHaveBeenCalledWith('session-1', 'branch-a');
+
+      // Second change: fails — currentBranch should NOT advance
+      await Bun.write(headPath, 'ref: refs/heads/branch-b\n');
+      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Third change: should still detect from branch-a (not branch-b)
+      await Bun.write(headPath, 'ref: refs/heads/branch-c\n');
+      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(onBranchChanged).toHaveBeenCalledWith('session-1', 'branch-c');
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
 });

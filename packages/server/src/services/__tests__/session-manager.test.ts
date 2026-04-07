@@ -2679,7 +2679,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
       const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
       const stopWatching = mock((_sid: string) => {});
-      manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
+      await manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
 
       await manager.createSession({
         type: 'worktree',
@@ -2698,7 +2698,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
       const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
       const stopWatching = mock((_sid: string) => {});
-      manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
+      await manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
 
       await manager.createSession({
         type: 'quick',

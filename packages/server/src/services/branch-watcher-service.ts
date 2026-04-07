@@ -64,10 +64,26 @@ export async function resolveHeadFilePath(locationPath: string): Promise<string 
   return null;
 }
 
+/**
+ * Read the current branch from a HEAD file path.
+ */
+async function readBranchFromHeadFile(headFilePath: string): Promise<string | null> {
+  try {
+    const content = await Bun.file(headFilePath).text();
+    return parseBranchFromHead(content);
+  } catch {
+    return null;
+  }
+}
+
 interface WatcherEntry {
   watcher: FSWatcher;
   debounceTimer: ReturnType<typeof setTimeout> | null;
   currentBranch: string;
+  /** Serialization lock: when set, a sync is in progress. Next change waits. */
+  syncInProgress: boolean;
+  /** Whether another change arrived during an in-progress sync. */
+  pendingRecheck: boolean;
 }
 
 export interface BranchChangeCallback {
@@ -90,6 +106,9 @@ export class BranchWatcherService {
   /**
    * Start watching the HEAD file for a session.
    * If already watching this session, stops the previous watcher first.
+   *
+   * Reads the actual HEAD file to seed the watcher with the real current branch,
+   * and triggers onBranchChanged if it differs from the provided currentBranch.
    */
   async startWatching(sessionId: string, locationPath: string, currentBranch: string): Promise<void> {
     // Stop any existing watcher for this session
@@ -101,17 +120,29 @@ export class BranchWatcherService {
       return;
     }
 
-    // Verify the HEAD file exists before watching
-    const headFile = Bun.file(headFilePath);
-    if (!await headFile.exists()) {
-      logger.warn({ sessionId, headFilePath }, 'HEAD file does not exist, skipping branch watch');
+    // Read actual HEAD to seed the watcher from reality, not stale metadata
+    const actualBranch = await readBranchFromHeadFile(headFilePath);
+    if (actualBranch === null) {
+      logger.warn({ sessionId, headFilePath }, 'HEAD file not readable, skipping branch watch');
       return;
+    }
+
+    // If stored branch differs from actual HEAD, reconcile immediately
+    if (actualBranch !== currentBranch) {
+      logger.info({ sessionId, storedBranch: currentBranch, actualBranch }, 'Reconciling stale branch on watcher start');
+      try {
+        await this.onBranchChanged(sessionId, actualBranch);
+      } catch (error) {
+        logger.error({ sessionId, err: error }, 'Failed to reconcile stale branch');
+      }
     }
 
     const entry: WatcherEntry = {
       watcher: null as unknown as FSWatcher,
       debounceTimer: null,
-      currentBranch,
+      currentBranch: actualBranch,
+      syncInProgress: false,
+      pendingRecheck: false,
     };
 
     try {
@@ -122,7 +153,7 @@ export class BranchWatcherService {
         }
         entry.debounceTimer = setTimeout(() => {
           entry.debounceTimer = null;
-          this.handleHeadChange(sessionId, headFilePath, entry);
+          this.serializedHeadChange(sessionId, headFilePath, entry);
         }, DEBOUNCE_DELAY);
       });
 
@@ -133,7 +164,7 @@ export class BranchWatcherService {
       entry.watcher = fsWatcher;
       this.watchers.set(sessionId, entry);
 
-      logger.info({ sessionId, headFilePath, currentBranch }, 'Started watching HEAD file');
+      logger.info({ sessionId, headFilePath, currentBranch: actualBranch }, 'Started watching HEAD file');
     } catch (error) {
       logger.error({ sessionId, headFilePath, err: error }, 'Failed to start HEAD file watcher');
     }
@@ -176,6 +207,29 @@ export class BranchWatcherService {
     return this.watchers.has(sessionId);
   }
 
+  /**
+   * Serialize sync operations per entry to prevent parallel handleHeadChange runs.
+   */
+  private async serializedHeadChange(sessionId: string, headFilePath: string, entry: WatcherEntry): Promise<void> {
+    if (entry.syncInProgress) {
+      entry.pendingRecheck = true;
+      return;
+    }
+
+    entry.syncInProgress = true;
+    try {
+      await this.handleHeadChange(sessionId, headFilePath, entry);
+    } finally {
+      entry.syncInProgress = false;
+
+      // If another change arrived during sync, process it
+      if (entry.pendingRecheck) {
+        entry.pendingRecheck = false;
+        await this.serializedHeadChange(sessionId, headFilePath, entry);
+      }
+    }
+  }
+
   private async handleHeadChange(sessionId: string, headFilePath: string, entry: WatcherEntry): Promise<void> {
     try {
       const content = await Bun.file(headFilePath).text();
@@ -186,11 +240,12 @@ export class BranchWatcherService {
       }
 
       const oldBranch = entry.currentBranch;
-      entry.currentBranch = newBranch;
 
       logger.info({ sessionId, oldBranch, newBranch }, 'Branch change detected');
 
+      // Call onBranchChanged first; only update currentBranch on success
       await this.onBranchChanged(sessionId, newBranch);
+      entry.currentBranch = newBranch;
     } catch (error) {
       logger.error({ sessionId, headFilePath, err: error }, 'Failed to handle HEAD change');
     }
