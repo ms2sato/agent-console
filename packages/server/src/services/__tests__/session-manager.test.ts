@@ -2677,8 +2677,8 @@ describe('SessionManager', () => {
   describe('setBranchWatcherCallbacks', () => {
     it('should call startWatching when worktree session is created', async () => {
       const manager = await getSessionManager();
-      const startWatching = mock(async () => {});
-      const stopWatching = mock(() => {});
+      const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
+      const stopWatching = mock((_sid: string) => {});
       manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
 
       await manager.createSession({
@@ -2696,8 +2696,8 @@ describe('SessionManager', () => {
 
     it('should not call startWatching for quick sessions', async () => {
       const manager = await getSessionManager();
-      const startWatching = mock(async () => {});
-      const stopWatching = mock(() => {});
+      const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
+      const stopWatching = mock((_sid: string) => {});
       manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
 
       await manager.createSession({
