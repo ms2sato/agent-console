@@ -1,0 +1,198 @@
+/**
+ * BranchWatcherService - Monitors git HEAD files to detect branch changes.
+ *
+ * Watches the HEAD file for each worktree session via fs.watch.
+ * When a branch change is detected, updates worktreeId in memory,
+ * persists to database, and broadcasts to connected clients.
+ *
+ * HEAD file locations:
+ * - Main repository: <locationPath>/.git/HEAD
+ * - Git worktree: <main-repo>/.git/worktrees/<basename>/HEAD
+ */
+
+import { watch, type FSWatcher } from 'node:fs';
+import * as path from 'node:path';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('branch-watcher');
+
+const DEBOUNCE_DELAY = 200;
+
+/** Parse branch name from HEAD file content. */
+export function parseBranchFromHead(content: string): string {
+  const trimmed = content.trim();
+  const refPrefix = 'ref: refs/heads/';
+  if (trimmed.startsWith(refPrefix)) {
+    return trimmed.slice(refPrefix.length);
+  }
+  // Detached HEAD (raw commit hash or other)
+  return '(detached)';
+}
+
+/**
+ * Resolve the path to the HEAD file for a given locationPath.
+ *
+ * For git worktrees, the .git entry is a file containing "gitdir: <path>".
+ * We read that to find the actual git directory, which contains the HEAD file.
+ *
+ * For main repositories, .git is a directory and HEAD is at .git/HEAD.
+ */
+export async function resolveHeadFilePath(locationPath: string): Promise<string | null> {
+  const dotGitPath = path.join(locationPath, '.git');
+
+  // Try reading .git as a file (worktree case: contains "gitdir: <path>")
+  // Uses Bun.file() to avoid node:fs/promises mock contamination in tests
+  try {
+    const content = await Bun.file(dotGitPath).text();
+    if (content.startsWith('gitdir: ')) {
+      const gitdir = content.slice('gitdir: '.length).trim();
+      const resolvedGitdir = path.isAbsolute(gitdir)
+        ? gitdir
+        : path.resolve(locationPath, gitdir);
+      return path.join(resolvedGitdir, 'HEAD');
+    }
+  } catch {
+    // Not a readable file — may be a directory or not exist
+  }
+
+  // Main repository: HEAD is at .git/HEAD
+  const headPath = path.join(dotGitPath, 'HEAD');
+  if (await Bun.file(headPath).exists()) {
+    return headPath;
+  }
+
+  return null;
+}
+
+interface WatcherEntry {
+  watcher: FSWatcher;
+  debounceTimer: ReturnType<typeof setTimeout> | null;
+  currentBranch: string;
+}
+
+export interface BranchChangeCallback {
+  (sessionId: string, newBranch: string): Promise<void>;
+}
+
+type WatchFn = typeof watch;
+
+export class BranchWatcherService {
+  private watchers = new Map<string, WatcherEntry>();
+  private watchFn: WatchFn;
+
+  constructor(
+    private readonly onBranchChanged: BranchChangeCallback,
+    watchFn?: WatchFn,
+  ) {
+    this.watchFn = watchFn ?? watch;
+  }
+
+  /**
+   * Start watching the HEAD file for a session.
+   * If already watching this session, stops the previous watcher first.
+   */
+  async startWatching(sessionId: string, locationPath: string, currentBranch: string): Promise<void> {
+    // Stop any existing watcher for this session
+    this.stopWatching(sessionId);
+
+    const headFilePath = await resolveHeadFilePath(locationPath);
+    if (!headFilePath) {
+      logger.warn({ sessionId, locationPath }, 'Could not resolve HEAD file path, skipping branch watch');
+      return;
+    }
+
+    // Verify the HEAD file exists before watching
+    const headFile = Bun.file(headFilePath);
+    if (!await headFile.exists()) {
+      logger.warn({ sessionId, headFilePath }, 'HEAD file does not exist, skipping branch watch');
+      return;
+    }
+
+    const entry: WatcherEntry = {
+      watcher: null as unknown as FSWatcher,
+      debounceTimer: null,
+      currentBranch,
+    };
+
+    try {
+      const fsWatcher = this.watchFn(headFilePath, (_eventType) => {
+        // Debounce: git may write HEAD multiple times during a single operation
+        if (entry.debounceTimer) {
+          clearTimeout(entry.debounceTimer);
+        }
+        entry.debounceTimer = setTimeout(() => {
+          entry.debounceTimer = null;
+          this.handleHeadChange(sessionId, headFilePath, entry);
+        }, DEBOUNCE_DELAY);
+      });
+
+      fsWatcher.on('error', (error) => {
+        logger.error({ sessionId, headFilePath, err: error }, 'HEAD file watcher error');
+      });
+
+      entry.watcher = fsWatcher;
+      this.watchers.set(sessionId, entry);
+
+      logger.info({ sessionId, headFilePath, currentBranch }, 'Started watching HEAD file');
+    } catch (error) {
+      logger.error({ sessionId, headFilePath, err: error }, 'Failed to start HEAD file watcher');
+    }
+  }
+
+  /**
+   * Stop watching the HEAD file for a session.
+   */
+  stopWatching(sessionId: string): void {
+    const entry = this.watchers.get(sessionId);
+    if (!entry) return;
+
+    if (entry.debounceTimer) {
+      clearTimeout(entry.debounceTimer);
+    }
+    entry.watcher.close();
+    this.watchers.delete(sessionId);
+
+    logger.info({ sessionId }, 'Stopped watching HEAD file');
+  }
+
+  /**
+   * Stop all watchers. Called on server shutdown.
+   */
+  stopAll(): void {
+    for (const [sessionId, entry] of this.watchers) {
+      if (entry.debounceTimer) {
+        clearTimeout(entry.debounceTimer);
+      }
+      entry.watcher.close();
+      logger.debug({ sessionId }, 'Stopped HEAD watcher (shutdown)');
+    }
+    this.watchers.clear();
+  }
+
+  /**
+   * Check if a session is being watched.
+   */
+  isWatching(sessionId: string): boolean {
+    return this.watchers.has(sessionId);
+  }
+
+  private async handleHeadChange(sessionId: string, headFilePath: string, entry: WatcherEntry): Promise<void> {
+    try {
+      const content = await Bun.file(headFilePath).text();
+      const newBranch = parseBranchFromHead(content);
+
+      if (newBranch === entry.currentBranch) {
+        return; // No change
+      }
+
+      const oldBranch = entry.currentBranch;
+      entry.currentBranch = newBranch;
+
+      logger.info({ sessionId, oldBranch, newBranch }, 'Branch change detected');
+
+      await this.onBranchChanged(sessionId, newBranch);
+    } catch (error) {
+      logger.error({ sessionId, headFilePath, err: error }, 'Failed to handle HEAD change');
+    }
+  }
+}

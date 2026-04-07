@@ -55,6 +55,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     getTimerCleanupCallback: () => undefined,
     getProcessCleanupCallback: () => undefined,
     stopWatching: mockStopWatching,
+    stopBranchWatching: () => {},
     ...overrides,
   };
 }

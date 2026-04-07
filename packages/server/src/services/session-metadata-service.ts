@@ -79,6 +79,100 @@ export class SessionMetadataService {
     return this.updateSessionMetadata(sessionId, { branch: newBranch });
   }
 
+  /**
+   * Update worktreeId after an external branch change (e.g., detected by fs.watch).
+   *
+   * Unlike updateSessionMetadata, this does NOT call gitRenameBranch because
+   * the branch has already changed in git. It only updates in-memory state,
+   * persists, and broadcasts.
+   */
+  async syncBranchFromGit(
+    sessionId: string,
+    newBranch: string
+  ): Promise<SessionMetadataUpdateResult> {
+    const session = this.deps.getSession(sessionId);
+
+    if (!session) {
+      // For inactive sessions, update persistence directly
+      return this.syncBranchForInactiveSession(sessionId, newBranch);
+    }
+
+    if (session.type !== 'worktree') {
+      return { success: false, error: 'Can only sync branch for worktree sessions' };
+    }
+
+    if (session.worktreeId === newBranch) {
+      return { success: true, branch: newBranch };
+    }
+
+    session.worktreeId = newBranch;
+
+    // Update git-diff workers' base commit for the new branch
+    try {
+      await this.deps.updateGitDiffWorkersAfterBranchRename(sessionId);
+    } catch (diffUpdateError) {
+      logger.error(
+        { sessionId, err: diffUpdateError },
+        'Failed to update git-diff workers after branch sync'
+      );
+    }
+
+    await this.deps.persistSession(session);
+
+    // Broadcast session update via WebSocket
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
+
+    logger.info({ sessionId, newBranch }, 'Branch synced from git');
+
+    return { success: true, branch: newBranch };
+  }
+
+  private async syncBranchForInactiveSession(
+    sessionId: string,
+    newBranch: string
+  ): Promise<SessionMetadataUpdateResult> {
+    const metadata = await this.deps.sessionRepository.findById(sessionId);
+    if (!metadata) {
+      return { success: false, error: 'session_not_found' };
+    }
+
+    if (metadata.type !== 'worktree') {
+      return { success: false, error: 'Can only sync branch for worktree sessions' };
+    }
+
+    if (metadata.worktreeId === newBranch) {
+      return { success: true, branch: newBranch };
+    }
+
+    // Update base commit for git-diff workers
+    let updatedWorkers: typeof metadata.workers | undefined;
+    try {
+      const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
+      const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
+      updatedWorkers = metadata.workers.map(w => {
+        if (w.type === 'git-diff') {
+          return { ...w, baseCommit: resolvedBaseCommit };
+        }
+        return w;
+      });
+    } catch (diffUpdateError) {
+      logger.error(
+        { sessionId, err: diffUpdateError },
+        'Failed to update git-diff workers after branch sync for inactive session'
+      );
+    }
+
+    const toSave = { ...metadata, worktreeId: newBranch };
+    if (updatedWorkers !== undefined) {
+      toSave.workers = updatedWorkers;
+    }
+    await this.deps.sessionRepository.save(toSave);
+
+    logger.info({ sessionId, newBranch }, 'Branch synced from git (inactive session)');
+
+    return { success: true, branch: newBranch };
+  }
+
   private async updateInactiveSession(
     sessionId: string,
     updates: { title?: string; branch?: string }

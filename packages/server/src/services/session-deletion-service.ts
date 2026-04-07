@@ -36,6 +36,7 @@ export interface SessionDeletionDeps {
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
   getProcessCleanupCallback: () => ((sessionId: string) => void) | undefined;
   stopWatching: (locationPath: string) => void;
+  stopBranchWatching: (sessionId: string) => void;
 }
 
 export class SessionDeletionService {
@@ -49,6 +50,9 @@ export class SessionDeletionService {
   async killSessionWorkers(id: string): Promise<void> {
     const session = this.deps.getSession(id);
     if (!session) return;
+
+    // Stop branch watcher
+    this.deps.stopBranchWatching(id);
 
     const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
@@ -73,6 +77,9 @@ export class SessionDeletionService {
     // Notify all active Worker WebSocket connections that session is being deleted
     // This must happen BEFORE killing workers so clients receive the notification
     this.deps.getWebSocketCallbacks()?.notifySessionDeleted(id);
+
+    // Stop branch watcher
+    this.deps.stopBranchWatching(id);
 
     // Kill all workers first (before removing from memory)
     const killPromises: Promise<void>[] = [];
