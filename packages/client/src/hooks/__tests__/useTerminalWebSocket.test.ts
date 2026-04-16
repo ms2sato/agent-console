@@ -114,8 +114,47 @@ describe('useTerminalWebSocket', () => {
       ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data', offset: 5678 }));
     });
 
-    // onHistory is called with data and offset
-    expect(options.onHistory).toHaveBeenCalledWith('history data', 5678);
+    // onHistory is called with data, offset, and generation (undefined when not provided)
+    expect(options.onHistory).toHaveBeenCalledWith('history data', 5678, undefined);
+  });
+
+  it('should pass generation through onHistory when included in history message', async () => {
+    const options = createDefaultOptions();
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'history data', offset: 5678, generation: 3 }));
+    });
+
+    expect(options.onHistory).toHaveBeenCalledWith('history data', 5678, 3);
+  });
+
+  it('should pass generation through onOutputTruncated when included', async () => {
+    const options = {
+      ...createDefaultOptions(),
+      onOutputTruncated: mock(() => {}),
+    };
+    renderHook(() =>
+      useTerminalWebSocket('session-1', 'worker-1', options)
+    );
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'output-truncated', message: 'truncated', newOffset: 4000, generation: 2 }));
+    });
+
+    expect(options.onOutputTruncated).toHaveBeenCalledWith('truncated', 4000, 2);
   });
 
   it('should call onExit when receiving exit message', async () => {
