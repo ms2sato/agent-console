@@ -373,7 +373,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     if (generation !== undefined) {
       generationRef.current = generation;
     }
-  }, []);
+
+    // Mark dirty so save manager persists the updated offset and generation to IndexedDB.
+    // Without this, unregister() on session switch would skip saving (isDirty=false),
+    // leaving stale generation=0 in cache and preventing mismatch detection on return.
+    markSaveManagerDirty(sessionId, workerId);
+  }, [sessionId, workerId]);
 
   // Handle worker-restarted event from app WebSocket
   const handleWorkerRestarted = useCallback((restartedSessionId: string, restartedWorkerId: string, _activityState: AgentActivityState) => {

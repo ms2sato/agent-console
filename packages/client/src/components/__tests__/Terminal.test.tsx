@@ -667,6 +667,70 @@ describe('Terminal state machine sync', () => {
    * However, handleWorkerRestarted still calls terminal.reset() explicitly for immediate visual
    * feedback that the terminal is restarting.
    */
+  describe('truncation should mark save manager dirty for cache persistence', () => {
+    /**
+     * Simulates handleOutputTruncated including the markSaveManagerDirty call.
+     * Maps to Terminal.tsx handleOutputTruncated:
+     *   - Updates offsetRef.current = newOffset
+     *   - Updates generationRef.current = generation
+     *   - Calls markSaveManagerDirty() so cache is persisted on next save/unmount
+     */
+    function handleTruncationWithDirtyFlag(
+      state: SimulatedState & { generation: number; isDirty: boolean },
+      newOffset: number,
+      newGeneration: number
+    ): SimulatedState & { generation: number; isDirty: boolean } {
+      return {
+        ...state,
+        currentOffset: newOffset,
+        generation: newGeneration,
+        isDirty: true, // markSaveManagerDirty() is called
+      };
+    }
+
+    it('should mark dirty after output-truncated so generation is persisted to cache', () => {
+      const state = {
+        ...createInitialState({
+          cacheProcessed: true,
+          historyRequested: true,
+          currentOffset: 8000,
+        }),
+        generation: 0,
+        isDirty: false,
+      };
+
+      const result = handleTruncationWithDirtyFlag(state, 4000, 1);
+
+      // isDirty must be true — without this, unregister() skips saving,
+      // leaving stale generation=0 in IndexedDB cache
+      expect(result.isDirty).toBe(true);
+      expect(result.generation).toBe(1);
+      expect(result.currentOffset).toBe(4000);
+    });
+
+    it('should persist generation even when no new output arrives after truncation', () => {
+      // Scenario: output stops → idle save (generation=0) → truncation → no new output → session switch
+      // Without markDirty, unregister() would skip saving because isDirty is still false
+      const state = {
+        ...createInitialState({
+          cacheProcessed: true,
+          historyRequested: true,
+          currentOffset: 8000,
+        }),
+        generation: 0,
+        isDirty: false, // idle save already ran, isDirty was reset
+      };
+
+      const result = handleTruncationWithDirtyFlag(state, 4000, 1);
+
+      expect(result.isDirty).toBe(true);
+
+      // Simulate unregister — isDirty=true means save will happen
+      // Cache will contain generation=1, so next switch-back can detect mismatch
+      expect(result.generation).toBe(1);
+    });
+  });
+
   describe('scroll position preservation: truncation vs worker restart', () => {
     /**
      * Simulates handleOutputTruncated behavior including terminal.reset() decision.
