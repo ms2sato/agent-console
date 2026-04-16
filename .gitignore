@@ -31,6 +31,7 @@ npm-debug.log*
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/worktrees/
 .claude/review-queue/*.jsonl
 .claude/review-queue/fixing.json
 
