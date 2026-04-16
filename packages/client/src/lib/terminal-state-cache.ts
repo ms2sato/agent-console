@@ -82,6 +82,8 @@ export interface CachedState {
   offset: number;
   /** Server process ID at time of save. Used to detect server restarts. */
   serverPid?: number;
+  /** Truncation generation counter at time of save. Used to detect file truncation since cache was saved. */
+  generation?: number;
 }
 
 /**

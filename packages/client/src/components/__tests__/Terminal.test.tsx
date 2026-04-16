@@ -865,6 +865,232 @@ describe('Terminal state machine sync', () => {
     });
   });
 
+  describe('generation mismatch detection (truncation since cache was saved)', () => {
+    /**
+     * Extended SimulatedState with generation tracking.
+     */
+    interface GenerationState extends SimulatedState {
+      generation: number;
+    }
+
+    function createGenerationState(overrides?: Partial<GenerationState>): GenerationState {
+      return {
+        ...createInitialState(),
+        generation: 0,
+        ...overrides,
+      };
+    }
+
+    /**
+     * Simulates handleHistory generation mismatch detection.
+     * When server's generation differs from cached generation and we requested
+     * with an offset (had cache), the cache is stale from a different file generation.
+     *
+     * Returns:
+     * - generationMismatch: true if mismatch detected
+     * - shouldReRequest: true if history should be re-requested from offset 0
+     * - newState: the updated state after handling
+     */
+    function handleHistoryWithGeneration(
+      state: GenerationState,
+      serverGeneration: number,
+      _receivedOffset: number,
+      _hasData: boolean
+    ): {
+      generationMismatch: boolean;
+      shouldReRequest: boolean;
+      newState: GenerationState;
+    } {
+      // Generation mismatch: server's file was truncated since cache was saved
+      if (state.generation !== serverGeneration && state.requestedWithOffset > 0) {
+        return {
+          generationMismatch: true,
+          shouldReRequest: true,
+          newState: {
+            ...state,
+            generation: serverGeneration,
+            requestedWithOffset: 0,
+            historyRequested: false,
+            currentOffset: 0,
+          },
+        };
+      }
+
+      // No mismatch — update generation and continue normally
+      return {
+        generationMismatch: false,
+        shouldReRequest: false,
+        newState: {
+          ...state,
+          generation: serverGeneration,
+        },
+      };
+    }
+
+    it('should detect generation mismatch and trigger re-request from offset 0', () => {
+      // Cache was saved at generation=2, offset=5MB
+      const state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000000,
+        currentOffset: 5000000,
+        generation: 2,
+      });
+
+      // Server responds with generation=3 (truncation happened since cache was saved)
+      const result = handleHistoryWithGeneration(state, 3, 5000000, true);
+
+      expect(result.generationMismatch).toBe(true);
+      expect(result.shouldReRequest).toBe(true);
+      expect(result.newState.generation).toBe(3);
+      expect(result.newState.requestedWithOffset).toBe(0);
+      expect(result.newState.historyRequested).toBe(false);
+      expect(result.newState.currentOffset).toBe(0);
+    });
+
+    it('should NOT detect mismatch when generations match (normal diff-append)', () => {
+      const state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000,
+        currentOffset: 5000,
+        generation: 2,
+      });
+
+      // Server responds with same generation — no truncation since cache
+      const result = handleHistoryWithGeneration(state, 2, 7000, true);
+
+      expect(result.generationMismatch).toBe(false);
+      expect(result.shouldReRequest).toBe(false);
+      expect(result.newState.generation).toBe(2);
+      expect(result.newState.requestedWithOffset).toBe(5000); // unchanged
+    });
+
+    it('should NOT detect mismatch on fresh load (requestedWithOffset=0)', () => {
+      // Fresh load — no cache, so generation comparison is irrelevant
+      const state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 0,
+        currentOffset: 0,
+        generation: 0,
+      });
+
+      // Server responds with generation=3 — this is fine for fresh load
+      const result = handleHistoryWithGeneration(state, 3, 5000, true);
+
+      expect(result.generationMismatch).toBe(false);
+      expect(result.shouldReRequest).toBe(false);
+      expect(result.newState.generation).toBe(3);
+    });
+
+    it('should handle legacy cache without generation (undefined → treated as 0)', () => {
+      // Legacy cache has no generation field (treated as 0)
+      const state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 3000,
+        currentOffset: 3000,
+        generation: 0, // legacy cache — generation was undefined, defaults to 0
+      });
+
+      // Server responds with generation=1 — mismatch, cache is stale
+      const result = handleHistoryWithGeneration(state, 1, 3000, true);
+
+      expect(result.generationMismatch).toBe(true);
+      expect(result.shouldReRequest).toBe(true);
+    });
+
+    it('should re-request successfully after generation mismatch recovery', () => {
+      // Step 1: Generation mismatch detected
+      let state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000,
+        currentOffset: 5000,
+        generation: 1,
+      });
+
+      const mismatchResult = handleHistoryWithGeneration(state, 3, 5000, true);
+      expect(mismatchResult.generationMismatch).toBe(true);
+      state = mismatchResult.newState;
+
+      // Step 2: Re-request should happen from offset 0
+      expect(state.historyRequested).toBe(false);
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(0);
+
+      // Step 3: Apply the request
+      state = { ...state, ...applyHistoryRequest(state) };
+
+      // Step 4: Fresh history arrives with generation=3
+      const freshResult = handleHistoryWithGeneration(state, 3, 8000, true);
+      expect(freshResult.generationMismatch).toBe(false);
+      expect(freshResult.newState.generation).toBe(3);
+    });
+
+    /**
+     * Simulates handleOutputTruncated with generation update.
+     */
+    function handleTruncationWithGeneration(
+      state: GenerationState,
+      newOffset: number,
+      newGeneration: number
+    ): GenerationState {
+      return {
+        ...state,
+        currentOffset: newOffset,
+        generation: newGeneration,
+      };
+    }
+
+    it('should update generation on output-truncated notification', () => {
+      const state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        currentOffset: 8000,
+        generation: 1,
+      });
+
+      const result = handleTruncationWithGeneration(state, 4000, 2);
+
+      expect(result.generation).toBe(2);
+      expect(result.currentOffset).toBe(4000);
+    });
+
+    it('should detect mismatch after reconnection when truncation happened while disconnected', () => {
+      // Step 1: Cache saved with generation=1, offset=8000
+      let state = createGenerationState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 0,
+        currentOffset: 8000,
+        generation: 1,
+      });
+
+      // Step 2: Disconnect
+      state = { ...state, historyRequested: false };
+
+      // Step 3: While disconnected, server truncated twice (generation went 1→3)
+      // File grew past the cached offset of 8000
+
+      // Step 4: Reconnect — request with offset 8000
+      const request = evaluateHistoryRequest(state, true);
+      expect(request.shouldRequest).toBe(true);
+      expect(request.requestOffset).toBe(8000);
+      state = { ...state, historyRequested: true, requestedWithOffset: 8000 };
+
+      // Step 5: Server responds with generation=3 (mismatches cached generation=1)
+      // Even though offset is valid (file regrew past 8000), the bytes are from
+      // a different file generation — diff data would be wrong
+      const result = handleHistoryWithGeneration(state, 3, 9000, true);
+
+      expect(result.generationMismatch).toBe(true);
+      expect(result.shouldReRequest).toBe(true);
+    });
+  });
+
   describe('duplicate request prevention', () => {
     it('should not send duplicate request when useEffect re-runs', () => {
       let state = createInitialState({ cacheProcessed: true });

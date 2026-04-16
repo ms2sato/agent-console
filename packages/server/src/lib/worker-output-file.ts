@@ -14,8 +14,9 @@ const logger = createLogger('worker-output-file');
 /**
  * Callback type for output truncation notification.
  * Used to notify WebSocket clients when output file is truncated.
+ * Includes the new generation counter so clients can detect stale caches.
  */
-export type OutputTruncatedCallback = (sessionId: string, workerId: string, newOffset: number) => void;
+export type OutputTruncatedCallback = (sessionId: string, workerId: string, newOffset: number, generation: number) => void;
 
 /** Registered callback for output truncation notifications */
 let onOutputTruncatedCallback: OutputTruncatedCallback | null = null;
@@ -37,6 +38,9 @@ export interface HistoryReadResult {
   data: string;
   /** Current file offset (file size) for incremental sync */
   offset: number;
+  /** Monotonically increasing counter incremented on each file truncation.
+   *  Allows clients to detect when their cached state is from a different file generation. */
+  generation: number;
 }
 
 /**
@@ -65,6 +69,12 @@ export interface WorkerOutputFileConfig {
 export class WorkerOutputFileManager {
   /** Pending buffers waiting to be flushed: sessionId/workerId -> PendingFlush */
   private pendingFlushes = new Map<string, PendingFlush>();
+
+  /** Per-worker truncation generation counter: sessionId/workerId -> generation number.
+   *  Monotonically increasing, incremented on each file truncation.
+   *  In-memory only — server restart resets to 0, but serverPid mismatch
+   *  already invalidates all client caches in that case. */
+  private generations = new Map<string, number>();
 
   private readonly config: WorkerOutputFileConfig;
 
@@ -121,10 +131,18 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Get the key for tracking pending flushes.
+   * Get the key for tracking pending flushes and generations.
    */
   private getKey(sessionId: string, workerId: string): string {
     return `${sessionId}/${workerId}`;
+  }
+
+  /**
+   * Get the current generation for a worker.
+   * Returns 0 if no truncation has occurred.
+   */
+  getGeneration(sessionId: string, workerId: string): number {
+    return this.generations.get(this.getKey(sessionId, workerId)) ?? 0;
   }
 
   /**
@@ -290,11 +308,16 @@ export class WorkerOutputFileManager {
 
       await fs.writeFile(filePath, trimmedBuffer);
 
-      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length }, 'Truncated output file');
+      // Increment the generation counter for this worker
+      const key = this.getKey(sessionId, workerId);
+      const newGeneration = (this.generations.get(key) ?? 0) + 1;
+      this.generations.set(key, newGeneration);
+
+      logger.debug({ filePath, originalSize: currentSize, newSize: trimmedBuffer.length, generation: newGeneration }, 'Truncated output file');
 
       // Notify connected clients about the truncation via registered callback
       if (onOutputTruncatedCallback) {
-        onOutputTruncatedCallback(sessionId, workerId, trimmedBuffer.length);
+        onOutputTruncatedCallback(sessionId, workerId, trimmedBuffer.length, newGeneration);
       }
     } catch (error) {
       logger.error({ filePath, err: error }, 'Failed to truncate output file');
@@ -321,6 +344,8 @@ export class WorkerOutputFileManager {
     resolver: SessionDataPathResolver,
     fromOffset?: number,
   ): Promise<HistoryReadResult> {
+    const generation = this.getGeneration(sessionId, workerId);
+
     try {
       // Get pending buffer for this worker
       const key = this.getKey(sessionId, workerId);
@@ -336,11 +361,11 @@ export class WorkerOutputFileManager {
         if (pendingByteLength > 0) {
           // Return pending buffer as data with byte offset (not character count)
           // File offsets are measured in bytes, so we must use byte length for consistency
-          return { data: pendingBuffer, offset: pendingByteLength };
+          return { data: pendingBuffer, offset: pendingByteLength, generation };
         }
         // No file and no pending buffer - return empty history
         // This is a valid state for newly created workers
-        return { data: '', offset: 0 };
+        return { data: '', offset: 0, generation };
       }
 
       // Read the file and decompress if legacy compressed file
@@ -362,11 +387,11 @@ export class WorkerOutputFileManager {
             { sessionId, workerId, fromOffset, totalOffset },
             'History request offset exceeds file size (likely truncated), returning empty data with current offset'
           );
-          return { data: '', offset: totalOffset };
+          return { data: '', offset: totalOffset, generation };
         }
         if (fromOffset === totalOffset) {
           // Client is up to date, no new data
-          return { data: '', offset: totalOffset };
+          return { data: '', offset: totalOffset, generation };
         }
 
         if (fromOffset >= fileSize) {
@@ -376,17 +401,17 @@ export class WorkerOutputFileManager {
           // We need to slice the pending buffer at byte boundary
           const pendingBufferAsBuffer = Buffer.from(pendingBuffer, 'utf-8');
           const remainingPendingBuffer = pendingBufferAsBuffer.slice(pendingSkipBytes);
-          return { data: remainingPendingBuffer.toString('utf-8'), offset: totalOffset };
+          return { data: remainingPendingBuffer.toString('utf-8'), offset: totalOffset, generation };
         }
 
         // Offset is within the file, return file data from offset + full pending buffer
         const dataBuffer = buffer.slice(fromOffset);
         const fileData = dataBuffer.toString('utf-8');
-        return { data: fileData + pendingBuffer, offset: totalOffset };
+        return { data: fileData + pendingBuffer, offset: totalOffset, generation };
       }
 
       // Initial load (fromOffset=0 or undefined), return full file content + pending buffer
-      return { data: buffer.toString('utf-8') + pendingBuffer, offset: totalOffset };
+      return { data: buffer.toString('utf-8') + pendingBuffer, offset: totalOffset, generation };
     } catch (error) {
       // File doesn't exist or read error
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -397,14 +422,14 @@ export class WorkerOutputFileManager {
           // Return pending buffer as data with byte offset (not character count)
           // File offsets are measured in bytes, so we must use byte length for consistency
           const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
-          return { data: pending.buffer, offset: byteLength };
+          return { data: pending.buffer, offset: byteLength, generation };
         }
         // No file and no pending buffer - return empty history
-        return { data: '', offset: 0 };
+        return { data: '', offset: 0, generation };
       }
       logger.error({ sessionId, workerId, err: error }, 'Failed to read output file');
       // Return empty history on error to avoid breaking the client
-      return { data: '', offset: 0 };
+      return { data: '', offset: 0, generation };
     }
   }
 
@@ -422,6 +447,8 @@ export class WorkerOutputFileManager {
     maxLines: number,
     resolver: SessionDataPathResolver,
   ): Promise<HistoryReadResult> {
+    const generation = this.getGeneration(sessionId, workerId);
+
     try {
       // Get pending buffer for this worker
       const key = this.getKey(sessionId, workerId);
@@ -437,11 +464,11 @@ export class WorkerOutputFileManager {
         if (pendingByteLength > 0) {
           // Apply line limit to pending buffer
           const trimmedData = this.getLastNLines(pendingBuffer, maxLines);
-          return { data: trimmedData, offset: pendingByteLength };
+          return { data: trimmedData, offset: pendingByteLength, generation };
         }
         // No file and no pending buffer - return empty history
         // This is a valid state for newly created workers
-        return { data: '', offset: 0 };
+        return { data: '', offset: 0, generation };
       }
 
       // Read the file and decompress if legacy compressed file
@@ -459,7 +486,7 @@ export class WorkerOutputFileManager {
       // Get last N lines from combined content
       const trimmedData = this.getLastNLines(fullContent, maxLines);
 
-      return { data: trimmedData, offset: totalOffset };
+      return { data: trimmedData, offset: totalOffset, generation };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         const key = this.getKey(sessionId, workerId);
@@ -467,14 +494,14 @@ export class WorkerOutputFileManager {
         if (pending && pending.buffer.length > 0) {
           const byteLength = Buffer.byteLength(pending.buffer, 'utf-8');
           const trimmedData = this.getLastNLines(pending.buffer, maxLines);
-          return { data: trimmedData, offset: byteLength };
+          return { data: trimmedData, offset: byteLength, generation };
         }
         // No file and no pending buffer - return empty history
-        return { data: '', offset: 0 };
+        return { data: '', offset: 0, generation };
       }
       logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for last N lines');
       // Return empty history on error to avoid breaking the client
-      return { data: '', offset: 0 };
+      return { data: '', offset: 0, generation };
     }
   }
 

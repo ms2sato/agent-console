@@ -198,7 +198,7 @@ export function notifySessionPaused(sessionId: string): void {
  * Registered as callback in setupWebSocketRoutes() to avoid circular dependency.
  * Called by WorkerOutputFileManager when output file exceeds size limits.
  */
-function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOffset: number): void {
+function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOffset: number, generation: number): void {
   const connections = registry.getWorkerConnections(sessionId, workerId);
   if (!connections || connections.size === 0) {
     logger.debug({ sessionId, workerId }, 'No worker connections to notify for output truncation');
@@ -209,6 +209,7 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOff
     type: 'output-truncated',
     message: 'Output history truncated due to size limits',
     newOffset,
+    generation,
   };
   const msgStr = JSON.stringify(msg);
 
@@ -818,11 +819,13 @@ export async function setupWebSocketRoutes(
                       type: 'history',
                       data: historyResult.data,
                       offset: historyResult.offset,
+                      generation: historyResult.generation,
                     };
                     ws.send(JSON.stringify(historyMsg));
-                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, fromOffset }, 'Sent history on request');
+                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, generation: historyResult.generation, fromOffset }, 'Sent history on request');
                   } else {
                     // Fallback to in-memory buffer (only for initial load)
+                    // Generation is 0 for fallback paths (no truncation has occurred)
                     if (fromOffset === 0) {
                       const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
                       if (history) {
@@ -830,6 +833,7 @@ export async function setupWebSocketRoutes(
                           type: 'history',
                           data: history,
                           offset: Buffer.byteLength(history, 'utf-8'),
+                          generation: 0,
                         };
                         ws.send(JSON.stringify(historyMsg));
                         logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
@@ -839,6 +843,7 @@ export async function setupWebSocketRoutes(
                           type: 'history',
                           data: '',
                           offset: 0,
+                          generation: 0,
                         };
                         ws.send(JSON.stringify(historyMsg));
                         logger.debug({ sessionId, workerId }, 'Sent empty history on request');
@@ -849,6 +854,7 @@ export async function setupWebSocketRoutes(
                         type: 'history',
                         data: '',
                         offset: fromOffset,
+                        generation: 0,
                       };
                       ws.send(JSON.stringify(historyMsg));
                       logger.debug({ sessionId, workerId, fromOffset }, 'Sent empty incremental history on request');
@@ -869,6 +875,7 @@ export async function setupWebSocketRoutes(
                         data: '',
                         offset: fromOffset,
                         timedOut: true,
+                        generation: 0,
                       };
                       ws.send(JSON.stringify(historyMsg));
                     } catch {

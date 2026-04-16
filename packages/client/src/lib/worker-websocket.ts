@@ -84,11 +84,11 @@ interface WorkerConnection {
 export interface TerminalWorkerCallbacks {
   type: 'terminal' | 'agent';
   onOutput: (data: string, offset: number) => void;
-  onHistory: (data: string, offset: number) => void;
+  onHistory: (data: string, offset: number, generation?: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onActivity?: (state: AgentActivityState) => void;
   onError?: (message: string, code?: WorkerErrorCode) => void;
-  onOutputTruncated?: (message: string, newOffset: number) => void;
+  onOutputTruncated?: (message: string, newOffset: number, generation?: number) => void;
 }
 
 // Callbacks for git-diff workers
@@ -235,7 +235,7 @@ function handleTerminalMessage(
       callbacks.onOutput(msg.data, msg.offset);
       break;
     case 'history':
-      callbacks.onHistory(msg.data, msg.offset);
+      callbacks.onHistory(msg.data, msg.offset, msg.generation);
       break;
     case 'exit':
       callbacks.onExit(msg.exitCode, msg.signal);
@@ -285,7 +285,7 @@ function handleTerminalMessage(
         });
 
       // Notify the terminal component about the truncation
-      callbacks.onOutputTruncated?.(msg.message, msg.newOffset);
+      callbacks.onOutputTruncated?.(msg.message, msg.newOffset, msg.generation);
       break;
     }
     case 'server-restarted':

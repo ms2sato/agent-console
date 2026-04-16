@@ -191,6 +191,7 @@ describe('Worker WebSocket history and notifications', () => {
       const spy = spyOn(sessionManager, 'getWorkerOutputHistory').mockResolvedValue({
         data: 'incremental data',
         offset: 700,
+        generation: 0,
       });
 
       // Clear messages from connection setup
@@ -221,6 +222,7 @@ describe('Worker WebSocket history and notifications', () => {
       const spy = spyOn(sessionManager, 'getWorkerOutputHistory').mockResolvedValue({
         data: 'initial data',
         offset: 100,
+        generation: 0,
       });
 
       mockWs.sentMessages.length = 0;

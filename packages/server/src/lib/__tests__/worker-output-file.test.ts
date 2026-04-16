@@ -977,6 +977,99 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
+  describe('truncation generation counter', () => {
+    it('should return generation 0 for workers that have never been truncated', async () => {
+      const filePath = manager.getOutputFilePath('session-gen', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-gen`, { recursive: true });
+      vol.writeFileSync(filePath, 'hello world');
+
+      const result = await manager.readHistoryWithOffset('session-gen', 'worker-1', quickResolver);
+
+      expect(result.generation).toBe(0);
+    });
+
+    it('should return generation 0 in readLastNLines for workers that have never been truncated', async () => {
+      const filePath = manager.getOutputFilePath('session-gen-lines', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-gen-lines`, { recursive: true });
+      vol.writeFileSync(filePath, 'line1\nline2\nline3');
+
+      const result = await manager.readLastNLines('session-gen-lines', 'worker-1', 2, quickResolver);
+
+      expect(result.generation).toBe(0);
+    });
+
+    it('should increment generation on file truncation', async () => {
+      // Write enough data to trigger truncation (max 1024 bytes)
+      const chunk1 = 'A'.repeat(500);
+      manager.bufferOutput('session-gen-trunc', 'worker-1', chunk1, quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      // Generation should still be 0 (no truncation yet)
+      expect(manager.getGeneration('session-gen-trunc', 'worker-1')).toBe(0);
+
+      // Write more to trigger truncation (total > 1024)
+      const chunk2 = 'B'.repeat(600);
+      manager.bufferOutput('session-gen-trunc', 'worker-1', chunk2, quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      // Generation should be 1 after first truncation
+      expect(manager.getGeneration('session-gen-trunc', 'worker-1')).toBe(1);
+    });
+
+    it('should include current generation in readHistoryWithOffset after truncation', async () => {
+      // Write enough data to trigger truncation
+      const largeData = 'X'.repeat(1200);
+      manager.bufferOutput('session-gen-read', 'worker-1', largeData, quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      // After truncation, generation should be 1
+      const result = await manager.readHistoryWithOffset('session-gen-read', 'worker-1', quickResolver);
+
+      expect(result.generation).toBe(1);
+    });
+
+    it('should include current generation in readLastNLines after truncation', async () => {
+      // Write enough data to trigger truncation
+      const largeData = 'Y'.repeat(1200);
+      manager.bufferOutput('session-gen-readlines', 'worker-1', largeData, quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      const result = await manager.readLastNLines('session-gen-readlines', 'worker-1', 5, quickResolver);
+
+      expect(result.generation).toBe(1);
+    });
+
+    it('should increment generation on each successive truncation', async () => {
+      // First truncation
+      manager.bufferOutput('session-gen-multi', 'worker-1', 'A'.repeat(1200), quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(manager.getGeneration('session-gen-multi', 'worker-1')).toBe(1);
+
+      // Second truncation
+      manager.bufferOutput('session-gen-multi', 'worker-1', 'B'.repeat(1200), quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(manager.getGeneration('session-gen-multi', 'worker-1')).toBe(2);
+
+      // Third truncation
+      manager.bufferOutput('session-gen-multi', 'worker-1', 'C'.repeat(1200), quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(manager.getGeneration('session-gen-multi', 'worker-1')).toBe(3);
+    });
+
+    it('should track generations independently per worker', async () => {
+      // Trigger truncation for worker-1
+      manager.bufferOutput('session-gen-indep', 'worker-1', 'A'.repeat(1200), quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      // worker-2 has not been truncated
+      manager.bufferOutput('session-gen-indep', 'worker-2', 'B'.repeat(100), quickResolver);
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      expect(manager.getGeneration('session-gen-indep', 'worker-1')).toBe(1);
+      expect(manager.getGeneration('session-gen-indep', 'worker-2')).toBe(0);
+    });
+  });
+
   describe('repository-scoped paths', () => {
     it('should return repository-scoped path when repositoryName is provided', () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', repoResolver);

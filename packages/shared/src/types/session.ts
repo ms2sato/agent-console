@@ -122,10 +122,10 @@ export type WorkerErrorCode =
 export type WorkerServerMessage =
   | { type: 'output'; data: string; offset: number }
   | { type: 'exit'; exitCode: number; signal: string | null; reason?: ExitReason }
-  | { type: 'history'; data: string; offset: number; timedOut?: boolean }
+  | { type: 'history'; data: string; offset: number; timedOut?: boolean; generation?: number }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode }
-  | { type: 'output-truncated'; message: string; newOffset: number }
+  | { type: 'output-truncated'; message: string; newOffset: number; generation?: number }
   | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
 
 export interface WorkerActivityInfo {

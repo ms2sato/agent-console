@@ -5,11 +5,11 @@ import { usePersistentWebSocket } from './usePersistentWebSocket';
 
 interface UseTerminalWebSocketOptions {
   onOutput: (data: string, offset: number) => void;
-  onHistory: (data: string, offset: number) => void;
+  onHistory: (data: string, offset: number, generation?: number) => void;
   onExit: (exitCode: number, signal: string | null) => void;
   onConnectionChange: (connected: boolean) => void;
   onActivity?: (state: AgentActivityState) => void;
-  onOutputTruncated?: (message: string, newOffset: number) => void;
+  onOutputTruncated?: (message: string, newOffset: number, generation?: number) => void;
 }
 
 export interface WorkerError {

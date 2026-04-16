@@ -121,6 +121,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   const [cacheProcessed, setCacheProcessed] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const offsetRef = useRef<number>(0);
+  /** Server-side truncation generation counter. Tracks the generation of the output file
+   *  to detect when client cache is from a different file generation (stale after truncation). */
+  const generationRef = useRef<number>(0);
   const connectedRef = useRef(false);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | null>(null);
@@ -204,6 +207,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         rows: terminal.rows,
         offset: offsetRef.current,
         ...(serverPid !== null ? { serverPid } : {}),
+        generation: generationRef.current,
       }).catch((e) => logger.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
       logger.warn('[Terminal] Failed to serialize terminal state after history:', e);
@@ -231,13 +235,45 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     markSaveManagerDirty(sessionId, workerId);
   }, [sessionId, workerId, updateScrollButtonVisibility, processOutput]);
 
-  const handleHistory = useCallback((data: string, offset: number) => {
+  const handleHistory = useCallback((data: string, offset: number, generation?: number) => {
     setLoadingHistory(false);
     watchdogRef.current?.onHistoryReceived(data.length, offset);
-    offsetRef.current = offset;
 
     const terminal = terminalRef.current;
     if (!terminal) return;
+
+    // Detect generation mismatch: server's file generation differs from cached generation.
+    // This means the file was truncated since the cache was saved, and the cached bytes
+    // are from a different file generation. Cache must be invalidated.
+    if (generation !== undefined && generationRef.current !== generation
+        && stateRef.current.requestedWithOffset > 0) {
+      logger.warn('[Terminal] Generation mismatch detected (file truncated since cache), re-requesting fresh history', {
+        cachedGeneration: generationRef.current,
+        serverGeneration: generation,
+        requestedOffset: stateRef.current.requestedWithOffset,
+      });
+      // Update generation to server's current value
+      generationRef.current = generation;
+      // Clear stale cache
+      clearTerminalState(sessionId, workerId).catch((e) =>
+        logger.warn('[Terminal] Failed to clear terminal cache on generation mismatch:', e)
+      );
+      // Reset to fresh load mode and re-request history from offset 0
+      stateRef.current.requestedWithOffset = 0;
+      stateRef.current.historyRequested = false;
+      offsetRef.current = 0;
+      // Clear existing terminal display before fresh load
+      terminal.clear();
+      // Re-request will be triggered by the useEffect that watches historyRequested
+      return;
+    }
+
+    // Update generation ref to track current server generation
+    if (generation !== undefined) {
+      generationRef.current = generation;
+    }
+
+    offsetRef.current = offset;
 
     // Detect server-side truncation: response offset is lower than requested offset.
     // This means the file was truncated and the client's cached state is stale.
@@ -313,7 +349,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     stateRef.current.requestedWithOffset = 0;
   }, []);
 
-  const handleOutputTruncated = useCallback((message: string, newOffset: number) => {
+  const handleOutputTruncated = useCallback((message: string, newOffset: number, generation?: number) => {
     if (truncationTimeoutRef.current) {
       clearTimeout(truncationTimeoutRef.current);
     }
@@ -327,6 +363,13 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     // The xterm.js terminal still has valid content; the server only removed
     // old data from the beginning of the file.
     offsetRef.current = newOffset;
+
+    // Update generation counter so subsequent cache saves include the latest value.
+    // This allows the next history request (after reconnection) to detect if another
+    // truncation occurred.
+    if (generation !== undefined) {
+      generationRef.current = generation;
+    }
   }, []);
 
   // Handle worker-restarted event from app WebSocket
@@ -550,6 +593,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
           rows: terminalRef.current.rows,
           offset: offsetRef.current,
           ...(serverPid !== null ? { serverPid } : {}),
+          generation: generationRef.current,
         };
       } catch {
         return null;
@@ -588,8 +632,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
             updateScrollButtonVisibility();
           });
           offsetRef.current = cached.offset;
+          generationRef.current = cached.generation ?? 0;
         } else {
           offsetRef.current = 0;
+          generationRef.current = 0;
         }
 
         stateRef.current.cacheProcessed = true;
@@ -813,6 +859,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       };
       setCacheProcessed(false);
       offsetRef.current = 0;
+      generationRef.current = 0;
 
       cancelAnimationFrame(rafId);
       viewportObserver.disconnect();
