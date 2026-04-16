@@ -790,35 +790,33 @@ describe('Terminal state machine sync', () => {
     });
   });
 
-  describe('history offset regression (truncation) -> clear and full rewrite', () => {
+  describe('history offset regression (truncation) -> cache invalidation and no-op', () => {
     /**
      * Simulates handleHistory truncation detection behavior.
      * When received offset < requestedWithOffset, the file was truncated.
-     * Terminal must be cleared before writing new full history.
+     * Server now returns empty data, so the client just invalidates its cache
+     * and resets requestedWithOffset. The xterm.js display stays as-is (still valid).
      */
     function handleHistoryWithTruncationDetection(
       state: SimulatedState,
       receivedOffset: number,
       hasData: boolean
-    ): { state: SimulatedState; terminalClearCalled: boolean; historyAction: 'append-diff' | 'full-write' | 'skip' } {
+    ): { state: SimulatedState; historyAction: 'append-diff' | 'full-write' | 'skip' } {
       const truncationDetected = state.requestedWithOffset > 0 && receivedOffset < state.requestedWithOffset;
 
-      let terminalClearCalled = false;
       let currentState = { ...state };
 
       if (truncationDetected) {
-        // Clear stale display (maps to terminal.clear() in Terminal.tsx)
-        terminalClearCalled = true;
-        // Reset to full history mode
+        // Invalidate cache (IndexedDB cleared) and reset to full history mode
         currentState = { ...currentState, requestedWithOffset: 0 };
       }
 
       const historyAction = determineHistoryAction(currentState.requestedWithOffset, hasData);
 
-      return { state: currentState, terminalClearCalled, historyAction };
+      return { state: currentState, historyAction };
     }
 
-    it('should clear terminal and do full-write when received offset < requestedWithOffset', () => {
+    it('should reset requestedWithOffset and skip write when server returns empty data on truncation', () => {
       // State: had cache at offset 5000, requested incremental from there
       const state = createInitialState({
         cacheProcessed: true,
@@ -827,17 +825,16 @@ describe('Terminal state machine sync', () => {
         currentOffset: 5000,
       });
 
-      // Server responds with offset 200 (file was truncated)
-      const result = handleHistoryWithTruncationDetection(state, 200, true);
+      // Server returns empty data with lower offset (file was truncated)
+      const result = handleHistoryWithTruncationDetection(state, 200, false);
 
-      // Terminal must be cleared to remove stale cached content
-      expect(result.terminalClearCalled).toBe(true);
-      // After clearing, requestedWithOffset is reset to 0, so action is full-write
-      expect(result.historyAction).toBe('full-write');
+      // requestedWithOffset is reset (cache invalidated)
       expect(result.state.requestedWithOffset).toBe(0);
+      // Empty data → skip (no terminal write needed, display stays as-is)
+      expect(result.historyAction).toBe('skip');
     });
 
-    it('should not clear terminal when received offset >= requestedWithOffset (normal diff)', () => {
+    it('should not detect truncation when received offset >= requestedWithOffset (normal diff)', () => {
       const state = createInitialState({
         cacheProcessed: true,
         historyRequested: true,
@@ -848,11 +845,11 @@ describe('Terminal state machine sync', () => {
       // Server responds with offset 5000 (no truncation, normal case)
       const result = handleHistoryWithTruncationDetection(state, 5000, true);
 
-      expect(result.terminalClearCalled).toBe(false);
       expect(result.historyAction).toBe('append-diff');
+      expect(result.state.requestedWithOffset).toBe(5000);
     });
 
-    it('should not clear terminal when requestedWithOffset is 0 (no cache)', () => {
+    it('should not detect truncation when requestedWithOffset is 0 (fresh load)', () => {
       const state = createInitialState({
         cacheProcessed: true,
         historyRequested: true,
@@ -860,26 +857,10 @@ describe('Terminal state machine sync', () => {
         currentOffset: 0,
       });
 
-      // Server responds with offset 0 (fresh load, no truncation possible)
+      // Server responds with offset 0, fresh load with data
       const result = handleHistoryWithTruncationDetection(state, 0, true);
 
-      expect(result.terminalClearCalled).toBe(false);
       expect(result.historyAction).toBe('full-write');
-    });
-
-    it('should skip write but still clear terminal when truncation detected with no data', () => {
-      const state = createInitialState({
-        cacheProcessed: true,
-        historyRequested: true,
-        requestedWithOffset: 5000,
-        currentOffset: 5000,
-      });
-
-      // Server responds with offset 0, empty data (file truncated to empty)
-      const result = handleHistoryWithTruncationDetection(state, 0, false);
-
-      expect(result.terminalClearCalled).toBe(true);
-      expect(result.historyAction).toBe('skip');
       expect(result.state.requestedWithOffset).toBe(0);
     });
   });

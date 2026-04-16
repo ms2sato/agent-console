@@ -355,13 +355,14 @@ export class WorkerOutputFileManager {
       // Handle offset-based reads (incremental sync)
       if (fromOffset !== undefined && fromOffset > 0) {
         if (fromOffset > totalOffset) {
-          // Client's offset exceeds file size — file was likely truncated
-          // or offset tracking diverged. Return full history so client can resync.
+          // Client's offset exceeds file size — file was likely truncated.
+          // Return empty data with current offset so client updates its offset
+          // without re-downloading full history (xterm.js only keeps 1000 lines anyway).
           logger.warn(
             { sessionId, workerId, fromOffset, totalOffset },
-            'History request offset exceeds file size, returning full history for resync'
+            'History request offset exceeds file size (likely truncated), returning empty data with current offset'
           );
-          return { data: buffer.toString('utf-8') + pendingBuffer, offset: totalOffset };
+          return { data: '', offset: totalOffset };
         }
         if (fromOffset === totalOffset) {
           // Client is up to date, no new data

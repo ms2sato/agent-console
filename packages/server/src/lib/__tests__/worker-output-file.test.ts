@@ -174,16 +174,18 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.offset).toBe(11);
     });
 
-    it('should return full history when offset exceeds file size (truncation resync)', async () => {
+    it('should return empty data when offset exceeds file size (truncation resync)', async () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', quickResolver);
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-1`, { recursive: true });
       vol.writeFileSync(filePath, 'hello world');
 
-      // Client has offset 100 but file is only 11 bytes — file was truncated
+      // Client has offset 100 but file is only 11 bytes — file was truncated.
+      // Server returns empty data with current offset so client can update its offset
+      // without re-downloading full history (xterm.js only keeps 1000 lines anyway).
       const result = await manager.readHistoryWithOffset('session-1', 'worker-1', quickResolver, 100);
 
       expect(result).not.toBeNull();
-      expect(result!.data).toBe('hello world');
+      expect(result!.data).toBe('');
       expect(result!.offset).toBe(11);
     });
 
@@ -538,18 +540,19 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.offset).toBe(10);
     });
 
-    it('should return full history when offset exceeds total size (file + pending) after truncation', async () => {
+    it('should return empty data when offset exceeds total size (file + pending) after truncation', async () => {
       const filePath = manager.getOutputFilePath('session-total-exceed', 'worker-1', quickResolver);
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-total-exceed`, { recursive: true });
       vol.writeFileSync(filePath, 'file'); // 4 bytes
 
       manager.bufferOutput('session-total-exceed', 'worker-1', 'buffer', quickResolver); // 6 bytes
 
-      // Client has offset 50 but total is only 10 bytes — file was truncated
+      // Client has offset 50 but total is only 10 bytes — file was truncated.
+      // Server returns empty data with current offset so client can update its offset.
       const result = await manager.readHistoryWithOffset('session-total-exceed', 'worker-1', quickResolver, 50);
 
       expect(result).not.toBeNull();
-      expect(result!.data).toBe('filebuffer');
+      expect(result!.data).toBe('');
       expect(result!.offset).toBe(10);
     });
 

@@ -255,8 +255,6 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       );
       // Reset to full history mode
       stateRef.current.requestedWithOffset = 0;
-      // Clear stale display before full history rewrite
-      terminal.clear();
     }
 
     if (stateRef.current.requestedWithOffset > 0) {
