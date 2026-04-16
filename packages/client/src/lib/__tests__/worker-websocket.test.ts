@@ -193,7 +193,7 @@ describe('worker-websocket', () => {
       // Send history message with offset
       ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history', offset: 5678 }));
 
-      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history', 5678);
+      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history', 5678, undefined);
     });
   });
 
