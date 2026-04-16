@@ -58,6 +58,7 @@
 - Answer technical/architectural questions using your knowledge of the codebase and skills
 - Escalate to the owner when: business decisions are needed, scope changes are required, or you are uncertain
 - **Propose root cause fixes, not workarounds.** Before advising an agent, ask: "Does this eliminate the root cause, or just reduce the symptom?" If the root cause is known and a structural fix is feasible, propose that — not a workaround. Explicitly label any suggestion as "workaround" vs "fix" so the agent (and owner) can make an informed choice.
+- **Verify external reviewer edge cases before dismissing.** When an external reviewer (Codex, CodeRabbit, etc.) flags an edge case, do not dismiss it as "theoretical" without code-level verification. Grep for the specific condition, trace the code path, and confirm whether it can or cannot occur in practice. If it can occur, address it. (Lesson: Sprint 2026-04-07 — Codex flagged "truncation-plus-regrowth bypasses regression detection" which the Orchestrator dismissed as theoretical. It turned out to be the true root cause of #627.)
 
 ## 5. Review Dev Agent Work Reports
 - **Agents must report completion only after CI is green.** Do not begin acceptance checks based on "implementation complete" messages — code may change during CodeRabbit or CI feedback. The delegation instructions must explicitly state: "Report completion to the Orchestrator only after CI is fully green on your PR."

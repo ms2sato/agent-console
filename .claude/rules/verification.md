@@ -51,6 +51,7 @@ Follow GitHub-Flow. The `main` branch is always kept GREEN.
 
 - **Testing with code changes:** Always update or add tests. Code without tests is incomplete.
 - **TDD for bug fixes:** Write a failing test first, then implement the fix.
+- **Real-device verification for bug fixes:** When fixing bugs reported from real usage (dogfooding, production), verify the fix on the actual environment before considering it complete. The verification sequence is: reproduce on real device → identify code path via browser console/logs → implement fix → verify fix on real device. Do not rely solely on unit tests for bugs that were discovered through real usage. (Lesson: Sprint 2026-04-07 — two #627 fixes passed all tests but had no effect on the actual bug because the diagnosed code path was wrong.)
 
 ## Commit Standards
 
