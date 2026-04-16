@@ -258,13 +258,16 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       clearTerminalState(sessionId, workerId).catch((e) =>
         logger.warn('[Terminal] Failed to clear terminal cache on generation mismatch:', e)
       );
-      // Reset to fresh load mode and re-request history from offset 0
-      stateRef.current.requestedWithOffset = 0;
-      stateRef.current.historyRequested = false;
-      offsetRef.current = 0;
       // Clear existing terminal display before fresh load
       terminal.clear();
-      // Re-request will be triggered by the useEffect that watches historyRequested
+      // Reset to fresh load mode and directly re-request history from offset 0.
+      // Cannot rely on the useEffect because historyRequested is a ref (not state),
+      // so changing it won't trigger a re-render.
+      offsetRef.current = 0;
+      stateRef.current.requestedWithOffset = 0;
+      stateRef.current.historyRequested = true;
+      setLoadingHistory(true);
+      requestHistory(sessionId, workerId, 0);
       return;
     }
 

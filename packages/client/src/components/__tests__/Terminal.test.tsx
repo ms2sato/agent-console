@@ -901,7 +901,9 @@ describe('Terminal state machine sync', () => {
       shouldReRequest: boolean;
       newState: GenerationState;
     } {
-      // Generation mismatch: server's file was truncated since cache was saved
+      // Generation mismatch: server's file was truncated since cache was saved.
+      // Directly calls requestHistory(0) — cannot rely on useEffect because
+      // historyRequested is a ref (not state), so changing it won't trigger re-render.
       if (state.generation !== serverGeneration && state.requestedWithOffset > 0) {
         return {
           generationMismatch: true,
@@ -910,7 +912,7 @@ describe('Terminal state machine sync', () => {
             ...state,
             generation: serverGeneration,
             requestedWithOffset: 0,
-            historyRequested: false,
+            historyRequested: true, // stays true — requestHistory called directly
             currentOffset: 0,
           },
         };
@@ -944,7 +946,7 @@ describe('Terminal state machine sync', () => {
       expect(result.shouldReRequest).toBe(true);
       expect(result.newState.generation).toBe(3);
       expect(result.newState.requestedWithOffset).toBe(0);
-      expect(result.newState.historyRequested).toBe(false);
+      expect(result.newState.historyRequested).toBe(true); // requestHistory called directly
       expect(result.newState.currentOffset).toBe(0);
     });
 
@@ -1015,16 +1017,12 @@ describe('Terminal state machine sync', () => {
       expect(mismatchResult.generationMismatch).toBe(true);
       state = mismatchResult.newState;
 
-      // Step 2: Re-request should happen from offset 0
-      expect(state.historyRequested).toBe(false);
-      const request = evaluateHistoryRequest(state, true);
-      expect(request.shouldRequest).toBe(true);
-      expect(request.requestOffset).toBe(0);
+      // Step 2: requestHistory(0) was called directly (historyRequested stays true)
+      expect(state.historyRequested).toBe(true);
+      expect(state.requestedWithOffset).toBe(0);
+      expect(state.currentOffset).toBe(0);
 
-      // Step 3: Apply the request
-      state = { ...state, ...applyHistoryRequest(state) };
-
-      // Step 4: Fresh history arrives with generation=3
+      // Step 3: Fresh history arrives with generation=3
       const freshResult = handleHistoryWithGeneration(state, 3, 8000, true);
       expect(freshResult.generationMismatch).toBe(false);
       expect(freshResult.newState.generation).toBe(3);
