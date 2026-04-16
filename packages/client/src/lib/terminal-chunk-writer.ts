@@ -160,7 +160,7 @@ export async function writeDataInChunks(
 }
 
 /**
- * Write full history to terminal, clearing existing content first.
+ * Write full history to terminal.
  *
  * For large data, this function splits the data into chunks to prevent
  * buffer overflow and UI degradation. It ensures ANSI escape sequences

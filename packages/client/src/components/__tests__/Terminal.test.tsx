@@ -790,6 +790,100 @@ describe('Terminal state machine sync', () => {
     });
   });
 
+  describe('history offset regression (truncation) -> clear and full rewrite', () => {
+    /**
+     * Simulates handleHistory truncation detection behavior.
+     * When received offset < requestedWithOffset, the file was truncated.
+     * Terminal must be cleared before writing new full history.
+     */
+    function handleHistoryWithTruncationDetection(
+      state: SimulatedState,
+      receivedOffset: number,
+      hasData: boolean
+    ): { state: SimulatedState; terminalClearCalled: boolean; historyAction: 'append-diff' | 'full-write' | 'skip' } {
+      const truncationDetected = state.requestedWithOffset > 0 && receivedOffset < state.requestedWithOffset;
+
+      let terminalClearCalled = false;
+      let currentState = { ...state };
+
+      if (truncationDetected) {
+        // Clear stale display (maps to terminal.clear() in Terminal.tsx)
+        terminalClearCalled = true;
+        // Reset to full history mode
+        currentState = { ...currentState, requestedWithOffset: 0 };
+      }
+
+      const historyAction = determineHistoryAction(currentState.requestedWithOffset, hasData);
+
+      return { state: currentState, terminalClearCalled, historyAction };
+    }
+
+    it('should clear terminal and do full-write when received offset < requestedWithOffset', () => {
+      // State: had cache at offset 5000, requested incremental from there
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000,
+        currentOffset: 5000,
+      });
+
+      // Server responds with offset 200 (file was truncated)
+      const result = handleHistoryWithTruncationDetection(state, 200, true);
+
+      // Terminal must be cleared to remove stale cached content
+      expect(result.terminalClearCalled).toBe(true);
+      // After clearing, requestedWithOffset is reset to 0, so action is full-write
+      expect(result.historyAction).toBe('full-write');
+      expect(result.state.requestedWithOffset).toBe(0);
+    });
+
+    it('should not clear terminal when received offset >= requestedWithOffset (normal diff)', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000,
+        currentOffset: 5000,
+      });
+
+      // Server responds with offset 5000 (no truncation, normal case)
+      const result = handleHistoryWithTruncationDetection(state, 5000, true);
+
+      expect(result.terminalClearCalled).toBe(false);
+      expect(result.historyAction).toBe('append-diff');
+    });
+
+    it('should not clear terminal when requestedWithOffset is 0 (no cache)', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 0,
+        currentOffset: 0,
+      });
+
+      // Server responds with offset 0 (fresh load, no truncation possible)
+      const result = handleHistoryWithTruncationDetection(state, 0, true);
+
+      expect(result.terminalClearCalled).toBe(false);
+      expect(result.historyAction).toBe('full-write');
+    });
+
+    it('should skip write but still clear terminal when truncation detected with no data', () => {
+      const state = createInitialState({
+        cacheProcessed: true,
+        historyRequested: true,
+        requestedWithOffset: 5000,
+        currentOffset: 5000,
+      });
+
+      // Server responds with offset 0, empty data (file truncated to empty)
+      const result = handleHistoryWithTruncationDetection(state, 0, false);
+
+      expect(result.terminalClearCalled).toBe(true);
+      expect(result.historyAction).toBe('skip');
+      expect(result.state.requestedWithOffset).toBe(0);
+    });
+  });
+
   describe('duplicate request prevention', () => {
     it('should not send duplicate request when useEffect re-runs', () => {
       let state = createInitialState({ cacheProcessed: true });
