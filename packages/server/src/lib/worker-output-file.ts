@@ -193,6 +193,17 @@ export class WorkerOutputFileManager {
    * Also enforces max file size by truncating from the beginning.
    *
    * Note: Legacy .log.gz files are migrated to .log on first write.
+   *
+   * Failure handling:
+   * - The write step (appendFile/writeFile) is critical. If it fails, the buffer
+   *   is restored (prepended to preserve order with any data that accumulated
+   *   during the failed flush) and a retry is scheduled via the timer mechanism.
+   * - Post-write steps (stat, truncate) are non-critical. If they fail, data is
+   *   already persisted — we log and move on.
+   *
+   * The buffer is cleared synchronously BEFORE any `await` so concurrent
+   * `bufferOutput` calls during in-flight I/O write to a fresh buffer. No mutex
+   * is used: a mutex would cause worse accumulation when writes outpace flushes.
    */
   private async flushBuffer(sessionId: string, workerId: string): Promise<void> {
     const key = this.getKey(sessionId, workerId);
@@ -202,7 +213,9 @@ export class WorkerOutputFileManager {
       return;
     }
 
-    // Clear timer and get buffer content
+    // Clear timer and get buffer content synchronously before any await.
+    // This guarantees that concurrent bufferOutput calls during in-flight
+    // I/O accumulate in a fresh buffer, not in the one being written.
     if (pending.timer) {
       clearTimeout(pending.timer);
       pending.timer = null;
@@ -213,8 +226,8 @@ export class WorkerOutputFileManager {
     const resolver = pending.resolver;
     const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
+    // Step 1: Critical write. If this fails, restore buffer and schedule retry.
     try {
-      // Ensure directory exists
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
       // Check if we need to migrate from legacy compressed file
@@ -229,30 +242,60 @@ export class WorkerOutputFileManager {
         const combinedContent = existingContent + dataToWrite;
         await fs.writeFile(filePath, combinedContent, 'utf-8');
 
-        // Delete the old compressed file
+        // Delete the old compressed file (post-write cleanup — non-critical).
+        // A failure here does not lose data; the write already succeeded.
         await fs.unlink(actualFile.path).catch((err) => {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
             logger.warn({ sessionId, workerId, path: actualFile.path, err }, 'Failed to delete legacy compressed file during migration');
           }
         });
-
-        // Check file size and truncate if necessary
-        const stats = await fs.stat(filePath);
-        if (stats.size > this.config.fileMaxSize) {
-          await this.truncateFile(filePath, stats.size, sessionId, workerId);
-        }
       } else {
-        // Simple append to uncompressed file
         await fs.appendFile(filePath, dataToWrite, 'utf-8');
-
-        // Check file size and truncate if necessary
-        const stats = await fs.stat(filePath);
-        if (stats.size > this.config.fileMaxSize) {
-          await this.truncateFile(filePath, stats.size, sessionId, workerId);
-        }
       }
     } catch (error) {
-      logger.error({ sessionId, workerId, err: error }, 'Failed to flush output to file');
+      // Write failed — restore buffer (prepend to preserve order) and schedule retry.
+      // Data is not lost; the next timer tick will retry.
+      this.restoreBufferOnFailure(sessionId, workerId, dataToWrite);
+      logger.error({ sessionId, workerId, err: error }, 'Failed to flush output to file; buffer restored for retry');
+      return;
+    }
+
+    // Step 2: Post-write file-size check. Non-critical — data is already on disk.
+    try {
+      const stats = await fs.stat(filePath);
+      if (stats.size > this.config.fileMaxSize) {
+        await this.truncateFile(filePath, stats.size, sessionId, workerId);
+      }
+    } catch (error) {
+      logger.error({ sessionId, workerId, err: error }, 'Failed to check/truncate file size after flush');
+    }
+  }
+
+  /**
+   * Restore buffered data that failed to flush.
+   *
+   * Prepends `dataToWrite` to the current pending buffer so order is preserved
+   * (new data may have accumulated during the failed I/O). Schedules a retry
+   * via the standard flush timer if no timer is already set.
+   *
+   * If the pending entry was removed during the failed I/O (e.g., the worker
+   * was reset or deleted), the data is discarded silently — the caller
+   * intentionally wanted the data gone.
+   */
+  private restoreBufferOnFailure(sessionId: string, workerId: string, dataToWrite: string): void {
+    const key = this.getKey(sessionId, workerId);
+    const currentPending = this.pendingFlushes.get(key);
+    if (!currentPending) {
+      // Worker was reset or deleted during the failed flush — discard data silently.
+      return;
+    }
+    currentPending.buffer = dataToWrite + currentPending.buffer;
+    if (!currentPending.timer) {
+      currentPending.timer = setTimeout(() => {
+        void this.flushBuffer(sessionId, workerId).catch((err) => {
+          logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on retry timer');
+        });
+      }, this.config.flushInterval);
     }
   }
 

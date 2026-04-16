@@ -1014,4 +1014,132 @@ describe('WorkerOutputFileManager', () => {
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });
   });
+
+  describe('write failure recovery', () => {
+    /**
+     * Helper: pre-create a directory at the path where the worker output file
+     * will be written. This causes `fs.appendFile` (and `fs.writeFile`) to fail
+     * with EISDIR when the flush tries to write. Returns the file path so the
+     * test can `vol.rmdirSync` later to allow a retry to succeed.
+     *
+     * This approach is used instead of monkey-patching memfs because ESM
+     * namespace bindings (from `import * as fs from 'fs/promises'`) are
+     * immutable — runtime mutations to the memfs module object do not affect
+     * callers who imported via a namespace binding. Forcing a real I/O failure
+     * through the file system is the only reliable way to exercise the error
+     * path in this test harness.
+     */
+    const blockWriteWithDirectory = (sessionId: string, workerId: string): string => {
+      const filePath = manager.getOutputFilePath(sessionId, workerId, quickResolver);
+      // Create a directory at the target file path → appendFile will throw EISDIR.
+      vol.mkdirSync(filePath, { recursive: true });
+      return filePath;
+    };
+
+    /** Remove the blocking directory so a subsequent flush can succeed. */
+    const unblockWrite = (filePath: string): void => {
+      vol.rmdirSync(filePath);
+    };
+
+    it('should restore buffer and retry on appendFile failure', async () => {
+      const filePath = blockWriteWithDirectory('session-fail-1', 'worker-1');
+
+      manager.bufferOutput('session-fail-1', 'worker-1', 'critical data', quickResolver);
+
+      // Wait for first flush to fire (timer = 100ms). It fails → buffer restored,
+      // retry scheduled 100ms later. Allow the first attempt to complete.
+      await new Promise(resolve => setTimeout(resolve, 130));
+
+      // At this point the first flush has failed. File path still exists as a dir.
+      // Unblock so the retry (next timer tick) can succeed.
+      unblockWrite(filePath);
+
+      // Wait for retry flush to complete.
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      expect(vol.existsSync(filePath)).toBe(true);
+      // Sanity-check it's now a file (not the blocking directory).
+      expect(vol.statSync(filePath).isFile()).toBe(true);
+      const content = vol.readFileSync(filePath, 'utf-8');
+      expect(content).toBe('critical data');
+    });
+
+    it('should preserve data when multiple writes occur during failed flush', async () => {
+      const filePath = blockWriteWithDirectory('session-fail-2', 'worker-1');
+
+      // First write triggers the buffering; flushAll forces a synchronous flush attempt.
+      manager.bufferOutput('session-fail-2', 'worker-1', 'data1', quickResolver);
+      await manager.flushAll(); // First flush fails → 'data1' restored + retry scheduled.
+
+      // Second write arrives after restore; buffer becomes 'data1' + 'data2'.
+      manager.bufferOutput('session-fail-2', 'worker-1', 'data2', quickResolver);
+
+      // Before the retry timer fires (100ms after restoreBufferOnFailure), unblock.
+      unblockWrite(filePath);
+
+      // Wait for retry timer to fire and succeed.
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.statSync(filePath).isFile()).toBe(true);
+      const content = vol.readFileSync(filePath, 'utf-8');
+      expect(content).toBe('data1data2');
+    });
+
+    it('should not lose data when flushAll encounters write failure followed by success', async () => {
+      const filePath = blockWriteWithDirectory('session-fa', 'worker-1');
+
+      manager.bufferOutput('session-fa', 'worker-1', 'important', quickResolver);
+
+      // flushAll triggers a flush that fails; data is restored to buffer.
+      await manager.flushAll();
+
+      // File path still points to the blocking directory — no regular file yet.
+      expect(vol.statSync(filePath).isDirectory()).toBe(true);
+
+      // Unblock so the retry timer (scheduled by the failed flush) can succeed.
+      unblockWrite(filePath);
+
+      // Wait for the retry to fire.
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.statSync(filePath).isFile()).toBe(true);
+      const content = vol.readFileSync(filePath, 'utf-8');
+      expect(content).toBe('important');
+    });
+
+    it('should not accumulate buffer beyond threshold + chunk under sustained writes', async () => {
+      // Use a dedicated manager with a large fileMaxSize so truncation doesn't
+      // obscure the acceptance criterion (which is about buffer accumulation,
+      // not file size). Same flushThreshold/flushInterval as the test default.
+      const sustainedManager = new WorkerOutputFileManager({
+        flushThreshold: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
+        flushInterval: TEST_WORKER_OUTPUT_FLUSH_INTERVAL,
+        fileMaxSize: 1024 * 1024, // 1 MB — comfortably larger than the test payload.
+      });
+
+      const chunkText = 'x'.repeat(50); // ~50 bytes each
+      const iterations = 50;
+
+      // Sustained writes interleaved with event loop yields so flushes can run.
+      for (let i = 0; i < iterations; i++) {
+        sustainedManager.bufferOutput('session-sustained', 'worker-1', chunkText, quickResolver);
+        await new Promise(r => setTimeout(r, 5));
+      }
+
+      // Allow pending timers to fire, then force-flush anything still buffered.
+      await new Promise(r => setTimeout(r, 200));
+      await sustainedManager.flushAll();
+
+      const expectedSize = iterations * chunkText.length;
+      const offset = await sustainedManager.getCurrentOffset('session-sustained', 'worker-1', quickResolver);
+      expect(offset).toBe(expectedSize);
+
+      const filePath = sustainedManager.getOutputFilePath('session-sustained', 'worker-1', quickResolver);
+      const content = vol.readFileSync(filePath, 'utf-8') as string;
+      expect(content).toBe(chunkText.repeat(iterations));
+    });
+
+  });
 });
