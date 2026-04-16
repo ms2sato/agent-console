@@ -172,19 +172,44 @@ export class WorkerOutputFileManager {
 
     // Flush immediately if buffer exceeds threshold
     if (pending.buffer.length >= this.config.flushThreshold) {
-      void this.flushBuffer(sessionId, workerId).catch((err) => {
-        logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on threshold');
-      });
+      void this.flushAndScheduleRetry(sessionId, workerId);
       return;
     }
 
     // Schedule flush if not already scheduled
-    if (!pending.timer) {
-      pending.timer = setTimeout(() => {
-        void this.flushBuffer(sessionId, workerId).catch((err) => {
-          logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on timer');
-        });
-      }, this.config.flushInterval);
+    this.scheduleFlushTimer(sessionId, workerId);
+  }
+
+  /**
+   * Schedule a flush timer if one is not already scheduled.
+   * Used by both the initial timer path and the retry path after a failed flush.
+   */
+  private scheduleFlushTimer(sessionId: string, workerId: string): void {
+    const key = this.getKey(sessionId, workerId);
+    const pending = this.pendingFlushes.get(key);
+    if (!pending || pending.timer) {
+      return;
+    }
+    pending.timer = setTimeout(() => {
+      void this.flushAndScheduleRetry(sessionId, workerId);
+    }, this.config.flushInterval);
+  }
+
+  /**
+   * Fire-and-forget wrapper for callers (threshold trigger, flush timer) that
+   * cannot handle errors. Awaits the flush, and if it fails, schedules a retry
+   * via the flush timer. The buffer has already been restored by `flushBuffer`.
+   */
+  private async flushAndScheduleRetry(sessionId: string, workerId: string): Promise<void> {
+    try {
+      await this.flushBuffer(sessionId, workerId);
+    } catch (error) {
+      // Buffer was restored by flushBuffer's catch block — schedule retry.
+      this.scheduleFlushTimer(sessionId, workerId);
+      logger.error(
+        { sessionId, workerId, err: error },
+        'Failed to flush output to file; buffer restored, retry scheduled',
+      );
     }
   }
 
@@ -197,7 +222,8 @@ export class WorkerOutputFileManager {
    * Failure handling:
    * - The write step (appendFile/writeFile) is critical. If it fails, the buffer
    *   is restored (prepended to preserve order with any data that accumulated
-   *   during the failed flush) and a retry is scheduled via the timer mechanism.
+   *   during the failed flush) and the error is RETHROWN so the caller can
+   *   decide how to handle it (e.g., schedule retry, surface to `flushAll`).
    * - Post-write steps (stat, truncate) are non-critical. If they fail, data is
    *   already persisted — we log and move on.
    *
@@ -226,7 +252,7 @@ export class WorkerOutputFileManager {
     const resolver = pending.resolver;
     const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
-    // Step 1: Critical write. If this fails, restore buffer and schedule retry.
+    // Step 1: Critical write. If this fails, restore buffer and rethrow.
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
@@ -253,11 +279,10 @@ export class WorkerOutputFileManager {
         await fs.appendFile(filePath, dataToWrite, 'utf-8');
       }
     } catch (error) {
-      // Write failed — restore buffer (prepend to preserve order) and schedule retry.
-      // Data is not lost; the next timer tick will retry.
-      this.restoreBufferOnFailure(sessionId, workerId, dataToWrite);
-      logger.error({ sessionId, workerId, err: error }, 'Failed to flush output to file; buffer restored for retry');
-      return;
+      // Write failed — restore buffer (prepend to preserve order) and rethrow.
+      // Callers decide how to handle retry/error surfacing.
+      this.restorePendingBuffer(sessionId, workerId, dataToWrite);
+      throw error;
     }
 
     // Step 2: Post-write file-size check. Non-critical — data is already on disk.
@@ -272,17 +297,19 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Restore buffered data that failed to flush.
-   *
-   * Prepends `dataToWrite` to the current pending buffer so order is preserved
-   * (new data may have accumulated during the failed I/O). Schedules a retry
-   * via the standard flush timer if no timer is already set.
+   * Restore buffered data that failed to flush by prepending it back to the
+   * pending buffer. Order is preserved with any data that accumulated during
+   * the failed I/O.
    *
    * If the pending entry was removed during the failed I/O (e.g., the worker
    * was reset or deleted), the data is discarded silently — the caller
    * intentionally wanted the data gone.
+   *
+   * Retry scheduling is NOT performed here; that is the responsibility of
+   * `flushAndScheduleRetry` (for fire-and-forget callers) or `flushAll` (for
+   * shutdown/graceful drain).
    */
-  private restoreBufferOnFailure(sessionId: string, workerId: string, dataToWrite: string): void {
+  private restorePendingBuffer(sessionId: string, workerId: string, dataToWrite: string): void {
     const key = this.getKey(sessionId, workerId);
     const currentPending = this.pendingFlushes.get(key);
     if (!currentPending) {
@@ -290,13 +317,6 @@ export class WorkerOutputFileManager {
       return;
     }
     currentPending.buffer = dataToWrite + currentPending.buffer;
-    if (!currentPending.timer) {
-      currentPending.timer = setTimeout(() => {
-        void this.flushBuffer(sessionId, workerId).catch((err) => {
-          logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on retry timer');
-        });
-      }, this.config.flushInterval);
-    }
   }
 
   /**
@@ -577,8 +597,11 @@ export class WorkerOutputFileManager {
    */
   async getCurrentOffset(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
     // Flush any pending buffer first to ensure accurate offset
-    // This prevents race conditions where offset is read before buffer is flushed
-    await this.flushBuffer(sessionId, workerId);
+    // This prevents race conditions where offset is read before buffer is flushed.
+    // Use the fire-and-forget wrapper: if the flush fails, the buffer has been
+    // restored and a retry scheduled — we should not surface the error to the
+    // caller (which only wants a best-effort offset).
+    await this.flushAndScheduleRetry(sessionId, workerId);
 
     try {
       const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
@@ -725,16 +748,67 @@ export class WorkerOutputFileManager {
   /**
    * Force flush all pending buffers.
    * Useful for graceful shutdown.
+   *
+   * Implements a bounded drain loop: up to `maxAttempts` passes over all
+   * workers that still have buffered data. Between failed attempts, waits
+   * `flushInterval` ms before retrying. If any buffer still contains data
+   * after all attempts, throws the last underlying error (or a descriptive
+   * Error if none was captured) so the caller knows data was not persisted.
+   *
+   * On success (all buffers empty), resolves normally.
    */
   async flushAll(): Promise<void> {
-    const flushPromises: Promise<void>[] = [];
+    const maxAttempts = 3;
+    let lastError: unknown = null;
 
-    for (const key of this.pendingFlushes.keys()) {
-      const [sessionId, workerId] = key.split('/');
-      flushPromises.push(this.flushBuffer(sessionId, workerId));
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const keysWithData: string[] = [];
+      for (const [key, pending] of this.pendingFlushes) {
+        if (pending.buffer.length > 0) {
+          keysWithData.push(key);
+        }
+      }
+      if (keysWithData.length === 0) {
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        keysWithData.map((key) => {
+          const [sessionId, workerId] = key.split('/');
+          return this.flushBuffer(sessionId, workerId);
+        }),
+      );
+
+      lastError = null;
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          lastError = result.reason;
+        }
+      }
+
+      // If some attempts failed and we have more attempts remaining,
+      // wait for the flush interval before retrying (gives transient
+      // failures time to resolve, e.g., EBUSY on Windows).
+      if (lastError !== null && attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, this.config.flushInterval));
+      }
     }
 
-    await Promise.all(flushPromises);
+    // Final check: any remaining buffered data is a hard failure.
+    let remaining = 0;
+    for (const [, pending] of this.pendingFlushes) {
+      if (pending.buffer.length > 0) {
+        remaining++;
+      }
+    }
+    if (remaining > 0) {
+      if (lastError instanceof Error) {
+        throw lastError;
+      }
+      throw new Error(
+        `flushAll: ${remaining} worker buffer(s) still contain data after ${maxAttempts} attempts`,
+      );
+    }
   }
 }
 

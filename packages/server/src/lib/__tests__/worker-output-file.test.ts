@@ -1067,18 +1067,23 @@ describe('WorkerOutputFileManager', () => {
     it('should preserve data when multiple writes occur during failed flush', async () => {
       const filePath = blockWriteWithDirectory('session-fail-2', 'worker-1');
 
-      // First write triggers the buffering; flushAll forces a synchronous flush attempt.
-      manager.bufferOutput('session-fail-2', 'worker-1', 'data1', quickResolver);
-      await manager.flushAll(); // First flush fails → 'data1' restored + retry scheduled.
+      // Unblock shortly after flushAll starts so its internal retry loop succeeds
+      // on a later attempt (flushInterval = 100ms, maxAttempts = 3 → up to ~200ms).
+      setTimeout(() => unblockWrite(filePath), 50);
 
-      // Second write arrives after restore; buffer becomes 'data1' + 'data2'.
+      // First write + flushAll: the first attempt fails (EISDIR), the second
+      // write is appended to the restored buffer concurrently, and the retry
+      // loop eventually succeeds after the blocking directory is removed.
+      manager.bufferOutput('session-fail-2', 'worker-1', 'data1', quickResolver);
+      const flushPromise = manager.flushAll();
+
+      // Queue the second write right after the failed first attempt would have
+      // restored the buffer. It becomes 'data1' + 'data2' once restoreBufferOnFailure
+      // prepends and a later attempt sees both.
+      await new Promise(resolve => setTimeout(resolve, 10));
       manager.bufferOutput('session-fail-2', 'worker-1', 'data2', quickResolver);
 
-      // Before the retry timer fires (100ms after restoreBufferOnFailure), unblock.
-      unblockWrite(filePath);
-
-      // Wait for retry timer to fire and succeed.
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await flushPromise;
 
       expect(vol.existsSync(filePath)).toBe(true);
       expect(vol.statSync(filePath).isFile()).toBe(true);
@@ -1091,22 +1096,39 @@ describe('WorkerOutputFileManager', () => {
 
       manager.bufferOutput('session-fa', 'worker-1', 'important', quickResolver);
 
-      // flushAll triggers a flush that fails; data is restored to buffer.
+      // Unblock partway through flushAll so an internal retry attempt succeeds.
+      setTimeout(() => unblockWrite(filePath), 50);
+
       await manager.flushAll();
-
-      // File path still points to the blocking directory — no regular file yet.
-      expect(vol.statSync(filePath).isDirectory()).toBe(true);
-
-      // Unblock so the retry timer (scheduled by the failed flush) can succeed.
-      unblockWrite(filePath);
-
-      // Wait for the retry to fire.
-      await new Promise(resolve => setTimeout(resolve, 200));
 
       expect(vol.existsSync(filePath)).toBe(true);
       expect(vol.statSync(filePath).isFile()).toBe(true);
       const content = vol.readFileSync(filePath, 'utf-8');
       expect(content).toBe('important');
+    });
+
+    it('should throw when data cannot be flushed after max attempts', async () => {
+      // Pre-create a directory at the file path so every write attempt fails
+      // with EISDIR. flushAll should exhaust its bounded retry loop and throw.
+      const filePath = blockWriteWithDirectory('session-persistent-fail', 'worker-1');
+
+      manager.bufferOutput('session-persistent-fail', 'worker-1', 'doomed data', quickResolver);
+
+      // flushAll must surface the failure so shutdown code can react.
+      await expect(manager.flushAll()).rejects.toThrow(/EISDIR|flushAll/);
+
+      // Data must still be preserved in the pending buffer (not silently lost).
+      // File path is still the blocking directory.
+      expect(vol.statSync(filePath).isDirectory()).toBe(true);
+
+      // After unblocking, a subsequent flushAll drains the preserved data —
+      // proving nothing was lost during the failed attempts.
+      unblockWrite(filePath);
+      await manager.flushAll();
+
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.statSync(filePath).isFile()).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('doomed data');
     });
 
     it('should not accumulate buffer beyond threshold + chunk under sustained writes', async () => {
