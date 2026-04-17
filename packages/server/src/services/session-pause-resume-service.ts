@@ -54,6 +54,8 @@ export interface SessionPauseResumeDeps {
   userRepository: UserRepository | null;
   resolveSpawnUsername: (createdBy: string | undefined, userRepo: UserRepository | null) => Promise<string>;
   stopWatching: (locationPath: string) => void;
+  startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
+  stopBranchWatching: (sessionId: string) => void;
   getServerPid: () => number;
 }
 
@@ -81,6 +83,9 @@ export class SessionPauseResumeService {
       logger.warn({ sessionId: id }, 'Cannot pause quick session: use delete instead');
       return false;
     }
+
+    // Stop branch watcher before pausing
+    this.deps.stopBranchWatching(id);
 
     // Notify all active Worker WebSocket connections that session is being paused
     // This must happen BEFORE killing workers so clients receive the notification
@@ -310,6 +315,11 @@ export class SessionPauseResumeService {
     }
 
     logger.info({ sessionId: id }, 'Session resumed');
+
+    // Start branch watcher for worktree sessions
+    if (internalSession.type === 'worktree') {
+      await this.deps.startBranchWatching(id, internalSession.locationPath, internalSession.worktreeId);
+    }
 
     const publicSession = this.deps.toPublicSession(internalSession);
 

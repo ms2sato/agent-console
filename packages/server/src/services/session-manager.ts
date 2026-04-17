@@ -150,6 +150,10 @@ export class SessionManager {
   private sessionConverterService: SessionConverterService;
   private timerCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
+  private branchWatcherCallbacks?: {
+    startWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
+    stopWatching: (sessionId: string) => void;
+  };
 
   /**
    * Create a SessionManager instance with async initialization.
@@ -274,6 +278,7 @@ export class SessionManager {
       getTimerCleanupCallback: () => this.timerCleanupCallback,
       getProcessCleanupCallback: () => this.processCleanupCallback,
       stopWatching,
+      stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
     });
 
     this.sessionPauseResumeService = new SessionPauseResumeService({
@@ -296,6 +301,9 @@ export class SessionManager {
       userRepository: this.userRepository,
       resolveSpawnUsername,
       stopWatching,
+      startBranchWatching: (sessionId, locationPath, currentBranch) =>
+        this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
+      stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       getServerPid,
     });
   }
@@ -436,6 +444,28 @@ export class SessionManager {
     this.processCleanupCallback = callback;
   }
 
+  /**
+   * Set callbacks for branch watcher lifecycle.
+   * Wired in app-context to connect SessionManager with BranchWatcherService
+   * without creating a direct dependency.
+   *
+   * Backfills watchers for any worktree sessions that were already restored
+   * by initialize() before this setter was called.
+   */
+  async setBranchWatcherCallbacks(callbacks: {
+    startWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
+    stopWatching: (sessionId: string) => void;
+  }): Promise<void> {
+    this.branchWatcherCallbacks = callbacks;
+
+    // Backfill watchers for already-live worktree sessions (auto-resumed during initialize)
+    for (const [sessionId, session] of this.sessions) {
+      if (session.type === 'worktree') {
+        await callbacks.startWatching(sessionId, session.locationPath, session.worktreeId);
+      }
+    }
+  }
+
   // ========== Session Lifecycle ==========
 
   async createSession(request: CreateSessionRequest, context?: SessionCreationContext): Promise<Session> {
@@ -512,6 +542,11 @@ export class SessionManager {
     ]);
 
     logger.info({ sessionId: id, type: internalSession.type }, 'Session created');
+
+    // Start branch watcher for worktree sessions
+    if (internalSession.type === 'worktree') {
+      await this.branchWatcherCallbacks?.startWatching(id, internalSession.locationPath, internalSession.worktreeId);
+    }
 
     const publicSession = this.toPublicSession(internalSession);
     this.sessionLifecycleCallbacks?.onSessionCreated?.(publicSession);
@@ -808,6 +843,17 @@ export class SessionManager {
     newBranch: string
   ): Promise<{ success: boolean; branch?: string; error?: string }> {
     return this.sessionMetadataService.renameBranch(sessionId, newBranch);
+  }
+
+  /**
+   * Sync worktreeId after an external branch change detected by fs.watch.
+   * Unlike updateSessionMetadata, this does NOT rename the git branch.
+   */
+  async syncBranchFromGit(
+    sessionId: string,
+    newBranch: string
+  ): Promise<{ success: boolean; branch?: string; error?: string }> {
+    return this.sessionMetadataService.syncBranchFromGit(sessionId, newBranch);
   }
 
   /**

@@ -31,6 +31,7 @@ import type { MessageTemplateRepository } from './repositories/message-template-
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { OpenPrInfo } from './services/github-pr-service.js';
 import type { GenerateRepositoryDescriptionFn } from './services/repository-description-generator.js';
+import type { BranchWatcherService as BranchWatcherServiceType } from './services/branch-watcher-service.js';
 import type { InboundIntegrationInstance } from './services/inbound/index.js';
 import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
@@ -60,6 +61,7 @@ import { AnnotationService as AnnotationServiceClass } from './services/annotati
 import { InterSessionMessageService as InterSessionMessageServiceClass } from './services/inter-session-message-service.js';
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
+import { BranchWatcherService } from './services/branch-watcher-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
@@ -139,6 +141,9 @@ export interface AppContext {
 
   /** Message template CRUD repository */
   messageTemplateRepository: MessageTemplateRepository;
+
+  /** Branch watcher service for dynamic branch tracking */
+  branchWatcherService: BranchWatcherServiceType;
 }
 
 /**
@@ -331,6 +336,16 @@ export async function createAppContext(
     interactiveProcessManager.deleteProcessesBySession(sessionId);
   });
 
+  // 6.9. Create branch watcher service and wire into session lifecycle
+  const branchWatcherService = new BranchWatcherService(async (sessionId, newBranch) => {
+    await sessionManager.syncBranchFromGit(sessionId, newBranch);
+  });
+  await sessionManager.setBranchWatcherCallbacks({
+    startWatching: (sessionId, locationPath, currentBranch) =>
+      branchWatcherService.startWatching(sessionId, locationPath, currentBranch),
+    stopWatching: (sessionId) => branchWatcherService.stopWatching(sessionId),
+  });
+
   // 7. Wire cross-dependencies between managers
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
@@ -380,6 +395,7 @@ export async function createAppContext(
     findOpenPullRequest,
     generateRepositoryDescription,
     messageTemplateRepository,
+    branchWatcherService,
   };
 }
 
@@ -550,6 +566,7 @@ export async function createTestContext(
     findOpenPullRequest,
     generateRepositoryDescription,
     messageTemplateRepository,
+    branchWatcherService: new BranchWatcherService(async () => {}),
   };
 }
 
@@ -563,9 +580,10 @@ export async function createTestContext(
 export async function shutdownAppContext(
   context: AppContext,
 ): Promise<void> {
-  // Dispose timer manager and interactive process manager
+  // Dispose timer manager, interactive process manager, and branch watcher
   context.timerManager.disposeAll();
   context.interactiveProcessManager.disposeAll();
+  context.branchWatcherService.stopAll();
 
   // Stop job queue
   await context.jobQueue.stop();

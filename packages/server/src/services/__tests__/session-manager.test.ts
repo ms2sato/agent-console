@@ -2622,6 +2622,94 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('syncBranchFromGit', () => {
+    it('should update worktreeId without calling gitRenameBranch', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      mockGit.renameBranch.mockReset();
+
+      const result = await manager.syncBranchFromGit(session.id, 'new-branch');
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+
+      // Verify worktreeId was updated
+      const updated = manager.getSession(session.id);
+      expect(updated).toBeDefined();
+      if (updated?.type === 'worktree') {
+        expect(updated.worktreeId).toBe('new-branch');
+      }
+
+      // gitRenameBranch should NOT have been called
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+    });
+
+    it('should broadcast session update via lifecycle callback', async () => {
+      const manager = await getSessionManager();
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'old-branch',
+        agentId: 'claude-code',
+      });
+
+      // Reset to only count the syncBranchFromGit call
+      onSessionUpdated.mockReset();
+
+      await manager.syncBranchFromGit(session.id, 'new-branch');
+
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('setBranchWatcherCallbacks', () => {
+    it('should call startWatching when worktree session is created', async () => {
+      const manager = await getSessionManager();
+      const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
+      const stopWatching = mock((_sid: string) => {});
+      await manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
+
+      await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      expect(startWatching).toHaveBeenCalledTimes(1);
+      expect(startWatching.mock.calls[0][1]).toBe('/test/path');
+      expect(startWatching.mock.calls[0][2]).toBe('main');
+    });
+
+    it('should not call startWatching for quick sessions', async () => {
+      const manager = await getSessionManager();
+      const startWatching = mock(async (_sid: string, _path: string, _branch: string) => {});
+      const stopWatching = mock((_sid: string) => {});
+      await manager.setBranchWatcherCallbacks({ startWatching, stopWatching });
+
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(startWatching).not.toHaveBeenCalled();
+    });
+  });
+
   describe('pauseSession', () => {
     it('should call notifySessionPaused before killing PTY workers', async () => {
       const manager = await getSessionManager();

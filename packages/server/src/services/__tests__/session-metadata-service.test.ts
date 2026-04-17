@@ -386,4 +386,112 @@ describe('SessionMetadataService', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('syncBranchFromGit', () => {
+    it('should update worktreeId without calling gitRenameBranch for active session', async () => {
+      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
+      const onSessionUpdated = mock(() => {});
+      deps = createMockDeps({
+        getSession: mock(() => session),
+        getSessionLifecycleCallbacks: () => ({ onSessionUpdated }),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('session-1', 'new-branch');
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+      expect(session.worktreeId).toBe('new-branch');
+      expect(deps.persistSession).toHaveBeenCalledWith(session);
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      // gitRenameBranch should NOT have been called (it's in the git mock)
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+    });
+
+    it('should skip update when branch has not changed', async () => {
+      const session = buildInternalWorktreeSession([], { worktreeId: 'same-branch' });
+      deps = createMockDeps({
+        getSession: mock(() => session),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('session-1', 'same-branch');
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('same-branch');
+      expect(deps.persistSession).not.toHaveBeenCalled();
+    });
+
+    it('should return error for non-worktree session', async () => {
+      const session = buildInternalQuickSession();
+      deps = createMockDeps({
+        getSession: mock(() => session),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('session-1', 'new-branch');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('worktree');
+    });
+
+    it('should update inactive session in persistence without git rename', async () => {
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-3',
+        worktreeId: 'old-branch',
+        locationPath: '/test/path',
+        workers: [
+          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'old-commit' }),
+        ],
+      });
+      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
+      deps = createMockDeps({
+        sessionRepository: createMockSessionRepository({
+          findById: mock(() => Promise.resolve(persisted)),
+          save: saveMock,
+        }),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('session-3', 'new-branch');
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('new-branch');
+      expect(saveMock).toHaveBeenCalledTimes(1);
+      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
+      expect(savedSession.worktreeId).toBe('new-branch');
+      // gitRenameBranch should NOT have been called
+      expect(mockGit.renameBranch).not.toHaveBeenCalled();
+    });
+
+    it('should handle detached HEAD state', async () => {
+      const session = buildInternalWorktreeSession([], { worktreeId: 'main' });
+      const onSessionUpdated = mock(() => {});
+      deps = createMockDeps({
+        getSession: mock(() => session),
+        getSessionLifecycleCallbacks: () => ({ onSessionUpdated }),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('session-1', '(detached)');
+
+      expect(result.success).toBe(true);
+      expect(session.worktreeId).toBe('(detached)');
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return error when session not found', async () => {
+      deps = createMockDeps({
+        sessionRepository: createMockSessionRepository({
+          findById: mock(() => Promise.resolve(null)),
+        }),
+      });
+      service = new SessionMetadataService(deps);
+
+      const result = await service.syncBranchFromGit('nonexistent', 'new-branch');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('session_not_found');
+    });
+  });
 });

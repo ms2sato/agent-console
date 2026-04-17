@@ -83,6 +83,8 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     userRepository: null,
     resolveSpawnUsername: mock(async () => 'testuser'),
     stopWatching: mockStopWatching,
+    startBranchWatching: async () => {},
+    stopBranchWatching: () => {},
     getServerPid: () => 99999,
     ...overrides,
   };
