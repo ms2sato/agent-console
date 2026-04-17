@@ -39,10 +39,10 @@ jobs:
         run: bun run --filter @agent-console/client build
 
       - name: Dependency rules (dependency-cruiser)
-        run: bun run check:deps
+        run: bun run lint:deps
 
       - name: Circular dependencies (madge)
-        run: bun run check:cycles
+        run: bun run lint:cycles
 
       - name: Dead code / unused deps (knip)
-        run: bun run check:unused
+        run: bun run lint:unused
