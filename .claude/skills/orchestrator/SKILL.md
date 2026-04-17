@@ -11,6 +11,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - `test-standards` — determine appropriate test layer for acceptance criteria, verify test adequacy during acceptance checks
 - `code-quality-standards` — evaluate domain design, service layer separation, and code quality during acceptance checks
 - `ux-design-standards` — evaluate UX design in acceptance criteria and feature design
+- `architectural-invariants` — walk the cross-cutting invariant catalog (I-1..I-N) during acceptance checks and when framing delegation prompts
 
 ---
 

@@ -291,15 +291,23 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 7 questions', () => {
+  it('returns 8 questions', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(7);
+    expect(questions).toHaveLength(8);
   });
 
-  it('returns questions with keys q1-q7', () => {
+  it('returns questions with keys q1-q8', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8']);
+  });
+
+  it('Q8 references the architectural-invariants skill catalog', () => {
+    const questions = getQuestions(false);
+    const q8 = questions.find(q => q.key === 'q8');
+    expect(q8.text).toContain('architectural-invariants');
+    expect(q8.focus).toContain('I-1');
+    expect(q8.focus).toContain('I-6');
   });
 
   it('uses acceptance criteria variant for Q3 when criteria exist', () => {

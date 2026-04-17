@@ -93,6 +93,19 @@ ${issue.title}
 
 Read the Issue carefully — it contains the full design, acceptance criteria, and affected files list.
 
+## Architectural Invariants (required reading before implementation)
+Before writing code, read \`.claude/skills/architectural-invariants/SKILL.md\` and identify which catalog entries (I-1..I-N) your change could plausibly violate. The catalog is short; walking it takes minutes.
+
+For each applicable invariant, keep the check in mind as you implement. The Orchestrator's acceptance check (Q8) will require you to explicitly answer whether each applicable invariant holds, with evidence.
+
+Quick reference (full details in the skill file):
+- **I-1 I/O Addressing Symmetry** — if your code writes AND reads a persistent resource, the write-address and read-address must converge for the same identity (unless explicit asymmetry is documented).
+- **I-2 Single Writer for Derived Values** — one function is the source-of-truth for computing paths/keys/IDs.
+- **I-3 Identity Stability Across Time** — identifiers survive restart/rename/restore.
+- **I-4 State Persistence Survives Process Lifecycle** — return success only after durable commit.
+- **I-5 Server as Source of Truth** — user-meaningful state is not kept only in client \`localStorage\`.
+- **I-6 Boundary Validation** — external values validated with a schema before use.
+
 ## Key Implementation Notes
 <!-- Orchestrator: Add only supplementary context NOT already in the Issue.
      Keep concise — the Issue is the source of truth.
@@ -105,7 +118,7 @@ Read the Issue carefully — it contains the full design, acceptance criteria, a
 4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
 5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
 6. Wait for CI green, fix any issues.
-7. Report completion with PR URL and retrospective to Orchestrator.
+7. Report completion with PR URL and retrospective to Orchestrator. Your retrospective MUST include a one-line answer per applicable architectural invariant.
 `;
 
 console.log(output);
