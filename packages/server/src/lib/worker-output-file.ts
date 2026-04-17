@@ -46,6 +46,12 @@ interface PendingFlush {
   buffer: string;
   timer: ReturnType<typeof setTimeout> | null;
   resolver: SessionDataPathResolver;
+  /**
+   * Timestamp (ms) of the last "abnormal accumulation" diagnostic warn for this
+   * worker. Used to throttle the hot-path warn log in `bufferOutput` so it
+   * emits at most once per 10s per worker.
+   */
+  lastDiagnosticWarnAt?: number;
 }
 
 /**
@@ -134,6 +140,7 @@ export class WorkerOutputFileManager {
    */
   async initializeWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
     const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
+    const outputsDir = resolver.getOutputsDir();
 
     try {
       // Ensure directory exists
@@ -142,16 +149,36 @@ export class WorkerOutputFileManager {
       // Check if file already exists (e.g., from previous run)
       const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (actualFile) {
-        // File already exists, no need to initialize
+        // File already exists — log path resolution details for diagnosing
+        // issue #631 (why pending buffers accumulated without the file being
+        // updated on disk). Captures pre-restart state so we can correlate
+        // with post-restart writes.
+        const stats = await fs.stat(actualFile.path).catch(() => null);
+        logger.info(
+          {
+            sessionId,
+            workerId,
+            filePath,
+            actualPath: actualFile.path,
+            isCompressed: actualFile.isCompressed,
+            fileSize: stats?.size ?? null,
+            mtimeMs: stats?.mtimeMs ?? null,
+            outputsDir,
+          },
+          'Worker output initialized (existing file)',
+        );
         return;
       }
 
       // Create empty file
       await fs.writeFile(filePath, '', 'utf-8');
 
-      logger.debug({ sessionId, workerId, filePath }, 'Initialized empty worker output file');
+      logger.info(
+        { sessionId, workerId, filePath, outputsDir },
+        'Worker output initialized (new empty file)',
+      );
     } catch (error) {
-      logger.error({ sessionId, workerId, err: error }, 'Failed to initialize worker output file');
+      logger.error({ sessionId, workerId, filePath, err: error }, 'Failed to initialize worker output file');
     }
   }
 
@@ -169,6 +196,28 @@ export class WorkerOutputFileManager {
     }
 
     pending.buffer += data;
+
+    // Diagnostic: detect abnormal pending buffer accumulation (issue #631).
+    // Throttled per-worker to avoid flooding logs on the hot path.
+    const abnormalThreshold = this.config.flushThreshold * 4;
+    if (pending.buffer.length > abnormalThreshold) {
+      const now = Date.now();
+      const last = pending.lastDiagnosticWarnAt ?? 0;
+      if (now - last >= 10_000) {
+        pending.lastDiagnosticWarnAt = now;
+        logger.warn(
+          {
+            sessionId,
+            workerId,
+            pendingBufferBytes: pending.buffer.length,
+            abnormalThreshold,
+            flushThreshold: this.config.flushThreshold,
+            timerSet: pending.timer !== null,
+          },
+          'Abnormal pending buffer accumulation detected',
+        );
+      }
+    }
 
     // Flush immediately if buffer exceeds threshold
     if (pending.buffer.length >= this.config.flushThreshold) {
@@ -282,12 +331,39 @@ export class WorkerOutputFileManager {
       // Write failed — restore buffer (prepend to preserve order) and rethrow.
       // Callers decide how to handle retry/error surfacing.
       this.restorePendingBuffer(sessionId, workerId, dataToWrite);
+
+      // Diagnostic: capture errno/code and buffer state for issue #631 root-cause.
+      const errCode = (error as NodeJS.ErrnoException).code;
+      const errno = (error as NodeJS.ErrnoException).errno;
+      const currentPending = this.pendingFlushes.get(key);
+      logger.error(
+        {
+          sessionId,
+          workerId,
+          filePath,
+          errCode,
+          errno,
+          errMsg: error instanceof Error ? error.message : String(error),
+          dataToWriteBytes: Buffer.byteLength(dataToWrite, 'utf-8'),
+          pendingBufferAfterRestore: currentPending?.buffer.length ?? 0,
+        },
+        'flushBuffer write step failed',
+      );
       throw error;
     }
 
     // Step 2: Post-write file-size check. Non-critical — data is already on disk.
     try {
       const stats = await fs.stat(filePath);
+      logger.debug(
+        {
+          sessionId,
+          workerId,
+          dataWrittenBytes: Buffer.byteLength(dataToWrite, 'utf-8'),
+          fileSize: stats.size,
+        },
+        'flushBuffer succeeded',
+      );
       if (stats.size > this.config.fileMaxSize) {
         await this.truncateFile(filePath, stats.size, sessionId, workerId);
       }
@@ -313,7 +389,17 @@ export class WorkerOutputFileManager {
     const key = this.getKey(sessionId, workerId);
     const currentPending = this.pendingFlushes.get(key);
     if (!currentPending) {
-      // Worker was reset or deleted during the failed flush — discard data silently.
+      // Worker was reset or deleted during the failed flush — data is intentionally
+      // discarded. Logged as warn so we can quantify frequency during dogfood
+      // of issue #631.
+      logger.warn(
+        {
+          sessionId,
+          workerId,
+          discardedBytes: Buffer.byteLength(dataToWrite, 'utf-8'),
+        },
+        'Cannot restore pending buffer: entry was removed during flush (worker reset?)',
+      );
       return;
     }
     currentPending.buffer = dataToWrite + currentPending.buffer;
