@@ -21,6 +21,13 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
    - Sprint goal, planned task list, parallel execution plan
    - This serves as the owner's at-a-glance dashboard for the sprint
    - The previous sprint's memo will still be displayed — overwrite it with the new sprint's content (memos are replaced on each write, so no manual cleanup is needed)
+5. **Re-evaluate open PRs carried over from previous sprints.** Run `gh pr list --state open` and for each PR not created or merged in this session, evaluate:
+   - **Staleness of feedback**: Does it have unaddressed review feedback (e.g., CodeRabbit CHANGES_REQUESTED) older than a sprint? Age it.
+   - **Mergeability**: Does `mergeStateStatus: CLEAN` still hold? Is there semantic conflict (test in a temp worktree: `git worktree add /tmp/test <branch> && git merge origin/main && bun run typecheck && bun run test`)?
+   - **Obsoletion**: Has the feature been superseded by later work (e.g., a root-cause fix that makes the original symptom fix redundant)?
+   - **Propose a disposition** to the owner: resume (rebase + address feedback), close (obsoleted), or defer (keep open, revisit next sprint with a concrete trigger).
+
+   **Why:** PRs silently rotting is a real failure mode. Sprint 2026-04-17 discovered PR #626 had sat 10 days with unaddressed CodeRabbit feedback; it turned out to still be valid and was merged after review. Without this step, it would have continued to rot. This step converts "discovered by accident" into "verified every sprint."
 
 ## Sprint Execution
 - Task progression, acceptance checks, merges
