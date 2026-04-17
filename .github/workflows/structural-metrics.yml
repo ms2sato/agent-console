@@ -1,0 +1,48 @@
+name: Structural Metrics
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.claude/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.claude/**'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  check-structure:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.4"
+
+      - name: Install dependencies
+        run: bun install
+
+      # Generate TanStack Router files so dep-cruiser can resolve imports.
+      - name: Prebuild (generate routeTree.gen.ts)
+        run: bun run --filter @agent-console/client build
+
+      - name: Dependency rules (dependency-cruiser)
+        run: bun run check:deps
+
+      - name: Circular dependencies (madge)
+        run: bun run check:cycles
+
+      - name: Dead code / unused deps (knip)
+        run: bun run check:unused

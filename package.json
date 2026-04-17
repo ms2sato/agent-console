@@ -16,11 +16,22 @@
     "test:only": "bun run --filter '*' test",
     "test:coverage": "bun run --filter '*' test:coverage",
     "lint": "bun run --filter '*' lint",
+    "check:structure": "bun run check:deps && bun run check:cycles && bun run check:unused",
+    "check:deps": "depcruise --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json packages",
+    "check:deps:all": "depcruise --config .dependency-cruiser.cjs packages",
+    "check:deps:baseline": "depcruise --config .dependency-cruiser.cjs --output-type baseline packages > .dependency-cruiser-known-violations.json",
+    "check:cycles": "madge --circular --extensions ts,tsx packages",
+    "check:cycles:all": "madge --circular --extensions ts,tsx --exclude '^$' packages",
+    "check:unused": "knip",
+    "graph:deps": "depcruise --config .dependency-cruiser.cjs --output-type dot packages | dot -T svg -o dependency-graph.svg",
     "release": "bumpp"
   },
   "devDependencies": {
     "bumpp": "^10.1.0",
     "concurrently": "^9.2.1",
+    "dependency-cruiser": "^17.3.10",
+    "knip": "^6.4.1",
+    "madge": "^8.0.0",
     "typescript": "^5.7.2"
   },
   "dependencies": {}
