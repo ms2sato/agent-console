@@ -171,6 +171,21 @@ describe('RepositoryManager', () => {
     });
   });
 
+  describe('getRepositorySlug', () => {
+    it('returns the repository name as slug for registered id', async () => {
+      const manager = await getRepositoryManager();
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
+
+      expect(manager.getRepositorySlug(registered.id)).toBe(registered.name);
+    });
+
+    it('returns undefined for unknown id', async () => {
+      const manager = await getRepositoryManager();
+
+      expect(manager.getRepositorySlug('unknown-id')).toBeUndefined();
+    });
+  });
+
   describe('getAllRepositories', () => {
     it('should return empty array when no repositories', async () => {
       const manager = await getRepositoryManager();
