@@ -13,7 +13,7 @@ This split follows the Claude Code docs recommendation: "Use rules to keep CLAUD
 
 Rule prose must not appear verbatim in any skill file. When a topic is covered by both, the rule is the canonical declarative form and the skill supplies only what the rule cannot: code examples, procedural steps, tables with more columns than fit in a rule, worked scenarios.
 
-**Rationale.** When the same guidance lives in two files, they drift. Each edit only touches one copy, and over time the two versions disagree without any error surfacing. A real drift between `rules/verification.md` and `skills/development-workflow-standards/development-workflow-standards.md` was the motivating case for this cleanup — both claimed to list the pre-push verification checklist, but they enumerated different steps.
+**Rationale.** When the same guidance lives in two files, they drift. Each edit only touches one copy, and over time the two versions disagree without any error surfacing. A real drift between `rules/workflow.md` and `skills/development-workflow-standards/development-workflow-standards.md` was the motivating case for this cleanup — both claimed to list the pre-push verification checklist, but they enumerated different steps.
 
 ## Cross-references
 
@@ -39,7 +39,7 @@ When a single skill has multiple sub-files, each sub-file should have a distinct
 │   ├── backend.md           # packages/server/**
 │   ├── frontend.md          # packages/client/**
 │   ├── testing.md           # **/*.test.* and **/__tests__/**
-│   ├── verification.md      # always (workflow invariants)
+│   ├── workflow.md          # always (workflow invariants: verification, branching, commits, etc.)
 │   ├── design-principles.md # always (design invariants)
 │   └── test-trigger.md      # production file patterns requiring tests
 ├── skills/                  # on-demand; SKILL.md as router

@@ -1,6 +1,6 @@
 # Development Workflow Standards (Procedural Detail)
 
-> See [rules/verification.md](../../rules/verification.md) for the declarative rules (verification checklist, branching strategy, testing requirements, commit standards, code quality, language policy, Claude Code on the Web essentials). This document covers procedural detail and decision frameworks that are too long for an auto-loaded rule.
+> See [rules/workflow.md](../../rules/workflow.md) for the declarative rules (verification checklist, branching strategy, testing requirements, commit standards, code quality, language policy, Claude Code on the Web essentials). This document covers procedural detail and decision frameworks that are too long for an auto-loaded rule.
 
 ## Conflict Assessment Before PR
 
