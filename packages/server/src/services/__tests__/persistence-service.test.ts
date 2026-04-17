@@ -233,6 +233,105 @@ describe('PersistenceService', () => {
     });
   });
 
+  describe('PersistedSession — scope-based persistence fields', () => {
+    it('round-trips dataScope / dataScopeSlug / recoveryState for a worktree session', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'wt-healthy',
+          type: 'worktree',
+          locationPath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'main',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          dataScope: 'repository',
+          dataScopeSlug: 'org/repo',
+          recoveryState: 'healthy',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded).toEqual(testSessions);
+      expect(loaded[0].dataScope).toBe('repository');
+      expect(loaded[0].dataScopeSlug).toBe('org/repo');
+      expect(loaded[0].recoveryState).toBe('healthy');
+    });
+
+    it('round-trips orphanedAt / orphanedReason for a quick session', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'quick-orphaned',
+          type: 'quick',
+          locationPath: '/path/to/quick',
+          workers: [],
+          serverPid: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          dataScope: 'quick',
+          dataScopeSlug: null,
+          recoveryState: 'orphaned',
+          orphanedAt: 1_700_000_000_000,
+          orphanedReason: 'missing-worktree',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded).toEqual(testSessions);
+      expect(loaded[0].recoveryState).toBe('orphaned');
+      expect(loaded[0].orphanedAt).toBe(1_700_000_000_000);
+      expect(loaded[0].orphanedReason).toBe('missing-worktree');
+      expect(loaded[0].dataScopeSlug).toBeNull();
+    });
+
+    it('loads legacy sessions without the new fields (fields stay undefined)', async () => {
+      const service = await getPersistenceService();
+
+      // Write raw JSON directly to simulate a legacy sessions.json that was
+      // persisted before the scope-based fields were introduced.
+      const sessionsFile = path.join(getTestConfigDir(), 'sessions.json');
+      const legacyRaw = [
+        {
+          id: 'legacy-wt',
+          type: 'worktree',
+          locationPath: '/legacy/wt',
+          repositoryId: 'repo-legacy',
+          worktreeId: 'main',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'legacy-quick',
+          type: 'quick',
+          locationPath: '/legacy/quick',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2024-01-02T00:00:00.000Z',
+        },
+      ];
+      fs.writeFileSync(sessionsFile, JSON.stringify(legacyRaw));
+
+      const loaded = await service.loadSessions();
+
+      expect(loaded.length).toBe(2);
+      for (const session of loaded) {
+        expect(session.dataScope).toBeUndefined();
+        expect(session.dataScopeSlug).toBeUndefined();
+        expect(session.recoveryState).toBeUndefined();
+        expect(session.orphanedAt).toBeUndefined();
+        expect(session.orphanedReason).toBeUndefined();
+      }
+    });
+  });
+
   describe('atomic write', () => {
     it('should not leave temp files on successful write', async () => {
       const service = await getPersistenceService();
