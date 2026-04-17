@@ -4,7 +4,7 @@
  * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
  * Full acceptance check requiring human judgment. Guides the Orchestrator
- * through Q1-Q7 in an interactive session via run_process.
+ * through Q1-Q8 in an interactive session via run_process.
  *
  * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
@@ -35,7 +35,7 @@ function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q7).');
+  console.error('This script runs a full interactive acceptance check (Q1-Q8).');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
 }
@@ -370,6 +370,23 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false } 
       focus: 'Check that the PR handles relevant failure modes for the domain. Not every PR needs all categories — focus on what is relevant to the change.',
       insufficient: '"Error handling is fine" (no specifics)',
       sufficient: '"PR adds worker restart. Checked: (1) PTY death during restart — worker-service.ts L60 catches spawn failure and transitions to \'error\' state. (2) Invalid worker ID — route handler returns 404 via service Result. (3) Concurrent restart — service checks current state and rejects if already restarting. WebSocket disconnect is not relevant to this change."',
+    },
+    {
+      key: 'q8',
+      text: 'Q8: Architectural Invariants — Walk through .claude/skills/architectural-invariants/SKILL.md. For each catalog entry (I-1..I-N) that could plausibly apply to this PR, explicitly answer whether the invariant holds.',
+      focus: [
+        'The catalog is deliberately short. The cost of walking it is low; the cost of missing an invariant is silent fragmentation / data loss / identity drift.',
+        'High-priority entries to check for every PR that touches persistent state or I/O:',
+        '  • I-1 I/O Addressing Symmetry — same identity → same read/write address (unless explicit asymmetry documented)',
+        '  • I-2 Single Writer for Derived Values — one function is the source-of-truth for address/key/ID computation',
+        '  • I-3 Identity Stability Across Time — identifiers survive restart/rename/restore',
+        '  • I-4 State Persistence Survives Process Lifecycle — "success" returned only after durable commit',
+        '  • I-5 Server as Source of Truth — user-meaningful state not in client localStorage',
+        '  • I-6 Boundary Validation — external values validated with a schema before use',
+        'If the PR does not touch persistent state, I/O, or shared identifiers, it is acceptable to answer "N/A — PR scope does not interact with any catalog entry" with a one-line justification.',
+      ].join('\n  '),
+      insufficient: '"Invariants look fine" (without walking the catalog)',
+      sufficient: '"I-1: PR adds getCurrentOffset fallback branch. Verified via grep that both readWorkerOutput and getCurrentOffset route through computeSessionDataBaseDir — same identity yields same path. I-2: computeSessionDataBaseDir is the single helper, no inline path construction. I-3: sessionId is the stable identity and is unchanged. I-4: PR does not introduce new persistent state. I-5: N/A (server-only). I-6: job payloads validated via ZJobPayload schema at line 42."',
     },
   ];
 }
