@@ -56,7 +56,7 @@ import { SessionInitializationService } from './session-initialization-service.j
 import { SessionDeletionService } from './session-deletion-service.js';
 import { SessionPauseResumeService } from './session-pause-resume-service.js';
 import { SessionConverterService } from './session-converter-service.js';
-import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup.js';
+import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
 
 /**
  * Callbacks for WebSocket operations.
@@ -450,7 +450,8 @@ export class SessionManager {
         throw new RepositoryNotFoundError(request.repositoryId);
       }
       // Validate slug via the helper's invariants (throws InvalidSessionDataScopeError).
-      computeSessionDataBaseDir(getConfigDir(), 'repository', slug);
+      // The return value is intentionally discarded — we only want the side-effect validation.
+      void computeSessionDataBaseDir(getConfigDir(), 'repository', slug);
       dataScope = 'repository';
       dataScopeSlug = slug;
     } else {
@@ -912,6 +913,21 @@ export class SessionManager {
   }
 
   /**
+   * Public accessor: return the path resolver for an in-memory session by id.
+   * Returns null if the session is not in memory OR its scope is missing.
+   * Callers should treat null as "cannot resolve path; surface an error".
+   */
+  getPathResolverForSessionId(sessionId: string): SessionDataPathResolver | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    try {
+      return this.getPathResolverForSession(session);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Resolve the session data path resolver from a persisted session.
    * Throws if scope is missing — see {@link baseDirForPersistedSession}.
    */
@@ -929,6 +945,15 @@ export class SessionManager {
       return { scope: 'quick', slug: null };
     }
     if (!session.dataScope) return null;
+    // Defensive: a worktree session must always carry the 'repository' scope.
+    // Treat any mismatch as orphaned so callers do not silently fall back.
+    if (session.dataScope !== 'repository') {
+      logger.warn(
+        { sessionId: session.id, type: session.type, dataScope: session.dataScope },
+        'Scope/type mismatch; treating as orphaned'
+      );
+      return null;
+    }
     return { scope: session.dataScope, slug: session.dataScopeSlug ?? null };
   }
 
@@ -940,6 +965,14 @@ export class SessionManager {
       return { scope: 'quick', slug: null };
     }
     if (!persisted.dataScope) return null;
+    // Defensive: a worktree session must always carry the 'repository' scope.
+    if (persisted.dataScope !== 'repository') {
+      logger.warn(
+        { sessionId: persisted.id, type: persisted.type, dataScope: persisted.dataScope },
+        'Scope/type mismatch; treating as orphaned'
+      );
+      return null;
+    }
     return { scope: persisted.dataScope, slug: persisted.dataScopeSlug ?? null };
   }
 

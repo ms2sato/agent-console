@@ -122,7 +122,7 @@ describe('MemoService', () => {
       expect(vol.existsSync(filePath)).toBe(false);
     });
 
-    it('should use _quick fallback when resolver has no repositoryName', async () => {
+    it('should write to _quick path when resolver is constructed with _quick baseDir', async () => {
       const filePath = await service.writeMemo('session-1', '# Quick Memo', quickResolver);
 
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/memos/session-1.md`);

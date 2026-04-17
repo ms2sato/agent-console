@@ -29,8 +29,7 @@ function walkFiles(dir: string, acc: string[] = []): string[] {
       if (entry.name === 'node_modules') continue;
       walkFiles(fullPath, acc);
     } else if (entry.isFile() && /\.ts$/.test(entry.name)) {
-      // Skip the invariant test itself and the path-resolver source (it defines
-      // the constructor).
+      // Skip the invariant test itself.
       if (fullPath === __filename) continue;
       acc.push(fullPath);
     }
@@ -43,33 +42,40 @@ describe('session-data-path invariants (grep-based)', () => {
 
   it('no production file constructs SessionDataPathResolver without a baseDir argument', () => {
     const offenders: Array<{ file: string; line: number; text: string }> = [];
-    const pattern = /new\s+SessionDataPathResolver\s*\(\s*\)/g;
+    // Non-global: `.test()` is stateless without the /g flag.
+    const pattern = /new\s+SessionDataPathResolver\s*\(\s*\)/;
 
     for (const file of files) {
       const content = fs.readFileSync(file, 'utf-8');
       if (!pattern.test(content)) {
-        pattern.lastIndex = 0;
         continue;
       }
-      pattern.lastIndex = 0;
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (pattern.test(lines[i])) {
           offenders.push({ file, line: i + 1, text: lines[i].trim() });
         }
-        pattern.lastIndex = 0;
       }
     }
 
     expect(offenders).toEqual([]);
   });
 
-  it('no production file writes a repositoryName field into a cleanup job payload', () => {
+  it('no cleanup job payload (production) writes a repositoryName field for path purposes', () => {
+    // Scope the invariant to the directories where cleanup job payloads are
+    // defined and consumed. A blanket grep for `repositoryName:` produces
+    // false positives — `repositoryName` is a legitimate field on Session
+    // and on inbound webhook events, neither of which has anything to do
+    // with the session-data-path refactor.
+    const jobFiles = files.filter(
+      (file) =>
+        file.includes(`${path.sep}jobs${path.sep}`) ||
+        file.endsWith(`${path.sep}job-types.ts`)
+    );
     const offenders: Array<{ file: string; line: number; text: string }> = [];
-    // Match `repositoryName:` as an object literal key.
     const pattern = /repositoryName\s*:/;
 
-    for (const file of files) {
+    for (const file of jobFiles) {
       const content = fs.readFileSync(file, 'utf-8');
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {

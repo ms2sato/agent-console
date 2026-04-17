@@ -293,6 +293,7 @@ describe('Sessions API - Pause/Resume', () => {
 // 404 status. This test exercises the full request → handler → error-handler
 // pipeline so that any future change to either the route or the global error
 // formatter will surface immediately.
+// TODO: extract common setup into createTestApp helper; see PR #638 review
 describe('Sessions API - POST /api/sessions (repository_not_found)', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;

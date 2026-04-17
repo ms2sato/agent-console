@@ -166,6 +166,184 @@ describe('mappers', () => {
     });
   });
 
+  describe('toSessionRow - scope+slug invariants', () => {
+    it('should accept legacy session with no dataScope', () => {
+      const session = buildPersistedQuickSession({
+        id: 'legacy-session',
+        // no dataScope, no dataScopeSlug
+      });
+      // Strip the scope-related fields to simulate legacy state
+      const legacy = { ...session };
+      delete (legacy as { dataScope?: unknown }).dataScope;
+      delete (legacy as { dataScopeSlug?: unknown }).dataScopeSlug;
+
+      const row = toSessionRow(legacy);
+      expect(row.data_scope).toBeNull();
+      expect(row.data_scope_slug).toBeNull();
+    });
+
+    it('should accept quick scope with null slug', () => {
+      const session = buildPersistedQuickSession({
+        id: 'quick-session',
+        dataScope: 'quick',
+        dataScopeSlug: null,
+      });
+      const row = toSessionRow(session);
+      expect(row.data_scope).toBe('quick');
+      expect(row.data_scope_slug).toBeNull();
+    });
+
+    it('should throw DataIntegrityError when quick scope has a non-null slug', () => {
+      const session = buildPersistedQuickSession({
+        id: 'bad-quick',
+        dataScope: 'quick',
+        dataScopeSlug: 'unexpected-slug',
+      });
+      expect(() => toSessionRow(session)).toThrow(DataIntegrityError);
+      expect(() => toSessionRow(session)).toThrow(/dataScopeSlug must be null for quick scope/);
+    });
+
+    it('should accept repository scope with non-empty slug', () => {
+      const session = buildPersistedWorktreeSession({
+        id: 'repo-session',
+        dataScope: 'repository',
+        dataScopeSlug: 'owner/repo',
+      });
+      const row = toSessionRow(session);
+      expect(row.data_scope).toBe('repository');
+      expect(row.data_scope_slug).toBe('owner/repo');
+    });
+
+    it('should throw DataIntegrityError when repository scope has null slug', () => {
+      const session = buildPersistedWorktreeSession({
+        id: 'bad-repo',
+        dataScope: 'repository',
+        dataScopeSlug: null,
+      });
+      expect(() => toSessionRow(session)).toThrow(DataIntegrityError);
+      expect(() => toSessionRow(session)).toThrow(/dataScopeSlug required for repository scope/);
+    });
+
+    it('should throw DataIntegrityError when repository scope has empty string slug', () => {
+      const session = buildPersistedWorktreeSession({
+        id: 'bad-repo-empty',
+        dataScope: 'repository',
+        dataScopeSlug: '',
+      });
+      expect(() => toSessionRow(session)).toThrow(DataIntegrityError);
+      expect(() => toSessionRow(session)).toThrow(/dataScopeSlug required for repository scope/);
+    });
+  });
+
+  describe('toPersistedSession - scope+slug invariants', () => {
+    function makeSessionRow(overrides: Partial<Session>): Session {
+      return {
+        id: 'session-1',
+        type: 'quick',
+        location_path: '/path',
+        server_pid: null,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        initial_prompt: null,
+        title: null,
+        repository_id: null,
+        worktree_id: null,
+        paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
+        created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
+        ...overrides,
+      };
+    }
+
+    it('should accept null scope (legacy row) without throwing', () => {
+      const row = makeSessionRow({ data_scope: null, data_scope_slug: null });
+      const session = toPersistedSession(row, []);
+      expect(session.dataScope).toBeUndefined();
+    });
+
+    it('should throw when scope=quick has a non-null slug in DB', () => {
+      const row = makeSessionRow({ data_scope: 'quick', data_scope_slug: 'unexpected' });
+      expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
+      expect(() => toPersistedSession(row, [])).toThrow(/inconsistent scope\+slug combination/);
+    });
+
+    it('should throw when scope=repository has null slug in DB', () => {
+      const row = makeSessionRow({
+        type: 'worktree',
+        repository_id: 'repo-1',
+        worktree_id: 'wt-1',
+        data_scope: 'repository',
+        data_scope_slug: null,
+      });
+      expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
+      expect(() => toPersistedSession(row, [])).toThrow(/inconsistent scope\+slug combination/);
+    });
+
+    it('should throw when scope=repository has empty string slug in DB', () => {
+      const row = makeSessionRow({
+        type: 'worktree',
+        repository_id: 'repo-1',
+        worktree_id: 'wt-1',
+        data_scope: 'repository',
+        data_scope_slug: '',
+      });
+      expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
+      expect(() => toPersistedSession(row, [])).toThrow(/inconsistent scope\+slug combination/);
+    });
+
+    it('should throw when data_scope is an unknown value', () => {
+      const row = makeSessionRow({
+        // Simulate database corruption: column type is wider than the union
+        data_scope: 'unknown' as unknown as 'quick' | 'repository' | null,
+        data_scope_slug: null,
+      });
+      expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
+      expect(() => toPersistedSession(row, [])).toThrow(/data_scope \(unexpected value: unknown\)/);
+    });
+
+    it('should accept valid quick scope (null slug) on read', () => {
+      const row = makeSessionRow({ data_scope: 'quick', data_scope_slug: null });
+      const session = toPersistedSession(row, []);
+      expect(session.dataScope).toBe('quick');
+      expect(session.dataScopeSlug).toBeNull();
+    });
+
+    it('should accept valid repository scope (non-empty slug) on read', () => {
+      const row = makeSessionRow({
+        type: 'worktree',
+        repository_id: 'repo-1',
+        worktree_id: 'wt-1',
+        data_scope: 'repository',
+        data_scope_slug: 'owner/repo',
+      });
+      const session = toPersistedSession(row, []);
+      expect(session.dataScope).toBe('repository');
+      expect(session.dataScopeSlug).toBe('owner/repo');
+    });
+
+    it('should throw when recovery_state is an unknown value', () => {
+      const row = makeSessionRow({
+        recovery_state: 'mystery' as unknown as 'healthy' | 'orphaned',
+      });
+      expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
+      expect(() => toPersistedSession(row, [])).toThrow(/recovery_state \(unexpected value: mystery\)/);
+    });
+
+    it('should treat null recovery_state as healthy (legacy row)', () => {
+      const row = makeSessionRow({
+        recovery_state: null as unknown as 'healthy' | 'orphaned',
+      });
+      const session = toPersistedSession(row, []);
+      expect(session.recoveryState).toBe('healthy');
+    });
+  });
+
   describe('toPersistedWorker - data integrity', () => {
     it('should throw DataIntegrityError when agent_id is missing for agent worker', () => {
       const dbWorker: Worker = {

@@ -291,7 +291,7 @@ export class WorkerLifecycleManager {
     // Clean up based on worker type
     if (worker.type === 'agent' || worker.type === 'terminal') {
       await this.deps.workerManager.killWorker(worker, sessionId);
-      await this.cleanupWorkerOutput(sessionId, workerId);
+      await this.cleanupWorkerOutput(sessionId, workerId, session);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -751,15 +751,10 @@ export class WorkerLifecycleManager {
    * If jobQueue is not available, or scope cannot be resolved, logs a warning
    * and skips cleanup — never falls back to `_quick/`.
    */
-  private async cleanupWorkerOutput(sessionId: string, workerId: string): Promise<void> {
+  private async cleanupWorkerOutput(sessionId: string, workerId: string, session: InternalSession): Promise<void> {
     const jobQueue = this.deps.getJobQueue();
     if (!jobQueue) {
       logger.warn({ sessionId, workerId }, 'JobQueue not available, skipping async output cleanup');
-      return;
-    }
-    const session = this.deps.getSession(sessionId);
-    if (!session) {
-      logger.warn({ sessionId, workerId }, 'Session not found; skipping worker-output cleanup enqueue');
       return;
     }
     const scopeInfo = this.deps.getSessionScope(session);

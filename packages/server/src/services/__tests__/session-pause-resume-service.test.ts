@@ -3,6 +3,7 @@ import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../sessi
 import type { InternalSession } from '../internal-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -40,7 +41,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     } as unknown as SessionPauseResumeDeps['workerManager'],
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
-    getPathResolverForSession: mock(() => ({})) as unknown as SessionPauseResumeDeps['getPathResolverForSession'],
+    getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy')),
     toPublicSession: mock((session: InternalSession) => ({
       id: session.id,
       type: session.type,
@@ -217,6 +218,11 @@ describe('SessionPauseResumeService', () => {
       expect(result).toBeNull();
       // Path existence must not even be checked for orphaned sessions.
       expect(deps.pathExists).not.toHaveBeenCalled();
+      // No session-mutating side effects must occur for orphaned sessions.
+      expect(deps.workerManager.restoreWorkersFromPersistence).not.toHaveBeenCalled();
+      expect(deps.setSession).not.toHaveBeenCalled();
+      expect(deps.sessionRepository.update).not.toHaveBeenCalled();
+      expect(deps.sessionRepository.save).not.toHaveBeenCalled();
     });
 
     it('should return null if path no longer exists', async () => {

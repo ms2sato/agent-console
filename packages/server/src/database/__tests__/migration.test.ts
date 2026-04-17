@@ -1418,7 +1418,7 @@ describe('migration', () => {
       expect(rows[0].created_by).toBeNull();
     });
 
-    it('should set schema version to 15', async () => {
+    it('should set schema version to 18 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
@@ -1454,7 +1454,7 @@ describe('migration', () => {
       expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     });
 
-    it('should set schema version to 17', async () => {
+    it('should set schema version to 18 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');

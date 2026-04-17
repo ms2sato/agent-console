@@ -203,15 +203,16 @@ export class SessionDeletionService {
           scope: scopeInfo.scope,
           slug: scopeInfo.slug,
         });
-      } else if (!scopeInfo) {
-        logger.warn(
-          { sessionId: id, method: 'forceDeleteSession' },
-          'Persisted session has no valid scope; skipping session-outputs cleanup'
-        );
       } else {
         logger.warn(
-          { sessionId: id, method: 'forceDeleteSession', skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS },
-          'JobQueue not available, skipping cleanup job for orphaned session'
+          {
+            sessionId: id,
+            method: 'forceDeleteSession',
+            skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
+            missingJobQueue: !this.deps.jobQueue,
+            missingScope: !scopeInfo,
+          },
+          'Skipping session-outputs cleanup for orphaned session'
         );
       }
       await this.deps.sessionRepository.delete(id);

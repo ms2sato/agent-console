@@ -57,7 +57,7 @@ export interface SessionsTable {
   /** Slug for 'repository' scope; null for 'quick' scope and orphaned sessions. */
   data_scope_slug: string | null;
   /** Recovery state ('healthy' | 'orphaned'); has DEFAULT 'healthy'. */
-  recovery_state: Generated<string>;
+  recovery_state: Generated<'healthy' | 'orphaned'>;
   /** Unix epoch ms when marked orphaned (null if healthy). */
   orphaned_at: number | null;
   /** Machine-readable orphan reason code (null if healthy). */

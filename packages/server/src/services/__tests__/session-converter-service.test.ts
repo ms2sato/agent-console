@@ -178,10 +178,16 @@ describe('SessionConverterService', () => {
         getRepositoryDisplayInfo: () => undefined,
       };
       // Recreate service with empty lookup.
+      // toPublicWorker / toPersistedWorker are unreachable for this test
+      // because the session has zero workers.
       const deps: SessionConverterDeps = {
         repositoryDisplayLookup: mockLookup,
-        toPublicWorker: (w) => ({ id: w.id, type: w.type, name: w.name, createdAt: w.createdAt } as unknown as Worker),
-        toPersistedWorker: (w) => ({ id: w.id, type: w.type, name: w.name, createdAt: w.createdAt } as unknown as PersistedWorker),
+        toPublicWorker: ((): Worker => {
+          throw new Error('unreachable: session has no workers');
+        }) as (w: InternalWorker) => Worker,
+        toPersistedWorker: ((): PersistedWorker => {
+          throw new Error('unreachable: session has no workers');
+        }) as (w: InternalWorker) => PersistedWorker,
         getServerPid: () => 12345,
       };
       service = new SessionConverterService(deps);

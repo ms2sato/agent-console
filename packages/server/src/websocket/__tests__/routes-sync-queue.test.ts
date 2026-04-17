@@ -6,6 +6,10 @@ import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import {
+  makeRepositoryLookup,
+  makeRepositoryEnvLookup,
+} from '../../__tests__/utils/repository-lookup-mock.js';
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -92,11 +96,10 @@ describe('App WebSocket sync-queue handling', () => {
       jobQueue: testJobQueue,
       agentManager,
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
-      repositoryEnvLookup: {
-        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
-        getWorktreeIndexNumber: async () => 0,
-      },
+      repositoryLookup: makeRepositoryLookup(() => 'test-repo'),
+      repositoryEnvLookup: makeRepositoryEnvLookup({
+        mapping: () => ({ name: 'test-repo', path: '/test/repo' }),
+      }),
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });

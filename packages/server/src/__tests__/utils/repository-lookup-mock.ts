@@ -6,7 +6,7 @@
  * specific repositories.
  */
 
-import type { RepositoryLookup, RepositoryEnvLookup, RepositoryInfo } from '../../services/repository-lookup.js';
+import type { RepositoryLookup, RepositoryEnvLookup, RepositoryInfo } from '../../services/repository-lookup-types.js';
 
 /**
  * A repository lookup that resolves any `repositoryId` to a fixed slug.

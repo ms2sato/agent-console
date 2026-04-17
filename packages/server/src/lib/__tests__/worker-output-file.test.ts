@@ -975,7 +975,7 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
-  describe('repository-scoped paths', () => {
+  describe('when repository-scoped baseDir is used', () => {
     it('should return repository-scoped path when repositoryName is provided', () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', repoResolver);
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1/worker-1.log`);
@@ -1010,7 +1010,7 @@ describe('WorkerOutputFileManager', () => {
       expect(vol.existsSync(sessionDir)).toBe(false);
     });
 
-    it('should use _quick fallback when repositoryName is not provided', () => {
+    it('uses the provided quick baseDir', () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', quickResolver);
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });

@@ -53,6 +53,31 @@ export class DataIntegrityError extends Error {
  * @returns Database row ready for insertion
  */
 export function toSessionRow(session: PersistedSession): NewSession {
+  // Validate (scope, slug) combination at the boundary. Legacy rows
+  // (dataScope undefined) are accepted as-is; orphan detection runs
+  // separately at startup.
+  if (session.dataScope === 'quick') {
+    if (session.dataScopeSlug !== null && session.dataScopeSlug !== undefined) {
+      throw new DataIntegrityError(
+        'session',
+        session.id,
+        'dataScopeSlug must be null for quick scope'
+      );
+    }
+  } else if (session.dataScope === 'repository') {
+    if (
+      session.dataScopeSlug === null ||
+      session.dataScopeSlug === undefined ||
+      session.dataScopeSlug === ''
+    ) {
+      throw new DataIntegrityError(
+        'session',
+        session.id,
+        'dataScopeSlug required for repository scope'
+      );
+    }
+  }
+
   const now = new Date().toISOString();
   const base = {
     id: session.id,
@@ -219,19 +244,63 @@ export function toPersistedSession(
     throw new DataIntegrityError('session', session.id, `type (unexpected value: ${session.type})`);
   }
 
-  // Normalize scope/slug/recovery fields. Coerce DB values into the narrow
-  // typed form used on PersistedSession. Unknown values fall through to
-  // undefined/healthy rather than crashing: the startup orphan detector
-  // (see docs/design/session-data-path.md) is responsible for flagging
-  // invalid metadata.
-  const dataScope: 'quick' | 'repository' | undefined =
-    session.data_scope === 'quick' || session.data_scope === 'repository'
-      ? session.data_scope
-      : undefined;
+  // Validate scope+slug combination at the boundary. Null scope is accepted
+  // (legacy row, pre-backfill). Other invalid combinations indicate corruption
+  // and must throw rather than silently fall back.
+  // Slug grammar (path-traversal etc.) is intentionally NOT checked here —
+  // that is runtime's job (orphan detector).
+  let dataScope: 'quick' | 'repository' | undefined;
+  if (session.data_scope === null || session.data_scope === undefined) {
+    dataScope = undefined;
+  } else if (session.data_scope === 'quick' || session.data_scope === 'repository') {
+    dataScope = session.data_scope;
+  } else {
+    throw new DataIntegrityError(
+      'session',
+      session.id,
+      `data_scope (unexpected value: ${session.data_scope})`
+    );
+  }
+
+  if (dataScope === 'quick' && session.data_scope_slug !== null) {
+    throw new DataIntegrityError(
+      'session',
+      session.id,
+      'inconsistent scope+slug combination (quick scope must have null slug)'
+    );
+  }
+  if (
+    dataScope === 'repository' &&
+    (session.data_scope_slug === null || session.data_scope_slug === '')
+  ) {
+    throw new DataIntegrityError(
+      'session',
+      session.id,
+      'inconsistent scope+slug combination (repository scope requires non-empty slug)'
+    );
+  }
+
   const dataScopeSlug: string | null | undefined =
     session.data_scope_slug === null ? null : session.data_scope_slug ?? undefined;
-  const recoveryState: 'healthy' | 'orphaned' =
-    session.recovery_state === 'orphaned' ? 'orphaned' : 'healthy';
+
+  // Validate recovery_state. Null treated as 'healthy' (legacy row).
+  let recoveryState: 'healthy' | 'orphaned';
+  if (
+    session.recovery_state === null ||
+    session.recovery_state === undefined ||
+    session.recovery_state === 'healthy'
+  ) {
+    recoveryState = 'healthy';
+  } else if (session.recovery_state === 'orphaned') {
+    recoveryState = 'orphaned';
+  } else {
+    throw new DataIntegrityError(
+      'session',
+      session.id,
+      `recovery_state (unexpected value: ${session.recovery_state})`
+    );
+  }
+
   const orphanedAt = session.orphaned_at ?? null;
   const orphanedReason = session.orphaned_reason ?? null;
 

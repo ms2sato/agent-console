@@ -1022,6 +1022,36 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('Message content too large');
     });
 
+    it('should resolve target path via SessionManager (uses persisted slug, not display name)', async () => {
+      // Register a repository whose persisted slug ('test-repo') is exposed by
+      // SessionManager via repositoryLookup.getRepositorySlug. Send a message
+      // to a worktree session and verify the message file path lands under
+      // the repository scope dir, not the `_quick/` fallback that the previous
+      // implementation would have produced.
+      await registerTestRepo('repo-1', 'test-repo', '/test/repo');
+
+      const targetSession = await sessionManager.createSession({
+        type: 'worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'wt-1',
+        locationPath: '/test/repo',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: targetSession.id,
+        content: 'hello worktree',
+        fromSessionId: 'sender-1',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      // Path must be rooted under the repository scope, not _quick.
+      expect(data.path).toContain(`${TEST_CONFIG_DIR}/repositories/test-repo/messages/`);
+      expect(data.path).not.toContain(`${TEST_CONFIG_DIR}/_quick/`);
+    });
+
     it('should return validation error when fromSessionId is omitted', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',

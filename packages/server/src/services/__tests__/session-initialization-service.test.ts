@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Kysely } from 'kysely';
 import type { PersistedSession } from '../persistence-service.js';
-import type { SessionRepository } from '../../repositories/index.js';
+import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';
 import type { Database } from '../../database/schema.js';
@@ -33,7 +33,21 @@ function createMockSessionRepository(sessions: PersistedSession[]): SessionRepos
     saveAll: async (newSessions: PersistedSession[]) => {
       storedSessions = [...newSessions];
     },
-    update: async () => true,
+    update: async (id: string, updates: SessionUpdateFields) => {
+      const idx = storedSessions.findIndex(s => s.id === id);
+      if (idx === -1) return false;
+      const current = storedSessions[idx];
+      // Apply only provided (non-undefined) fields. Null is a meaningful value.
+      const patch: Partial<PersistedSession> = {};
+      for (const key of Object.keys(updates) as Array<keyof SessionUpdateFields>) {
+        const value = updates[key];
+        if (value !== undefined) {
+          (patch as Record<string, unknown>)[key] = value;
+        }
+      }
+      storedSessions[idx] = { ...current, ...patch } as PersistedSession;
+      return true;
+    },
     delete: async (id: string) => {
       storedSessions = storedSessions.filter(s => s.id !== id);
     },

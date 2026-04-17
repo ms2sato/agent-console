@@ -73,7 +73,8 @@ export interface SessionRepository {
   /**
    * Update specific fields of a session without replacing the entire session.
    * Only supports fields defined in SessionUpdateFields:
-   * - serverPid, title, initialPrompt, locationPath, worktreeId
+   * - serverPid, title, initialPrompt, locationPath, worktreeId,
+   *   pausedAt, recoveryState, orphanedAt, orphanedReason
    * @param id - The session ID to update
    * @param updates - Fields to update (must be from SessionUpdateFields)
    * @returns true if session was found and updated, false if not found

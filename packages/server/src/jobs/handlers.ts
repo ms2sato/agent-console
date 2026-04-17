@@ -35,7 +35,7 @@ export function registerJobHandlers(jobQueue: JobQueue, workerOutputFileManager:
       const { sessionId, scope, slug } = payload;
       let baseDir: string;
       try {
-        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug ?? null);
+        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
       } catch (err) {
         if (err instanceof InvalidSessionDataScopeError) {
           logger.error({ sessionId, scope, slug, err: err.message }, 'Invalid cleanup payload; skipping');
@@ -57,7 +57,7 @@ export function registerJobHandlers(jobQueue: JobQueue, workerOutputFileManager:
       const { sessionId, workerId, scope, slug } = payload;
       let baseDir: string;
       try {
-        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug ?? null);
+        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
       } catch (err) {
         if (err instanceof InvalidSessionDataScopeError) {
           logger.error(
