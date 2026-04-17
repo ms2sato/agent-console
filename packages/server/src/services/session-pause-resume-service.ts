@@ -25,6 +25,7 @@ import type { WebSocketCallbacks } from './session-manager.js';
 import type { MessageService } from './message-service.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import { SessionOrphanedError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('session-pause-resume');
@@ -167,12 +168,14 @@ export class SessionPauseResumeService {
 
     // Orphaned sessions must never be resumed — they are surfaced in the UI
     // for manual deletion. See docs/design/session-data-path.md §3.
+    // Throw a typed error so the route handler can return 409 with a
+    // machine-readable code, distinguishing this case from "session deleted".
     if (persisted.recoveryState === 'orphaned') {
       logger.warn(
         { sessionId: id, reason: persisted.orphanedReason },
         'Cannot resume session: marked as orphaned',
       );
-      return null;
+      throw new SessionOrphanedError(id);
     }
 
     // Validate that locationPath still exists

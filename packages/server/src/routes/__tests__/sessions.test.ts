@@ -238,6 +238,36 @@ describe('Sessions API - Pause/Resume', () => {
       const body = (await res.json()) as { session: { id: string } };
       expect(body.session.id).toBe(session.id);
     });
+
+    it('should return 409 with code=session_orphaned when session is orphaned', async () => {
+      // Seed an orphaned persisted session directly — no in-memory entry.
+      const repo = sessionManager.getSessionRepository();
+      await repo.save({
+        id: 'orphan-resume-target',
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        serverPid: null,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'path_resolution_failed',
+      });
+
+      const res = await app.request('/api/sessions/orphan-resume-target/resume', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(409);
+
+      const body = (await res.json()) as { error: string; code?: string };
+      expect(body.code).toBe('session_orphaned');
+      // Message must identify the session so operators can diagnose.
+      expect(body.error).toContain('orphan-resume-target');
+    });
   });
 
   // ===========================================================================

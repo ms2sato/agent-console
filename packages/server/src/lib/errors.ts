@@ -64,3 +64,15 @@ export class RepositoryNotFoundError extends ApiError {
     this.name = 'RepositoryNotFoundError';
   }
 }
+
+/**
+ * 409 Conflict - Session exists but is marked orphaned and cannot be resumed.
+ * Distinct from `NotFoundError` so clients can offer a "delete orphan" flow
+ * rather than treat the session as already-deleted.
+ */
+export class SessionOrphanedError extends ApiError {
+  constructor(sessionId: string) {
+    super(`Session ${sessionId} is orphaned and cannot be resumed`, 409, 'session_orphaned');
+    this.name = 'SessionOrphanedError';
+  }
+}

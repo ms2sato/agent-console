@@ -118,3 +118,38 @@ export function computeSessionDataBaseDir(
   // value via a type cast.
   throw new InvalidSessionDataScopeError(`unknown scope: ${String(scope)}`);
 }
+
+/**
+ * Shape accepted by {@link resolveSessionScopePayload}. Intentionally narrow
+ * so that both `PersistedSession` and `InternalSession` can be passed directly
+ * (they share the same scope-related fields).
+ */
+export interface SessionScopeInput {
+  type: 'quick' | 'worktree';
+  dataScope?: SessionDataScope;
+  dataScopeSlug?: string | null;
+}
+
+/**
+ * Convert a session's (type, dataScope, dataScopeSlug) triplet into the
+ * `{ scope, slug }` payload used by cleanup jobs.
+ *
+ * Returns `null` when the session is orphaned:
+ *   - a worktree session without `dataScope` (legacy/unbackfilled row), or
+ *   - a scope/type mismatch (e.g. worktree session with `dataScope='quick'`).
+ *
+ * Never falls back to `_quick/` — callers that see `null` must log and skip
+ * the cleanup job rather than risk cross-scope deletion.
+ */
+export function resolveSessionScopePayload(
+  session: SessionScopeInput
+): { scope: SessionDataScope; slug: string | null } | null {
+  if (session.type === 'quick') {
+    return { scope: 'quick', slug: null };
+  }
+  if (!session.dataScope) return null;
+  // Defensive: a worktree session must always carry the 'repository' scope.
+  // Treat any mismatch as orphaned so callers do not silently fall back.
+  if (session.dataScope !== 'repository') return null;
+  return { scope: session.dataScope, slug: session.dataScopeSlug ?? null };
+}

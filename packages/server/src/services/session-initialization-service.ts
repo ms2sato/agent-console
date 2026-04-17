@@ -4,7 +4,7 @@ import type { PersistedSession } from './persistence-service.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { InvalidSessionDataScopeError } from '../lib/session-data-path.js';
+import { InvalidSessionDataScopeError, resolveSessionScopePayload } from '../lib/session-data-path.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { getConfigDir } from '../lib/config.js';
@@ -326,11 +326,7 @@ export class SessionInitializationService {
       for (const orphan of orphanSessions) {
         await this.deps.sessionRepository.delete(orphan.id);
         // Delete output files for orphan session via job queue; skip if scope missing.
-        const scope = orphan.type === 'quick'
-          ? { scope: 'quick' as const, slug: null }
-          : (orphan.dataScope
-            ? { scope: orphan.dataScope, slug: orphan.dataScopeSlug ?? null }
-            : null);
+        const scope = resolveSessionScopePayload(orphan);
         if (scope) {
           await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
             sessionId: orphan.id,

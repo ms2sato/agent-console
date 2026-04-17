@@ -195,6 +195,18 @@ describe('useSessionPageState', () => {
       expect(result.current.state.type).toBe('disconnected')
     })
 
+    it('should transition to orphaned when session recoveryState is orphaned', async () => {
+      const session = createMockSession({ status: 'inactive', recoveryState: 'orphaned' })
+      getSessionResponse = session
+
+      const { result } = await mountHook(createDefaultOptions())
+
+      expect(result.current.state.type).toBe('orphaned')
+      if (result.current.state.type === 'orphaned') {
+        expect(result.current.state.session.id).toBe('session-1')
+      }
+    })
+
     it('should transition to not_found when session does not exist', async () => {
       getSessionResponse = null
 

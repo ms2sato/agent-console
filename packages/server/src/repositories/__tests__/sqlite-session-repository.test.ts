@@ -355,6 +355,35 @@ describe('SqliteSessionRepository', () => {
         expect(found[0].worktreeId).toBe('feature-branch');
       }
     });
+
+    it('should exclude orphaned sessions even when serverPid is null', async () => {
+      // An orphaned session also has serverPid = null but must NOT be
+      // surfaced by findPaused — it is tracked separately for manual
+      // deletion and can never be auto-resumed.
+      const healthyPaused = buildPersistedWorktreeSession({
+        id: 'healthy-paused',
+        serverPid: null,
+        recoveryState: 'healthy',
+      });
+      const orphaned = buildPersistedWorktreeSession({
+        id: 'orphaned-session',
+        serverPid: null,
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'path_resolution_failed',
+      });
+
+      await repository.save(healthyPaused);
+      await repository.save(orphaned);
+
+      const found = await repository.findPaused();
+
+      expect(found.length).toBe(1);
+      expect(found[0].id).toBe('healthy-paused');
+      // Orphan must not appear at all.
+      expect(found.find((s) => s.id === 'orphaned-session')).toBeUndefined();
+    });
+
   });
 
   describe('save', () => {

@@ -84,7 +84,13 @@ export interface SessionRepository {
   /**
    * Find all paused sessions (those with serverPid = null).
    * Paused sessions are not actively managed by any server instance.
-   * @returns Array of paused sessions
+   *
+   * Sessions with `recoveryState === 'orphaned'` are EXCLUDED even though they
+   * also have `serverPid = null` — they are surfaced via separate routes and
+   * must never be offered for auto-resume. Legacy rows without
+   * `recoveryState` are treated as healthy and included.
+   *
+   * @returns Array of paused, healthy sessions (orphans excluded)
    */
   findPaused(): Promise<PersistedSession[]>;
 }

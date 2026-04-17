@@ -38,15 +38,33 @@ import { api } from './api-client';
 const API_BASE = '/api';
 
 /**
+ * Error thrown by failed API responses. Preserves HTTP status and the
+ * machine-readable `code` field from the response body so callers can
+ * branch on error kind (e.g., `session_orphaned`) without string matching.
+ */
+export class ApiError extends Error {
+  public readonly status: number;
+  public readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
  * Extract an error message from a failed API response and throw.
  * Attempts to parse JSON with `error` or `message` fields;
  * falls back to `fallbackMessage` combined with the HTTP status text.
+ * Preserves the response `status` and body `code` on the thrown `ApiError`.
  */
 async function handleApiError(res: Response, fallbackMessage: string): Promise<never> {
-  const body = await res.json().catch(() => null) as { error?: string; message?: string } | null;
+  const body = await res.json().catch(() => null) as { error?: string; message?: string; code?: string } | null;
   const serverMessage = (body?.error?.trim() || body?.message?.trim() || undefined);
   const message = serverMessage ?? (res.statusText ? `${fallbackMessage}: ${res.statusText}` : fallbackMessage);
-  throw new Error(message);
+  throw new ApiError(message, res.status, body?.code);
 }
 
 export interface ConfigResponse {

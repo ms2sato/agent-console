@@ -33,6 +33,8 @@ import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
+  isValidSlug,
+  resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
 import { RepositoryNotFoundError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
@@ -449,9 +451,13 @@ export class SessionManager {
       if (!slug) {
         throw new RepositoryNotFoundError(request.repositoryId);
       }
-      // Validate slug via the helper's invariants (throws InvalidSessionDataScopeError).
-      // The return value is intentionally discarded — we only want the side-effect validation.
-      void computeSessionDataBaseDir(getConfigDir(), 'repository', slug);
+      // Validate slug early with the dedicated pure validator — no filesystem
+      // coupling and no throw-for-side-effect anti-pattern.
+      if (!isValidSlug(slug)) {
+        throw new InvalidSessionDataScopeError(
+          `session slug ${JSON.stringify(slug)} does not match allowed pattern`
+        );
+      }
       dataScope = 'repository';
       dataScopeSlug = slug;
     } else {
@@ -939,41 +945,32 @@ export class SessionManager {
    * Return the scope/slug pair usable as a job-cleanup payload for a session.
    * Returns null when scope is missing (orphaned) — callers should log and skip
    * the enqueue rather than fall back to `_quick/`.
+   *
+   * Wraps {@link resolveSessionScopePayload} with scope/type mismatch logging.
    */
   private getSessionScopeForCleanup(session: InternalSession): { scope: 'quick' | 'repository'; slug: string | null } | null {
-    if (session.type === 'quick') {
-      return { scope: 'quick', slug: null };
-    }
-    if (!session.dataScope) return null;
-    // Defensive: a worktree session must always carry the 'repository' scope.
-    // Treat any mismatch as orphaned so callers do not silently fall back.
-    if (session.dataScope !== 'repository') {
+    const payload = resolveSessionScopePayload(session);
+    if (!payload && session.type === 'worktree' && session.dataScope && session.dataScope !== 'repository') {
       logger.warn(
         { sessionId: session.id, type: session.type, dataScope: session.dataScope },
         'Scope/type mismatch; treating as orphaned'
       );
-      return null;
     }
-    return { scope: session.dataScope, slug: session.dataScopeSlug ?? null };
+    return payload;
   }
 
   /**
    * Same as {@link getSessionScopeForCleanup} but for persisted-only sessions.
    */
   private getPersistedSessionScopeForCleanup(persisted: PersistedSession): { scope: 'quick' | 'repository'; slug: string | null } | null {
-    if (persisted.type === 'quick') {
-      return { scope: 'quick', slug: null };
-    }
-    if (!persisted.dataScope) return null;
-    // Defensive: a worktree session must always carry the 'repository' scope.
-    if (persisted.dataScope !== 'repository') {
+    const payload = resolveSessionScopePayload(persisted);
+    if (!payload && persisted.type === 'worktree' && persisted.dataScope && persisted.dataScope !== 'repository') {
       logger.warn(
         { sessionId: persisted.id, type: persisted.type, dataScope: persisted.dataScope },
         'Scope/type mismatch; treating as orphaned'
       );
-      return null;
     }
-    return { scope: persisted.dataScope, slug: persisted.dataScopeSlug ?? null };
+    return payload;
   }
 
   private toPublicSession(session: InternalSession): Session {

@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link } from '@tanstack/react-router';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { MemoizedTerminal as Terminal, type ConnectionStatus } from '../Terminal';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
-import { DiffIcon } from '../Icons';
-import { getSession, restartAgentWorker, resumeSession, openPath } from '../../lib/api';
+import { DiffIcon, AlertCircleIcon } from '../Icons';
+import { getSession, restartAgentWorker, resumeSession, deleteSession, openPath } from '../../lib/api';
+import { isSessionOrphanedError } from './resumeErrors';
 import { formatPath } from '../../lib/path';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
@@ -86,9 +87,13 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const { errorDialogProps, showError } = useErrorDialog();
   const { agents } = useAgents();
   const messagePanelRef = useRef<MessagePanelHandle>(null);
+  const navigate = useNavigate();
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  // State for deleting orphaned session
+  const [isDeletingOrphan, setIsDeletingOrphan] = useState(false);
+  const [orphanDeleteError, setOrphanDeleteError] = useState<string | null>(null);
 
   const { navigateToWorker, navigateToSession } = useWorkerRouting(sessionId);
 
@@ -103,9 +108,9 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   });
 
   // Derive branchName and sessionTitle from state
-  const branchName = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
+  const branchName = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused' || state.type === 'orphaned')
     ? getBranchName(state.session) : '';
-  const sessionTitle = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused')
+  const sessionTitle = (state.type === 'active' || state.type === 'disconnected' || state.type === 'paused' || state.type === 'orphaned')
     ? (state.session.title ?? '') : '';
 
   const activeSession = state.type === 'active' ? state.session : null;
@@ -175,7 +180,14 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       // Terminal remounts via resumeKey change.
     } catch (error) {
       logger.error('Failed to resume session:', error);
-      showError('Resume Failed', error instanceof Error ? error.message : 'Failed to resume session');
+      if (isSessionOrphanedError(error)) {
+        showError(
+          'Cannot Resume',
+          'This session is unrecoverable. Please delete it and create a new one.',
+        );
+      } else {
+        showError('Resume Failed', error instanceof Error ? error.message : 'Failed to resume session');
+      }
       setIsResuming(false);
     }
   }, [sessionId, isResuming, showError]);
@@ -275,6 +287,60 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     );
   }
 
+  // Orphaned state - session data path metadata is invalid; can only be deleted
+  if (state.type === 'orphaned') {
+    const handleDeleteOrphan = async () => {
+      if (isDeletingOrphan) return;
+      setIsDeletingOrphan(true);
+      setOrphanDeleteError(null);
+      try {
+        await deleteSession(sessionId);
+        // session-deleted WS event will transition state to 'not_found',
+        // but navigate away immediately for better UX.
+        await navigate({ to: '/' });
+      } catch (error) {
+        logger.error('Failed to delete orphaned session:', error);
+        setOrphanDeleteError(error instanceof Error ? error.message : 'Failed to delete session');
+        setIsDeletingOrphan(false);
+      }
+    };
+
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="card text-center max-w-md">
+          <h2 className="text-xl font-semibold mb-4 text-red-400 flex items-center justify-center gap-2">
+            <AlertCircleIcon className="w-5 h-5" />
+            Session Unrecoverable
+          </h2>
+          <p className="text-gray-400 mb-2">
+            This session&apos;s data path metadata is invalid and it cannot be used.
+            Please delete it and create a new session.
+          </p>
+          <p className="text-sm text-gray-500 mb-6 font-mono bg-slate-800 p-2 rounded">
+            {formatPath(state.session.locationPath)}
+          </p>
+          {orphanDeleteError && (
+            <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded mb-4">
+              {orphanDeleteError}
+            </p>
+          )}
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={handleDeleteOrphan}
+              disabled={isDeletingOrphan}
+              className="btn btn-danger"
+            >
+              {isDeletingOrphan ? 'Deleting...' : 'Delete Session'}
+            </button>
+            <Link to="/" className="btn bg-slate-600 hover:bg-slate-500 no-underline">
+              Dashboard
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Paused state - session was paused (by this or another client)
   if (state.type === 'paused') {
     const handleResume = async () => {
@@ -284,7 +350,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         await resumeSession(sessionId);
         // State transition handled by session-resumed WS event via handleSessionResumed.
       } catch (error) {
-        setResumeError(error instanceof Error ? error.message : 'Failed to resume session');
+        if (isSessionOrphanedError(error)) {
+          setResumeError('This session is unrecoverable. Please delete it and create a new one.');
+        } else {
+          setResumeError(error instanceof Error ? error.message : 'Failed to resume session');
+        }
         setIsResuming(false);
       }
     };

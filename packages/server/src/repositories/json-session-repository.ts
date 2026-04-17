@@ -128,6 +128,12 @@ export class JsonSessionRepository implements SessionRepository {
 
   async findPaused(): Promise<PersistedSession[]> {
     const sessions = await this.findAll();
-    return sessions.filter((s) => s.serverPid === null || s.serverPid === undefined);
+    // Exclude orphaned sessions even though they also have serverPid = null.
+    // Legacy rows without `recoveryState` are treated as healthy.
+    return sessions.filter(
+      (s) =>
+        (s.serverPid === null || s.serverPid === undefined) &&
+        s.recoveryState !== 'orphaned'
+    );
   }
 }

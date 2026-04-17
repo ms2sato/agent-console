@@ -4,6 +4,7 @@ import type { InternalSession } from '../internal-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { SessionOrphanedError } from '../../lib/errors.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -198,7 +199,7 @@ describe('SessionPauseResumeService', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null for sessions marked as orphaned', async () => {
+    it('should throw SessionOrphanedError for sessions marked as orphaned', async () => {
       const persisted = buildPersistedWorktreeSession({
         id: 'session-orphan',
         serverPid: null,
@@ -214,8 +215,11 @@ describe('SessionPauseResumeService', () => {
       });
       const service = new SessionPauseResumeService(deps);
 
-      const result = await service.resumeSession('session-orphan');
-      expect(result).toBeNull();
+      // A typed error lets the route layer return 409 with a machine-readable
+      // `session_orphaned` code instead of a generic 404.
+      await expect(service.resumeSession('session-orphan')).rejects.toThrow(
+        SessionOrphanedError
+      );
       // Path existence must not even be checked for orphaned sessions.
       expect(deps.pathExists).not.toHaveBeenCalled();
       // No session-mutating side effects must occur for orphaned sessions.

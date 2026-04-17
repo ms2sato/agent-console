@@ -329,6 +329,75 @@ describe('SessionInitializationService', () => {
       expect(autoResumeIds).toEqual([]);
     });
   });
+
+  describe('cleanupOrphanProcesses (via initialize)', () => {
+    // cleanupOrphanProcesses only removes paused worktree sessions whose
+    // serverPid is still set to a dead pid (initializeSessions preserves
+    // sessions with pausedAt set, so they survive into cleanupOrphanProcesses).
+    it('should delete orphan session without enqueueing cleanup job when dataScope is missing', async () => {
+      // An orphaned paused worktree session owned by a dead server, missing
+      // dataScope (legacy/unbackfilled row). `cleanupOrphanProcesses` must
+      // delete the DB row but must NOT enqueue a CLEANUP_SESSION_OUTPUTS
+      // job — falling back to _quick/ would risk cross-scope deletion.
+      const orphanWorktreeNoScope: PersistedSession = {
+        id: 'orphan-worktree-no-scope',
+        type: 'worktree',
+        locationPath: '/some/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        serverPid: 88888, // dead pid (not marked alive)
+        pausedAt: '2024-01-01T01:00:00.000Z', // paused → preserved by initializeSessions
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        // dataScope intentionally undefined → orphan with no scope
+      };
+
+      const { service, sessionRepository, jobQueue } = createService({
+        sessions: [orphanWorktreeNoScope],
+      });
+
+      // Sanity check — the session exists before initialize.
+      expect(await sessionRepository.findById('orphan-worktree-no-scope')).not.toBeNull();
+
+      await service.initialize();
+
+      // The session must have been deleted from persistence.
+      expect(await sessionRepository.findById('orphan-worktree-no-scope')).toBeNull();
+
+      // No cleanup job may have been enqueued — we only seeded one session,
+      // so zero calls confirms the scope-missing branch was taken.
+      expect(jobQueue!.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('should enqueue cleanup job for orphan session with valid dataScope', async () => {
+      // Baseline: when the orphan has a valid scope, we DO enqueue cleanup.
+      // This guards against the fix accidentally becoming a no-op.
+      const orphanWithScope: PersistedSession = {
+        id: 'orphan-with-scope',
+        type: 'worktree',
+        locationPath: '/some/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        serverPid: 77777, // dead pid
+        pausedAt: '2024-01-01T01:00:00.000Z', // paused → preserved by initializeSessions
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        dataScope: 'repository',
+        dataScopeSlug: 'my-repo',
+      };
+
+      const { service, sessionRepository, jobQueue } = createService({
+        sessions: [orphanWithScope],
+      });
+
+      await service.initialize();
+
+      // Session removed.
+      expect(await sessionRepository.findById('orphan-with-scope')).toBeNull();
+      // Cleanup enqueued with the scope payload.
+      expect(jobQueue!.enqueue).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('SessionInitializationService integration (real DB → mapper → service)', () => {

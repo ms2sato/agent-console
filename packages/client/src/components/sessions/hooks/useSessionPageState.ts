@@ -14,14 +14,20 @@ export type PageState =
   | { type: 'server_unavailable' }
   | { type: 'restarting' }
   | { type: 'paused'; session: Session }
+  | { type: 'orphaned'; session: Session }
 
 /**
  * Canonically maps a Session to the appropriate PageState.
- * pausedAt takes precedence over status (a session can be status='active' with pausedAt set during edge cases).
+ * Orphaned sessions take highest precedence — they cannot be resumed/edited and
+ * must be surfaced distinctly so users can delete them. pausedAt takes precedence
+ * over status (a session can be status='active' with pausedAt set during edge cases).
  *
  * @internal - exported for testing
  */
 export function sessionToPageState(session: Session): Extract<PageState, { session: Session }> {
+  if (session.recoveryState === 'orphaned') {
+    return { type: 'orphaned', session }
+  }
   if (session.pausedAt) {
     return { type: 'paused', session }
   }
@@ -102,7 +108,7 @@ export function useSessionPageState({
     if (updatedSession.id !== sessionId) return
 
     setState(prev => {
-      if (prev.type === 'active' || prev.type === 'disconnected' || prev.type === 'paused') {
+      if (prev.type === 'active' || prev.type === 'disconnected' || prev.type === 'paused' || prev.type === 'orphaned') {
         return { ...prev, session: updatedSession }
       }
       return prev
