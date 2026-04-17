@@ -28,6 +28,7 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
    - **Propose a disposition** to the owner: resume (rebase + address feedback), close (obsoleted), or defer (keep open, revisit next sprint with a concrete trigger).
 
    **Why:** PRs silently rotting is a real failure mode. Sprint 2026-04-17 discovered PR #626 had sat 10 days with unaddressed CodeRabbit feedback; it turned out to still be valid and was merged after review. Without this step, it would have continued to rot. This step converts "discovered by accident" into "verified every sprint."
+6. **Read founding narratives.** Scan `docs/narratives/` for entries with `nature: founding` and `importance: high`. These are short essays on why key systems or habits exist. Reading them at Sprint Start primes judgment — you enter the sprint with the same "why" context as the orchestrator who built those systems. See [Narrative Memory System](#narrative-memory-system) below.
 
 ## Sprint Execution
 - Task progression, acceptance checks, merges
@@ -92,3 +93,49 @@ The Orchestrator can propose ending the sprint to the owner when any of the foll
 - **Too much implicit knowledge has accumulated** — knowledge that should be written to memory has grown
 
 Include the current task status and estimated retrospective time when proposing.
+
+## Narrative Memory System
+
+The `docs/narratives/` directory preserves **qualitative accounts** of incidents, insights, and foundational decisions — the lived texture that rules lose during distillation. Rules say "don't do X"; narratives say "here is what happened when we did X, and here is what it felt like." This system exists because AI instances (this one included) do not retain embodied experience across sessions; rules alone produce compliance without conviction.
+
+### Three-tier knowledge hierarchy
+
+- **Rules / Skills** (`.claude/rules/` / `.claude/skills/`) — prescriptive principles, concise, always applicable
+- **Memory feedback** (`memory/feedback_*.md`) — summarized lessons, short "why", point to narratives
+- **Narratives** (`docs/narratives/`) — full qualitative background, first-person, emotion-labeled, timeline-detailed
+
+When a rule feels arbitrary, walk the hierarchy: rule → feedback's "why" → narrative. Readers may stop at any level.
+
+### When to read narratives
+
+- **Sprint Start Step 6** — scan `nature: founding`, `importance: high` entries to prime judgment
+- **When a rule feels arbitrary** — follow the `Read this if the rule feels arbitrary:` link from the rule
+- **After a near-miss or incident** — read the matching tag to see if the pattern recurred
+- **On demand** when exploring a topic — `grep tags:` in front matter
+
+### When to write a narrative
+
+During retrospective (Step 5 / Step 3a), consider writing a narrative if:
+
+- Something surprised the orchestrator in a way a rule would not convey
+- A near-miss was resolved by luck rather than process — document so future versions do not rely on the same luck
+- A rule was born from experience and the story deserves retention
+- The owner's correction or question reframed the problem (record in owner's own words where possible)
+
+Do not force it. Some sprints are mechanical.
+
+### Volume and retention
+
+Narratives are on-disk files, not loaded into context automatically. Volume can grow without affecting conversation context. No strict retention limit at this stage — err on the side of writing. Future retrospectives may introduce archival policy when the directory becomes unwieldy (hundreds of entries).
+
+### Format
+
+Each file: Markdown with front-matter (`date`, `importance`, `nature`, `tags`, `related_rules`, `related_issues`). Body in first-person present tense where possible, with an explicit "emotion labels" section. Full template and tag taxonomy in [docs/narratives/README.md](../../../docs/narratives/README.md).
+
+### Distillation vs preservation
+
+Some observations, repeated across sprints, deserve promotion into `memory/feedback_*.md` (rule-level, concise). Others are best kept only as narratives — one-off events whose full texture matters more than any extractable rule. **Preserve narratives even after distillation**; the rule and the story serve different purposes. Do not delete a narrative just because its lesson became a rule.
+
+### Honest limitation
+
+AI tends to skim prose when task-focused. A narrative is easy to skip. This system reduces but does not eliminate skipping — through prominent rule-side links, retrospective-level forced reading cadence, and tag-based retrieval. Accept the residual skip rate. Write narratives anyway; they will be read when they count.
