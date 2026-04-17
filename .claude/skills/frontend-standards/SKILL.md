@@ -9,7 +9,9 @@ description: Detailed React patterns and code examples for frontend implementati
 
 ## Detailed Documentation
 
-- [react-patterns.md](react-patterns.md) - React patterns with code examples (useEffect alternatives, Suspense, async/await, state management)
-- [frontend-standards.md](frontend-standards.md) - Full code examples for TanStack Router/Query, WebSocket integration, xterm.js, Valibot forms, testing, performance
+- [frontend-standards.md](frontend-standards.md) — agent-console-specific frontend patterns: TanStack Router/Query usage, xterm.js integration, Tailwind conventions, Valibot form pitfalls, Browser Verification procedure for UI changes.
+- [react-patterns.md](react-patterns.md) — generic React patterns with full code examples: `useSyncExternalStore` for external stores, Suspense for async, async/await in event handlers, async useEffect with cleanup flag, icon component extraction.
+
+The two files are non-overlapping. When a topic is generic React, it lives in `react-patterns.md`; when it is specific to agent-console's stack, it lives in `frontend-standards.md`.
 
 See also: `ux-design-standards` skill for UX design principles that guide feature-level decisions.

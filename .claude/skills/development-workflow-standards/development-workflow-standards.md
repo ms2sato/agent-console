@@ -1,35 +1,10 @@
-# Development Workflow Standards
+# Development Workflow Standards (Procedural Detail)
 
-This document defines the development process rules that all implementation work must follow.
+> See [rules/verification.md](../../rules/verification.md) for the declarative rules (verification checklist, branching strategy, testing requirements, commit standards, code quality, language policy, Claude Code on the Web essentials). This document covers procedural detail and decision frameworks that are too long for an auto-loaded rule.
 
-See [CLAUDE.md](/CLAUDE.md#working-principles) for working principles that apply to all work.
+## Conflict Assessment Before PR
 
-## Branching Strategy (GitHub-Flow)
-
-Follow GitHub-Flow. The `main` branch is always kept GREEN (all tests and type checks pass).
-
-### Starting Work (Branch Creation)
-
-Before creating a feature branch, **always fetch and sync with the latest main**:
-
-```bash
-# 1. Fetch the latest changes from remote
-git fetch origin
-
-# 2. Create a new branch from the latest origin/main
-git checkout -b feature/your-feature origin/main
-```
-
-**Important:** Never branch from a stale local main. Always use `origin/main` after fetching.
-
-### During Development
-
-1. Make changes with descriptive commits
-2. Run verification checklist before considering work complete
-
-### Before Completing Work (Conflict Assessment)
-
-Before opening a pull request, **always check for conflicts with the latest main**:
+Before opening a pull request, check for conflicts with the latest main:
 
 ```bash
 # 1. Fetch latest changes
@@ -42,7 +17,7 @@ git diff origin/main...HEAD --stat
 git merge-tree $(git merge-base origin/main HEAD) origin/main HEAD
 ```
 
-**Conflict Assessment Criteria:**
+### Conflict Assessment Criteria
 
 | Conflict Level | Criteria | Action |
 |----------------|----------|--------|
@@ -50,14 +25,14 @@ git merge-tree $(git merge-base origin/main HEAD) origin/main HEAD
 | **Moderate** | Conflicts in 3-5 files, but changes are isolated | Attempt rebase, resolve carefully |
 | **Severe** | Conflicts in core files you modified, or structural changes to same components | **Propose re-implementation** |
 
-**When to propose re-implementation:**
+### When to Propose Re-Implementation
 
 - The main branch has significant changes to files you heavily modified
 - The architectural approach in main has diverged from your implementation
 - Resolving conflicts would require understanding and integrating unfamiliar changes
 - The merge resolution effort approaches or exceeds the original implementation effort
 
-**Re-implementation proposal format:**
+### Re-Implementation Proposal Format
 
 > ⚠️ **Conflict Assessment Result**
 >
@@ -70,22 +45,8 @@ git merge-tree $(git merge-base origin/main HEAD) origin/main HEAD
 > - No risk of regression from incorrect merge resolution
 > - Opportunity to leverage any new patterns introduced in main
 
-### Pull Request
+## TDD for Bug Fixes — Worked Example
 
-1. Open pull requests for review
-2. **Merging is the user's responsibility** - Never merge PRs automatically. Always leave the merge decision to the user.
-3. **Write in English** - PR titles, descriptions, and comments must be written in English (per Language Policy).
-
-## Testing Requirements
-
-**Testing with code changes.** When modifying code, always update or add corresponding tests. Code changes without test coverage are incomplete.
-
-**TDD for bug fixes.** When fixing bugs, apply Test-Driven Development where feasible:
-1. Write a failing test that reproduces the bug
-2. Implement the fix
-3. Verify the test passes
-
-Example:
 ```typescript
 // 1. Write failing test that reproduces the bug
 it('should handle session with no workers without crashing', () => {
@@ -100,112 +61,26 @@ it('should handle session with no workers without crashing', () => {
 // 4. Run test - it passes (confirms bug is fixed)
 ```
 
-## Verification Checklist
+The value of step 1 is not just "write a test" — it is *proving that the test catches the bug before you touch production code*. A green test after the fix does not guarantee coverage of the original bug; a failing test before the fix does.
 
-Before completing any code changes, always verify:
+## Claude Code on the Web — Full Setup
 
-1. **Run the FULL test suite:** Execute `bun run test` and ensure **ALL** tests pass — not just the tests you added or modified. Running only new tests is not sufficient. The full suite must be green before every push.
-2. **Run type check:** Execute `bun run typecheck` and ensure no type errors
-3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If CodeRabbit CLI is not installed, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`
-4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
-5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser to verify the changes work as expected.
+The declarative summary is in the rule. This is the full operational setup.
 
-**Hard rule for production code changes:** When any file outside of `docs/`, `.claude/skills/`, or `.claude/agents/` is modified, you MUST run `bun run test` (full suite) and confirm zero failures before pushing. Do not report task completion without full test verification. Violations waste review cycles and block other developers.
+Required custom-environment configuration:
 
-**Important:** The main branch is always kept GREEN (all tests and type checks pass). If any verification fails, assume it is caused by your changes on the current branch and fix it before proceeding.
+- **`GH_TOKEN`**: set in the custom environment variables. The `gh` CLI recognizes this automatically; no additional login step.
+- **Network access**: if using custom network mode, add `release-assets.githubusercontent.com` to the allowlist so `gh` can download release artifacts.
 
-## Commands
+The `gh` CLI is installed automatically by the `SessionStart` hook at `.claude/hooks/gh-setup.sh` on each web session.
 
-```bash
-bun run dev        # Start development servers (uses AGENT_CONSOLE_HOME=$HOME/.agent-console-dev)
-bun run build      # Build all packages
-bun run test       # Run typecheck then tests
-bun run test:only  # Run tests only (skip typecheck)
-bun run typecheck  # Type check all packages
-bun run lint       # Lint all packages
-```
-
-### Environment Configuration
-
-**Before starting `bun run dev`:** Check `.env` for port configuration. Each worktree may use different ports to avoid conflicts:
-
-```bash
-cat .env  # Check PORT and CLIENT_PORT values
-```
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | 3457 | Backend server port |
-| `CLIENT_PORT` | 5173 | Frontend dev server port |
-| `AGENT_CONSOLE_HOME` | ~/.agent-console-dev | Data directory |
-
-## Claude Code on the Web (Remote Environment)
-
-When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook (`.claude/hooks/gh-setup.sh`). The following setup is required in the Claude Code Web custom environment:
-
-- **GH_TOKEN**: Set in the custom environment variables (gh CLI recognizes this automatically)
-- **Network access**: If using custom network mode, add `release-assets.githubusercontent.com` to the allowlist
-
-**Important:** Due to the sandbox proxy, `gh` commands require the `-R owner/repo` flag explicitly. For this repository, always use `-R ms2sato/agent-console`:
+Due to the sandbox proxy, `gh` commands always require the `-R owner/repo` flag explicitly. For this repository:
 
 ```bash
 gh issue list -R ms2sato/agent-console
 gh pr list -R ms2sato/agent-console
 gh pr view 123 -R ms2sato/agent-console
+gh pr diff 123 -R ms2sato/agent-console
 ```
 
-## Design Documents as Specification
-
-Design documents (`docs/design/`) are specifications. Code is their implementation. When adding new features or changing behavior, update the design document FIRST as the spec, then implement code to match. When code changes affect the spec, update the design document as well. The spec and implementation must never silently diverge.
-
-## Commit Standards
-
-Use conventional commit format: `type: description`
-
-- `feat:` new feature
-- `fix:` bug fix
-- `refactor:` code change without feature/fix
-- `test:` adding or updating tests
-- `docs:` documentation changes
-
-### Skipping CI with `[skip ci]`
-
-Use `[skip ci]` in the commit message for commits that **only** change non-production files:
-
-- `docs/**` — documentation
-- `.claude/skills/**` — skill definitions
-- `.claude/agents/**` — agent definitions
-- `CLAUDE.md` — project instructions
-
-These files do not affect production code, so running the full CI pipeline is unnecessary.
-
-Example: `docs: update orchestrator skill [skip ci]`
-
-**Do not use `[skip ci]`** if the commit includes any production code or test changes alongside documentation.
-
-## Code Quality
-
-**Avoid over-engineering.** Only make changes that are directly requested or clearly necessary. Keep solutions simple and focused.
-
-- Don't add features, refactor code, or make "improvements" beyond what was asked
-- A bug fix doesn't need surrounding code cleaned up
-- A simple feature doesn't need extra configurability
-- Don't add docstrings, comments, or type annotations to code you didn't change
-- Only add comments where the logic isn't self-evident
-
-**Avoid unnecessary complexity.**
-
-- Don't add error handling, fallbacks, or validation for scenarios that can't happen
-- Trust internal code and framework guarantees
-- Only validate at system boundaries (user input, external APIs)
-- Don't create helpers, utilities, or abstractions for one-time operations
-- Don't design for hypothetical future requirements
-
-**Clean up properly.**
-
-- Avoid backwards-compatibility hacks like renaming unused `_vars`, re-exporting types, adding `// removed` comments
-- If something is unused, delete it completely
-
-## Language Policy
-
-**Code and documentation:** Write all code comments, commit messages, and documentation in English.
+Omitting `-R` yields an opaque proxy error, not the usual "not a git repository" message. If a `gh` command fails in an unexpected way in the web environment, the first thing to check is whether `-R` was supplied.

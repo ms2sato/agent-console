@@ -1,30 +1,13 @@
-# React Patterns
+# React Patterns (generic, code-example detail)
 
-This document defines React patterns to follow in the agent-console project.
-
-## Avoid useEffect - Use Alternatives
-
-**useEffect should be a last resort.** Most use cases have better alternatives:
-
-| Instead of useEffect for... | Use this |
-|----------------------------|----------|
-| Fetching data | TanStack Query (`useQuery`) |
-| Subscribing to external store | `useSyncExternalStore` |
-| Derived state | Compute during render or `useMemo` |
-| Responding to user events | Event handlers |
-| Syncing with parent component | Lift state up or use context |
-
-**When useEffect is acceptable:**
-- Component-scoped WebSocket connections (tied to component lifecycle)
-- Third-party library integration (xterm.js, etc.)
-- Browser API subscriptions (resize observers, etc.)
+> See [rules/frontend.md](../../rules/frontend.md) for the declarative rules (useEffect alternatives table, state management hierarchy, async/await requirement). This file covers generic React patterns with the full code-example detail those rules imply. For agent-console-specific frontend standards (TanStack stack, xterm.js, Browser QA), see [frontend-standards.md](frontend-standards.md).
 
 ## useSyncExternalStore for External State
 
 When subscribing to external state (global stores, singletons), use `useSyncExternalStore`:
 
 ```typescript
-// lib/app-websocket.ts - External store with subscribe/getState pattern
+// lib/app-websocket.ts — external store with subscribe/getState
 export function subscribeState(listener: () => void): () => void {
   stateListeners.add(listener);
   return () => stateListeners.delete(listener);
@@ -34,21 +17,44 @@ export function getState(): AppWebSocketState {
   return state;
 }
 
-// hooks/useAppWs.ts - Hook using useSyncExternalStore
+// hooks/useAppWs.ts — hook using useSyncExternalStore
 export function useAppWsState<T>(selector: (state: AppWebSocketState) => T): T {
   return useSyncExternalStore(subscribeState, () => selector(getState()));
 }
 ```
 
-**Why this pattern:**
+Why this pattern:
 - React-safe synchronization with external state
 - Automatic subscription cleanup
 - Works with concurrent rendering
-- No stale closure issues
+- No stale-closure issues
+
+Contrast with the useEffect-based approach the rule tells you to avoid:
+
+```typescript
+// ❌ useEffect with manual subscription — stale closures, cleanup bugs
+function useConnectionStatus() {
+  const [status, setStatus] = useState(connectionStore.getStatus());
+  useEffect(() => {
+    const unsubscribe = connectionStore.subscribe(setStatus);
+    return unsubscribe;
+  }, []);
+  return status;
+}
+
+// ✅ useSyncExternalStore
+function useConnectionStatus() {
+  return useSyncExternalStore(
+    connectionStore.subscribe,
+    connectionStore.getStatus,
+    connectionStore.getServerStatus  // optional: for SSR
+  );
+}
+```
 
 ## Suspense for Async Operations
 
-**Prefer Suspense** for handling loading states:
+**Prefer Suspense** over manual `isLoading` flags:
 
 ```typescript
 // Route-level Suspense with TanStack Router
@@ -63,29 +69,39 @@ export const Route = createFileRoute('/sessions/$sessionId')({
 </Suspense>
 ```
 
-**Benefits:**
-- Cleaner component code (no loading state management)
-- Better UX with coordinated loading states
+Benefits:
+- Cleaner component code (no loading-state management)
+- Coordinated loading states at a boundary
 - Enables streaming and progressive rendering
 
-## Async/Await and Fire-and-Forget
+```typescript
+// ❌ Manual loading state
+function UserProfile({ userId }: { userId: string }) {
+  const { data, isLoading, error } = useQuery(...);
+  if (isLoading) return <Spinner />;
+  if (error) return <ErrorMessage />;
+  return <Profile user={data} />;
+}
 
-**Always use async/await. Avoid fire-and-forget patterns.**
+// ✅ Suspense boundary
+function UserProfile({ userId }: { userId: string }) {
+  const { data } = useSuspenseQuery(...);
+  return <Profile user={data} />;
+}
+// Wrapped with <Suspense fallback={<Spinner />}> at parent level
+```
 
-Fire-and-forget (calling an async function without awaiting) causes:
-- Silent errors that are difficult to debug
-- Race conditions and unpredictable behavior
-- Unhandled promise rejections
+## Async/Await in Event Handlers
 
-### Event Handlers
+The rule bans fire-and-forget. This is the mechanical pattern:
 
 ```typescript
-// ❌ Fire-and-forget - errors are silently swallowed
+// ❌ Fire-and-forget — errors are silently swallowed
 const handleClick = () => {
   submitForm(data);  // Promise ignored
 };
 
-// ❌ async without await - same problem
+// ❌ async without await — same problem
 const handleClick = async () => {
   submitForm(data);  // Still fire-and-forget
 };
@@ -100,7 +116,9 @@ const handleClick = async () => {
 };
 ```
 
-### useEffect with Async Operations
+## Async useEffect with Cleanup
+
+useEffect callbacks cannot be async directly. The canonical pattern:
 
 ```typescript
 // ❌ Fire-and-forget in useEffect
@@ -113,7 +131,7 @@ useEffect(async () => {  // TypeScript error
   await fetchData();
 }, []);
 
-// ✅ Proper pattern with cleanup
+// ✅ Proper pattern with cleanup flag
 useEffect(() => {
   let cancelled = false;
 
@@ -138,14 +156,16 @@ useEffect(() => {
 }, []);
 ```
 
-### Intentional Background Work
+The `cancelled` flag prevents state updates on an unmounted component (React will warn, and stale state can overwrite fresh state in the common remount-then-settle case).
+
+## Intentional Background Work
 
 When you genuinely need fire-and-forget (rare), make it explicit:
 
 ```typescript
-// ✅ Explicit fire-and-forget with error handling
+// ✅ Explicit fire-and-forget with local error handling
 const handleClick = async () => {
-  // Intentionally not awaiting - fire-and-forget for analytics
+  // Intentionally not awaiting — fire-and-forget for analytics
   trackAnalytics('button_clicked').catch((error) => {
     console.error('Analytics failed:', error);
   });
@@ -155,20 +175,47 @@ const handleClick = async () => {
 };
 ```
 
-**Note:** For data fetching, prefer TanStack Query over manual useEffect patterns.
+The `.catch()` is what makes this safe. A bare `trackAnalytics(...)` with no `.catch()` would silently swallow an unhandled rejection.
+
+**Prefer TanStack Query** over manual data-fetch useEffects. Query handles the cleanup, cancellation, caching, and retries for you. Manual useEffect is only appropriate for non-request-shaped async work (subscriptions, timers, third-party library integration).
 
 ## Component Design
 
 - Prefer function components with hooks
-- Keep components focused on single responsibility
+- Keep components focused on a single responsibility
 - Extract complex logic into custom hooks
 - Use composition over inheritance
 
-## State Management Hierarchy
-
-1. **Server state**: TanStack Query (`useQuery`, `useMutation`)
-2. **External state**: `useSyncExternalStore`
-3. **Local UI state**: `useState`, `useReducer`
-4. **Shared client state**: React Context (sparingly)
-
 Avoid prop drilling; prefer composition or context.
+
+## Icon Components
+
+SVG icons belong in a dedicated `Icons.tsx` file, not inline in view components:
+
+```typescript
+// ❌ Inline SVG in component
+function DeleteButton() {
+  return (
+    <button>
+      <svg viewBox="0 0 24 24">...</svg>
+    </button>
+  );
+}
+
+// ✅ Extracted icon component
+// In Icons.tsx
+export function TrashIcon(props: IconProps) {
+  return <svg viewBox="0 0 24 24" {...props}>...</svg>;
+}
+
+// In the button
+function DeleteButton() {
+  return (
+    <button>
+      <TrashIcon className="w-4 h-4" />
+    </button>
+  );
+}
+```
+
+Benefits: markup stays readable, icons are reusable, and accessibility attributes are set in one place.

@@ -1,20 +1,16 @@
-# Test Standards
+# Test Standards (Procedural Detail)
 
-This document defines testing best practices and anti-patterns for the agent-console project.
+> See [rules/testing.md](../../rules/testing.md) for the declarative rules (core principles, anti-patterns, evaluation criteria, naming conventions, pre-implementation checklist, unit-vs-integration responsibilities). This document covers procedural detail and code patterns.
 
-## Core Principles
-
-### 1. Tests Must Test Production Code
-
-Import and test production code directly. Never duplicate production logic in test files.
+## Tests Must Test Production Code — Worked Example
 
 ```typescript
-// ❌ Wrong: Duplicating logic in test file
+// ❌ Wrong: duplicating logic in the test file
 function cleanupOrphanProcesses(deps: MockDeps) {
   // Re-implementing production logic...
 }
 
-// ✅ Correct: Import and test production code
+// ✅ Correct: import and test production code
 import { SessionManager } from '../session-manager';
 
 describe('SessionManager', () => {
@@ -25,34 +21,16 @@ describe('SessionManager', () => {
 });
 ```
 
-### 2. Test Through Public Interface
-
-If you feel the need to test a private method, reconsider the design.
+## Mock at the Lowest Level — Fetch-Level Pattern
 
 ```typescript
-// ❌ Wrong: Trying to access private method
-// manager['privateMethod']() - Don't do this
-
-// ✅ Correct: Test through public interface
-describe('SessionManager', () => {
-  it('should cleanup orphan processes on initialization', () => {
-    // Test the observable behavior via public API
-  });
-});
-```
-
-### 3. Mock at the Lowest Level
-
-Mock at the communication layer (`fetch`, `WebSocket`, file system) rather than mocking intermediate modules.
-
-```typescript
-// ❌ Avoid: Module-level mocking
+// ❌ Avoid: module-level mocking
 mock.module('../lib/api', () => ({
   deleteWorktree: mock(() => Promise.resolve()),
 }));
 // Problems: bypasses actual API logic, permanent in bun:test
 
-// ✅ Correct: Mock at fetch level
+// ✅ Correct: mock at fetch level
 const originalFetch = globalThis.fetch;
 globalThis.fetch = mock(() => Promise.resolve(new Response()));
 
@@ -62,86 +40,20 @@ afterAll(() => {
 // Benefits: tests URL construction, error handling, etc.
 ```
 
-### 4. Do Not Change Production Code for Testing Without Discussion
+## Dependency Injection Over Module Mocking
 
-Changing production code interfaces solely to make testing easier should not be done without discussion.
+The rule names this as Anti-Pattern #2. The mechanical reason: in bun:test, `mock.module()` is **process-global and permanent**. A single call pollutes every test file that runs in the same process. Past incidents:
 
-```typescript
-// ❌ Wrong: Adding optional dependency injection just for testing without discussion
-class SessionManager {
-  cleanupOrphanProcesses(
-    deps: {
-      loadSessions?: () => PersistedSession[];
-      isProcessAlive?: (pid: number) => boolean;
-    } = {}
-  ): void {
-    // Changed signature just for testing
-  }
-}
-```
-
-If testing requires changes to production code, **consult with the team first**. Changes that improve testability often also improve design (e.g., dependency injection), but this should be a deliberate decision, not an afterthought.
-
-## Evaluation Criteria
-
-### Test Validity
-
-- Tests verify **requirements**, not implementation details
-- Assertions are meaningful and specific
-- Test names clearly describe what is being tested
-- Tests would fail if production code behavior changes
-
-### Coverage
-
-- Happy path is covered
-- Edge cases are considered (empty, null, boundary values)
-- Error scenarios are tested
-- Integration points are verified
-
-### Methodology
-
-- Mocks are used appropriately (not over-mocked)
-- Test isolation is maintained
-- Setup/teardown is clean
-- Follows project testing guidelines
-
-### Maintainability
-
-- Tests are readable without excessive comments
-- Duplication is minimized
-- Test data is clear and purposeful
-
-## Anti-Patterns to Avoid
-
-### 1. Logic Duplication
-
-Test file re-implements production logic instead of importing it.
-
-**Signs:**
-- Test-only classes that mirror production classes
-- Functions in test files that do the same thing as production code
-- Tests that wouldn't break when production code changes
-
-### 2. Module-Level Mocking
-
-Using `mock.module()` or `vi.mock()` instead of fetch-level mocks.
-
-**Problems:**
-- Bypasses actual API function logic (URL construction, error handling)
-- `mock.module()` is permanent in bun:test (cannot be reset)
-- Tests pass even when integration is broken
-
-**Bun-specific: `mock.module()` is process-global and permanent.** Mocking a module in one test file pollutes ALL test files that run in the same process. This has caused production incidents (e.g., mocking `config.js` in deletion tests broke 26+ unrelated tests; centralizing `worktreeService` mock into a shared helper broke 23 MCP tests via import-time side effects).
-
-**`mock.module()` is a code smell, not a testing tool.** If you need `mock.module()` to test something, the production code has a design problem — it depends on a module-level singleton instead of accepting dependencies as parameters. The correct fix is to refactor the production code for DI, not to find clever `mock.module()` workarounds.
+- Mocking `config.js` in deletion tests broke 26+ unrelated tests.
+- Centralizing a `worktreeService` mock into a shared helper broke 23 MCP tests via import-time side effects.
 
 **Common traps that do NOT solve the problem:**
-- "Each test file defines its own `mock.module()`" — still leaks if Bun runs files in the same process
-- "Centralized mock helper that calls `mock.module()` once" — makes it worse: every file that imports the helper triggers the global mock via import side effects
-- "Reset mocks in `beforeEach`" — `mock.module()` cannot be reset in Bun
 
-**Preferred approach: dependency injection over module mocking.**
-When a service depends on other services or configuration, accept them as parameters (constructor or function args) rather than importing a singleton. This project uses `AppContext` for DI — services are injected via Hono middleware context. Route handler tests use `createTestContext()` or `asAppContext()` to inject mocks without `mock.module()`.
+- "Each test file defines its own `mock.module()`" — still leaks if Bun runs files in the same process.
+- "Centralized mock helper that calls `mock.module()` once" — makes it worse: every file that imports the helper triggers the global mock via import-time side effects.
+- "Reset mocks in `beforeEach`" — `mock.module()` cannot be reset in Bun.
+
+**Correct fix: refactor the production code for DI.** When a service depends on other services or configuration, accept them as parameters (constructor or function args) rather than importing a singleton.
 
 ```typescript
 // ❌ mock.module — pollutes other tests, cannot be reset
@@ -167,36 +79,11 @@ export async function deleteWorktree(
 const result = await deleteWorktree(params, { worktreeService: mockService, ... });
 ```
 
-### 3. Private Method Testing
-
-Attempting to test internal/private methods directly.
-
-**Better approach:**
-- Test through public interface
-- If private method is complex enough to test, consider extracting to a separate module
-
-### 4. Boundary Testing Gaps
-
-Missing client-server boundary tests for forms.
-
-**Catches:**
-- `null` vs `undefined` mismatches
-- JSON serialization issues
-- Schema validation mismatches
-
-### 5. Form Testing Gaps
-
-Schema unit tests only (insufficient).
-
-**Required:**
-- Actual form interaction tests
-- Conditional field tests (hidden fields don't block submission)
-- Empty default value handling
-- Validation error message verification
+Route handler tests in this repository use `createTestContext()` or `asAppContext()` to inject mocks without `mock.module()`.
 
 ## Form Component Testing
 
-Forms using React Hook Form + Valibot require component-level tests.
+Forms using React Hook Form + Valibot need component-level tests beyond schema unit tests.
 
 ### Test Conditional Fields When Hidden
 
@@ -219,13 +106,13 @@ it('should show validation error when submitting with empty default', async () =
 });
 ```
 
-### Verify Error Messages
+### Verify Error Message Content (not just existence)
 
 ```typescript
 // ❌ Insufficient: only checks error existence
 expect(screen.getByRole('alert')).toBeTruthy();
 
-// ✅ Correct: verifies message content
+// ✅ Correct: verifies the message text
 expect(screen.getByText('Branch name is required')).toBeTruthy();
 ```
 
@@ -238,11 +125,9 @@ it('should NOT call onSubmit when validation fails', async () => {
 });
 ```
 
-## Client-Server Boundary Testing
+## Client-Server Boundary Testing — Server Bridge Pattern
 
-Test that client sends correct data AND server accepts it correctly.
-
-### Why It Matters
+The bug this pattern catches:
 
 ```typescript
 // Bug: undefined is omitted in JSON
@@ -251,9 +136,9 @@ activityPatterns: askingPatterns ? { askingPatterns } : undefined
 // Server receives nothing, keeps old value instead of clearing
 ```
 
-Unit tests on client or server alone cannot catch this.
+Unit tests on either client or server alone cannot catch this — the bug lives in the serialization boundary.
 
-### Server Bridge Pattern
+### Pattern
 
 ```typescript
 describe('Client-Server Boundary', () => {
@@ -281,26 +166,4 @@ describe('Client-Server Boundary', () => {
 });
 ```
 
-## Test Strategy: Unit vs Integration Responsibilities
-
-**Unit test exhaustiveness vs integration test connectivity — these are separate responsibilities.**
-- **Unit tests**: Each component must exhaustively cover all patterns defined in the spec. A parser must test all event types. A handler must test all supported event types.
-- **Integration tests**: Verify pipeline connectivity (e.g., parser → job handler → handler) with 1-2 representative events. Exhaustive coverage is the unit test's job — do not duplicate it in integration tests.
-- These responsibilities must not be confused.
-
-## Test File Naming Convention
-
-### Test File Naming Convention
-- Test files MUST be named after the production file they test: `foo-bar.ts` → `__tests__/foo-bar.test.ts`
-- Place test files in the `__tests__/` directory at the same level as the production file
-- The acceptance-check script verifies this convention — misnamed test files will be flagged
-
-## Pre-Implementation Checklist
-
-Before writing tests, verify:
-
-- [ ] Importing production code directly (not duplicating logic)
-- [ ] Testing through public interface (not private methods)
-- [ ] Mocking at lowest level (fetch, WebSocket, not modules)
-- [ ] Not following existing bad patterns blindly
-- [ ] Not changing production code just for testing without discussion
+This gives you a single test file that exercises the full round-trip: user event → form serialization → HTTP body → server handler → persisted state. If any step drops or mistransforms data, the test fails.
