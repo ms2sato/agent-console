@@ -70,6 +70,10 @@ Issue [#631](https://github.com/ms2sato/agent-console/issues/631). Worker output
 
 The answer at the time was "no" — and that single question surfaces the entire class of bug.
 
+### Suggested acceptance criterion template
+
+- [ ] For any persistent resource written and read in this change, the address used to write it with identity X matches the address used to read it back for the same X, across server restarts → integration test covering write → restart → read round-trip
+
 ---
 
 ## I-2. Single Writer for Derived Values
@@ -89,6 +93,10 @@ The answer at the time was "no" — and that single question surfaces the entire
 - **Extract a helper.** Name it what it computes (`computeSessionDataBaseDir`).
 - **Make the helper the only writer.** Document it. Add a test. Add a grep-based invariant check to CI if the pattern is safety-critical.
 
+### Suggested acceptance criterion template
+
+- [ ] The derived value (path/key/URL/ID) computed in this change is produced by exactly one exported helper; all callers import that helper rather than reconstructing the value inline → unit test plus repo-wide grep confirming no duplicate computation
+
 ---
 
 ## I-3. Identity Stability Across Time
@@ -107,6 +115,10 @@ The answer at the time was "no" — and that single question surfaces the entire
 
 - Generate identifiers at creation (UUID or similar), persist them, never recompute.
 - Treat names/slugs as mutable aliases, identifiers as immutable keys.
+
+### Suggested acceptance criterion template
+
+- [ ] Identifiers issued by this change remain resolvable after server restart, config migration, and renaming of any mutable aliases (names, slugs) → integration test asserting identifier survives the relevant lifecycle events
 
 ---
 
@@ -128,6 +140,10 @@ The answer at the time was "no" — and that single question surfaces the entire
 - Register shutdown handlers that drain buffers.
 - Test the crash/restart round-trip explicitly.
 
+### Suggested acceptance criterion template
+
+- [ ] The operation returns success only after its result is committed to durable storage (not merely enqueued or in-memory); a forced process kill immediately after success must not lose the data → unit test with forced I/O failure plus crash/restart round-trip test
+
 ---
 
 ## I-5. Server as Source of Truth
@@ -148,6 +164,10 @@ The answer at the time was "no" — and that single question surfaces the entire
 - Client caches are clearly labeled as such (invalidation, TTL, refetch logic).
 - `localStorage` restricted to transient UI preferences.
 
+### Suggested acceptance criterion template
+
+- [ ] User-meaningful state introduced by this change is persisted via a server API; reloading the browser, switching devices, or opening a second session shows the same state. `localStorage` is used only for transient UI preferences (if at all) → integration test covering reload/cross-session consistency
+
 ---
 
 ## I-6. Boundary Validation
@@ -167,6 +187,10 @@ The answer at the time was "no" — and that single question surfaces the entire
 - Validate with Valibot (or equivalent) at every trust boundary.
 - For filesystem paths, resolve and then assert `startsWith(allowedRoot)`.
 - For IDs coming from external sources, verify they exist in the expected registry.
+
+### Suggested acceptance criterion template
+
+- [ ] Every value crossing a trust boundary in this change (user input, external API response, persisted-then-reread payload, cross-process IPC) is validated with a schema before use; invalid input is rejected with a clear error rather than poisoning downstream state → unit test with malformed/corrupted input asserting explicit rejection
 
 ---
 
