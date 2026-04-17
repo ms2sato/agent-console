@@ -194,6 +194,50 @@ The answer at the time was "no" — and that single question surfaces the entire
 
 ---
 
+## I-7. Enumeration Exhaustiveness
+
+**Rule.** When a value has **multiple valid shapes or formats** (e.g. `org/repo` and `repo`, signed and unsigned identifiers, optional-prefix URLs, nullable and non-nullable variants of the same concept), every code path — validation, persistence, serialization, rendering, round-trip — covers ALL shapes, and every shape is exercised by at least one test.
+
+**Why it matters.** When the "default" shape is the one developers think about, the other shapes silently take the else branch. The else branch is often wrong (unhandled), but there is no error because the code type-checks and runs. The only signal is a user reporting "this feature doesn't work for my case." That is often discovered long after the code ships.
+
+### Domains where this applies
+
+| Situation | Shape 1 | Shape 2 (often forgotten) |
+|-----------|---------|---------------------------|
+| Repository name (this project) | `org/repo` | `repo` (local-only) |
+| User identifier | internal UUID | external-provider ID |
+| URL | `https://` | `//` (protocol-relative) or `wss://` |
+| Timestamp | unix ms | ISO string |
+| Path | absolute | relative |
+| Session type | `worktree` | `quick` |
+| Enumeration with DEFAULT | known cases | unknown/future case (`default:` branch) |
+
+### Detection heuristics
+
+1. **Domain model mentions "or"** — if a concept is described as "A or B", every code path touching it needs both branches. Grep for "or" / "either" / "depending on" in design docs.
+2. **Optional-slash or optional-prefix regex** — `/^[a-z]+(\/[a-z]+)?$/` implies two shapes. Every call site consuming the matched value must handle both.
+3. **Test fixtures use only one shape** — if every test uses `"org/repo"`, the `"repo"` shape is uncovered.
+4. **Migration / persistence mapping forgets a case** — a backfill that handles `type='worktree'` must also handle `type='quick'`.
+
+### Resolution patterns
+
+- **Discriminated unions in types.** Force exhaustive handling at compile time; the `never` check in a `default` catches missed shapes.
+- **Table-driven tests.** One test table, one row per shape. Missing rows are visible.
+- **Shape documented alongside the type.** If a schema or type allows multiple shapes, the documentation lists them explicitly and says which is preferred / default.
+- **Grep-based invariant at review time.** For fields with known shape variety, reviewers walk each shape against each call site.
+
+### Example: caught by this invariant
+
+During Sprint 2026-04-17, Issue #638 introduced `data_scope_slug` with grammar `^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$` — permitting both `org/repo` and `repo` shapes. Initial acceptance check did not explicitly confirm both shapes. Owner asked "does this handle repo-only names too?" which prompted explicit verification. Tests did cover both shapes (good), but the orchestrator did not self-initiate that question. If I-7 had been in the catalog at acceptance-check time, the question would have been posed mechanically.
+
+**Review question that would have surfaced it mechanically:** *"What is the full enumeration of valid shapes for this value? For each shape, is there a test? For each call site, does it handle all shapes?"*
+
+### Suggested acceptance criterion template
+
+- [ ] The value shapes introduced or touched by this change are enumerated explicitly in the PR description; each shape has at least one test exercising it; all consumer call sites handle each shape — no silent fallback to the "default" one → unit/integration test per shape
+
+---
+
 ## How to Add New Invariants
 
 A new entry to this catalog should satisfy all of:

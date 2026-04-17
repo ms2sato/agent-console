@@ -98,6 +98,15 @@ Allowed combinations:
 | `'repository'` | `'<slug>'`      | Session uses `repositories/<slug>/` directory |
 | `NULL`       | `NULL`            | Orphaned — see §3 |
 
+#### Slug shapes (important)
+
+A repository slug has **two valid shapes** — both must be handled by every code path that touches the slug:
+
+1. **`org/repo`** — for repositories mirrored from a remote host with an organization / owner namespace (e.g., GitHub). The slug maps to a nested directory (`repositories/org/repo/`).
+2. **`repo`** — for **local-only repositories** that have no remote namespace. The slug maps to a flat directory (`repositories/repo/`).
+
+The grammar `^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$` permits both shapes. Anything that consumes the slug — path computation, migration backfill, orphan detection, job-payload validation, tests — must cover **both**. Treating `org/repo` as the only shape silently breaks local-only repositories with no error signal (the else branch takes the wrong path). See [architectural-invariants I-7 "Enumeration Exhaustiveness"](../../.claude/skills/architectural-invariants/SKILL.md) for the broader pattern.
+
 ### 2. Path derivation is a pure function
 
 A single module-level helper is the only writer-of-truth for path computation:
