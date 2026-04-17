@@ -179,12 +179,11 @@ async function initApp() {
 
     setCapabilities(config.capabilities);
 
-    // Set current server PID and handle cache invalidation if server has restarted
-    // This clears all terminal caches if the server PID has changed
+    // Record the current server PID for observability. Cache retention is
+    // handled by server-side offset-based truncation detection on reconnect.
     await setCurrentServerPid(config.serverPid);
 
-    // Clean up expired terminal states (24 hours old)
-    // This runs after server PID check, so states from previous servers are already cleared
+    // Clean up expired terminal states (older than MAX_AGE_MS).
     cleanupOldStates().catch((e) => {
       logger.warn('Failed to cleanup old terminal states:', e);
     });

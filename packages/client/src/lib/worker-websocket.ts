@@ -290,16 +290,13 @@ function handleTerminalMessage(
     }
     case 'server-restarted':
       // Server restart notification received on an active worker WebSocket.
-      // Update the in-memory PID and invalidate stale caches (setCurrentServerPid
-      // also clears all caches when the PID has changed). Additionally, clear
-      // this specific worker's terminal cache since the server's in-memory
-      // history buffer is lost on restart.
+      // Record the new server PID for observability. Cache is retained —
+      // server-side offset-based truncation detection (`readHistoryWithOffset`)
+      // will trigger a full-history resync on reconnect if the cached offset
+      // is beyond the server's current range.
       logger.debug('[WorkerWS] Server restarted notification received, serverPid:', msg.serverPid);
       setCurrentServerPid(msg.serverPid).catch((err) => {
         logger.error('[WorkerWS] Failed to update server PID on restart:', err);
-      });
-      clearTerminalState(sessionId, workerId).catch((err) => {
-        logger.error('[WorkerWS] Failed to clear terminal state on server restart:', err);
       });
       break;
     default: {

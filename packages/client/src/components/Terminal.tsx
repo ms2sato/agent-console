@@ -11,7 +11,7 @@ import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter, stripSystemMessages } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState, clearTerminalState, getCurrentServerPid } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, clearTerminalState } from '../lib/terminal-state-cache.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -196,14 +196,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     try {
       const serializedData = serializeAddon.serialize();
-      const serverPid = getCurrentServerPid();
       saveTerminalState(sessionId, workerId, {
         data: serializedData,
         savedAt: Date.now(),
         cols: terminal.cols,
         rows: terminal.rows,
         offset: offsetRef.current,
-        ...(serverPid !== null ? { serverPid } : {}),
       }).catch((e) => logger.warn('[Terminal] Failed to save terminal state after history:', e));
     } catch (e) {
       logger.warn('[Terminal] Failed to serialize terminal state after history:', e);
@@ -542,14 +540,12 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
         return null;
       }
       try {
-        const serverPid = getCurrentServerPid();
         return {
           data: serializeAddonRef.current.serialize(),
           savedAt: Date.now(),
           cols: terminalRef.current.cols,
           rows: terminalRef.current.rows,
           offset: offsetRef.current,
-          ...(serverPid !== null ? { serverPid } : {}),
         };
       } catch {
         return null;

@@ -10,6 +10,7 @@ import {
   _reset,
   type TerminalWorkerCallbacks,
 } from '../worker-websocket';
+import * as terminalStateCache from '../terminal-state-cache';
 
 describe('worker-websocket', () => {
   let restoreWebSocket: () => void;
@@ -366,6 +367,25 @@ describe('worker-websocket', () => {
         call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Server restarted notification received'))
       );
       expect(serverRestartLogged).toBe(true);
+    });
+
+    it('should NOT clear terminal state on server-restarted (cache is owned by client; server-side truncation detection handles staleness)', () => {
+      const clearSpy = spyOn(terminalStateCache, 'clearTerminalState');
+
+      const callbacks = createTerminalCallbacks();
+      connect('session-1', 'worker-1', callbacks);
+
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+
+      ws?.simulateMessage(JSON.stringify({ type: 'server-restarted', serverPid: 12345 }));
+
+      // clearTerminalState must NOT be called on server-restarted.
+      // Staleness is handled by the server via offset-based truncation
+      // detection (`readHistoryWithOffset`) on reconnect.
+      expect(clearSpy).not.toHaveBeenCalled();
+
+      clearSpy.mockRestore();
     });
   });
 
