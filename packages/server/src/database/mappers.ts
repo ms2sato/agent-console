@@ -67,6 +67,13 @@ export function toSessionRow(session: PersistedSession): NewSession {
     parent_session_id: session.parentSessionId ?? null,
     parent_worker_id: session.parentWorkerId ?? null,
     created_by: session.createdBy ?? null,
+    data_scope: session.dataScope ?? null,
+    data_scope_slug: session.dataScopeSlug ?? null,
+    // recovery_state has a DB-level DEFAULT 'healthy' but we write it
+    // explicitly so round-tripping a PersistedSession is lossless.
+    recovery_state: session.recoveryState ?? 'healthy',
+    orphaned_at: session.orphanedAt ?? null,
+    orphaned_reason: session.orphanedReason ?? null,
   };
 
   if (session.type === 'worktree') {
@@ -212,6 +219,22 @@ export function toPersistedSession(
     throw new DataIntegrityError('session', session.id, `type (unexpected value: ${session.type})`);
   }
 
+  // Normalize scope/slug/recovery fields. Coerce DB values into the narrow
+  // typed form used on PersistedSession. Unknown values fall through to
+  // undefined/healthy rather than crashing: the startup orphan detector
+  // (see docs/design/session-data-path.md) is responsible for flagging
+  // invalid metadata.
+  const dataScope: 'quick' | 'repository' | undefined =
+    session.data_scope === 'quick' || session.data_scope === 'repository'
+      ? session.data_scope
+      : undefined;
+  const dataScopeSlug: string | null | undefined =
+    session.data_scope_slug === null ? null : session.data_scope_slug ?? undefined;
+  const recoveryState: 'healthy' | 'orphaned' =
+    session.recovery_state === 'orphaned' ? 'orphaned' : 'healthy';
+  const orphanedAt = session.orphaned_at ?? null;
+  const orphanedReason = session.orphaned_reason ?? null;
+
   if (session.type === 'worktree') {
     if (session.repository_id === null || session.repository_id === undefined) {
       throw new DataIntegrityError('session', session.id, 'repository_id (missing required field)');
@@ -234,6 +257,11 @@ export function toPersistedSession(
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
       createdBy: session.created_by ?? undefined,
+      dataScope,
+      dataScopeSlug,
+      recoveryState,
+      orphanedAt,
+      orphanedReason,
     } as PersistedWorktreeSession;
   } else if (session.type === 'quick') {
     return {
@@ -249,6 +277,11 @@ export function toPersistedSession(
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
       createdBy: session.created_by ?? undefined,
+      dataScope,
+      dataScopeSlug,
+      recoveryState,
+      orphanedAt,
+      orphanedReason,
     } as PersistedQuickSession;
   } else {
     // This should never be reached due to the validation above,

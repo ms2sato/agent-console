@@ -212,7 +212,14 @@ export async function createAppContext(
     : await SingleUserMode.create(bunPtyProvider, userRepository);
   logger.info({ authMode: serverConfig.AUTH_MODE }, 'User mode initialized');
 
-  // 6. Create managers (with injected dependencies)
+  // 6. Create managers. RepositoryManager is built FIRST so SessionManager can
+  //    receive a ready-to-use RepositoryLookup at construction time (no late
+  //    setters, no `isInitialized()` guards). See docs/design/session-data-path.md §5.
+  const repositoryManager = await RepositoryManagerClass.create({
+    repository: repositoryRepository,
+    jobQueue,
+  });
+
   const sessionManager = await SessionManagerClass.create({
     userMode,
     userRepository,
@@ -224,11 +231,16 @@ export async function createAppContext(
     workerOutputFileManager,
     interSessionMessageService,
     memoService,
-  });
-
-  const repositoryManager = await RepositoryManagerClass.create({
-    repository: repositoryRepository,
-    jobQueue,
+    repositoryLookup: {
+      getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
+    },
+    repositoryEnvLookup: {
+      getRepositoryInfo: (id) => {
+        const r = repositoryManager.getRepository(id);
+        return r ? { name: r.name, path: r.path, envVars: r.envVars } : undefined;
+      },
+      getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
+    },
   });
 
   // 6.5. Create timer manager with persistence
@@ -323,12 +335,6 @@ export async function createAppContext(
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
       sessionManager.getSessionsUsingRepository(repoId),
-  });
-
-  sessionManager.setRepositoryCallbacks({
-    getRepository: (repoId) => repositoryManager.getRepository(repoId),
-    isInitialized: () => true, // Always true once context is created
-    getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
   });
 
   // Wire notification callbacks
@@ -446,7 +452,13 @@ export async function createTestContext(
     userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
   }
 
-  // Create managers (with injected dependencies)
+  // Create managers (with injected dependencies). RepositoryManager first so
+  // SessionManager can receive a ready lookup at construction time.
+  const repositoryManager = await RepositoryManagerClass.create({
+    repository: repositoryRepository,
+    jobQueue,
+  });
+
   const sessionManager = await SessionManagerClass.create({
     userMode,
     userRepository,
@@ -458,23 +470,22 @@ export async function createTestContext(
     workerOutputFileManager,
     interSessionMessageService,
     memoService,
-  });
-
-  const repositoryManager = await RepositoryManagerClass.create({
-    repository: repositoryRepository,
-    jobQueue,
+    repositoryLookup: {
+      getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
+    },
+    repositoryEnvLookup: {
+      getRepositoryInfo: (id) => {
+        const r = repositoryManager.getRepository(id);
+        return r ? { name: r.name, path: r.path, envVars: r.envVars } : undefined;
+      },
+      getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
+    },
   });
 
   // Wire cross-dependencies
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
       sessionManager.getSessionsUsingRepository(repoId),
-  });
-
-  sessionManager.setRepositoryCallbacks({
-    getRepository: (repoId) => repositoryManager.getRepository(repoId),
-    isInitialized: () => true,
-    getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
   });
 
   notificationManager.setSessionExistsCallback((sessionId) =>

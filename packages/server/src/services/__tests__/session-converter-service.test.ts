@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import type { Worker } from '@agent-console/shared';
 import type { PersistedWorker } from '../persistence-service.js';
 import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
-import type { SessionRepositoryCallbacks } from '../session-manager.js';
-import { SessionConverterService, type SessionConverterDeps } from '../session-converter-service.js';
+import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup } from '../session-converter-service.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -21,25 +20,23 @@ import {
 
 describe('SessionConverterService', () => {
   let service: SessionConverterService;
-  let mockRepoCallbacks: SessionRepositoryCallbacks;
+  let mockLookup: RepositoryDisplayLookup;
   let toPublicWorkerResults: Map<string, Worker>;
   let toPersistedWorkerResults: Map<string, PersistedWorker>;
 
   beforeEach(() => {
-    mockRepoCallbacks = {
-      getRepository: (id: string) => {
+    mockLookup = {
+      getRepositoryDisplayInfo: (id: string) => {
         if (id === 'repo-1') return { name: 'my-repo', path: '/repos/my-repo' };
         return undefined;
       },
-      isInitialized: () => true,
-      getWorktreeIndexNumber: async () => 1,
     };
 
     toPublicWorkerResults = new Map();
     toPersistedWorkerResults = new Map();
 
     const deps: SessionConverterDeps = {
-      getRepositoryCallbacks: () => mockRepoCallbacks,
+      repositoryDisplayLookup: mockLookup,
       toPublicWorker: (w: InternalWorker): Worker => {
         const existing = toPublicWorkerResults.get(w.id);
         if (existing) return existing;
@@ -176,11 +173,18 @@ describe('SessionConverterService', () => {
       expect(result.workers[1].id).toBe('w-later');
     });
 
-    it('falls back to Unknown repository name when repository callbacks not initialized', () => {
-      mockRepoCallbacks = {
-        ...mockRepoCallbacks,
-        isInitialized: () => false,
+    it('falls back to Unknown repository name when repository is not found', () => {
+      mockLookup = {
+        getRepositoryDisplayInfo: () => undefined,
       };
+      // Recreate service with empty lookup.
+      const deps: SessionConverterDeps = {
+        repositoryDisplayLookup: mockLookup,
+        toPublicWorker: (w) => ({ id: w.id, type: w.type, name: w.name, createdAt: w.createdAt } as unknown as Worker),
+        toPersistedWorker: (w) => ({ id: w.id, type: w.type, name: w.name, createdAt: w.createdAt } as unknown as PersistedWorker),
+        getServerPid: () => 12345,
+      };
+      service = new SessionConverterService(deps);
 
       const session = buildInternalWorktreeSession([]);
       const result = service.toPublicSession(session);

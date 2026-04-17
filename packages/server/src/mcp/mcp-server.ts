@@ -28,6 +28,8 @@ import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import { computeSessionDataBaseDir } from '../lib/session-data-path.js';
+import { getConfigDir } from '../lib/config.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -390,10 +392,27 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolvedWorkerId = agentWorkers[0].id;
         }
 
-        // 3. Write message file
-        const resolver = new SessionDataPathResolver(
-          targetSession.type === 'worktree' ? targetSession.repositoryName : undefined,
-        );
+        // 3. Write message file. Route through the shared path helper so MCP
+        //    never writes to a `_quick/` fallback for worktree sessions.
+        //    For worktree sessions with missing `repositoryName`, we cannot
+        //    safely resolve a path — surface as an error.
+        let resolver: SessionDataPathResolver;
+        try {
+          if (targetSession.type === 'worktree') {
+            resolver = new SessionDataPathResolver(
+              computeSessionDataBaseDir(getConfigDir(), 'repository', targetSession.repositoryName),
+            );
+          } else {
+            resolver = new SessionDataPathResolver(
+              computeSessionDataBaseDir(getConfigDir(), 'quick', null),
+            );
+          }
+        } catch (err) {
+          return errorResult(
+            `Cannot resolve data path for target session ${toSessionId}: ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
         const result = await interSessionMessageService.sendMessage({
           toSessionId,
           toWorkerId: resolvedWorkerId,

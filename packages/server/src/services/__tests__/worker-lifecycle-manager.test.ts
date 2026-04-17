@@ -23,6 +23,7 @@ import type { InternalSession } from '../internal-types.js';
 import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
 import { JobQueue } from '../../jobs/index.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { AnnotationService } from '../annotation-service.js';
 import { InterSessionMessageService } from '../inter-session-message-service.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
@@ -84,7 +85,9 @@ describe('WorkerLifecycleManager', () => {
       resolveSpawnUsername: async () => 'testuser',
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
-      getPathResolver: () => new SessionDataPathResolver(),
+      getPathResolver: () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`),
+      getSessionScope: () => ({ scope: 'quick', slug: null }),
+      getPathResolverByPersistedSessionId: async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`),
       annotationService: new AnnotationService(),
       workerOutputFileManager: new WorkerOutputFileManager(),
       interSessionMessageService: new InterSessionMessageService(),
@@ -1808,6 +1811,94 @@ describe('WorkerLifecycleManager', () => {
       expect(params.context?.templateVars).toBeUndefined();
 
       activateSpy.mockRestore();
+    });
+  });
+
+  describe('getCurrentOutputOffset fallback branch (session not in memory)', () => {
+    it('uses the DB-backed resolver when session is not in memory but persisted', async () => {
+      // The in-memory `sessions` map is empty; the worker cannot be found
+      // via `getWorker` so this test exercises the guard that returns 0 when
+      // there is no worker. See design §"Call-site coverage" for the full
+      // mandate that covers this branch.
+      const dbResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/test-repo`);
+      const manager = new WorkerLifecycleManager(createDeps({
+        getSession: () => undefined,
+        // The DB-backed lookup returns a resolver that points to a valid
+        // repository path. With no worker present, offset is 0.
+        getPathResolverByPersistedSessionId: async () => dbResolver,
+      }));
+
+      const offset = await manager.getCurrentOutputOffset('missing-session', 'missing-worker');
+      expect(offset).toBe(0);
+    });
+
+    it('returns 0 and logs when the DB-backed lookup returns null (orphaned scope)', async () => {
+      const manager = new WorkerLifecycleManager(createDeps({
+        getSession: () => undefined,
+        getPathResolverByPersistedSessionId: async () => null,
+      }));
+
+      const offset = await manager.getCurrentOutputOffset('orphaned-session', 'wid');
+      expect(offset).toBe(0);
+    });
+
+    it('returns 0 and never reads from disk when in-memory session has invalid scope', async () => {
+      // Construct an in-memory session that owns a real worker, then make
+      // `getPathResolver` throw `InvalidSessionDataScopeError` (the situation
+      // when a session was persisted with an invalid scope and is now active
+      // again). The fallback contract: return 0 WITHOUT touching the
+      // workerOutputFileManager, so we never accidentally read/write under
+      // `_quick/`.
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker: InternalAgentWorker = {
+        id: 'wid-invalid-scope',
+        type: 'agent',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      // Fresh WorkerOutputFileManager so the spy is scoped to this test.
+      const fileManager = new WorkerOutputFileManager();
+      const getCurrentOffsetSpy = spyOn(fileManager, 'getCurrentOffset');
+      // Likewise spy the persisted-fallback so we can assert it is NOT
+      // consulted for an in-memory session with an invalid scope.
+      const persistedResolverSpy: (sessionId: string) => Promise<SessionDataPathResolver | null> =
+        mock(async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`));
+
+      const manager = new WorkerLifecycleManager(
+        createDeps({
+          workerOutputFileManager: fileManager,
+          getPathResolver: () => {
+            throw new InvalidSessionDataScopeError('invalid scope (test fixture)');
+          },
+          getPathResolverByPersistedSessionId: persistedResolverSpy,
+        }),
+      );
+
+      const offset = await manager.getCurrentOutputOffset(session.id, agentWorker.id);
+      expect(offset).toBe(0);
+
+      // CRITICAL: must not have constructed an output path. If
+      // `getCurrentOffset` were called, it would have used whatever resolver
+      // was passed in — which in the bad pre-fix world would have been a
+      // `_quick/` fallback resolver.
+      expect(getCurrentOffsetSpy).not.toHaveBeenCalled();
+      // For an in-memory session, the persisted-fallback must NOT be
+      // consulted — `resolveOutputResolver` short-circuits to null on
+      // in-memory failure.
+      expect(persistedResolverSpy).not.toHaveBeenCalled();
+
+      getCurrentOffsetSpy.mockRestore();
     });
   });
 });

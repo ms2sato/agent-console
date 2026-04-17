@@ -8,6 +8,7 @@ import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
 import {
@@ -78,7 +79,8 @@ describe('SessionInitializationService', () => {
       isSessionInMemory: (id) => inMemoryIds.has(id),
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
     });
 
@@ -344,7 +346,8 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       isSessionInMemory: () => false,
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
     });
 
@@ -395,5 +398,98 @@ describe('SessionInitializationService integration (real DB → mapper → servi
     const autoResumeIds = await service.initialize();
 
     expect(autoResumeIds).toContain('active-via-db');
+  });
+
+  describe('orphan detection', () => {
+    function createServiceWithOrphanThrowingBaseDir(
+      opts: { throwFor?: Set<string> } = {},
+    ) {
+      const workerOutputFileManager = {
+        deleteSessionOutputs: mock(async () => {}),
+      } as unknown as WorkerOutputFileManager;
+      const jobQueue = {
+        enqueue: mock(async () => 'job-id'),
+      } as unknown as JobQueue;
+
+      const service = new SessionInitializationService({
+        sessionRepository,
+        pathExists: async () => true,
+        isSessionInMemory: () => false,
+        workerOutputFileManager,
+        jobQueue,
+        getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+        baseDirForPersistedSession: (persisted) => {
+          if (opts.throwFor?.has(persisted.id)) {
+            throw new InvalidSessionDataScopeError(
+              `session ${persisted.id} has no persisted data scope`,
+            );
+          }
+          return '/test/config/_quick';
+        },
+        getServerPid: () => TEST_SERVER_PID,
+      });
+      return { service };
+    }
+
+    it('marks sessions whose (scope, slug) cannot be resolved as orphaned', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'orphan-candidate',
+        locationPath: '/some/path',
+        serverPid: null,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+      });
+      await sessionRepository.save(session);
+
+      const { service } = createServiceWithOrphanThrowingBaseDir({
+        throwFor: new Set(['orphan-candidate']),
+      });
+      await service.initialize();
+
+      const persisted = await sessionRepository.findById('orphan-candidate');
+      expect(persisted).not.toBeNull();
+      expect(persisted!.recoveryState).toBe('orphaned');
+      expect(persisted!.orphanedReason).toBe('path_resolution_failed');
+      expect(persisted!.orphanedAt).toBeGreaterThan(0);
+    });
+
+    it('fragmentation report runs without throwing when directories are missing', async () => {
+      // No _quick/outputs or outputs dirs exist in memfs; the report should
+      // silently succeed rather than crashing startup.
+      const session = buildPersistedQuickSession({
+        id: 'healthy',
+        locationPath: '/some/path',
+      });
+      await sessionRepository.save(session);
+
+      const { service } = createServiceWithOrphanThrowingBaseDir();
+      // If initialize() throws, this expect will fail. Reaching the assertion
+      // demonstrates the fragmentation scan and orphan-detection steps both
+      // completed without crashing.
+      const autoResumeIds = await service.initialize();
+      expect(Array.isArray(autoResumeIds)).toBe(true);
+    });
+
+    it('excludes orphaned sessions from auto-resume', async () => {
+      // Seed an orphaned session with dead serverPid — would normally auto-resume.
+      const session = buildPersistedQuickSession({
+        id: 'orphaned-dead',
+        locationPath: '/some/path',
+        serverPid: 12345,
+      });
+      await sessionRepository.save(session);
+      // Mark it orphaned directly in the DB so the detector's update is a no-op
+      // for this session (the detector runs first and preserves the flag).
+      await sessionRepository.update('orphaned-dead', {
+        recoveryState: 'orphaned',
+        orphanedAt: Date.now(),
+        orphanedReason: 'path_resolution_failed',
+      });
+      // serverPid 12345 is dead (not marked alive).
+
+      const { service } = createServiceWithOrphanThrowingBaseDir();
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('orphaned-dead');
+    });
   });
 });

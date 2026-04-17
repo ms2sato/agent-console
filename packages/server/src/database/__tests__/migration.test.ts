@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1423,7 +1423,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
     });
   });
 
@@ -1459,7 +1459,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
     });
   });
 

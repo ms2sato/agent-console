@@ -9,8 +9,8 @@ import {
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 const TEST_CONFIG_DIR = '/test/config';
-const quickResolver = new SessionDataPathResolver();
-const repoResolver = new SessionDataPathResolver('org/repo');
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`);
 
 describe('InterSessionMessageService', () => {
   let service: InterSessionMessageService;

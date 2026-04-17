@@ -52,6 +52,16 @@ export interface SessionsTable {
   parent_worker_id: string | null;
   /** User UUID (from users table) of the user who created this session (null for pre-multi-user sessions) */
   created_by: string | null;
+  /** Data-location scope ('quick' | 'repository'); null for legacy rows and orphaned sessions. */
+  data_scope: 'quick' | 'repository' | null;
+  /** Slug for 'repository' scope; null for 'quick' scope and orphaned sessions. */
+  data_scope_slug: string | null;
+  /** Recovery state ('healthy' | 'orphaned'); has DEFAULT 'healthy'. */
+  recovery_state: Generated<string>;
+  /** Unix epoch ms when marked orphaned (null if healthy). */
+  orphaned_at: number | null;
+  /** Machine-readable orphan reason code (null if healthy). */
+  orphaned_reason: string | null;
 }
 
 /**

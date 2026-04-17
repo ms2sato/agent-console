@@ -1,89 +1,46 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 
-const TEST_CONFIG_DIR = '/test/config';
-const ORIGINAL_AGENT_CONSOLE_HOME = process.env.AGENT_CONSOLE_HOME;
-
+/**
+ * After Stage 2, `SessionDataPathResolver` is a thin wrapper over a
+ * precomputed baseDir. These tests verify it just joins the well-known
+ * subdirectories under that base — nothing more.
+ *
+ * Scope/slug validation lives in `computeSessionDataBaseDir` (see its tests).
+ */
 describe('SessionDataPathResolver', () => {
-  beforeEach(() => {
-    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+  const BASE_DIR = '/test/config/repositories/myorg/myrepo';
+
+  it('resolves messages dir under baseDir', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getMessagesDir()).toBe(`${BASE_DIR}/messages`);
   });
 
-  afterEach(() => {
-    if (ORIGINAL_AGENT_CONSOLE_HOME === undefined) {
-      delete process.env.AGENT_CONSOLE_HOME;
-    } else {
-      process.env.AGENT_CONSOLE_HOME = ORIGINAL_AGENT_CONSOLE_HOME;
-    }
+  it('resolves memos dir under baseDir', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getMemosDir()).toBe(`${BASE_DIR}/memos`);
   });
 
-  describe('with repositoryName', () => {
-    it('should resolve messages dir under repository path', () => {
-      const resolver = new SessionDataPathResolver('myorg/myrepo');
-      expect(resolver.getMessagesDir()).toBe(`${TEST_CONFIG_DIR}/repositories/myorg/myrepo/messages`);
-    });
-
-    it('should resolve memos dir under repository path', () => {
-      const resolver = new SessionDataPathResolver('myorg/myrepo');
-      expect(resolver.getMemosDir()).toBe(`${TEST_CONFIG_DIR}/repositories/myorg/myrepo/memos`);
-    });
-
-    it('should resolve memos path with .md extension', () => {
-      const resolver = new SessionDataPathResolver('myorg/myrepo');
-      expect(resolver.getMemosPath('session-1')).toBe(
-        `${TEST_CONFIG_DIR}/repositories/myorg/myrepo/memos/session-1.md`,
-      );
-    });
-
-    it('should resolve outputs dir under repository path', () => {
-      const resolver = new SessionDataPathResolver('myorg/myrepo');
-      expect(resolver.getOutputsDir()).toBe(`${TEST_CONFIG_DIR}/repositories/myorg/myrepo/outputs`);
-    });
-
-    it('should resolve output file path with .log extension', () => {
-      const resolver = new SessionDataPathResolver('myorg/myrepo');
-      expect(resolver.getOutputFilePath('session-1', 'worker-1')).toBe(
-        `${TEST_CONFIG_DIR}/repositories/myorg/myrepo/outputs/session-1/worker-1.log`,
-      );
-    });
+  it('resolves memos path with .md extension', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getMemosPath('session-1')).toBe(`${BASE_DIR}/memos/session-1.md`);
   });
 
-  describe('without repositoryName', () => {
-    it('should resolve messages dir under _quick path', () => {
-      const resolver = new SessionDataPathResolver();
-      expect(resolver.getMessagesDir()).toBe(`${TEST_CONFIG_DIR}/_quick/messages`);
-    });
-
-    it('should resolve memos dir under _quick path', () => {
-      const resolver = new SessionDataPathResolver();
-      expect(resolver.getMemosDir()).toBe(`${TEST_CONFIG_DIR}/_quick/memos`);
-    });
-
-    it('should resolve memos path with .md extension under _quick', () => {
-      const resolver = new SessionDataPathResolver();
-      expect(resolver.getMemosPath('session-abc')).toBe(
-        `${TEST_CONFIG_DIR}/_quick/memos/session-abc.md`,
-      );
-    });
-
-    it('should resolve outputs dir under _quick path', () => {
-      const resolver = new SessionDataPathResolver();
-      expect(resolver.getOutputsDir()).toBe(`${TEST_CONFIG_DIR}/_quick/outputs`);
-    });
-
-    it('should resolve output file path under _quick', () => {
-      const resolver = new SessionDataPathResolver();
-      expect(resolver.getOutputFilePath('session-1', 'worker-1')).toBe(
-        `${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`,
-      );
-    });
+  it('resolves outputs dir under baseDir', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getOutputsDir()).toBe(`${BASE_DIR}/outputs`);
   });
 
-  describe('with undefined repositoryName', () => {
-    it('should behave the same as no argument', () => {
-      const resolver = new SessionDataPathResolver(undefined);
-      expect(resolver.getMessagesDir()).toBe(`${TEST_CONFIG_DIR}/_quick/messages`);
-      expect(resolver.getOutputsDir()).toBe(`${TEST_CONFIG_DIR}/_quick/outputs`);
-    });
+  it('resolves output file path with .log extension', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getOutputFilePath('session-1', 'worker-1')).toBe(
+      `${BASE_DIR}/outputs/session-1/worker-1.log`,
+    );
+  });
+
+  it('works for quick-session-style baseDirs', () => {
+    const quickBase = '/test/config/_quick';
+    const resolver = new SessionDataPathResolver(quickBase);
+    expect(resolver.getOutputsDir()).toBe(`${quickBase}/outputs`);
   });
 });

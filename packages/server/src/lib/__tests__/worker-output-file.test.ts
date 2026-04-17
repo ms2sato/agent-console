@@ -10,8 +10,9 @@ const TEST_WORKER_OUTPUT_FILE_MAX_SIZE = 1024; // 1KB for easier testing
 const TEST_WORKER_OUTPUT_FLUSH_INTERVAL = 100; // 100ms (same as default)
 const TEST_WORKER_OUTPUT_FLUSH_THRESHOLD = 256; // 256 bytes for easier testing
 
-const quickResolver = new SessionDataPathResolver();
-const repoResolver = new SessionDataPathResolver('org/repo');
+const TEST_CONFIG_DIR_FIXTURE = '/test/config';
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/_quick`);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/repositories/org/repo`);
 
 describe('WorkerOutputFileManager', () => {
   const TEST_CONFIG_DIR = '/test/config';

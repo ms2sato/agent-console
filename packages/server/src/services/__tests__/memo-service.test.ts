@@ -6,8 +6,8 @@ import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js
 
 const TEST_CONFIG_DIR = '/test/config';
 const ORIGINAL_AGENT_CONSOLE_HOME = process.env.AGENT_CONSOLE_HOME;
-const quickResolver = new SessionDataPathResolver();
-const repoResolver = new SessionDataPathResolver('org/repo');
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`);
 
 describe('MemoService', () => {
   let service: MemoService;

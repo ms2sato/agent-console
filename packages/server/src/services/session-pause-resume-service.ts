@@ -165,6 +165,16 @@ export class SessionPauseResumeService {
       return null;
     }
 
+    // Orphaned sessions must never be resumed — they are surfaced in the UI
+    // for manual deletion. See docs/design/session-data-path.md §3.
+    if (persisted.recoveryState === 'orphaned') {
+      logger.warn(
+        { sessionId: id, reason: persisted.orphanedReason },
+        'Cannot resume session: marked as orphaned',
+      );
+      return null;
+    }
+
     // Validate that locationPath still exists
     const pathExistsResult = await this.deps.pathExists(persisted.locationPath);
     if (!pathExistsResult) {
@@ -187,6 +197,11 @@ export class SessionPauseResumeService {
       parentWorkerId: persisted.parentWorkerId,
       createdBy: persisted.createdBy,
       templateVars: persisted.templateVars,
+      dataScope: persisted.dataScope,
+      dataScopeSlug: persisted.dataScopeSlug,
+      recoveryState: persisted.recoveryState,
+      orphanedAt: persisted.orphanedAt,
+      orphanedReason: persisted.orphanedReason,
     };
 
     const internalSession: InternalSession = persisted.type === 'worktree'

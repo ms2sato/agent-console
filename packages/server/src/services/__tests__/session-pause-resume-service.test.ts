@@ -40,7 +40,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     } as unknown as SessionPauseResumeDeps['workerManager'],
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
-    getPathResolverForSession: mock(() => ({ getRepositoryName: () => 'test-repo' })) as unknown as SessionPauseResumeDeps['getPathResolverForSession'],
+    getPathResolverForSession: mock(() => ({})) as unknown as SessionPauseResumeDeps['getPathResolverForSession'],
     toPublicSession: mock((session: InternalSession) => ({
       id: session.id,
       type: session.type,
@@ -195,6 +195,28 @@ describe('SessionPauseResumeService', () => {
       const result = await service.resumeSession('non-existent');
 
       expect(result).toBeNull();
+    });
+
+    it('should return null for sessions marked as orphaned', async () => {
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-orphan',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        recoveryState: 'orphaned',
+        orphanedReason: 'path_resolution_failed',
+      });
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+        },
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-orphan');
+      expect(result).toBeNull();
+      // Path existence must not even be checked for orphaned sessions.
+      expect(deps.pathExists).not.toHaveBeenCalled();
     });
 
     it('should return null if path no longer exists', async () => {

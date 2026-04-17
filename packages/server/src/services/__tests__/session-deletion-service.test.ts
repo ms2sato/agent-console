@@ -46,8 +46,10 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     memoService: {
       deleteMemo: mock(async () => {}),
     } as unknown as SessionDeletionDeps['memoService'],
-    getPathResolverForSession: () => new SessionDataPathResolver('test-repo'),
-    getPathResolverForPersistedSession: () => new SessionDataPathResolver('test-repo'),
+    getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
+    getPersistedSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
     getTimerCleanupCallback: () => undefined,
@@ -119,6 +121,14 @@ describe('SessionDeletionService', () => {
       const service = new SessionDeletionService(deps);
 
       const result = await service.deleteSession('session-1');
+
+      // Cleanup job payload uses {scope, slug} — not the legacy `repositoryName`.
+      const enqueueCall = (deps.jobQueue!.enqueue as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+      expect(enqueueCall[1]).toEqual({
+        sessionId: 'session-1',
+        scope: 'repository',
+        slug: 'test-repo',
+      });
 
       expect(result).toBe(true);
       // WebSocket notification happens before killing

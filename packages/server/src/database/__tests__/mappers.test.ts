@@ -276,6 +276,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -298,6 +303,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
@@ -320,6 +330,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -344,6 +359,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -369,6 +389,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       const workers = [
@@ -403,6 +428,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       const session = toPersistedSession(dbSession, []);
@@ -429,6 +459,11 @@ describe('mappers', () => {
         parent_session_id: null,
         parent_worker_id: null,
         created_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
       };
 
       const session = toPersistedSession(dbSession, []);

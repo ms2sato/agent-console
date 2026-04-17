@@ -62,19 +62,25 @@ export type JobType = (typeof JOB_TYPES)[keyof typeof JOB_TYPES];
 
 /**
  * Payload for cleanup:session-outputs job.
+ * `scope` + `slug` is reconstructed into the data base dir by the handler
+ * via `computeSessionDataBaseDir`. See docs/design/session-data-path.md.
  */
 export interface CleanupSessionOutputsPayload {
   sessionId: string;
-  repositoryName?: string;
+  scope: 'quick' | 'repository';
+  slug: string | null;
 }
 
 /**
  * Payload for cleanup:worker-output job.
+ * `scope` + `slug` is reconstructed into the data base dir by the handler
+ * via `computeSessionDataBaseDir`. See docs/design/session-data-path.md.
  */
 export interface CleanupWorkerOutputPayload {
   sessionId: string;
   workerId: string;
-  repositoryName?: string;
+  scope: 'quick' | 'repository';
+  slug: string | null;
 }
 
 /**

@@ -80,6 +80,11 @@ export class SqliteSessionRepository implements SessionRepository {
             paused_at: sessionRow.paused_at,
             parent_session_id: sessionRow.parent_session_id,
             parent_worker_id: sessionRow.parent_worker_id,
+            data_scope: sessionRow.data_scope,
+            data_scope_slug: sessionRow.data_scope_slug,
+            recovery_state: sessionRow.recovery_state,
+            orphaned_at: sessionRow.orphaned_at,
+            orphaned_reason: sessionRow.orphaned_reason,
           })
         )
         .execute();
@@ -174,6 +179,15 @@ export class SqliteSessionRepository implements SessionRepository {
     }
     if (updates.pausedAt !== undefined) {
       updateValues.paused_at = updates.pausedAt ?? null;
+    }
+    if (updates.recoveryState !== undefined) {
+      updateValues.recovery_state = updates.recoveryState;
+    }
+    if (updates.orphanedAt !== undefined) {
+      updateValues.orphaned_at = updates.orphanedAt ?? null;
+    }
+    if (updates.orphanedReason !== undefined) {
+      updateValues.orphaned_reason = updates.orphanedReason ?? null;
     }
 
     const result = await this.db

@@ -39,6 +39,16 @@ export interface InternalSessionBase {
   createdBy?: string;
   /** Custom template variable overrides for agent command templates */
   templateVars?: Record<string, string>;
+  /** Scope-based persistence for session data path. See docs/design/session-data-path.md. */
+  dataScope?: 'quick' | 'repository';
+  /** Slug for 'repository' scope; null for 'quick'. */
+  dataScopeSlug?: string | null;
+  /** 'healthy' or 'orphaned'. Undefined defaults to 'healthy'. */
+  recoveryState?: 'healthy' | 'orphaned';
+  /** Unix epoch ms when marked orphaned. */
+  orphanedAt?: number | null;
+  /** Machine-readable reason code for orphan. */
+  orphanedReason?: string | null;
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

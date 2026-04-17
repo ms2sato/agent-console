@@ -17,6 +17,12 @@ export interface SessionUpdateFields {
   locationPath?: string;
   worktreeId?: string;
   pausedAt?: string | null;
+  /** Session recovery state. See docs/design/session-data-path.md. */
+  recoveryState?: 'healthy' | 'orphaned';
+  /** Unix epoch ms when marked orphaned. Null to clear. */
+  orphanedAt?: number | null;
+  /** Machine-readable orphan reason code. Null to clear. */
+  orphanedReason?: string | null;
 }
 
 /**

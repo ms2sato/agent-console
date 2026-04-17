@@ -289,6 +289,11 @@ describe('API Routes Integration', () => {
         sessionRepository,
         jobQueue: testJobQueue,
         agentManager: testAgentManager,
+        repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+        repositoryEnvLookup: {
+          getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+          getWorktreeIndexNumber: async () => 0,
+        },
       });
       testRepositoryManager = await RepositoryManager.create({ jobQueue: testJobQueue });
     }

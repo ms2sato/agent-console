@@ -56,6 +56,11 @@ describe('Workers API', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
     });
 
     app = new Hono<AppBindings>();

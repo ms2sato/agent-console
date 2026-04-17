@@ -30,6 +30,11 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import {
+  computeSessionDataBaseDir,
+  InvalidSessionDataScopeError,
+} from '../lib/session-data-path.js';
+import { RepositoryNotFoundError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -51,16 +56,7 @@ import { SessionInitializationService } from './session-initialization-service.j
 import { SessionDeletionService } from './session-deletion-service.js';
 import { SessionPauseResumeService } from './session-pause-resume-service.js';
 import { SessionConverterService } from './session-converter-service.js';
-
-/**
- * Callbacks for resolving dependencies without circular imports.
- * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
- */
-export interface SessionRepositoryCallbacks {
-  getRepository: (repositoryId: string) => { name: string; path: string; envVars?: string | null } | undefined;
-  isInitialized: () => boolean;
-  getWorktreeIndexNumber: (worktreePath: string) => Promise<number>;
-}
+import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup.js';
 
 /**
  * Callbacks for WebSocket operations.
@@ -115,12 +111,23 @@ interface SessionManagerOptions {
   memoService?: MemoService;
   /** PTY message injection service. Defaults to a new instance wired to this manager. */
   ptyMessageInjectionService?: PtyMessageInjectionService;
+  /**
+   * Required lookup for repository slug (used for session-data path resolution).
+   * See docs/design/session-data-path.md §5.
+   */
+  repositoryLookup: RepositoryLookup;
+  /**
+   * Required lookup for repository env vars and worktree index number
+   * (used when spawning PTYs for worktree sessions).
+   */
+  repositoryEnvLookup: RepositoryEnvLookup;
 }
 
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
-  private repositoryCallbacks: SessionRepositoryCallbacks | null = null;
+  private readonly repositoryLookup: RepositoryLookup;
+  private readonly repositoryEnvLookup: RepositoryEnvLookup;
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
@@ -162,6 +169,8 @@ export class SessionManager {
     const agentManager = options.agentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;
+    this.repositoryLookup = options.repositoryLookup;
+    this.repositoryEnvLookup = options.repositoryEnvLookup;
     const workerOutputFileManager = options.workerOutputFileManager ?? new WorkerOutputFileManager();
     this.workerOutputFileManager = workerOutputFileManager;
     this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
@@ -173,7 +182,12 @@ export class SessionManager {
     this.jobQueue = options?.jobQueue ?? null;
 
     this.sessionConverterService = new SessionConverterService({
-      getRepositoryCallbacks: () => this.repositoryCallbacks,
+      repositoryDisplayLookup: {
+        getRepositoryDisplayInfo: (repositoryId) => {
+          const info = this.repositoryEnvLookup.getRepositoryInfo(repositoryId);
+          return info ? { name: info.name, path: info.path } : undefined;
+        },
+      },
       toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
       toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
       getServerPid: () => getServerPid(),
@@ -192,6 +206,17 @@ export class SessionManager {
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       getPathResolver: (session) => this.getPathResolverForSession(session),
+      getSessionScope: (session) => this.getSessionScopeForCleanup(session),
+      getPathResolverByPersistedSessionId: async (id) => {
+        const persisted = await this.sessionRepository.findById(id);
+        if (!persisted) return null;
+        try {
+          return this.getPathResolverForPersistedSession(persisted);
+        } catch {
+          // Orphaned / invalid scope — don't fall back to _quick/.
+          return null;
+        }
+      },
       annotationService: options.annotationService ?? new AnnotationService(),
       workerOutputFileManager,
       interSessionMessageService: this.interSessionMessageService,
@@ -223,6 +248,7 @@ export class SessionManager {
       workerOutputFileManager: this.workerOutputFileManager,
       jobQueue: this.jobQueue,
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
+      baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted),
       getServerPid,
     });
 
@@ -239,6 +265,8 @@ export class SessionManager {
       memoService: this.memoService,
       getPathResolverForSession: (session) => this.getPathResolverForSession(session),
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
+      getSessionScope: (session) => this.getSessionScopeForCleanup(session),
+      getPersistedSessionScope: (persisted) => this.getPersistedSessionScopeForCleanup(persisted),
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       getWebSocketCallbacks: () => this.webSocketCallbacks,
       getTimerCleanupCallback: () => this.timerCleanupCallback,
@@ -389,14 +417,6 @@ export class SessionManager {
   }
 
   /**
-   * Set callbacks for resolving repository dependencies without circular imports.
-   * Must be called after both SessionManager and RepositoryManager are initialized.
-   */
-  setRepositoryCallbacks(callbacks: SessionRepositoryCallbacks): void {
-    this.repositoryCallbacks = callbacks;
-  }
-
-  /**
    * Set a callback to clean up timers when a session is deleted.
    * Wired in app-context to connect SessionManager with TimerManager
    * without creating a direct dependency.
@@ -420,6 +440,24 @@ export class SessionManager {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
+    // Resolve scope+slug BEFORE inserting any DB row. Worktree sessions that
+    // reference an unknown repository must fail fast (see design §6).
+    let dataScope: 'quick' | 'repository';
+    let dataScopeSlug: string | null;
+    if (request.type === 'worktree') {
+      const slug = this.repositoryLookup.getRepositorySlug(request.repositoryId);
+      if (!slug) {
+        throw new RepositoryNotFoundError(request.repositoryId);
+      }
+      // Validate slug via the helper's invariants (throws InvalidSessionDataScopeError).
+      computeSessionDataBaseDir(getConfigDir(), 'repository', slug);
+      dataScope = 'repository';
+      dataScopeSlug = slug;
+    } else {
+      dataScope = 'quick';
+      dataScopeSlug = null;
+    }
+
     const baseSession = {
       id,
       locationPath: request.locationPath,
@@ -432,6 +470,9 @@ export class SessionManager {
       parentWorkerId: request.parentWorkerId,
       createdBy: context?.createdBy,
       templateVars: request.templateVars ?? context?.templateVars,
+      dataScope,
+      dataScopeSlug,
+      recoveryState: 'healthy' as const,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'
@@ -786,13 +827,7 @@ export class SessionManager {
       return {};
     }
 
-    // Check if RepositoryManager is available via callback (edge case: early startup)
-    // Uses callback to avoid circular dependency with RepositoryManager
-    if (!this.repositoryCallbacks?.isInitialized()) {
-      return {};
-    }
-
-    const repository = this.repositoryCallbacks.getRepository(session.repositoryId);
+    const repository = this.repositoryEnvLookup.getRepositoryInfo(session.repositoryId);
     if (!repository) {
       return {};
     }
@@ -808,7 +843,7 @@ export class SessionManager {
     if (!hasTemplates) return filtered;
 
     // Resolve template variables and apply substitution
-    const worktreeNum = await this.repositoryCallbacks.getWorktreeIndexNumber(session.locationPath);
+    const worktreeNum = await this.repositoryEnvLookup.getWorktreeIndexNumber(session.locationPath);
     const branch = await gitGetCurrentBranch(session.locationPath);
     const vars = {
       worktreeNum,
@@ -834,24 +869,78 @@ export class SessionManager {
   }
 
   /**
-   * Resolve the session data path resolver for a session.
-   * Returns a resolver scoped to the repository for worktree sessions,
-   * or a quick-session resolver for quick sessions.
+   * Compute the base directory for an in-memory session.
+   * Throws `InvalidSessionDataScopeError` if the session is missing data_scope
+   * (only possible for legacy rows before the Stage-2 refactor, or for
+   * sessions that failed to populate scope at creation — both indicate the
+   * session is orphaned).
    */
-  private getPathResolverForSession(session: InternalSession): SessionDataPathResolver {
-    if (session.type !== 'worktree') return new SessionDataPathResolver();
-    if (!this.repositoryCallbacks?.isInitialized()) return new SessionDataPathResolver();
-    return new SessionDataPathResolver(this.repositoryCallbacks.getRepository(session.repositoryId)?.name);
+  private baseDirForSession(session: InternalSession): string {
+    const configDir = getConfigDir();
+    if (session.type === 'quick') {
+      return computeSessionDataBaseDir(configDir, 'quick', null);
+    }
+    const { dataScope, dataScopeSlug } = session;
+    if (dataScope === undefined || dataScope === null) {
+      throw new InvalidSessionDataScopeError(`session ${session.id} has no persisted data scope`);
+    }
+    return computeSessionDataBaseDir(configDir, dataScope, dataScopeSlug ?? null);
   }
 
   /**
-   * Resolve the session data path resolver from a persisted session's repositoryId.
-   * Returns a quick-session resolver for quick sessions or when repository callbacks are unavailable.
+   * Compute the base directory for a persisted session row.
+   * Throws `InvalidSessionDataScopeError` if scope is missing — callers that
+   * operate on potentially-orphaned sessions must catch this explicitly.
+   */
+  private baseDirForPersistedSession(persisted: PersistedSession): string {
+    const configDir = getConfigDir();
+    if (persisted.type === 'quick') {
+      return computeSessionDataBaseDir(configDir, 'quick', null);
+    }
+    if (persisted.dataScope === undefined || persisted.dataScope === null) {
+      throw new InvalidSessionDataScopeError(`session ${persisted.id} has no persisted data scope`);
+    }
+    return computeSessionDataBaseDir(configDir, persisted.dataScope, persisted.dataScopeSlug ?? null);
+  }
+
+  /**
+   * Resolve the session data path resolver for a session.
+   * Throws if the session's scope cannot be resolved.
+   */
+  private getPathResolverForSession(session: InternalSession): SessionDataPathResolver {
+    return new SessionDataPathResolver(this.baseDirForSession(session));
+  }
+
+  /**
+   * Resolve the session data path resolver from a persisted session.
+   * Throws if scope is missing — see {@link baseDirForPersistedSession}.
    */
   private getPathResolverForPersistedSession(persisted: PersistedSession): SessionDataPathResolver {
-    if (persisted.type !== 'worktree') return new SessionDataPathResolver();
-    if (!this.repositoryCallbacks?.isInitialized()) return new SessionDataPathResolver();
-    return new SessionDataPathResolver(this.repositoryCallbacks.getRepository(persisted.repositoryId)?.name);
+    return new SessionDataPathResolver(this.baseDirForPersistedSession(persisted));
+  }
+
+  /**
+   * Return the scope/slug pair usable as a job-cleanup payload for a session.
+   * Returns null when scope is missing (orphaned) — callers should log and skip
+   * the enqueue rather than fall back to `_quick/`.
+   */
+  private getSessionScopeForCleanup(session: InternalSession): { scope: 'quick' | 'repository'; slug: string | null } | null {
+    if (session.type === 'quick') {
+      return { scope: 'quick', slug: null };
+    }
+    if (!session.dataScope) return null;
+    return { scope: session.dataScope, slug: session.dataScopeSlug ?? null };
+  }
+
+  /**
+   * Same as {@link getSessionScopeForCleanup} but for persisted-only sessions.
+   */
+  private getPersistedSessionScopeForCleanup(persisted: PersistedSession): { scope: 'quick' | 'repository'; slug: string | null } | null {
+    if (persisted.type === 'quick') {
+      return { scope: 'quick', slug: null };
+    }
+    if (!persisted.dataScope) return null;
+    return { scope: persisted.dataScope, slug: persisted.dataScopeSlug ?? null };
   }
 
   private toPublicSession(session: InternalSession): Session {

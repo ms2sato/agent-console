@@ -6,6 +6,7 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvLookup } from '../../__tests__/utils/repository-lookup-mock.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
@@ -86,6 +87,8 @@ describe('SessionManager', () => {
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
     });
   }
 
@@ -101,6 +104,66 @@ describe('SessionManager', () => {
     it('should only be instantiable via SessionManager.create()', async () => {
       const manager = await getSessionManager();
       expect(manager).toBeDefined();
+    });
+  });
+
+  describe('createSession data-scope persistence', () => {
+    it('persists (scope=repository, slug=<name>) for worktree sessions', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.dataScope).toBe('repository');
+      expect(persisted!.dataScopeSlug).toBe('test-repo');
+      expect(persisted!.recoveryState).toBe('healthy');
+    });
+
+    it('persists (scope=quick, slug=null) for quick sessions', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.dataScope).toBe('quick');
+      expect(persisted!.dataScopeSlug).toBeNull();
+      expect(persisted!.recoveryState).toBe('healthy');
+    });
+
+    it('throws RepositoryNotFoundError and persists no row when repository is unknown', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        // Lookup returns undefined for every id — creation must fail fast.
+        repositoryLookup: { getRepositorySlug: () => undefined },
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const sessionsBefore = await manager.getSessionRepository().findAll();
+
+      await expect(manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'nope',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      })).rejects.toThrow('Repository not found');
+
+      const sessionsAfter = await manager.getSessionRepository().findAll();
+      expect(sessionsAfter.length).toBe(sessionsBefore.length);
     });
   });
 
@@ -123,8 +186,8 @@ describe('SessionManager', () => {
       expect(session.locationPath).toBe('/test/path');
       if (session.type === 'worktree') {
         expect(session.repositoryId).toBe('repo-1');
-        // repositoryName is 'Unknown' when RepositoryManager is not initialized
-        expect(session.repositoryName).toBe('Unknown');
+        // Resolved via the default repository lookup configured in this test suite.
+        expect(session.repositoryName).toBe('test-repo');
         expect(session.worktreeId).toBe('main');
       }
       expect(session.status).toBe('active');
@@ -669,6 +732,8 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
       const session = await manager.createSession({
@@ -701,6 +766,8 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
       const session = await manager.createSession({
@@ -1673,7 +1740,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager });
+      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -2886,6 +2953,8 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: null,
         agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
       // Verify session exists in persistence
@@ -3077,6 +3146,8 @@ describe('SessionManager', () => {
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
         agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
       // Mark initialization as complete so subsequent pathExists calls return false
@@ -3120,6 +3191,8 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
       // Resume should fail because PTY activation throws
@@ -3244,17 +3317,26 @@ describe('SessionManager', () => {
 
   describe('repository env var template expansion', () => {
     it('should expand template placeholders in repository env vars when creating a worker', async () => {
-      const manager = await getSessionManager();
-
-      // Configure repository callbacks to return env vars with template placeholders
-      manager.setRepositoryCallbacks({
-        getRepository: () => ({
-          name: 'my-repo',
-          path: '/test/repo',
-          envVars: 'PORT={{WORKTREE_NUM * 100}}\nBRANCH_NAME={{BRANCH}}',
-        }),
-        isInitialized: () => true,
+      // Create a manager with a repo env lookup that resolves 'repo-1' to
+      // a repository whose envVars contain template placeholders.
+      const envLookup = makeRepositoryEnvLookup({
+        mapping: {
+          'repo-1': {
+            name: 'my-repo',
+            path: '/test/repo',
+            envVars: 'PORT={{WORKTREE_NUM * 100}}\nBRANCH_NAME={{BRANCH}}',
+          },
+        },
         getWorktreeIndexNumber: async () => 3,
+      });
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        repositoryLookup: { getRepositorySlug: (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryEnvLookup: envLookup,
       });
 
       // Mock getCurrentBranch to return a known branch name

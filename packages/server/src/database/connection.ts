@@ -11,6 +11,7 @@ import type { PersistedSession, PersistedRepository } from '../services/persiste
 import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { isValidSlug } from '../lib/session-data-path.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
 import { addDatetime } from './schema-helpers.js';
 
@@ -247,6 +248,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
 
   if (currentVersion < 17) {
     await migrateToV17(database);
+  }
+
+  if (currentVersion < 18) {
+    await migrateToV18(database);
   }
 }
 
@@ -816,6 +821,182 @@ async function migrateToV17(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 17`.execute(database);
 
   logger.info('Migration to v17 completed');
+}
+
+/**
+ * Migration v18: Add session-data-path scope columns and orphan recovery state.
+ *
+ * Adds five new columns to the sessions table to support scope-based data path
+ * resolution and explicit orphan recovery state. See docs/design/session-data-path.md.
+ *
+ * After adding columns, backfills existing rows within a single transaction:
+ *   - type='quick'    -> data_scope='quick',      data_scope_slug=NULL
+ *   - type='worktree' -> data_scope='repository', data_scope_slug=<repositories.name>
+ *     (joined via sessions.repository_id), but only when the resolved name
+ *     conforms to the slug grammar enforced by `session-data-path.ts`.
+ *   - type='worktree' with an unresolvable repository_id -> recovery_state='orphaned',
+ *     orphaned_at=<now>, orphaned_reason='migration_unresolved_repository'
+ *   - type='worktree' whose joined repository name does not satisfy the slug
+ *     grammar -> recovery_state='orphaned', orphaned_at=<now>,
+ *     orphaned_reason='migration_invalid_slug'.
+ *     Without this, an invalid name would be written verbatim and would later
+ *     fail at runtime in `computeSessionDataBaseDir`, corrupting otherwise-
+ *     healthy sessions.
+ */
+async function migrateToV18(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v18: Adding session-data-path scope columns');
+
+  // Idempotent ALTER TABLE ADD COLUMN for each new column.
+  const addColumns: Array<{
+    name: string;
+    add: () => Promise<void>;
+  }> = [
+    {
+      name: 'data_scope',
+      add: async () => {
+        await database.schema
+          .alterTable('sessions')
+          .addColumn('data_scope', 'text')
+          .execute();
+      },
+    },
+    {
+      name: 'data_scope_slug',
+      add: async () => {
+        await database.schema
+          .alterTable('sessions')
+          .addColumn('data_scope_slug', 'text')
+          .execute();
+      },
+    },
+    {
+      name: 'recovery_state',
+      add: async () => {
+        // NOT NULL with DEFAULT so existing rows receive 'healthy' automatically.
+        await sql`ALTER TABLE sessions ADD COLUMN recovery_state TEXT NOT NULL DEFAULT 'healthy'`.execute(database);
+      },
+    },
+    {
+      name: 'orphaned_at',
+      add: async () => {
+        await database.schema
+          .alterTable('sessions')
+          .addColumn('orphaned_at', 'integer')
+          .execute();
+      },
+    },
+    {
+      name: 'orphaned_reason',
+      add: async () => {
+        await database.schema
+          .alterTable('sessions')
+          .addColumn('orphaned_reason', 'text')
+          .execute();
+      },
+    },
+  ];
+
+  for (const { name, add } of addColumns) {
+    try {
+      await add();
+    } catch (error) {
+      if (!isDuplicateColumnError(error)) throw error;
+      logger.info({ column: name }, 'Column already exists, skipping');
+    }
+  }
+
+  // Backfill existing rows.
+  // Guard: only rows with data_scope IS NULL are touched so that re-running
+  // the migration cannot re-orphan rows that were already backfilled, and
+  // cannot un-orphan rows that were healthy-at-migration-time.
+  const now = Date.now();
+  let quickBackfilled = 0;
+  let worktreeBackfilledHealthy = 0;
+  let worktreeOrphanedUnresolved = 0;
+  let worktreeOrphanedInvalidSlug = 0;
+
+  await database.transaction().execute(async (trx) => {
+    // Quick sessions: scope='quick', slug=NULL.
+    const quickResult = await trx
+      .updateTable('sessions')
+      .set({ data_scope: 'quick', data_scope_slug: null })
+      .where('type', '=', 'quick')
+      .where('data_scope', 'is', null)
+      .executeTakeFirst();
+    quickBackfilled = Number(quickResult.numUpdatedRows ?? 0);
+
+    // Worktree sessions with a resolvable repository: scope='repository', slug=<name>.
+    // Load candidates (id + repository_id + repositories.name) first, then
+    // partition into resolvable and unresolvable sets.
+    const candidates = await trx
+      .selectFrom('sessions')
+      .leftJoin('repositories', 'repositories.id', 'sessions.repository_id')
+      .select([
+        'sessions.id as sessionId',
+        'sessions.repository_id as repositoryId',
+        'repositories.name as repositoryName',
+      ])
+      .where('sessions.type', '=', 'worktree')
+      .where('sessions.data_scope', 'is', null)
+      .execute();
+
+    for (const row of candidates) {
+      if (row.repositoryName === null || row.repositoryName === undefined) {
+        await trx
+          .updateTable('sessions')
+          .set({
+            data_scope: null,
+            data_scope_slug: null,
+            recovery_state: 'orphaned',
+            orphaned_at: now,
+            orphaned_reason: 'migration_unresolved_repository',
+          })
+          .where('id', '=', row.sessionId)
+          .execute();
+        worktreeOrphanedUnresolved++;
+        continue;
+      }
+
+      // The repository name is what gets persisted as `data_scope_slug`. If
+      // the name does not conform to the slug grammar, writing it verbatim
+      // would silently succeed here but would later throw at runtime in
+      // `computeSessionDataBaseDir`. Mark the session orphaned instead.
+      if (!isValidSlug(row.repositoryName)) {
+        await trx
+          .updateTable('sessions')
+          .set({
+            data_scope: null,
+            data_scope_slug: null,
+            recovery_state: 'orphaned',
+            orphaned_at: now,
+            orphaned_reason: 'migration_invalid_slug',
+          })
+          .where('id', '=', row.sessionId)
+          .execute();
+        worktreeOrphanedInvalidSlug++;
+        continue;
+      }
+
+      await trx
+        .updateTable('sessions')
+        .set({ data_scope: 'repository', data_scope_slug: row.repositoryName })
+        .where('id', '=', row.sessionId)
+        .execute();
+      worktreeBackfilledHealthy++;
+    }
+  });
+
+  await sql`PRAGMA user_version = 18`.execute(database);
+
+  logger.info(
+    {
+      quickBackfilled,
+      worktreeBackfilledHealthy,
+      worktreeOrphanedUnresolved,
+      worktreeOrphanedInvalidSlug,
+    },
+    'Migration to v18 completed'
+  );
 }
 
 /**
