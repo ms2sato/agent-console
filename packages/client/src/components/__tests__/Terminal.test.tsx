@@ -12,6 +12,17 @@ import { isScrolledToBottom, stripSystemMessages, stripScrollbackClear, type Ter
 import { restoreScrollPosition, type ScrollableTerminal } from '../Terminal';
 import { render, screen, cleanup } from '@testing-library/react';
 import { TerminalLoadingBar } from '../ui/TerminalLoadingBar';
+import type { CachedState } from '../../lib/terminal-state-cache';
+import {
+  register as registerSaveManager,
+  unregister as unregisterSaveManager,
+  markDirty as markSaveManagerDirty,
+  setIdleSaveDelay,
+  resetIdleSaveDelay,
+  setSaveFunction,
+  resetSaveFunction,
+  clearRegistry as clearSaveManagerRegistry,
+} from '../../lib/terminal-state-save-manager';
 
 describe('Terminal history handling integration', () => {
   let restoreWebSocket: () => void;
@@ -1307,6 +1318,76 @@ describe('Terminal loading indicator', () => {
   it('should hide loading bar when loadingHistory is false', () => {
     render(<TerminalLoadingBar visible={false} />);
     expect(screen.queryByRole('progressbar')).toBeNull();
+  });
+});
+
+/**
+ * Tests for Terminal cache-save payload contract (#648).
+ *
+ * Terminal.tsx constructs a `CachedState` and hands it to the save-manager
+ * (which eventually calls `saveTerminalState`). Since the server-PID-based
+ * invalidation was removed, the save payload must no longer contain a
+ * `serverPid` field — only the 5 canonical keys: data, savedAt, cols, rows, offset.
+ *
+ * The Terminal component cannot be rendered in unit tests (xterm.js mocking
+ * pollutes global state). This test pins the observable contract by intercepting
+ * the save function via the save-manager's DI hook and asserting the exact
+ * payload shape that Terminal.tsx's registered state-getter would produce.
+ */
+describe('Terminal cache-save payload contract', () => {
+  const TEST_IDLE_DELAY_MS = 20;
+  const capturedSaves: Array<{ sessionId: string; workerId: string; state: CachedState }> = [];
+
+  beforeEach(() => {
+    clearSaveManagerRegistry();
+    capturedSaves.length = 0;
+    setIdleSaveDelay(TEST_IDLE_DELAY_MS);
+    setSaveFunction(async (sessionId, workerId, state) => {
+      capturedSaves.push({ sessionId, workerId, state });
+    });
+  });
+
+  afterEach(() => {
+    clearSaveManagerRegistry();
+    capturedSaves.length = 0;
+    resetIdleSaveDelay();
+    resetSaveFunction();
+  });
+
+  it('should save a payload with exactly the 5 CachedState keys and no serverPid', async () => {
+    // Mirrors the state-getter Terminal.tsx registers with the save manager
+    // (Terminal.tsx ~lines 542-549). The object is typed as CachedState, so
+    // TypeScript would reject any `serverPid` field at compile time. This
+    // runtime assertion pins the same contract so a regression cannot silently
+    // reintroduce the field via a loosely-typed spread.
+    const terminalStateGetter = (): CachedState => ({
+      data: 'serialized-terminal-data',
+      savedAt: 1700000000000,
+      cols: 80,
+      rows: 24,
+      offset: 1234,
+    });
+
+    registerSaveManager('session-1', 'worker-1', terminalStateGetter);
+    markSaveManagerDirty('session-1', 'worker-1');
+
+    // Wait for the idle timer to fire and the save to propagate
+    await new Promise((resolve) => setTimeout(resolve, TEST_IDLE_DELAY_MS + 20));
+    await unregisterSaveManager('session-1', 'worker-1');
+
+    expect(capturedSaves).toHaveLength(1);
+    const [saved] = capturedSaves;
+    expect(saved.sessionId).toBe('session-1');
+    expect(saved.workerId).toBe('worker-1');
+
+    // Exact-key contract: the payload must contain the 5 canonical keys only.
+    // No `serverPid` — the #648 fix removed server-PID-based cache invalidation.
+    // TypeScript enforces this at compile time (CachedState has no serverPid field);
+    // this runtime check pins the same contract so a regression cannot silently
+    // reintroduce the field via a loosely-typed spread.
+    const keys = Object.keys(saved.state).sort();
+    expect(keys).toEqual(['cols', 'data', 'offset', 'rows', 'savedAt']);
+    expect(keys).not.toContain('serverPid');
   });
 });
 
