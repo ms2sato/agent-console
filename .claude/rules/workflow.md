@@ -1,6 +1,6 @@
-# Verification and Workflow Rules
+# Workflow Rules
 
-These rules apply to all code changes in this project.
+These rules apply to all code changes in this project. Contents span verification, branching, testing, commits, code quality, language policy, and Claude Code on the Web — collected here because each is a short declarative rule that auto-loads for all work, not just code in a particular package.
 
 ## Verification Checklist
 

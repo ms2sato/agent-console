@@ -1,11 +1,11 @@
 ---
 name: development-workflow-standards
-description: Development workflow procedures including conflict assessment, re-implementation proposals, and TDD steps. Use when you need step-by-step workflow guidance beyond what the auto-loaded verification rules provide.
+description: Development workflow procedures including conflict assessment, re-implementation proposals, and TDD steps. Use when you need step-by-step workflow guidance beyond what the auto-loaded workflow rules provide.
 ---
 
 # Development Workflow Standards (Procedural Guide)
 
-> **Note:** Verification checklist, commands, branching rules, commit standards, and code quality rules are in `.claude/rules/verification.md` and always auto-loaded. This skill provides detailed procedures and decision frameworks.
+> **Note:** Verification checklist, commands, branching rules, commit standards, and code quality rules are in `.claude/rules/workflow.md` and always auto-loaded. This skill provides detailed procedures and decision frameworks.
 
 ## Detailed Documentation
 

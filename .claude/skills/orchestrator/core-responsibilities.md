@@ -159,3 +159,12 @@ Send rebase instructions via `send_session_message` with specific guidance on wh
 Clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
 
 Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.
+
+**Gotcha: ExitWorktree × squash-merge.** When the Orchestrator's own lightweight worktree (created via `EnterWorktree`) is squash-merged into main, the local branch tip keeps the original commit hashes while main gets a new single squash commit. `ExitWorktree` with `action: "remove"` detects the divergence and refuses with `"N commits will be lost. Confirm with the user, then re-invoke with discard_changes: true"`. This is a false alarm — the *content* is in main, only the *commit identity* differs. Procedure:
+
+1. Verify the PR is merged (`gh pr view <num> --json mergedAt,mergeCommit`).
+2. Verify main contains the content (`git log --oneline origin/main | head -3` should show the squash commit).
+3. Report the situation to the owner and request approval for `discard_changes: true` (per the no-force rule — do not use force options without explicit owner approval).
+4. After approval, re-invoke `ExitWorktree` with `action: "remove"` and `discard_changes: true`.
+
+This is a recurring interaction between GitHub's squash-merge default and the tool's strict branch-commit comparison. Do not use `discard_changes: true` proactively without owner approval, even when you are sure the content landed.

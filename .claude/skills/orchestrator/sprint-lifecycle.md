@@ -2,6 +2,10 @@
 
 Orchestrator sessions are managed in sprint units. Sprints run on a plan -> execute -> retrospective cycle.
 
+## Sprint label convention
+
+Each sprint is labeled by the calendar date its retrospective runs (e.g., `2026-04-17`). When two or more sprints complete on the same calendar day, suffix the second and onward with `-b`, `-c`, etc. (e.g., `2026-04-17b`). Use the same label consistently in retrospective memos, `project_sprint_status.md`, and commit / PR references for that sprint's artifacts.
+
 ## Sprint Start
 1. **Sync the Orchestrator session branch with origin/main** (with owner confirmation):
    ```bash
@@ -35,6 +39,12 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
 - When new gotchas are discovered, append them to `memory/project_sprint_status.md` (Claude memory) immediately
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
 - **Idle time utilization**: When waiting for agent completion or owner approval and **active worktrees are ≤1**, consider running `review-loop` on the full codebase or specific packages. This catches systemic issues and makes productive use of wait time. Do NOT run review-loop when many worktrees are active — it competes for compute resources.
+
+## Memory as temporary bridge to rules/skills
+
+When a retrospective surfaces a learning worth codifying, the usual flow is: create a feedback memory for immediate retention AND file an Issue to land the learning in a rule or skill. The memory is a **temporary bridge** — once the Issue merges the learning into a rule/skill, remove the memory (or narrow it to a pointer like "covered in rules/X.md since commit ABC"). Otherwise the memory and rule drift, reintroducing the exact pattern `rule-skill-duplication-check.js` was built to prevent.
+
+On the memory side, record the landing Issue in the `description` front-matter field so the cleanup is visible at `MEMORY.md`-scan time.
 
 ## Retrospective Collection and Process Improvement
 
