@@ -111,7 +111,7 @@
 - **CodeRabbit review**: CodeRabbit auto-reviews PRs on push. No manual re-review requests needed — if rate-limited, it resolves naturally.
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 - **MANDATORY: Every PR must go through both checks.**
-  - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation. CI runs this automatically.
+  - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation and rule/skill duplication invariant check. CI runs this automatically.
   - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q7 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
 
 ## 7. Post-Merge Flow
