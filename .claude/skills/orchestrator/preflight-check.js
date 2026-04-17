@@ -23,6 +23,7 @@ import {
   isTestFile,
   detectIntegrationTestNeeds,
 } from './check-utils.js';
+import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
 
 // --- Display ---
 
@@ -59,42 +60,48 @@ function run(changedFiles) {
   if (filesNeedingCoverage.length === 0 && !integrationTestNeeds) {
     console.log('## Test Coverage Check\n');
     console.log('No production files matching coverage patterns were changed.\n');
-    process.exit(0);
-  }
-
-  const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
-  const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
-
-  console.log('## Test Coverage Check\n');
-
-  if (covered.length > 0) {
-    console.log(`### Covered (${covered.length})\n`);
-    for (const { file } of covered) {
-      console.log(`- ✅ \`${file}\``);
-    }
-    console.log();
-  }
-
-  if (gaps.length > 0) {
-    console.log(`### Missing Tests (${gaps.length})\n`);
-    for (const { file, expectedTestPath } of gaps) {
-      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
-    }
-    console.log();
-  }
-
-  printIntegrationTestCoverage(integrationTestNeeds);
-
-  if (hasUnitGaps) {
-    console.log(`**${gaps.length} production file(s) missing test coverage.**`);
-    process.exit(1);
-  } else if (hasIntegrationGap) {
-    console.log('**Integration test gap detected — review recommended.** ⚠');
-    process.exit(0);
   } else {
-    console.log('**All production files have corresponding tests.** ✅');
-    process.exit(0);
+    const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
+    const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
+
+    console.log('## Test Coverage Check\n');
+
+    if (covered.length > 0) {
+      console.log(`### Covered (${covered.length})\n`);
+      for (const { file } of covered) {
+        console.log(`- ✅ \`${file}\``);
+      }
+      console.log();
+    }
+
+    if (gaps.length > 0) {
+      console.log(`### Missing Tests (${gaps.length})\n`);
+      for (const { file, expectedTestPath } of gaps) {
+        console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
+      }
+      console.log();
+    }
+
+    printIntegrationTestCoverage(integrationTestNeeds);
+
+    if (hasUnitGaps) {
+      console.log(`**${gaps.length} production file(s) missing test coverage.**`);
+    } else if (hasIntegrationGap) {
+      console.log('**Integration test gap detected — review recommended.** ⚠');
+    } else {
+      console.log('**All production files have corresponding tests.** ✅');
+    }
   }
+
+  // Rule/Skill duplication invariant — runs on every preflight because drift
+  // can be introduced by edits anywhere, not just the current PR's diff.
+  console.log('\n---\n');
+  const duplicationExit = runDuplicationCheck();
+
+  if (hasUnitGaps || duplicationExit !== 0) {
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 // --- Exports for testing ---
