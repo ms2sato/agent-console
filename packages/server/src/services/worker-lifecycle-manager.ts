@@ -75,10 +75,21 @@ export interface WorkerLifecycleDeps {
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   /**
    * Resolve the session data path resolver for a session.
-   * Returns a resolver scoped to the repository for worktree sessions,
-   * or a quick-session resolver for quick sessions.
+   * Throws if the session's scope cannot be resolved (orphaned session).
    */
   getPathResolver: (session: InternalSession) => SessionDataPathResolver;
+  /**
+   * Look up the (scope, slug) pair for a session for cleanup-job enqueue.
+   * Returns null for orphaned sessions — callers must log and skip.
+   */
+  getSessionScope: (session: InternalSession) => { scope: 'quick' | 'repository'; slug: string | null } | null;
+  /**
+   * Resolve the data-path resolver for a session that is no longer in memory
+   * (e.g. after a browser reconnect hit the "session not found" branch).
+   * Returns null when the DB has no matching row or the persisted scope is
+   * invalid — callers must not fall back to `_quick/`.
+   */
+  getPathResolverByPersistedSessionId: (sessionId: string) => Promise<SessionDataPathResolver | null>;
   /** In-memory review annotation store */
   annotationService: AnnotationService;
   /** Worker output file management (buffering, history, cleanup) */
@@ -280,7 +291,7 @@ export class WorkerLifecycleManager {
     // Clean up based on worker type
     if (worker.type === 'agent' || worker.type === 'terminal') {
       await this.deps.workerManager.killWorker(worker, sessionId);
-      await this.cleanupWorkerOutput(sessionId, workerId, resolver);
+      await this.cleanupWorkerOutput(sessionId, workerId, session);
     } else {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -649,7 +660,12 @@ export class WorkerLifecycleManager {
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return null;
 
-    const resolver = session ? this.deps.getPathResolver(session) : new SessionDataPathResolver();
+    const resolver = await this.resolveOutputResolver(sessionId, session);
+    if (!resolver) {
+      // No valid scope available — treat as no history.
+      // Never silently fall back to _quick/ (see design §2).
+      return null;
+    }
 
     // Use line-limited read for initial connection (fromOffset is 0 or undefined)
     if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
@@ -662,15 +678,41 @@ export class WorkerLifecycleManager {
   /**
    * Get current output offset for a worker.
    * Used to mark the boundary before registering callbacks.
-   * @returns Current file offset (0 if file doesn't exist)
+   * @returns Current file offset (0 if file doesn't exist or scope is missing)
    */
   async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
     const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
     if (!worker || worker.type === 'git-diff') return 0;
 
-    const resolver = session ? this.deps.getPathResolver(session) : new SessionDataPathResolver();
+    const resolver = await this.resolveOutputResolver(sessionId, session);
+    if (!resolver) {
+      // Scope missing — do not fall back to _quick/. Return 0 and log.
+      logger.warn({ sessionId, workerId }, 'No valid scope to resolve output offset; returning 0');
+      return 0;
+    }
     return this.deps.workerOutputFileManager.getCurrentOffset(sessionId, workerId, resolver);
+  }
+
+  /**
+   * Resolve a SessionDataPathResolver for an output read operation.
+   * Prefers the in-memory session; falls back to DB lookup when the session
+   * is not in memory. Returns null when scope cannot be resolved — callers
+   * must treat this as "no history" and never default to `_quick/`.
+   */
+  private async resolveOutputResolver(
+    sessionId: string,
+    session: InternalSession | undefined,
+  ): Promise<SessionDataPathResolver | null> {
+    if (session) {
+      try {
+        return this.deps.getPathResolver(session);
+      } catch (err) {
+        logger.warn({ sessionId, err }, 'Failed to resolve path for in-memory session');
+        return null;
+      }
+    }
+    return this.deps.getPathResolverByPersistedSessionId(sessionId);
   }
 
   // ========== Private Helpers ==========
@@ -705,14 +747,26 @@ export class WorkerLifecycleManager {
 
   /**
    * Clean up worker output file via job queue.
-   * If jobQueue is not available, logs a warning and skips cleanup gracefully.
+   * Uses the session's persisted `(scope, slug)` pair for the payload.
+   * If jobQueue is not available, or scope cannot be resolved, logs a warning
+   * and skips cleanup — never falls back to `_quick/`.
    */
-  private async cleanupWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<void> {
+  private async cleanupWorkerOutput(sessionId: string, workerId: string, session: InternalSession): Promise<void> {
     const jobQueue = this.deps.getJobQueue();
     if (!jobQueue) {
       logger.warn({ sessionId, workerId }, 'JobQueue not available, skipping async output cleanup');
       return;
     }
-    await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, { sessionId, workerId, repositoryName: resolver.getRepositoryName() });
+    const scopeInfo = this.deps.getSessionScope(session);
+    if (!scopeInfo) {
+      logger.warn({ sessionId, workerId }, 'Session has no valid scope; skipping worker-output cleanup enqueue');
+      return;
+    }
+    await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, {
+      sessionId,
+      workerId,
+      scope: scopeInfo.scope,
+      slug: scopeInfo.slug,
+    });
   }
 }

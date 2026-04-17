@@ -223,9 +223,19 @@ describe('MCP Server Tools', () => {
       jobQueue: testJobQueue,
       agentManager,
       annotationService,
+      repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryEnvLookup: {
+        getRepositoryInfo: (id: string) => {
+          const r = repositoryManager?.getRepository(id);
+          return r ? { name: r.name, path: r.path, envVars: r.envVars } : undefined;
+        },
+        getWorktreeIndexNumber: async () => 0,
+      },
     });
 
-    // Create RepositoryManager (initially empty)
+    // Create RepositoryManager (initially empty). Tests that create worktree
+    // sessions via sessionManager must call `registerRepoForTests('repo-1')`
+    // before doing so.
     repositoryManager = await RepositoryManager.create({ jobQueue: testJobQueue });
 
     // Create TimerManager (no-op callback for tests)
@@ -241,6 +251,36 @@ describe('MCP Server Tools', () => {
     await remountMcpApp();
     nextId = 10;
   });
+
+  /**
+   * Register `repo-1` in the current RepositoryManager so tests that create
+   * worktree sessions via `sessionManager.createSession({ repositoryId: 'repo-1' })`
+   * can resolve the slug. After Stage 2 of the session-data-path refactor,
+   * unknown repositories throw RepositoryNotFoundError at creation time.
+   */
+  async function registerTestRepo(
+    id = 'repo-1',
+    name = 'test-repo',
+    repoPath = '/test/repo',
+  ): Promise<void> {
+    const db = getDatabase();
+    const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+    await sqliteRepoRepo.save({
+      id,
+      name,
+      path: repoPath,
+      createdAt: new Date().toISOString(),
+    });
+    // Ensure the path exists in memfs so RepositoryManager.initialize()
+    // doesn't filter it out on load.
+    const fs = await import('fs');
+    fs.mkdirSync(repoPath, { recursive: true });
+    repositoryManager = await RepositoryManager.create({
+      repository: sqliteRepoRepo,
+      jobQueue: testJobQueue,
+    });
+    await remountMcpApp();
+  }
 
   afterEach(async () => {
     timerManager.disposeAll();
@@ -485,6 +525,7 @@ describe('MCP Server Tools', () => {
     });
 
     it('should include worktreeId for worktree sessions', async () => {
+      await registerTestRepo();
       await sessionManager.createSession({
         type: 'worktree',
         locationPath: '/test/worktree',
@@ -500,6 +541,7 @@ describe('MCP Server Tools', () => {
     });
 
     it('should include repositoryId and repositoryName for worktree sessions', async () => {
+      await registerTestRepo();
       await sessionManager.createSession({
         type: 'worktree',
         locationPath: '/test/worktree',
@@ -574,6 +616,7 @@ describe('MCP Server Tools', () => {
     });
 
     it('should include worktreeId for worktree sessions', async () => {
+      await registerTestRepo();
       const session = await sessionManager.createSession({
         type: 'worktree',
         locationPath: '/test/worktree',
@@ -591,6 +634,7 @@ describe('MCP Server Tools', () => {
     });
 
     it('should include repositoryId and repositoryName for worktree sessions', async () => {
+      await registerTestRepo();
       const session = await sessionManager.createSession({
         type: 'worktree',
         locationPath: '/test/worktree',
@@ -976,6 +1020,36 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBe(true);
       expect(data.error).toContain('Message content too large');
+    });
+
+    it('should resolve target path via SessionManager (uses persisted slug, not display name)', async () => {
+      // Register a repository whose persisted slug ('test-repo') is exposed by
+      // SessionManager via repositoryLookup.getRepositorySlug. Send a message
+      // to a worktree session and verify the message file path lands under
+      // the repository scope dir, not the `_quick/` fallback that the previous
+      // implementation would have produced.
+      await registerTestRepo('repo-1', 'test-repo', '/test/repo');
+
+      const targetSession = await sessionManager.createSession({
+        type: 'worktree',
+        repositoryId: 'repo-1',
+        worktreeId: 'wt-1',
+        locationPath: '/test/repo',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: targetSession.id,
+        content: 'hello worktree',
+        fromSessionId: 'sender-1',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      // Path must be rooted under the repository scope, not _quick.
+      expect(data.path).toContain(`${TEST_CONFIG_DIR}/repositories/test-repo/messages/`);
+      expect(data.path).not.toContain(`${TEST_CONFIG_DIR}/_quick/`);
     });
 
     it('should return validation error when fromSessionId is omitted', async () => {
@@ -2107,11 +2181,12 @@ describe('MCP Server Tools', () => {
 
       const db = getDatabase();
 
-      // Register repository
+      // Register repository. Name uses slug-safe characters only (no spaces)
+      // because SessionManager uses the name as the data-scope slug.
       const sqliteRepoRepo = new SqliteRepositoryRepository(db);
       await sqliteRepoRepo.save({
         id: repoId,
-        name: 'Test Repo',
+        name: 'test-repo',
         path: repoPath,
         createdAt: new Date().toISOString(),
       });
@@ -2132,13 +2207,9 @@ describe('MCP Server Tools', () => {
         });
       }
 
-      // Wire repository callbacks so isMainWorktree resolves correctly
-      sessionManager.setRepositoryCallbacks({
-        getRepository: (id) => repositoryManager.getRepository(id),
-        isInitialized: () => true,
-        getWorktreeIndexNumber: async () => 0,
-      });
-
+      // No callback wiring needed — SessionManager was constructed with
+      // repositoryLookup/repositoryEnvLookup that route through
+      // repositoryManager for slug/name/path.
       await remountMcpApp();
     }
 
@@ -2169,21 +2240,18 @@ describe('MCP Server Tools', () => {
     });
 
     it('should return error when repository is not found', async () => {
-      const session = await sessionManager.createSession({
-        type: 'worktree',
-        locationPath: WT_WORKTREE_PATH,
-        repositoryId: 'non-existent-repo',
-        worktreeId: 'feature-branch',
-        agentId: 'claude-code',
-      });
-
-      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
-        sessionId: session.id,
-      }, nextId++);
-      const data = parseToolResult(response) as { error: string };
-
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Repository not found');
+      // After Stage 2 of session-data-path refactor, worktree session creation
+      // fails fast with RepositoryNotFoundError if the repository is unknown.
+      // See docs/design/session-data-path.md §6.
+      await expect(
+        sessionManager.createSession({
+          type: 'worktree',
+          locationPath: WT_WORKTREE_PATH,
+          repositoryId: 'non-existent-repo',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+        }),
+      ).rejects.toThrow('Repository not found');
     });
 
     it('should return error for main worktree session', async () => {

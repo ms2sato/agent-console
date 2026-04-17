@@ -223,6 +223,17 @@ export class RepositoryManager {
     return this.repositories.get(id);
   }
 
+  /**
+   * Return the slug used for session-data path resolution.
+   * Currently the slug is the repository name — keep this accessor distinct
+   * from `getRepository` so callers that only need path-purposes data can
+   * depend on a narrow `RepositoryLookup` interface.
+   * Returns undefined if the repository is not registered.
+   */
+  getRepositorySlug(id: string): string | undefined {
+    return this.repositories.get(id)?.name;
+  }
+
   getAllRepositories(): Repository[] {
     return Array.from(this.repositories.values());
   }

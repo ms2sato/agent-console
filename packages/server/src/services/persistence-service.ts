@@ -75,6 +75,16 @@ interface PersistedSessionBase {
   createdBy?: string;
   /** Custom template variable overrides for agent command templates */
   templateVars?: Record<string, string>;
+  /** Scope-based persistence for session data path. Undefined on legacy rows before backfill. */
+  dataScope?: 'quick' | 'repository';
+  /** Slug for 'repository' scope; null for 'quick'. Undefined before backfill. */
+  dataScopeSlug?: string | null;
+  /** 'healthy' or 'orphaned'. Undefined defaults to 'healthy' for legacy rows. */
+  recoveryState?: 'healthy' | 'orphaned';
+  /** Unix epoch ms when marked orphaned. */
+  orphanedAt?: number | null;
+  /** Machine-readable reason code for orphan. */
+  orphanedReason?: string | null;
 }
 
 export interface PersistedWorktreeSession extends PersistedSessionBase {

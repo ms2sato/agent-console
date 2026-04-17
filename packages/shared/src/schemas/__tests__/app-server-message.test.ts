@@ -30,6 +30,7 @@ const worktreeSession = {
   repositoryName: 'my-repo',
   worktreeId: 'feature-branch',
   isMainWorktree: false,
+  recoveryState: 'healthy' as const,
 };
 
 const quickSession = {
@@ -40,6 +41,7 @@ const quickSession = {
   activationState: 'running' as const,
   createdAt: '2026-01-01T00:00:00Z',
   workers: [],
+  recoveryState: 'healthy' as const,
 };
 
 const agentDefinition = {

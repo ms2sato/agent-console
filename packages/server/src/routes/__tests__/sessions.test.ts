@@ -65,6 +65,11 @@ describe('Sessions API - Pause/Resume', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
     });
 
     // Create Hono app with error handler
@@ -233,6 +238,36 @@ describe('Sessions API - Pause/Resume', () => {
       const body = (await res.json()) as { session: { id: string } };
       expect(body.session.id).toBe(session.id);
     });
+
+    it('should return 409 with code=session_orphaned when session is orphaned', async () => {
+      // Seed an orphaned persisted session directly — no in-memory entry.
+      const repo = sessionManager.getSessionRepository();
+      await repo.save({
+        id: 'orphan-resume-target',
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        serverPid: null,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'path_resolution_failed',
+      });
+
+      const res = await app.request('/api/sessions/orphan-resume-target/resume', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(409);
+
+      const body = (await res.json()) as { error: string; code?: string };
+      expect(body.code).toBe('session_orphaned');
+      // Message must identify the session so operators can diagnose.
+      expect(body.error).toContain('orphan-resume-target');
+    });
   });
 
   // ===========================================================================
@@ -277,5 +312,208 @@ describe('Sessions API - Pause/Resume', () => {
       expect(body.failed).toBe(0);
       expect(body.results).toHaveLength(0);
     });
+  });
+});
+
+// ===========================================================================
+// POST /api/sessions — repository_not_found mapping
+// ===========================================================================
+//
+// The `RepositoryNotFoundError` carries `code: 'repository_not_found'` and a
+// 404 status. This test exercises the full request → handler → error-handler
+// pipeline so that any future change to either the route or the global error
+// formatter will surface immediately.
+// TODO: extract common setup into createTestApp helper; see PR #638 review
+describe('Sessions API - POST /api/sessions (repository_not_found)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+      // The session-create route validates the requested locationPath via
+      // `validateSessionPath`, which calls `realpath` on the (mocked) fs.
+      // The path must resolve, otherwise the route fails with 400 before
+      // reaching the repository lookup we want to exercise here.
+      ['/test/path/.keep']: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      // Repository lookup never resolves any id — every worktree-session create
+      // must therefore fail fast with RepositoryNotFoundError.
+      repositoryLookup: { getRepositorySlug: () => undefined },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => undefined,
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  it('returns 404 with code=repository_not_found when the repository id is unknown', async () => {
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'unknown-repo-id',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      }),
+    });
+
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('repository_not_found');
+    // Message must mention the missing repository so operators can diagnose.
+    expect(body.error).toContain('Repository not found');
+    expect(body.error).toContain('unknown-repo-id');
+
+    // No row may have been persisted as a side-effect.
+    const persisted = await sessionManager.getSessionRepository().findAll();
+    expect(persisted).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// GET /api/sessions/:id — orphaned sessions surface recoveryState
+// ===========================================================================
+//
+// Per docs/design/session-data-path.md §"Orphaned recovery state", an
+// orphaned session is intentionally NOT hidden from clients — it is exposed
+// with `recoveryState: 'orphaned'` so the UI can offer recovery actions.
+// This route-level test guards against accidental filtering at the API
+// boundary. The session is seeded directly into the persistence layer (no
+// in-memory active session) and the route must surface it via the persisted
+// fallback in `GET /api/sessions/:id`.
+describe('Sessions API - GET /api/sessions/:id (orphaned visibility)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
+  let sessionRepository: JsonSessionRepository;
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+
+    sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  it('returns the orphaned session with recoveryState=orphaned', async () => {
+    // Seed the persistence layer directly (no in-memory session). serverPid
+    // is null so the row is treated as paused/persisted-only.
+    await sessionRepository.save({
+      id: 'orphan-session-1',
+      type: 'worktree',
+      locationPath: '/some/missing/path',
+      repositoryId: 'gone-repo',
+      worktreeId: 'main',
+      serverPid: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      workers: [],
+      recoveryState: 'orphaned',
+      orphanedAt: 1700000000000,
+      orphanedReason: 'migration_unresolved_repository',
+    });
+
+    const res = await app.request('/api/sessions/orphan-session-1', {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      session: {
+        id: string;
+        recoveryState: 'healthy' | 'orphaned';
+      };
+    };
+    expect(body.session.id).toBe('orphan-session-1');
+    expect(body.session.recoveryState).toBe('orphaned');
   });
 });

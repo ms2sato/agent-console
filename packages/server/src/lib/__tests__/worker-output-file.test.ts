@@ -10,8 +10,9 @@ const TEST_WORKER_OUTPUT_FILE_MAX_SIZE = 1024; // 1KB for easier testing
 const TEST_WORKER_OUTPUT_FLUSH_INTERVAL = 100; // 100ms (same as default)
 const TEST_WORKER_OUTPUT_FLUSH_THRESHOLD = 256; // 256 bytes for easier testing
 
-const quickResolver = new SessionDataPathResolver();
-const repoResolver = new SessionDataPathResolver('org/repo');
+const TEST_CONFIG_DIR_FIXTURE = '/test/config';
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/_quick`);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/repositories/org/repo`);
 
 describe('WorkerOutputFileManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
@@ -974,7 +975,7 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
-  describe('repository-scoped paths', () => {
+  describe('when repository-scoped baseDir is used', () => {
     it('should return repository-scoped path when repositoryName is provided', () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', repoResolver);
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/repositories/org/repo/outputs/session-1/worker-1.log`);
@@ -1009,7 +1010,7 @@ describe('WorkerOutputFileManager', () => {
       expect(vol.existsSync(sessionDir)).toBe(false);
     });
 
-    it('should use _quick fallback when repositoryName is not provided', () => {
+    it('uses the provided quick baseDir', () => {
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', quickResolver);
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });

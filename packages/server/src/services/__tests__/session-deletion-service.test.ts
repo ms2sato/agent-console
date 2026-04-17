@@ -46,8 +46,10 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     memoService: {
       deleteMemo: mock(async () => {}),
     } as unknown as SessionDeletionDeps['memoService'],
-    getPathResolverForSession: () => new SessionDataPathResolver('test-repo'),
-    getPathResolverForPersistedSession: () => new SessionDataPathResolver('test-repo'),
+    getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
+    getPersistedSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
     getTimerCleanupCallback: () => undefined,
@@ -119,6 +121,14 @@ describe('SessionDeletionService', () => {
       const service = new SessionDeletionService(deps);
 
       const result = await service.deleteSession('session-1');
+
+      // Cleanup job payload uses {scope, slug} — not the legacy `repositoryName`.
+      const enqueueCall = (deps.jobQueue!.enqueue as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+      expect(enqueueCall[1]).toEqual({
+        sessionId: 'session-1',
+        scope: 'repository',
+        slug: 'test-repo',
+      });
 
       expect(result).toBe(true);
       // WebSocket notification happens before killing
@@ -241,6 +251,29 @@ describe('SessionDeletionService', () => {
 
       const result = await service.deleteSession('session-1');
       expect(result).toBe(true);
+    });
+
+    it('should skip enqueueing cleanup job when getSessionScope returns null (orphaned)', async () => {
+      // Simulate an orphaned session whose (scope, slug) cannot be resolved.
+      // The service must still delete the DB row and complete successfully,
+      // but must NOT enqueue a cleanup job that would fall back to _quick/.
+      const session = buildInternalWorktreeSession(
+        [buildInternalAgentWorker({ id: 'w1' })],
+      );
+
+      const deps = createMockDeps({
+        getSession: (id) => id === 'session-1' ? session : undefined,
+        getSessionScope: () => null, // orphaned — no scope available
+      });
+      const service = new SessionDeletionService(deps);
+
+      const result = await service.deleteSession('session-1');
+
+      expect(result).toBe(true);
+      // No cleanup job enqueued — we never want to risk cross-scope deletion.
+      expect(deps.jobQueue!.enqueue).not.toHaveBeenCalled();
+      // Persistence row must still be removed so the orphan does not leak.
+      expect(deps.sessionRepository.delete).toHaveBeenCalledWith('session-1');
     });
   });
 

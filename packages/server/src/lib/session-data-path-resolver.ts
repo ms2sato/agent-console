@@ -1,42 +1,20 @@
 /**
- * SessionDataPathResolver - Centralizes session data path resolution.
+ * SessionDataPathResolver — thin wrapper around a precomputed base directory.
  *
- * Encapsulates the repository-scoped vs quick-session path branching
- * so callers never need to handle the conditional logic themselves.
- *
- * Path structure:
- *   Worktree sessions: ~/.agent-console/repositories/{org}/{repo}/[messages|memos|outputs]/
- *   Quick sessions:    ~/.agent-console/_quick/[messages|memos|outputs]/
+ * The base directory is always computed via `computeSessionDataBaseDir` in
+ * `session-data-path.ts`. See `docs/design/session-data-path.md` for the spec.
  */
-
 import * as path from 'path';
-import { getConfigDir, getRepositoriesDir } from './config.js';
 
 export class SessionDataPathResolver {
-  constructor(private readonly repositoryName?: string) {}
-
-  /**
-   * Get the repository name used for path resolution.
-   * Needed for serializable job payloads that cannot accept a resolver instance.
-   */
-  getRepositoryName(): string | undefined {
-    return this.repositoryName;
-  }
-
-  /** Base directory for session data (repository-scoped or quick session) */
-  private getBaseDir(): string {
-    if (this.repositoryName) {
-      return path.join(getRepositoriesDir(), this.repositoryName);
-    }
-    return path.join(getConfigDir(), '_quick');
-  }
+  constructor(private readonly baseDir: string) {}
 
   getMessagesDir(): string {
-    return path.join(this.getBaseDir(), 'messages');
+    return path.join(this.baseDir, 'messages');
   }
 
   getMemosDir(): string {
-    return path.join(this.getBaseDir(), 'memos');
+    return path.join(this.baseDir, 'memos');
   }
 
   getMemosPath(sessionId: string): string {
@@ -44,7 +22,7 @@ export class SessionDataPathResolver {
   }
 
   getOutputsDir(): string {
-    return path.join(this.getBaseDir(), 'outputs');
+    return path.join(this.baseDir, 'outputs');
   }
 
   getOutputFilePath(sessionId: string, workerId: string): string {

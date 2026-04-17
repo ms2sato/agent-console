@@ -88,6 +88,11 @@ describe('Worker History File Initialization', () => {
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
     });
   }
 

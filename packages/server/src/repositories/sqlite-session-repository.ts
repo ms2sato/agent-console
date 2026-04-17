@@ -80,6 +80,11 @@ export class SqliteSessionRepository implements SessionRepository {
             paused_at: sessionRow.paused_at,
             parent_session_id: sessionRow.parent_session_id,
             parent_worker_id: sessionRow.parent_worker_id,
+            data_scope: sessionRow.data_scope,
+            data_scope_slug: sessionRow.data_scope_slug,
+            recovery_state: sessionRow.recovery_state,
+            orphaned_at: sessionRow.orphaned_at,
+            orphaned_reason: sessionRow.orphaned_reason,
           })
         )
         .execute();
@@ -175,6 +180,15 @@ export class SqliteSessionRepository implements SessionRepository {
     if (updates.pausedAt !== undefined) {
       updateValues.paused_at = updates.pausedAt ?? null;
     }
+    if (updates.recoveryState !== undefined) {
+      updateValues.recovery_state = updates.recoveryState;
+    }
+    if (updates.orphanedAt !== undefined) {
+      updateValues.orphaned_at = updates.orphanedAt ?? null;
+    }
+    if (updates.orphanedReason !== undefined) {
+      updateValues.orphaned_reason = updates.orphanedReason ?? null;
+    }
 
     const result = await this.db
       .updateTable('sessions')
@@ -190,9 +204,19 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   async findPaused(): Promise<PersistedSession[]> {
+    // Orphaned sessions also have server_pid = null (set during orphan
+    // detection) but must not be surfaced as paused. Filter them out here so
+    // that `/api/sessions/paused` and resume flows see only healthy rows.
+    // Legacy rows without `recovery_state` are treated as healthy.
     const sessions = await this.db
       .selectFrom('sessions')
       .where('server_pid', 'is', null)
+      .where((eb) =>
+        eb.or([
+          eb('recovery_state', '=', 'healthy'),
+          eb('recovery_state', 'is', null),
+        ])
+      )
       .selectAll()
       .execute();
 

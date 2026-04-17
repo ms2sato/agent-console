@@ -17,6 +17,12 @@ export interface SessionUpdateFields {
   locationPath?: string;
   worktreeId?: string;
   pausedAt?: string | null;
+  /** Session recovery state. See docs/design/session-data-path.md. */
+  recoveryState?: 'healthy' | 'orphaned';
+  /** Unix epoch ms when marked orphaned. Null to clear. */
+  orphanedAt?: number | null;
+  /** Machine-readable orphan reason code. Null to clear. */
+  orphanedReason?: string | null;
 }
 
 /**
@@ -67,7 +73,8 @@ export interface SessionRepository {
   /**
    * Update specific fields of a session without replacing the entire session.
    * Only supports fields defined in SessionUpdateFields:
-   * - serverPid, title, initialPrompt, locationPath, worktreeId
+   * - serverPid, title, initialPrompt, locationPath, worktreeId,
+   *   pausedAt, recoveryState, orphanedAt, orphanedReason
    * @param id - The session ID to update
    * @param updates - Fields to update (must be from SessionUpdateFields)
    * @returns true if session was found and updated, false if not found
@@ -77,7 +84,13 @@ export interface SessionRepository {
   /**
    * Find all paused sessions (those with serverPid = null).
    * Paused sessions are not actively managed by any server instance.
-   * @returns Array of paused sessions
+   *
+   * Sessions with `recoveryState === 'orphaned'` are EXCLUDED even though they
+   * also have `serverPid = null` — they are surfaced via separate routes and
+   * must never be offered for auto-resume. Legacy rows without
+   * `recoveryState` are treated as healthy and included.
+   *
+   * @returns Array of paused, healthy sessions (orphans excluded)
    */
   findPaused(): Promise<PersistedSession[]>;
 }

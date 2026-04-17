@@ -102,6 +102,8 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   const { session, activityState } = sessionWithActivity;
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
   const label = getActivityLabel(activityState);
+  const isOrphaned = session.recoveryState === 'orphaned';
+  const orphanedTooltip = isOrphaned ? `${tooltip} (Unrecoverable)` : tooltip;
 
   if (collapsed) {
     return (
@@ -110,9 +112,13 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
         className={`w-full p-3 flex justify-center hover:bg-slate-800 transition-colors ${
           isActive ? 'bg-slate-800' : ''
         }`}
-        title={`${tooltip} (${label})`}
+        title={isOrphaned ? orphanedTooltip : `${tooltip} (${label})`}
       >
-        <ActivityIndicator state={activityState} />
+        {isOrphaned ? (
+          <AlertCircleIcon className="w-3 h-3 text-red-400" />
+        ) : (
+          <ActivityIndicator state={activityState} />
+        )}
       </button>
     );
   }
@@ -123,13 +129,21 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
       className={`w-full p-3 text-left hover:bg-slate-800 transition-colors ${
         isActive ? 'bg-slate-800' : ''
       }`}
-      title={tooltip}
+      title={orphanedTooltip}
     >
       <div className="flex items-start gap-2">
-        <ActivityIndicator state={activityState} className="mt-1.5" />
+        {isOrphaned ? (
+          <AlertCircleIcon className="w-3 h-3 text-red-400 mt-1.5 shrink-0" />
+        ) : (
+          <ActivityIndicator state={activityState} className="mt-1.5" />
+        )}
         <div className="min-w-0 flex-1">
-          <div className="text-gray-300 text-sm font-medium truncate">{primary}</div>
-          <div className="text-gray-500 text-xs truncate">{secondary}</div>
+          <div className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
+            {primary}
+          </div>
+          <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-500'}`}>
+            {isOrphaned ? 'Unrecoverable' : secondary}
+          </div>
         </div>
       </div>
     </button>
@@ -281,15 +295,20 @@ interface PausedSessionItemProps {
 
 function PausedSessionItem({ session, collapsed, onClick }: PausedSessionItemProps) {
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
+  const isOrphaned = session.recoveryState === 'orphaned';
 
   if (collapsed) {
     return (
       <button
         onClick={onClick}
         className="w-full p-3 flex justify-center hover:bg-slate-800 transition-colors"
-        title={`${tooltip} (Paused)`}
+        title={isOrphaned ? `${tooltip} (Unrecoverable)` : `${tooltip} (Paused)`}
       >
-        <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0" />
+        {isOrphaned ? (
+          <AlertCircleIcon className="w-3 h-3 text-red-400 shrink-0" />
+        ) : (
+          <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0" />
+        )}
       </button>
     );
   }
@@ -298,13 +317,21 @@ function PausedSessionItem({ session, collapsed, onClick }: PausedSessionItemPro
     <button
       onClick={onClick}
       className="w-full p-3 text-left hover:bg-slate-800 transition-colors"
-      title={tooltip}
+      title={isOrphaned ? `${tooltip} (Unrecoverable)` : tooltip}
     >
       <div className="flex items-start gap-2">
-        <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0 mt-1.5" />
+        {isOrphaned ? (
+          <AlertCircleIcon className="w-3 h-3 text-red-400 shrink-0 mt-1.5" />
+        ) : (
+          <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0 mt-1.5" />
+        )}
         <div className="min-w-0 flex-1">
-          <div className="text-gray-400 text-sm font-medium truncate">{primary}</div>
-          <div className="text-gray-600 text-xs truncate">{secondary}</div>
+          <div className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-400'}`}>
+            {primary}
+          </div>
+          <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-600'}`}>
+            {isOrphaned ? 'Unrecoverable' : secondary}
+          </div>
         </div>
       </div>
     </button>

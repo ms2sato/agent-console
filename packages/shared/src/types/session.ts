@@ -51,6 +51,8 @@ export interface SessionBase {
   parentWorkerId?: string;
   /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
   createdBy?: string;
+  /** Session recovery state, surfaced from server. 'healthy' | 'orphaned'. */
+  recoveryState: 'healthy' | 'orphaned';
 }
 
 export interface WorktreeSession extends SessionBase {

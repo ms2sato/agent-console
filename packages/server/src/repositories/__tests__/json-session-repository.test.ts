@@ -196,6 +196,31 @@ describe('JsonSessionRepository', () => {
       expect(sessions[0].workers.length).toBe(1);
       expect(sessions[0].workers[0].id).toBe('worker-1');
     });
+
+    it('should exclude orphaned sessions even when serverPid is null/undefined', async () => {
+      // Orphaned sessions share the "serverPid unset" marker with paused
+      // sessions but must not be offered for auto-resume.
+      const testSessions: PersistedSession[] = [
+        buildPersistedWorktreeSession({
+          id: 'healthy-paused',
+          serverPid: undefined,
+          recoveryState: 'healthy',
+        }),
+        buildPersistedWorktreeSession({
+          id: 'orphaned-session',
+          serverPid: undefined,
+          recoveryState: 'orphaned',
+          orphanedAt: 1700000000000,
+          orphanedReason: 'path_resolution_failed',
+        }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const sessions = await repository.findPaused();
+
+      expect(sessions.length).toBe(1);
+      expect(sessions[0].id).toBe('healthy-paused');
+    });
   });
 
   describe('save', () => {

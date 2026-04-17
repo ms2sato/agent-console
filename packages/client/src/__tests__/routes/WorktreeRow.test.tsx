@@ -42,6 +42,7 @@ function createTestSession(overrides?: Partial<WorktreeSession>): SessionWithAct
     activationState: 'running' as const,
     createdAt: new Date().toISOString(),
     workers: [],
+    recoveryState: 'healthy',
     ...overrides,
   };
 }
@@ -60,6 +61,7 @@ function createPausedSession(overrides?: Partial<WorktreeSession>): Session {
     createdAt: new Date().toISOString(),
     workers: [],
     pausedAt: new Date().toISOString(),
+    recoveryState: 'healthy',
     ...overrides,
   };
 }

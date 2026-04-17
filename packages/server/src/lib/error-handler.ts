@@ -40,12 +40,15 @@ function handleError(c: Context, error: unknown): Response {
   if (error instanceof ApiError) {
     // Log API errors at warn level (expected errors)
     logger.warn(
-      { method: c.req.method, path: c.req.path, status: error.statusCode, message: error.message },
+      { method: c.req.method, path: c.req.path, status: error.statusCode, message: error.message, code: error.code },
       'API error'
     );
     const body: ErrorResponse = {
       error: error.message,
     };
+    if (error.code !== undefined) {
+      body.code = error.code;
+    }
     return c.json(body, error.statusCode as 400 | 404 | 409 | 500);
   }
 

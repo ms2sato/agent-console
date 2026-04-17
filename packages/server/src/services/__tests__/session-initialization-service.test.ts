@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Kysely } from 'kysely';
 import type { PersistedSession } from '../persistence-service.js';
-import type { SessionRepository } from '../../repositories/index.js';
+import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
 import {
@@ -32,7 +33,21 @@ function createMockSessionRepository(sessions: PersistedSession[]): SessionRepos
     saveAll: async (newSessions: PersistedSession[]) => {
       storedSessions = [...newSessions];
     },
-    update: async () => true,
+    update: async (id: string, updates: SessionUpdateFields) => {
+      const idx = storedSessions.findIndex(s => s.id === id);
+      if (idx === -1) return false;
+      const current = storedSessions[idx];
+      // Apply only provided (non-undefined) fields. Null is a meaningful value.
+      const patch: Partial<PersistedSession> = {};
+      for (const key of Object.keys(updates) as Array<keyof SessionUpdateFields>) {
+        const value = updates[key];
+        if (value !== undefined) {
+          (patch as Record<string, unknown>)[key] = value;
+        }
+      }
+      storedSessions[idx] = { ...current, ...patch } as PersistedSession;
+      return true;
+    },
     delete: async (id: string) => {
       storedSessions = storedSessions.filter(s => s.id !== id);
     },
@@ -78,7 +93,8 @@ describe('SessionInitializationService', () => {
       isSessionInMemory: (id) => inMemoryIds.has(id),
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
     });
 
@@ -313,6 +329,75 @@ describe('SessionInitializationService', () => {
       expect(autoResumeIds).toEqual([]);
     });
   });
+
+  describe('cleanupOrphanProcesses (via initialize)', () => {
+    // cleanupOrphanProcesses only removes paused worktree sessions whose
+    // serverPid is still set to a dead pid (initializeSessions preserves
+    // sessions with pausedAt set, so they survive into cleanupOrphanProcesses).
+    it('should delete orphan session without enqueueing cleanup job when dataScope is missing', async () => {
+      // An orphaned paused worktree session owned by a dead server, missing
+      // dataScope (legacy/unbackfilled row). `cleanupOrphanProcesses` must
+      // delete the DB row but must NOT enqueue a CLEANUP_SESSION_OUTPUTS
+      // job — falling back to _quick/ would risk cross-scope deletion.
+      const orphanWorktreeNoScope: PersistedSession = {
+        id: 'orphan-worktree-no-scope',
+        type: 'worktree',
+        locationPath: '/some/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        serverPid: 88888, // dead pid (not marked alive)
+        pausedAt: '2024-01-01T01:00:00.000Z', // paused → preserved by initializeSessions
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        // dataScope intentionally undefined → orphan with no scope
+      };
+
+      const { service, sessionRepository, jobQueue } = createService({
+        sessions: [orphanWorktreeNoScope],
+      });
+
+      // Sanity check — the session exists before initialize.
+      expect(await sessionRepository.findById('orphan-worktree-no-scope')).not.toBeNull();
+
+      await service.initialize();
+
+      // The session must have been deleted from persistence.
+      expect(await sessionRepository.findById('orphan-worktree-no-scope')).toBeNull();
+
+      // No cleanup job may have been enqueued — we only seeded one session,
+      // so zero calls confirms the scope-missing branch was taken.
+      expect(jobQueue!.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('should enqueue cleanup job for orphan session with valid dataScope', async () => {
+      // Baseline: when the orphan has a valid scope, we DO enqueue cleanup.
+      // This guards against the fix accidentally becoming a no-op.
+      const orphanWithScope: PersistedSession = {
+        id: 'orphan-with-scope',
+        type: 'worktree',
+        locationPath: '/some/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        serverPid: 77777, // dead pid
+        pausedAt: '2024-01-01T01:00:00.000Z', // paused → preserved by initializeSessions
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        dataScope: 'repository',
+        dataScopeSlug: 'my-repo',
+      };
+
+      const { service, sessionRepository, jobQueue } = createService({
+        sessions: [orphanWithScope],
+      });
+
+      await service.initialize();
+
+      // Session removed.
+      expect(await sessionRepository.findById('orphan-with-scope')).toBeNull();
+      // Cleanup enqueued with the scope payload.
+      expect(jobQueue!.enqueue).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('SessionInitializationService integration (real DB → mapper → service)', () => {
@@ -344,7 +429,8 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       isSessionInMemory: () => false,
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver(),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
     });
 
@@ -395,5 +481,98 @@ describe('SessionInitializationService integration (real DB → mapper → servi
     const autoResumeIds = await service.initialize();
 
     expect(autoResumeIds).toContain('active-via-db');
+  });
+
+  describe('orphan detection', () => {
+    function createServiceWithOrphanThrowingBaseDir(
+      opts: { throwFor?: Set<string> } = {},
+    ) {
+      const workerOutputFileManager = {
+        deleteSessionOutputs: mock(async () => {}),
+      } as unknown as WorkerOutputFileManager;
+      const jobQueue = {
+        enqueue: mock(async () => 'job-id'),
+      } as unknown as JobQueue;
+
+      const service = new SessionInitializationService({
+        sessionRepository,
+        pathExists: async () => true,
+        isSessionInMemory: () => false,
+        workerOutputFileManager,
+        jobQueue,
+        getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+        baseDirForPersistedSession: (persisted) => {
+          if (opts.throwFor?.has(persisted.id)) {
+            throw new InvalidSessionDataScopeError(
+              `session ${persisted.id} has no persisted data scope`,
+            );
+          }
+          return '/test/config/_quick';
+        },
+        getServerPid: () => TEST_SERVER_PID,
+      });
+      return { service };
+    }
+
+    it('marks sessions whose (scope, slug) cannot be resolved as orphaned', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'orphan-candidate',
+        locationPath: '/some/path',
+        serverPid: null,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+      });
+      await sessionRepository.save(session);
+
+      const { service } = createServiceWithOrphanThrowingBaseDir({
+        throwFor: new Set(['orphan-candidate']),
+      });
+      await service.initialize();
+
+      const persisted = await sessionRepository.findById('orphan-candidate');
+      expect(persisted).not.toBeNull();
+      expect(persisted!.recoveryState).toBe('orphaned');
+      expect(persisted!.orphanedReason).toBe('path_resolution_failed');
+      expect(persisted!.orphanedAt).toBeGreaterThan(0);
+    });
+
+    it('fragmentation report runs without throwing when directories are missing', async () => {
+      // No _quick/outputs or outputs dirs exist in memfs; the report should
+      // silently succeed rather than crashing startup.
+      const session = buildPersistedQuickSession({
+        id: 'healthy',
+        locationPath: '/some/path',
+      });
+      await sessionRepository.save(session);
+
+      const { service } = createServiceWithOrphanThrowingBaseDir();
+      // If initialize() throws, this expect will fail. Reaching the assertion
+      // demonstrates the fragmentation scan and orphan-detection steps both
+      // completed without crashing.
+      const autoResumeIds = await service.initialize();
+      expect(Array.isArray(autoResumeIds)).toBe(true);
+    });
+
+    it('excludes orphaned sessions from auto-resume', async () => {
+      // Seed an orphaned session with dead serverPid — would normally auto-resume.
+      const session = buildPersistedQuickSession({
+        id: 'orphaned-dead',
+        locationPath: '/some/path',
+        serverPid: 12345,
+      });
+      await sessionRepository.save(session);
+      // Mark it orphaned directly in the DB so the detector's update is a no-op
+      // for this session (the detector runs first and preserves the flag).
+      await sessionRepository.update('orphaned-dead', {
+        recoveryState: 'orphaned',
+        orphanedAt: Date.now(),
+        orphanedReason: 'path_resolution_failed',
+      });
+      // serverPid 12345 is dead (not marked alive).
+
+      const { service } = createServiceWithOrphanThrowingBaseDir();
+      const autoResumeIds = await service.initialize();
+
+      expect(autoResumeIds).not.toContain('orphaned-dead');
+    });
   });
 });

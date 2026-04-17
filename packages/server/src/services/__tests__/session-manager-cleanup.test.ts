@@ -4,6 +4,7 @@ import type { PersistedSession } from '../persistence-service.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '../../__tests__/utils/repository-lookup-mock.js';
 import {
   buildPersistedQuickSession,
   buildPersistedWorktreeSession,
@@ -73,7 +74,12 @@ describe('SessionManager cleanup on initialization', () => {
     const SessionManager = await getSessionManager();
     const db = getDatabase();
     const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
-    return SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), agentManager: agentMgr });
+    return SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      agentManager: agentMgr,
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
+    });
   }
 
   it('should kill legacy session worker processes and auto-resume', async () => {

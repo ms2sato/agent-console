@@ -86,6 +86,11 @@ export const COVERAGE_PATTERNS = [
 // Files excluded from coverage requirements (no runtime logic to test)
 const COVERAGE_EXCLUSIONS = [
   /^packages\/shared\/src\/types\/.+\.ts$/,
+  // *-types.ts / *-types.tsx convention: files containing only type
+  // definitions (interfaces / type aliases) with no runtime logic.
+  // Testing them is not meaningful — the type system already enforces
+  // their shape at consume sites.
+  /-types\.tsx?$/,
 ];
 
 export function isTestFile(filePath) {

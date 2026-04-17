@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1418,12 +1418,12 @@ describe('migration', () => {
       expect(rows[0].created_by).toBeNull();
     });
 
-    it('should set schema version to 15', async () => {
+    it('should set schema version to 18 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
     });
   });
 
@@ -1454,12 +1454,12 @@ describe('migration', () => {
       expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     });
 
-    it('should set schema version to 17', async () => {
+    it('should set schema version to 18 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(17);
+      expect(result.rows[0]?.user_version).toBe(18);
     });
   });
 

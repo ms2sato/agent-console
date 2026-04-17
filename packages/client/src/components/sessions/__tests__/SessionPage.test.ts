@@ -342,4 +342,38 @@ describe('sessionToPageState', () => {
     expect(result.type).toBe('active');
     expect(result.session).toBe(resumedSession);
   });
+
+  it('should return orphaned when session recoveryState is orphaned', () => {
+    const session = createMockSession({ status: 'inactive', recoveryState: 'orphaned' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('orphaned');
+    expect(result.session).toBe(session);
+  });
+
+  it('should prioritize orphaned over pausedAt', () => {
+    // An orphaned session must never be shown as "paused", since users cannot
+    // resume it. This guards against pausedAt-based fallbacks overriding the
+    // orphaned indicator.
+    const session = createMockSession({
+      status: 'inactive',
+      pausedAt: '2026-01-01T00:00:00Z',
+      recoveryState: 'orphaned',
+    });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('orphaned');
+  });
+
+  it('should prioritize orphaned over active status', () => {
+    // Edge case: a server could hypothetically surface an orphaned session with
+    // status=active. The client must still treat it as orphaned.
+    const session = createMockSession({ status: 'active', recoveryState: 'orphaned' });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('orphaned');
+  });
 });

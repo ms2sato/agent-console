@@ -27,6 +27,10 @@ export interface SessionDeletionDeps {
   memoService: MemoService;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
   getPathResolverForPersistedSession: (persisted: PersistedSession) => SessionDataPathResolver;
+  /** Return the (scope, slug) pair for an in-memory session, or null if orphaned. */
+  getSessionScope: (session: InternalSession) => { scope: 'quick' | 'repository'; slug: string | null } | null;
+  /** Return the (scope, slug) pair for a persisted session, or null if orphaned. */
+  getPersistedSessionScope: (persisted: PersistedSession) => { scope: 'quick' | 'repository'; slug: string | null } | null;
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
   getWebSocketCallbacks: () => { notifySessionDeleted: (sessionId: string) => void } | null;
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
@@ -88,14 +92,31 @@ export class SessionDeletionService {
       throw new Error('JobQueue not available for session cleanup. Ensure SessionManager.create() was called with jobQueue.');
     }
 
-    // Resolve path resolver before cleanup operations
-    const resolver = this.deps.getPathResolverForSession(session);
+    // Resolve path resolver (may throw for orphaned sessions — handled below
+    // via getSessionScope which returns null for orphaned).
+    let resolver: SessionDataPathResolver | null;
+    try {
+      resolver = this.deps.getPathResolverForSession(session);
+    } catch {
+      resolver = null;
+    }
+
+    const scopeInfo = this.deps.getSessionScope(session);
 
     // Perform all deletion operations atomically
     // If any fail, restore in-memory state to maintain consistency
     try {
-      // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical)
-      await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
+      // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical).
+      // Skip if scope is missing — never fall back to _quick/.
+      if (scopeInfo) {
+        await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
+          sessionId: id,
+          scope: scopeInfo.scope,
+          slug: scopeInfo.slug,
+        });
+      } else {
+        logger.warn({ sessionId: id }, 'Session has no valid scope; skipping session-outputs cleanup');
+      }
 
       // 2. Clean up notification state (throttle timers, debounce timers)
       this.deps.notificationManager?.cleanupSession(id);
@@ -110,17 +131,25 @@ export class SessionDeletionService {
       this.deps.messageService.clearSession(id);
 
       // 2c. Clean up inter-session message files
-      try {
-        await this.deps.interSessionMessageService.deleteSessionMessages(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
+      if (resolver) {
+        try {
+          await this.deps.interSessionMessageService.deleteSessionMessages(id, resolver);
+        } catch (err) {
+          logger.warn({ sessionId: id, err }, 'Failed to clean inter-session message files');
+        }
+      } else {
+        logger.warn({ sessionId: id }, 'No resolver; skipping inter-session message cleanup');
       }
 
       // 2d. Clean up memo file
-      try {
-        await this.deps.memoService.deleteMemo(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+      if (resolver) {
+        try {
+          await this.deps.memoService.deleteMemo(id, resolver);
+        } catch (err) {
+          logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+        }
+      } else {
+        logger.warn({ sessionId: id }, 'No resolver; skipping memo cleanup');
       }
 
       // 3. Remove from in-memory map
@@ -159,22 +188,43 @@ export class SessionDeletionService {
     // Check persistence for orphaned session
     const persisted = await this.deps.sessionRepository.findById(id);
     if (persisted) {
-      const resolver = this.deps.getPathResolverForPersistedSession(persisted);
+      let resolver: SessionDataPathResolver | null;
+      try {
+        resolver = this.deps.getPathResolverForPersistedSession(persisted);
+      } catch {
+        resolver = null;
+      }
+      const scopeInfo = this.deps.getPersistedSessionScope(persisted);
+
       // Enqueue cleanup of worker output files (same as deleteSession)
-      if (this.deps.jobQueue) {
-        await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, { sessionId: id, repositoryName: resolver.getRepositoryName() });
+      if (this.deps.jobQueue && scopeInfo) {
+        await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
+          sessionId: id,
+          scope: scopeInfo.scope,
+          slug: scopeInfo.slug,
+        });
       } else {
         logger.warn(
-          { sessionId: id, method: 'forceDeleteSession', skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS },
-          'JobQueue not available, skipping cleanup job for orphaned session'
+          {
+            sessionId: id,
+            method: 'forceDeleteSession',
+            skippedJob: JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
+            missingJobQueue: !this.deps.jobQueue,
+            missingScope: !scopeInfo,
+          },
+          'Skipping session-outputs cleanup for orphaned session'
         );
       }
       await this.deps.sessionRepository.delete(id);
       // Clean up memo file
-      try {
-        await this.deps.memoService.deleteMemo(id, resolver);
-      } catch (err) {
-        logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+      if (resolver) {
+        try {
+          await this.deps.memoService.deleteMemo(id, resolver);
+        } catch (err) {
+          logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
+        }
+      } else {
+        logger.warn({ sessionId: id, method: 'forceDeleteSession' }, 'No resolver; skipping memo cleanup');
       }
       // Broadcast deletion to connected clients
       this.deps.getSessionLifecycleCallbacks()?.onSessionDeleted?.(id);

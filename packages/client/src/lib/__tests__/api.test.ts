@@ -14,7 +14,9 @@ import {
   fetchWorktrees,
   fetchBranches,
   generateRepositoryDescription,
+  resumeSession,
   ServerUnavailableError,
+  ApiError,
 } from '../api';
 
 // Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
@@ -811,6 +813,52 @@ describe('API Client', () => {
       } as unknown as Response);
 
       await expect(createSession({ type: 'quick', locationPath: '/path' })).rejects.toThrow('Failed to create session: Internal Server Error');
+    });
+
+    it('should throw ApiError that preserves status and code fields', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        json: mock(() => Promise.resolve({ error: 'Cannot resume', code: 'session_orphaned' })),
+      } as unknown as Response);
+
+      let thrown: unknown;
+      try {
+        await resumeSession('session-id');
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ApiError);
+      expect(thrown).toBeInstanceOf(Error);
+      if (thrown instanceof ApiError) {
+        expect(thrown.message).toBe('Cannot resume');
+        expect(thrown.status).toBe(409);
+        expect(thrown.code).toBe('session_orphaned');
+      }
+    });
+
+    it('should throw ApiError with undefined code when response body has no code field', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'Some error' })),
+      } as unknown as Response);
+
+      let thrown: unknown;
+      try {
+        await resumeSession('session-id');
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ApiError);
+      if (thrown instanceof ApiError) {
+        expect(thrown.status).toBe(400);
+        expect(thrown.code).toBeUndefined();
+      }
     });
   });
 });

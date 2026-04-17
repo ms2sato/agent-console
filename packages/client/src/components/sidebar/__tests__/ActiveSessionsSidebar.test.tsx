@@ -27,6 +27,7 @@ function createMockWorktreeSession(
     activationState: 'running' as const,
     createdAt: new Date().toISOString(),
     workers: [],
+    recoveryState: 'healthy',
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ function createMockQuickSession(
     activationState: 'running' as const,
     createdAt: new Date().toISOString(),
     workers: [],
+    recoveryState: 'healthy',
     ...overrides,
   };
 }
@@ -679,6 +681,63 @@ describe('ActiveSessionsSidebar', () => {
 
       expect(allButton.getAttribute('aria-pressed')).toBe('false');
       expect(mineButton.getAttribute('aria-pressed')).toBe('true');
+    });
+  });
+
+  describe('Orphaned sessions', () => {
+    it('should render "Unrecoverable" label for orphaned sessions in the active list', async () => {
+      const orphaned = createMockWorktreeSession({
+        repositoryName: 'broken-repo',
+        title: 'broken-branch',
+        recoveryState: 'orphaned',
+      });
+      const sessions = [createSessionWithActivity(orphaned, 'idle')];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      expect(screen.getByText('broken-repo')).toBeTruthy();
+      expect(screen.getByText('Unrecoverable')).toBeTruthy();
+      // Regular activity secondary line is replaced, so the title should NOT
+      // be rendered for orphaned sessions.
+      expect(screen.queryByText('broken-branch')).toBeNull();
+    });
+
+    it('should include "Unrecoverable" in the tooltip for orphaned active session', async () => {
+      const orphaned = createMockWorktreeSession({
+        repositoryName: 'broken-repo',
+        title: 'broken-branch',
+        recoveryState: 'orphaned',
+      });
+      const sessions = [createSessionWithActivity(orphaned, 'idle')];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const sessionButton = screen.getByText('broken-repo').closest('button')!;
+      expect(sessionButton.getAttribute('title')).toContain('Unrecoverable');
+    });
+
+    it('should render "Unrecoverable" label for orphaned sessions in the paused list', async () => {
+      const orphaned = createMockWorktreeSession({
+        repositoryName: 'orphan-paused',
+        title: 'paused-title',
+        pausedAt: new Date().toISOString(),
+        recoveryState: 'orphaned',
+      });
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} pausedSessions={[orphaned]} />
+      );
+
+      // Expand the paused accordion
+      const pausedButton = screen.getByText('Paused').closest('button')!;
+      fireEvent.click(pausedButton);
+
+      expect(screen.getByText('orphan-paused')).toBeTruthy();
+      expect(screen.getByText('Unrecoverable')).toBeTruthy();
     });
   });
 

@@ -27,7 +27,6 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -390,10 +389,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolvedWorkerId = agentWorkers[0].id;
         }
 
-        // 3. Write message file
-        const resolver = new SessionDataPathResolver(
-          targetSession.type === 'worktree' ? targetSession.repositoryName : undefined,
-        );
+        // 3. Resolve the path via SessionManager so we use the canonical
+        //    persisted slug — the in-memory `repositoryName` is a display
+        //    name that may differ from the on-disk slug.
+        const resolver = sessionManager.getPathResolverForSessionId(toSessionId);
+        if (!resolver) {
+          return errorResult(`Cannot resolve data path for target session ${toSessionId}`);
+        }
         const result = await interSessionMessageService.sendMessage({
           toSessionId,
           toWorkerId: resolvedWorkerId,

@@ -14,6 +14,11 @@ import {
 } from './job-types.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import {
+  computeSessionDataBaseDir,
+  InvalidSessionDataScopeError,
+} from '../lib/session-data-path.js';
+import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('job-handlers');
@@ -26,9 +31,20 @@ export function registerJobHandlers(jobQueue: JobQueue, workerOutputFileManager:
   // Handler for deleting all output files for a session
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
-    async ({ sessionId, repositoryName }) => {
-      const resolver = new SessionDataPathResolver(repositoryName);
-      logger.debug({ sessionId, repositoryName }, 'Executing cleanup:session-outputs job');
+    async (payload) => {
+      const { sessionId, scope, slug } = payload;
+      let baseDir: string;
+      try {
+        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
+      } catch (err) {
+        if (err instanceof InvalidSessionDataScopeError) {
+          logger.error({ sessionId, scope, slug, err: err.message }, 'Invalid cleanup payload; skipping');
+          return;
+        }
+        throw err;
+      }
+      const resolver = new SessionDataPathResolver(baseDir);
+      logger.debug({ sessionId, scope, slug }, 'Executing cleanup:session-outputs job');
       await workerOutputFileManager.deleteSessionOutputs(sessionId, resolver);
       logger.info({ sessionId }, 'Session outputs cleanup completed');
     }
@@ -37,9 +53,23 @@ export function registerJobHandlers(jobQueue: JobQueue, workerOutputFileManager:
   // Handler for deleting output file for a single worker
   jobQueue.registerHandler<CleanupWorkerOutputPayload>(
     JOB_TYPES.CLEANUP_WORKER_OUTPUT,
-    async ({ sessionId, workerId, repositoryName }) => {
-      const resolver = new SessionDataPathResolver(repositoryName);
-      logger.debug({ sessionId, workerId, repositoryName }, 'Executing cleanup:worker-output job');
+    async (payload) => {
+      const { sessionId, workerId, scope, slug } = payload;
+      let baseDir: string;
+      try {
+        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
+      } catch (err) {
+        if (err instanceof InvalidSessionDataScopeError) {
+          logger.error(
+            { sessionId, workerId, scope, slug, err: err.message },
+            'Invalid cleanup payload; skipping'
+          );
+          return;
+        }
+        throw err;
+      }
+      const resolver = new SessionDataPathResolver(baseDir);
+      logger.debug({ sessionId, workerId, scope, slug }, 'Executing cleanup:worker-output job');
       await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, resolver);
       logger.info({ sessionId, workerId }, 'Worker output cleanup completed');
     }

@@ -201,8 +201,8 @@ describe('useAppWsEvent', () => {
 
       const ws = MockWebSocket.getLastInstance();
       const mockSessions = [
-        { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] },
-        { id: 'session-2', type: 'quick', locationPath: '/path/2', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] },
+        { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], recoveryState: 'healthy' },
+        { id: 'session-2', type: 'quick', locationPath: '/path/2', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], recoveryState: 'healthy' },
       ];
       const mockActivityStates = [
         { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
@@ -227,7 +227,7 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionCreated }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], recoveryState: 'healthy' };
 
       act(() => {
         ws?.simulateOpen();
@@ -247,7 +247,7 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionUpdated }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], title: 'Updated Title' };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], title: 'Updated Title', recoveryState: 'healthy' };
 
       act(() => {
         ws?.simulateOpen();
@@ -446,6 +446,7 @@ describe('useAppWsEvent', () => {
         createdAt: '2024-01-01',
         workers: [],
         pausedAt: '2026-01-01T00:00:00.000Z',
+        recoveryState: 'healthy',
       };
 
       act(() => {
@@ -466,7 +467,7 @@ describe('useAppWsEvent', () => {
       renderHook(() => useAppWsEvent({ onSessionResumed }));
 
       const ws = MockWebSocket.getLastInstance();
-      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
+      const mockSession = { id: 'session-1', type: 'quick', locationPath: '/path/1', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], recoveryState: 'healthy' };
       const mockActivityStates = [
         { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
       ];

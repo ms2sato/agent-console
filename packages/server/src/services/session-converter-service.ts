@@ -20,18 +20,27 @@ import type {
   InternalTerminalWorker,
 } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
-import type { SessionRepositoryCallbacks } from './session-manager.js';
+
+/**
+ * Minimum repository view needed by the converter to attach
+ * `repositoryName` and `isMainWorktree` to public session objects.
+ */
+export interface RepositoryDisplayLookup {
+  getRepositoryDisplayInfo(repositoryId: string): { name: string; path: string } | undefined;
+}
 
 /**
  * Dependencies injected into SessionConverterService.
- * Uses getter callbacks to avoid capturing mutable references at construction time.
  */
 export interface SessionConverterDeps {
-  getRepositoryCallbacks: () => SessionRepositoryCallbacks | null;
+  repositoryDisplayLookup: RepositoryDisplayLookup;
   toPublicWorker: (worker: InternalWorker) => Worker;
   toPersistedWorker: (worker: InternalWorker) => PersistedWorker;
   getServerPid: () => number | null;
 }
+
+/** Re-export so tests can reference the same type the service expects. */
+export type { RepositoryDisplayLookup as SessionConverterRepositoryLookup };
 
 export class SessionConverterService {
   private readonly deps: SessionConverterDeps;
@@ -85,6 +94,11 @@ export class SessionConverterService {
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
       templateVars: session.templateVars,
+      dataScope: session.dataScope,
+      dataScopeSlug: session.dataScopeSlug,
+      recoveryState: session.recoveryState,
+      orphanedAt: session.orphanedAt,
+      orphanedReason: session.orphanedReason,
     };
 
     return session.type === 'worktree'
@@ -113,14 +127,11 @@ export class SessionConverterService {
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
+      recoveryState: session.recoveryState ?? 'healthy',
     };
 
     if (session.type === 'worktree') {
-      const repositoryCallbacks = this.deps.getRepositoryCallbacks();
-      // Get repository name via callback to avoid circular dependency
-      const repository = repositoryCallbacks?.isInitialized()
-        ? repositoryCallbacks.getRepository(session.repositoryId)
-        : undefined;
+      const repository = this.deps.repositoryDisplayLookup.getRepositoryDisplayInfo(session.repositoryId);
 
       const worktreeSession: WorktreeSession = {
         ...base,
@@ -187,14 +198,11 @@ export class SessionConverterService {
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
       createdBy: p.createdBy,
+      recoveryState: p.recoveryState ?? 'healthy',
     };
 
     if (p.type === 'worktree') {
-      const repositoryCallbacks = this.deps.getRepositoryCallbacks();
-      // Get repository name via callback to avoid circular dependency
-      const repository = repositoryCallbacks?.isInitialized()
-        ? repositoryCallbacks.getRepository(p.repositoryId)
-        : undefined;
+      const repository = this.deps.repositoryDisplayLookup.getRepositoryDisplayInfo(p.repositoryId);
 
       const worktreeSession: WorktreeSession = {
         ...base,

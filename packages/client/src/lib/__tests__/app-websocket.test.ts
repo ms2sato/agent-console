@@ -322,7 +322,7 @@ describe('app-websocket', () => {
       ws?.simulateOpen();
 
       // Test all valid message types (sessions must include all required fields for schema validation)
-      const mockSession = { id: 'test', type: 'quick', locationPath: '/test', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [] };
+      const mockSession = { id: 'test', type: 'quick', locationPath: '/test', status: 'active', activationState: 'running', createdAt: '2024-01-01', workers: [], recoveryState: 'healthy' };
       const validTypes = [
         { type: 'sessions-sync', sessions: [], activityStates: [] },
         { type: 'session-created', session: mockSession },

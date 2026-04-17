@@ -116,6 +116,20 @@ describe('findTestFiles', () => {
   });
 });
 
+describe('requiresTestCoverage — -types.ts(x) exemption', () => {
+  it('exempts -types.ts files from coverage requirement', () => {
+    expect(requiresTestCoverage('packages/server/src/services/internal-types.ts')).toBe(false);
+    expect(requiresTestCoverage('packages/server/src/services/repository-lookup-types.ts')).toBe(false);
+  });
+  it('exempts -types.tsx files from coverage requirement', () => {
+    expect(requiresTestCoverage('packages/client/src/components/foo-types.tsx')).toBe(false);
+  });
+  it('still requires coverage for regular files', () => {
+    expect(requiresTestCoverage('packages/server/src/services/foo.ts')).toBe(true);
+    expect(requiresTestCoverage('packages/client/src/components/Foo.tsx')).toBe(true);
+  });
+});
+
 describe('detectIntegrationTestNeeds', () => {
   it('returns null when no triggering files exist', () => {
     const files = ['CLAUDE.md', 'package.json'];
