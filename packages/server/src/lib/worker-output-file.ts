@@ -49,9 +49,16 @@ interface PendingFlush {
   /**
    * Timestamp (ms) of the last "abnormal accumulation" diagnostic warn for this
    * worker. Used to throttle the hot-path warn log in `bufferOutput` so it
-   * emits at most once per 10s per worker.
+   * emits at most once per `diagnosticThrottleMs` per worker.
    */
   lastDiagnosticWarnAt?: number;
+  /**
+   * Count of consecutive flush failures since the last successful flush. Used
+   * to drive exponential backoff for retry scheduling and to prevent tight
+   * retry loops under persistent write errors (EACCES, EISDIR, ENOSPC, ...).
+   * Reset to 0 after a successful write in `flushBuffer`.
+   */
+  consecutiveFailures: number;
 }
 
 /**
@@ -62,6 +69,28 @@ export interface WorkerOutputFileConfig {
   flushThreshold: number;
   flushInterval: number;
   fileMaxSize: number;
+  /**
+   * Upper bound (ms) for the exponential backoff applied to retry timers after
+   * consecutive flush failures. The effective delay is
+   * `min(flushInterval * 2^consecutiveFailures, maxBackoffMs)`.
+   */
+  maxBackoffMs: number;
+  /**
+   * Hard cap (characters) on the pending buffer size. When exceeded (typically
+   * under persistent write failure), the oldest data is dropped to prevent
+   * unbounded memory growth. An error is logged describing the drop.
+   */
+  maxPendingSize: number;
+  /**
+   * Multiplier applied to `flushThreshold` to compute the "abnormal pending
+   * accumulation" diagnostic warn threshold.
+   */
+  abnormalPendingMultiplier: number;
+  /**
+   * Minimum interval (ms) between consecutive diagnostic warn logs for the
+   * same worker. Prevents log floods on the hot path.
+   */
+  diagnosticThrottleMs: number;
 }
 
 /**
@@ -75,10 +104,15 @@ export class WorkerOutputFileManager {
   private readonly config: WorkerOutputFileConfig;
 
   constructor(config?: Partial<WorkerOutputFileConfig>) {
+    const fileMaxSize = config?.fileMaxSize ?? serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE;
     this.config = {
       flushThreshold: config?.flushThreshold ?? serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD,
       flushInterval: config?.flushInterval ?? serverConfig.WORKER_OUTPUT_FLUSH_INTERVAL,
-      fileMaxSize: config?.fileMaxSize ?? serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE,
+      fileMaxSize,
+      maxBackoffMs: config?.maxBackoffMs ?? 30_000,
+      maxPendingSize: config?.maxPendingSize ?? fileMaxSize,
+      abnormalPendingMultiplier: config?.abnormalPendingMultiplier ?? 4,
+      diagnosticThrottleMs: config?.diagnosticThrottleMs ?? 10_000,
     };
   }
 
@@ -191,19 +225,40 @@ export class WorkerOutputFileManager {
     let pending = this.pendingFlushes.get(key);
 
     if (!pending) {
-      pending = { buffer: '', timer: null, resolver };
+      pending = { buffer: '', timer: null, resolver, consecutiveFailures: 0 };
       this.pendingFlushes.set(key, pending);
     }
 
     pending.buffer += data;
 
+    // Hard cap: under persistent write failure (EACCES/EISDIR/ENOSPC/...) the
+    // buffer would otherwise grow unboundedly as new output arrives while
+    // retries keep failing. Drop oldest data to prevent OOM. A surrogate pair
+    // or multi-byte UTF-8 sequence may be split at the boundary, but this is
+    // an acceptable loss given the alternative is process crash — and we've
+    // already logged error-level warnings leading up to this point.
+    if (pending.buffer.length > this.config.maxPendingSize) {
+      const droppedChars = pending.buffer.length - this.config.maxPendingSize;
+      logger.error(
+        {
+          sessionId,
+          workerId,
+          droppedChars,
+          maxPendingSize: this.config.maxPendingSize,
+          consecutiveFailures: pending.consecutiveFailures,
+        },
+        'Pending buffer exceeded cap; dropping oldest data to prevent OOM',
+      );
+      pending.buffer = pending.buffer.slice(droppedChars);
+    }
+
     // Diagnostic: detect abnormal pending buffer accumulation (issue #631).
     // Throttled per-worker to avoid flooding logs on the hot path.
-    const abnormalThreshold = this.config.flushThreshold * 4;
+    const abnormalThreshold = this.config.flushThreshold * this.config.abnormalPendingMultiplier;
     if (pending.buffer.length > abnormalThreshold) {
       const now = Date.now();
       const last = pending.lastDiagnosticWarnAt ?? 0;
-      if (now - last >= 10_000) {
+      if (now - last >= this.config.diagnosticThrottleMs) {
         pending.lastDiagnosticWarnAt = now;
         logger.warn(
           {
@@ -232,6 +287,11 @@ export class WorkerOutputFileManager {
   /**
    * Schedule a flush timer if one is not already scheduled.
    * Used by both the initial timer path and the retry path after a failed flush.
+   *
+   * Applies exponential backoff based on `consecutiveFailures` to prevent
+   * tight retry loops under persistent write failure. The first attempt after
+   * a successful flush uses the base `flushInterval`; each subsequent failure
+   * doubles the delay up to `maxBackoffMs`.
    */
   private scheduleFlushTimer(sessionId: string, workerId: string): void {
     const key = this.getKey(sessionId, workerId);
@@ -239,24 +299,42 @@ export class WorkerOutputFileManager {
     if (!pending || pending.timer) {
       return;
     }
+    const delay = Math.min(
+      this.config.flushInterval * Math.pow(2, pending.consecutiveFailures),
+      this.config.maxBackoffMs,
+    );
     pending.timer = setTimeout(() => {
       void this.flushAndScheduleRetry(sessionId, workerId);
-    }, this.config.flushInterval);
+    }, delay);
   }
 
   /**
    * Fire-and-forget wrapper for callers (threshold trigger, flush timer) that
-   * cannot handle errors. Awaits the flush, and if it fails, schedules a retry
-   * via the flush timer. The buffer has already been restored by `flushBuffer`.
+   * cannot handle errors. Awaits the flush, and if it fails, increments
+   * `consecutiveFailures` and schedules a retry via the flush timer (which
+   * applies exponential backoff). The buffer has already been restored by
+   * `flushBuffer`.
    */
   private async flushAndScheduleRetry(sessionId: string, workerId: string): Promise<void> {
     try {
       await this.flushBuffer(sessionId, workerId);
     } catch (error) {
-      // Buffer was restored by flushBuffer's catch block — schedule retry.
+      // Buffer was restored by flushBuffer's catch block. Increment the
+      // consecutive-failure counter so the retry timer applies the correct
+      // backoff. Note: the pending entry may have been removed during the
+      // failed flush (worker reset); in that case there's nothing to track.
+      const pending = this.pendingFlushes.get(this.getKey(sessionId, workerId));
+      if (pending) {
+        pending.consecutiveFailures += 1;
+      }
       this.scheduleFlushTimer(sessionId, workerId);
       logger.error(
-        { sessionId, workerId, err: error },
+        {
+          sessionId,
+          workerId,
+          err: error,
+          consecutiveFailures: pending?.consecutiveFailures ?? 0,
+        },
         'Failed to flush output to file; buffer restored, retry scheduled',
       );
     }
@@ -350,6 +428,15 @@ export class WorkerOutputFileManager {
         'flushBuffer write step failed',
       );
       throw error;
+    }
+
+    // Step 1 succeeded. Reset the consecutive-failure counter so future retry
+    // scheduling starts from the base `flushInterval` rather than a backed-off
+    // delay. Do this BEFORE the non-critical Step 2 so a stat/truncate error
+    // does not cause spurious backoff on the next retry.
+    const pendingAfterSuccess = this.pendingFlushes.get(key);
+    if (pendingAfterSuccess) {
+      pendingAfterSuccess.consecutiveFailures = 0;
     }
 
     // Step 2: Post-write file-size check. Non-critical — data is already on disk.
@@ -689,25 +776,35 @@ export class WorkerOutputFileManager {
     // caller (which only wants a best-effort offset).
     await this.flushAndScheduleRetry(sessionId, workerId);
 
+    // Include any bytes still buffered (e.g., because the flush above failed
+    // and the buffer was restored). Without this, the returned offset would
+    // regress below a previously reported value — breaking the client's
+    // incremental sync invariant that offsets are monotonically non-decreasing.
+    const key = this.getKey(sessionId, workerId);
+    const getPendingBytes = (): number => {
+      const pending = this.pendingFlushes.get(key);
+      return Buffer.byteLength(pending?.buffer ?? '', 'utf-8');
+    };
+
     try {
       const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (!actualFile) {
-        return 0;
+        return getPendingBytes();
       }
 
       if (actualFile.isCompressed) {
         // For legacy compressed files, decompress to get the actual content size
         const compressedBuffer = await fs.readFile(actualFile.path);
         const decompressed = gunzipSync(compressedBuffer);
-        return decompressed.length;
+        return decompressed.length + getPendingBytes();
       } else {
         // For uncompressed files, file size equals content size
         const stats = await fs.stat(actualFile.path);
-        return stats.size;
+        return stats.size + getPendingBytes();
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return 0;
+        return getPendingBytes();
       }
       logger.error({ sessionId, workerId, err: error }, 'Failed to get file offset');
       return 0;
