@@ -54,6 +54,22 @@ run_process({ command: "node .claude/skills/orchestrator/sprint-retro.js" })
 ```
 The script guides you through all retrospective steps interactively via STDIN/STDOUT and instructs you to create a TaskCreate checklist for progress tracking. Do NOT skip the script and attempt the steps manually — the script exists precisely because manual execution leads to step omission.
 
+### Objective metrics block (Phase 1)
+
+Before the first interactive step, the script prints an objective-metrics report for the sprint's merged PRs: commits per PR, CI iterations, time-to-mergeable, CodeRabbit findings, push-to-fail ratio. Flags fire for PRs whose values exceed 2× the sprint median (minimum 3 PRs needed for aggregates). Use the flags as discussion starters for the incident review step — do not treat them as verdicts.
+
+Data sources are live `gh api` / `gh run list` / `gh pr list` calls; no persistent storage yet. If gh fails for a specific PR, that PR's affected fields show `n/a` and the error is listed at the end of the block; the rest of the report still renders.
+
+**Environment overrides** (optional):
+
+| Variable | Effect |
+|---|---|
+| `SPRINT_SINCE` / `SPRINT_UNTIL` | ISO dates (`YYYY-MM-DD`) for the `gh pr list --search "merged:>=..."` query |
+| `SPRINT_PR_NUMBERS` | Space- or comma-separated PR numbers, used verbatim in place of auto-discovery |
+| `SPRINT_LABEL` | Header label for the report (defaults to today's date) |
+
+Answer `Y` (default) at the `Continue to retro questions?` prompt to proceed to the interactive steps. Answer `n` only if the metrics reveal something that warrants re-planning the retrospective itself.
+
 **Process improvement PR convention** (referenced by the script's Step 4):
 - All improvements go into a single PR: branch `docs/sprint-retro-YYYY-MM-DD`, title `docs: sprint retrospective improvements (YYYY-MM-DD)`
 - Use `EnterWorktree` when the first improvement is agreed upon; commit all subsequent improvements to the same worktree

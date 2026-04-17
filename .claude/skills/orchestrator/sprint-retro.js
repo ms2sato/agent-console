@@ -10,6 +10,14 @@
  *   Run as interactive process via run_process MCP tool.
  */
 
+import {
+  collectSprintMetrics,
+  findMergedPrNumbers,
+  formatMetricsReport,
+  defaultExec,
+  createCache,
+} from './sprint-metrics.js';
+
 // --- STDIN reading (null-byte delimited) ---
 
 /**
@@ -179,9 +187,59 @@ function printSummary(responses, steps) {
   }
 }
 
+// --- Metrics block ---
+
+function isAffirmative(answer) {
+  if (!answer) return true; // default [Y/n] → Y on empty
+  const trimmed = answer.trim().toLowerCase();
+  return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
+}
+
+async function runMetricsBlock({
+  readResponse,
+  exec = defaultExec,
+  cache = createCache(),
+  env = process.env,
+  collect = collectSprintMetrics,
+  discover = findMergedPrNumbers,
+  format = formatMetricsReport,
+} = {}) {
+  const sprintLabel = env.SPRINT_LABEL || new Date().toISOString().slice(0, 10);
+  const since = env.SPRINT_SINCE || null;
+  const until = env.SPRINT_UNTIL || null;
+
+  let prNumbers;
+  if (env.SPRINT_PR_NUMBERS) {
+    prNumbers = env.SPRINT_PR_NUMBERS
+      .split(/[\s,]+/)
+      .map(s => Number.parseInt(s, 10))
+      .filter(n => Number.isFinite(n));
+  } else {
+    try {
+      prNumbers = discover({ exec, since, until });
+    } catch {
+      prNumbers = [];
+    }
+  }
+
+  if (!Array.isArray(prNumbers) || prNumbers.length === 0) {
+    console.log('\n--- Sprint Objective Metrics ---');
+    console.log('(no merged PRs found for this sprint window — skipping metrics)');
+    console.log();
+    return { prNumbers: [], proceed: true };
+  }
+
+  console.log();
+  const result = collect({ exec, cache, prNumbers });
+  console.log(format(result, { sprintLabel }));
+  console.log('Continue to retro questions? [Y/n]');
+  const answer = await readResponse();
+  return { prNumbers, proceed: isAffirmative(answer) };
+}
+
 // --- Main flow ---
 
-async function runRetro({ stdin = process.stdin } = {}) {
+async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock } = {}) {
   console.log('=== Sprint Retrospective ===');
   console.log();
   console.log('Before starting, create a TaskCreate checklist for tracking progress:');
@@ -197,6 +255,12 @@ async function runRetro({ stdin = process.stdin } = {}) {
 
   const responses = {};
   const readResponse = createStdinReader(stdin);
+
+  const { proceed } = await metricsRunner({ readResponse });
+  if (!proceed) {
+    console.log('Retrospective interrupted by user after metrics block.');
+    return;
+  }
 
   for (const step of steps) {
     printStepHeader(step);
@@ -215,6 +279,8 @@ export {
   printStepHeader,
   printSummary,
   runRetro,
+  runMetricsBlock,
+  isAffirmative,
 };
 
 // --- Main ---
