@@ -6,23 +6,26 @@ Tooling for **structural** cohesion/coupling review — the part of code quality
 - `knip` — dead code (unused files, exports, dependencies).
 - `madge` — circular dependency detection + graph visualization.
 
-Run everything locally:
+`bun run lint` is the recommended single command — it runs the full structural lint suite. Individual entries remain for targeted runs.
 
 ```bash
-bun run check:structure
+bun run lint              # alias for lint:structure (recommended)
+bun run lint:structure    # dep-cruiser + madge + knip
 ```
 
 Or individually:
 
 | Command | Purpose |
 |---------|---------|
-| `bun run check:deps` | dependency-cruiser against baseline (`--ignore-known`) |
-| `bun run check:deps:all` | dependency-cruiser, including known violations |
-| `bun run check:deps:baseline` | regenerate `.dependency-cruiser-known-violations.json` |
-| `bun run check:cycles` | madge circular detection (excludes via `.madgerc`) |
-| `bun run check:cycles:all` | madge without the grandfathering excludes |
-| `bun run check:unused` | knip dead-code / unused-deps |
+| `bun run lint:deps` | dependency-cruiser against baseline (`--ignore-known`) |
+| `bun run lint:deps:all` | dependency-cruiser, including known violations |
+| `bun run lint:deps:baseline` | regenerate `.dependency-cruiser-known-violations.json` |
+| `bun run lint:cycles` | madge circular detection (excludes via `.madgerc`) |
+| `bun run lint:cycles:all` | madge without the grandfathering excludes |
+| `bun run lint:unused` | knip dead-code / unused-deps |
 | `bun run graph:deps` | render the dependency graph to `dependency-graph.svg` (requires Graphviz `dot`) |
+
+> **Note.** ESLint is not currently installed in this project. When it is introduced, add a `lint:eslint` script and chain it from the `lint` umbrella (e.g., `"lint": "bun run lint:eslint && bun run lint:structure"`) so both style and structural checks run under the same command.
 
 CI runs all three on every PR — see `.github/workflows/structural-metrics.yml`.
 
@@ -80,7 +83,7 @@ Every rule in `.dependency-cruiser.cjs` carries a `comment` field describing:
 
 1. Open `.dependency-cruiser.cjs` and add a rule object to the `forbidden` array.
 2. Required fields: `name` (kebab-case), `severity` (`error` | `warn` | `info`), `comment` (explain *why*), `from`, `to`.
-3. Run `bun run check:deps:all` to see baseline violations.
+3. Run `bun run lint:deps:all` to see baseline violations.
 4. Classify each finding: fix, grandfather, or revise the rule (see below).
 5. Update this document's rule table.
 
