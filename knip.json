@@ -1,0 +1,83 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "error",
+    "optionalPeerDependencies": "off",
+    "unlisted": "warn",
+    "binaries": "off",
+    "unresolved": "warn",
+    "exports": "off",
+    "types": "off",
+    "nsExports": "off",
+    "nsTypes": "off",
+    "enumMembers": "off",
+    "duplicates": "warn"
+  },
+  "ignore": [
+    ".claude/**",
+    "packages/server/vitest.config.ts"
+  ],
+  "workspaces": {
+    ".": {
+      "ignoreDependencies": [
+        "bumpp",
+        "concurrently"
+      ]
+    },
+    "packages/shared": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "packages/server": {
+      "entry": [
+        "src/index.ts!",
+        "build.ts",
+        "src/app-context.ts",
+        "src/**/__tests__/**/*.test.ts",
+        "src/**/__tests__/**/*.isolated-test.ts",
+        "src/**/__tests__/utils/**/*.ts"
+      ],
+      "project": ["src/**/*.ts"],
+      "ignoreDependencies": [
+        "pino-pretty",
+        "@types/mock-fs",
+        "mock-fs"
+      ],
+      "ignore": [
+        "src/services/notifications/index.ts"
+      ]
+    },
+    "packages/client": {
+      "entry": [
+        "src/main.tsx!",
+        "src/routes/**/*.{ts,tsx}",
+        "src/**/__tests__/**/*.test.{ts,tsx}",
+        "src/test/setup.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignoreDependencies": [
+        "autoprefixer",
+        "postcss",
+        "@tailwindcss/postcss",
+        "tailwindcss",
+        "@types/diff",
+        "class-variance-authority",
+        "happy-dom"
+      ],
+      "ignore": [
+        "src/routeTree.gen.ts",
+        "src/components/workers/index.ts",
+        "src/hooks/index.ts"
+      ]
+    },
+    "packages/integration": {
+      "entry": [
+        "src/setup.ts",
+        "src/**/*.test.{ts,tsx}"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  }
+}

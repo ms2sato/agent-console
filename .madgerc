@@ -1,0 +1,6 @@
+{
+  "excludeRegExp": [
+    "(session-pause-resume-service|session-converter-service|SessionSettings|QuickSessionSettings|SessionPage|QuickWorktreeDialog|useCreateWorktree|components/sessions/index|components/worktrees/index|routes/__root)\\.(ts|tsx)$"
+  ],
+  "fileExtensions": ["ts", "tsx"]
+}

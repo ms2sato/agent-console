@@ -1,0 +1,105 @@
+[
+  {
+    "type": "cycle",
+    "from": "packages/client/src/components/QuickSessionSettings.tsx",
+    "to": "packages/client/src/components/sessions/index.ts",
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/client/src/components/sessions/index.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/client/src/components/sessions/SessionPage.tsx",
+        "dependencyTypes": [
+          "local",
+          "export"
+        ]
+      },
+      {
+        "name": "packages/client/src/components/QuickSessionSettings.tsx",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "cycle",
+    "from": "packages/client/src/components/sessions/SessionPage.tsx",
+    "to": "packages/client/src/components/SessionSettings.tsx",
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/client/src/components/SessionSettings.tsx",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/client/src/components/sessions/index.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/client/src/components/sessions/SessionPage.tsx",
+        "dependencyTypes": [
+          "local",
+          "export"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "cycle",
+    "from": "packages/client/src/components/worktrees/index.ts",
+    "to": "packages/client/src/components/worktrees/QuickWorktreeDialog.tsx",
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/client/src/components/worktrees/QuickWorktreeDialog.tsx",
+        "dependencyTypes": [
+          "local",
+          "export"
+        ]
+      },
+      {
+        "name": "packages/client/src/hooks/useCreateWorktree.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/client/src/routes/__root.tsx",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/client/src/components/worktrees/index.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  }
+]
