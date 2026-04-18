@@ -165,7 +165,7 @@ Append one row per merged agent-console PR brewed during the Pilot window. Reaso
 
 | Date | PR | Decision | Reason / Link |
 |------|------|------|------|
-| _(first row appended on first Pilot brewing after this PR merges)_ | | | |
+| 2026-04-18 | [#672](https://github.com/ms2sato/agent-console/pull/672) | skip | `docs-only`: diff touches only `.claude/rules/design-principles.md` (+2 insertions). Added content is a process principle ("grep for sibling call sites before root-cause fixes"), not an architectural code invariant. All 4 catalog criteria fail — no mechanical detection heuristic, no named failure-mode at the code/data level. |
 
 For `propose` rows, link to the proposal file in `_proposals/` in the "Reason / Link" column. For `skip` rows, write the reason category and a short explanation.
 
