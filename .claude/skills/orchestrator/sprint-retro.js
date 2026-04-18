@@ -8,6 +8,20 @@
  *
  * Usage:
  *   Run as interactive process via run_process MCP tool.
+ *
+ * Environment variables (all optional):
+ *   SPRINT_PR_NUMBERS  Explicit whitespace/comma-separated list of PR numbers
+ *                      (e.g., "665,666,667"). Skips date-window discovery. Use
+ *                      this when the sprint PRs are already known.
+ *   SPRINT_SINCE       ISO date lower bound for PR discovery (e.g., "2026-04-18").
+ *   SPRINT_UNTIL       ISO date upper bound for PR discovery.
+ *   SPRINT_LABEL       Label used in the metrics report header (default: today in
+ *                      ISO). Does not affect which PRs are selected.
+ *
+ * Default behaviour when none of SPRINT_PR_NUMBERS / SPRINT_SINCE / SPRINT_UNTIL
+ * is set: SPRINT_SINCE is computed as 14 days before today (YYYY-MM-DD). Without
+ * this default, the query would return the most recent 100 merged PRs and spend
+ * several minutes fetching per-PR metrics — enough to look like a hang.
  */
 
 import {
@@ -195,6 +209,46 @@ function isAffirmative(answer) {
   return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
 }
 
+const DEFAULT_WINDOW_DAYS = 14;
+
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Compute the default `since` date (N days before today, ISO YYYY-MM-DD).
+ * Exported for testing; callers in this file use it via `resolveDateWindow`.
+ */
+export function computeDefaultSince(now = new Date(), windowDays = DEFAULT_WINDOW_DAYS) {
+  const d = new Date(now);
+  d.setUTCDate(d.getUTCDate() - windowDays);
+  return isoDate(d);
+}
+
+/**
+ * Resolve the effective `since` and `until` based on env vars, applying the
+ * default window only when no explicit bounds were given and PR numbers were
+ * not supplied directly.
+ */
+export function resolveDateWindow({ env, now = new Date(), windowDays = DEFAULT_WINDOW_DAYS } = {}) {
+  const since = env.SPRINT_SINCE || null;
+  const until = env.SPRINT_UNTIL || null;
+  const hasPrNumbers = Boolean(env.SPRINT_PR_NUMBERS);
+  if (hasPrNumbers) {
+    return { since, until, defaultApplied: false };
+  }
+  if (!since && !until) {
+    return { since: computeDefaultSince(now, windowDays), until: null, defaultApplied: true };
+  }
+  return { since, until, defaultApplied: false };
+}
+
+function defaultProgressReporter(write = process.stderr.write.bind(process.stderr)) {
+  return ({ index, total, prNumber }) => {
+    write(`[${index}/${total}] fetching PR #${prNumber}...\n`);
+  };
+}
+
 async function runMetricsBlock({
   readResponse,
   exec = defaultExec,
@@ -203,10 +257,11 @@ async function runMetricsBlock({
   collect = collectSprintMetrics,
   discover = findMergedPrNumbers,
   format = formatMetricsReport,
+  now = new Date(),
+  onProgress = () => {},
 } = {}) {
-  const sprintLabel = env.SPRINT_LABEL || new Date().toISOString().slice(0, 10);
-  const since = env.SPRINT_SINCE || null;
-  const until = env.SPRINT_UNTIL || null;
+  const sprintLabel = env.SPRINT_LABEL || isoDate(now);
+  const { since, until, defaultApplied } = resolveDateWindow({ env, now });
 
   let prNumbers;
   if (env.SPRINT_PR_NUMBERS) {
@@ -215,6 +270,9 @@ async function runMetricsBlock({
       .map(s => Number.parseInt(s, 10))
       .filter(n => Number.isFinite(n));
   } else {
+    if (defaultApplied) {
+      console.log(`(no SPRINT_SINCE / SPRINT_UNTIL / SPRINT_PR_NUMBERS set — applying default window: merged:>=${since})`);
+    }
     try {
       prNumbers = discover({ exec, since, until });
     } catch {
@@ -230,7 +288,7 @@ async function runMetricsBlock({
   }
 
   console.log();
-  const result = collect({ exec, cache, prNumbers });
+  const result = collect({ exec, cache, prNumbers, onProgress });
   console.log(format(result, { sprintLabel }));
   console.log('Continue to retro questions? [Y/n]');
   const answer = await readResponse();
@@ -256,7 +314,7 @@ async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock
   const responses = {};
   const readResponse = createStdinReader(stdin);
 
-  const { proceed } = await metricsRunner({ readResponse });
+  const { proceed } = await metricsRunner({ readResponse, onProgress: defaultProgressReporter() });
   if (!proceed) {
     console.log('Retrospective interrupted by user after metrics block.');
     return;
@@ -282,6 +340,7 @@ export {
   runMetricsBlock,
   isAffirmative,
 };
+export { DEFAULT_WINDOW_DAYS };
 
 // --- Main ---
 
