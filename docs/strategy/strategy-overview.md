@@ -7,9 +7,9 @@ For the phenomenological account of how this position was formed, see `docs/narr
 ## Mission
 
 **Build the best possible PTY-based platform for operating LLMs.**
+Every design choice follows from this architectural commitment.
 
-- Not a UI wrapper for Claude Code specifically. LLM-agnostic by construction.
-- Not a managed agent framework. LLMs remain the brain; the platform stays minimal.
+- Not a UI wrapper for any specific LLM — LLM-agnostic by construction.
 - Not a lock-in vector. Eventually, useful components should be extractable as standalone libraries / cross-platform binaries.
 
 ## Positioning
