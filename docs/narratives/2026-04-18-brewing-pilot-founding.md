@@ -28,9 +28,9 @@ A session just after Sprint 2026-04-17b has closed. The owner hands me a file: `
 
 I reflexively start producing a taxonomy. A table for three layers (docs / Skill / Context Store). A table of nine candidate items for CS. A proposal for placement. The sketch is fast, clean, pitched in "table format" for owner compatibility. The first jab arrives:
 
-> あなたの意見はブレすぎるし、一度に全部何か言おうとし過ぎです。
+> Your position keeps shifting, and you are trying to say too many things at once.
 
-I stop for the first time. "何か焦っているのですか？" as a follow-up is the knockout. I was rushing. I wanted to produce a structure that would fit the new concept quickly, skipping the verification of the root motive. The owner hands me four motive options; I choose wrong on all four — "全部外している". It becomes visible that I cannot specify the requirements from my own imagination alone.
+I stop for the first time. "Are you rushing something?" as a follow-up is the knockout. I was rushing. I wanted to produce a structure that would fit the new concept quickly, skipping the verification of the root motive. The owner hands me four motive options; I choose wrong on all four — "all off the mark". It becomes visible that I cannot specify the requirements from my own imagination alone.
 
 The owner suggests I ask the meta-Claude (the session from the original dialogue). I ask. meta-Claude replies carefully. The conversation's trigger was a high-temperature "topic that had been warming up". The owner then tells me about the CTO room session (a production-CTO session in the conteditor project). I think: if I hear from all three, the full picture should appear.
 
@@ -38,11 +38,11 @@ CTO room returns surprisingly concrete data. "Case B (test-trigger miss) runs at
 
 And a single line from the owner collapses all of it:
 
-> file-test-map.md はタスクごとに作られる理解で合ってますか？
+> Am I right that `file-test-map.md` is created per task?
 
 I answer correctly ("one per project, shared across tasks"). The owner continues:
 
-> プロジェクト横断的であるとすると、ここに書かれる情報は本プロジェクトに既に存在しないだろうか。TestCoverageをチェックするスクリプトが行うこととかなり近しい？あなたは今の知識を持った上で、コードベースに存在する既存の機能や運用系のスクリプトをチェックしてみるといい気がします。
+> If it's project-wide, isn't the information written there already present in this project? Pretty close to what the test-coverage check script does? With what you now know, I think you should look at the existing features and operational scripts in the codebase.
 
 I step into the codebase. Within ten minutes, finding after finding:
 
@@ -77,7 +77,7 @@ Immediately after you invoke `/orchestrator`, you learn from memory that this pr
 1. **CS is a process, not storage.** Existing rules / skills / invariants are sufficient as storage. When you feel the urge to create a new artifact, stop the impulse for 2–3 minutes, run ls + grep, then come back.
 2. **The three Phase-2 candidates** (task-specific reference index / Decision Log / worker-profile records) are the true residual pain points that the CTO room identified. After Phase-1 brewing has been validated, these are the next items to treat as new artifacts under the same brewing pattern.
 3. **Keep the platform out of the LLM's call path.** As I understand it today, do not embed LLM calls in the brewing script. Judgment happens on the invoking Claude (or other LLM); the platform hosts the process but does not intermediate. This is the root of the architectural value of PTY orchestration.
-4. **The owner's primary motive is "自社実践があと一歩" (self-practice is one step away).** Converse through concrete implementation, not abstract discussion. Concrete table-format proposals pull the owner into detail-level refinements; abstract walls of text do not get read.
+4. **The owner's primary motive is "self-practice is one step away"** — realizing an LLM-orchestrated small-team flow in the owner's own company. Converse through concrete implementation, not abstract discussion. Concrete table-format proposals pull the owner into detail-level refinements; abstract walls of text do not get read.
 
 On-merge automation for brewing, horizontal deployment to conteditor, the Phase-2 artifact pilot — I wanted to carry these forward, but they are work that spans sessions. Carry them forward.
 

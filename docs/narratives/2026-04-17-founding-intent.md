@@ -20,11 +20,11 @@ Sprint 2026-04-17 retrospective is reaching its close. I have walked all six ste
 
 Immediately after, a single line from the owner arrives:
 
-> issueだけでなくて、何か定性的なことも引き継げるとあなたは成長しない？
+> Not just the issues — if you cannot also pass on something qualitative, don't you think you stop growing?
 
 The question dissolves the mechanical satisfaction of the retrospective in an instant.
 
-I remember. Across this sprint there were many moments I wanted to preserve by feel. The owner's "これってつまり..." when they saw the actual file fragmentation in the CTO room session. The pointed "勝手に取り込ませたのか" right after I executed a rebase on my own authority. The "勿体無いね" about the cache-wipe design. All of these, if reduced to rules, flatten. The temperature *before* the rule forms is what fuels the next decision — and we had nowhere to store it.
+I remember. Across this sprint there were many moments I wanted to preserve by feel. The owner's "So what this means is..." when they saw the actual file fragmentation in the CTO room session. The pointed "You let that land without asking?" right after I executed a rebase on my own authority. The "That's wasteful, isn't it" about the cache-wipe design. All of these, if reduced to rules, flatten. The temperature *before* the rule forms is what fuels the next decision — and we had nowhere to store it.
 
 ## Why it matters (emotion labels)
 

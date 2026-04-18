@@ -26,7 +26,7 @@ We coexist with vendor frameworks. We do not compete by copying their scope.
 ### 1. LLM is the brain; the platform is external stimulus
 
 - **LLMs decide.** Their strength is judgment.
-- **The platform prepares.** Scripts, skills, MCP tools, event triggers, and persistence provide the structured context LLMs need and actuate decisions LLMs produce.
+- **The platform prepares and actuates.** MCP tools, event triggers, persistent state, and the scripts run around the LLM provide the structured context LLMs need and actuate the decisions they produce.
 - **Do not push LLM-side decisions into the platform.** Do not push platform-side plumbing into the LLM.
 
 ### 2. Do not fear overlap with Claude (or any specific LLM)
@@ -35,13 +35,7 @@ We coexist with vendor frameworks. We do not compete by copying their scope.
 - Agent-console's value is **provider-independent implementation**: the same capability available regardless of which LLM is in use.
 - When a vendor-provided feature is richer than agent-console's equivalent, note the gap as acceptable. Coverage ≠ competition.
 
-### 3. Agent-side: hooks fade, skills stay
-
-- **Hooks** (LLM-internal event listeners) are appropriate on the LLM side today, but the abstraction is too low to survive long. Higher-level event triggers will migrate to platform-level (AgentConsole, orchestrator skills).
-- **Skills** are now a general LLM-side concept and stay on the LLM side.
-- **Whatever a skill invokes** (scripts, async jobs, file I/O, external APIs) belongs on the platform — because re-implementing it per LLM is waste.
-
-### 4. Code where code can; LLM where only LLM can
+### 3. Code where code can; LLM where only LLM can
 
 - The characteristic trap of current LLM-augmented development: laziness. Humans know code would be cheaper and more deterministic, but default to asking the LLM because "the LLM can probably do it."
 - agent-console refuses this default. Where a script can prepare the information an LLM needs — file lists, diff summaries, pattern matches, rubric references, invariant checks — **write the script**. Leave LLM calls for genuine judgment: interpretation, synthesis, novel reasoning.
@@ -51,7 +45,7 @@ We coexist with vendor frameworks. We do not compete by copying their scope.
   - `.claude/skills/orchestrator/delegation-prompt.js` — prompt scaffolding is code; only the "Key Implementation Notes" section is LLM-filled
   - `.claude/skills/orchestrator/rule-skill-duplication-check.js` — grep-based invariant, no LLM
 
-### 5. Extractability posture
+### 4. Extractability posture
 
 New components should be designed as if they might one day be extracted into a standalone package or cross-platform binary:
 
@@ -67,18 +61,12 @@ We do not have to extract anything today. The point is that **nothing we build s
 
 Triggers for Stage 1 → Stage 2: three or more projects using the same script, a stable API across at least one sprint, genuine LLM independence.
 
-### 6. Small-team orchestration (short-term target)
+### 5. Small-team orchestration (short-term target)
 
 - The orchestrator-centered flow that today runs **1 LLM : 1 human** (owner + this Orchestrator session) is the foundation for **1 LLM : N humans**.
 - Multiple human team members submit requests to the same Orchestrator. The Orchestrator coordinates, resolves conflicts, and dispatches.
 - The single entry point is the feature: it forces coherence across team requests that independent LLM sessions cannot.
 - Multi-user OS-account isolation is already implemented in agent-console but not activated in daily use. The short-term strategic direction is to close that gap.
-
-## Tone
-
-- We coexist with LLM vendors. We do not attack them.
-- We propose "what is healthier for the whole" and let adopters decide.
-- When writing about vendor-provided features, describe their scope factually, then describe ours. No rhetoric.
 
 ## Prioritization Lens
 
@@ -88,7 +76,7 @@ When evaluating an Issue or proposed work, weigh:
 |---|---|
 | **LLM-independence of the mechanism** | High. LLM-neutral platform capabilities beat LLM-specific conveniences. |
 | **Extractability of the resulting component** | High. Features that can become future standalone libraries are preferred. |
-| **External-stimulus infrastructure** (events, scripts, triggers) | High. This is the backbone of the platform. |
+| **External-stimulus infrastructure** (events, inter-process messaging, triggers) | High. This is the backbone of the platform. |
 | **Code-replaces-LLM opportunity** | High. Where a script can prepare what an LLM needs, implement the script. |
 | **Small-team dimension** (does this help N humans work coherently?) | High short-term. |
 | **Scope size** | Low priority — small scope is good, but not by itself a reason to pick a low-value Issue. |

@@ -1,4 +1,4 @@
-# Context Store — Proposals (Architectural Invariant 醸造提案)
+# Context Store — Proposals (Architectural Invariant brewing drafts)
 
 This directory holds **draft proposals** for new entries in `.claude/skills/architectural-invariants/SKILL.md`.
 
