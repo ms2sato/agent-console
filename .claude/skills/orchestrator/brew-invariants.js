@@ -17,6 +17,11 @@
  *   node .claude/skills/orchestrator/brew-invariants.js <PR number>
  *   node .claude/skills/orchestrator/brew-invariants.js 638 > /tmp/brew-638.md
  *
+ * Runtime: standard ESM + `node:child_process` + `node:fs` only. Compatible
+ * with both Node.js (≥20, tested on v24) and Bun (the project's declared
+ * engine). The entry-point check below uses a Node-compatible pattern so
+ * either runner works.
+ *
  * Output: structured markdown on stdout. Redirect to a file, or let the caller
  * pipe into a Claude session / sub-agent prompt.
  */
@@ -80,16 +85,34 @@ function main() {
     process.exit(1);
   }
 
-  // Full diff, truncated for context hygiene
-  const prDiff = exec(`gh pr diff ${prNumber}`) || '(no diff available)';
+  // Full diff, truncated for context hygiene.
+  // If the fetch fails, surface the error visibly in the output rather than
+  // silently substituting a placeholder — a judging Claude that cannot tell
+  // the difference between "empty diff" and "fetch failed" may propose or
+  // skip for the wrong reason.
+  const prDiffRaw = exec(`gh pr diff ${prNumber}`);
+  const prDiff = prDiffRaw !== null
+    ? prDiffRaw
+    : `⚠ Failed to fetch diff for PR #${prNumber}. \`gh pr diff ${prNumber}\` returned no output. The brewing judgment below may be unreliable — retry after verifying gh auth, or run \`gh pr diff ${prNumber}\` manually to diagnose.`;
   const truncatedDiff = truncate(prDiff, MAX_DIFF_LINES);
 
-  // Linked Issue detection (closes / fixes / resolves)
+  // Linked Issue detection (closes / fixes / resolves).
+  // Same principle as the diff: if the linked issue fetch fails, make the
+  // failure visible so the judge does not silently proceed with missing
+  // context.
   let issueSection = '';
   const issueNumber = extractLinkedIssueNumber(prMeta.body);
   if (issueNumber) {
     const issueRaw = exec(`gh issue view ${issueNumber} --json number,title,body`);
-    if (issueRaw) {
+    if (issueRaw === null) {
+      issueSection = [
+        '',
+        `## Linked Issue #${issueNumber}`,
+        '',
+        `⚠ Failed to fetch Issue #${issueNumber}. \`gh issue view ${issueNumber}\` returned no output. The brewing judgment below may be missing intent/context from the linked Issue — retry after verifying gh auth, or fetch the Issue manually.`,
+        '',
+      ].join('\n');
+    } else {
       try {
         const issue = JSON.parse(issueRaw);
         issueSection = [
@@ -99,8 +122,14 @@ function main() {
           issue.body || '(empty body)',
           '',
         ].join('\n');
-      } catch {
-        issueSection = `\n## Linked Issue #${issueNumber}\n\n(failed to fetch)\n`;
+      } catch (err) {
+        issueSection = [
+          '',
+          `## Linked Issue #${issueNumber}`,
+          '',
+          `⚠ Failed to parse Issue #${issueNumber} response as JSON: ${err.message}. The brewing judgment below may be missing intent/context from the linked Issue.`,
+          '',
+        ].join('\n');
       }
     }
   }
@@ -155,6 +184,14 @@ function main() {
   console.log(lines.join('\n'));
 }
 
-if (import.meta.main) {
+// Entry-point check that works on both Node (import.meta.url === file://<arg0>)
+// and Bun (import.meta.main is true). Node ≥20 and Bun both support ESM with
+// `import.meta.url`; preflight-check.js uses the same pattern.
+const isMainModule =
+  import.meta.main === true ||
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('brew-invariants.js');
+
+if (isMainModule) {
   main();
 }
