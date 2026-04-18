@@ -126,7 +126,7 @@ Keep each section concise. The proposal is a **draft** — the owner may rewrite
 
 Do not write a file. Print (or record elsewhere) a single line:
 
-```
+```text
 skip: PR #<N> — <reason category>: <short explanation>
 ```
 
