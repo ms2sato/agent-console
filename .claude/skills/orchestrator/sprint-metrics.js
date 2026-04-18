@@ -377,7 +377,7 @@ export function findMergedPrNumbers({ exec, since, until, repo = DEFAULT_REPO, l
 
 // --- Top-level collector ---
 
-export function collectSprintMetrics({ exec = defaultExec, cache = createCache(), prNumbers, repo = DEFAULT_REPO, thresholdMultiplier } = {}) {
+export function collectSprintMetrics({ exec = defaultExec, cache = createCache(), prNumbers, repo = DEFAULT_REPO, thresholdMultiplier, onProgress } = {}) {
   if (!Array.isArray(prNumbers) || prNumbers.length === 0) {
     return {
       prs: [],
@@ -388,7 +388,12 @@ export function collectSprintMetrics({ exec = defaultExec, cache = createCache()
   }
   const prs = [];
   const errors = [];
-  for (const num of prNumbers) {
+  const total = prNumbers.length;
+  for (let i = 0; i < total; i++) {
+    const num = prNumbers[i];
+    if (typeof onProgress === 'function') {
+      onProgress({ index: i + 1, total, prNumber: num });
+    }
     const metrics = collectPrMetrics({ exec, cache, prNumber: num, repo });
     prs.push(metrics);
     for (const e of metrics.errors) errors.push({ prNumber: num, ...e });
