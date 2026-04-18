@@ -9,6 +9,16 @@ This skill is the rubric for **醸造 (brewing)** — the process of surfacing n
 
 A brewing session takes a single merged PR, asks *"did this PR reveal a class of bug or constraint that should be captured as a new I-N entry?"*, and either writes a draft proposal or records a skip.
 
+## When to invoke
+
+**Pilot period (2026-04-18 — 2026-05-02):** Run brewing after **every merged PR** in agent-console, as step **7f** of the Orchestrator's Post-Merge Flow (see `.claude/skills/orchestrator/core-responsibilities.md` §7f). This is the current operational contract.
+
+**Outside the Pilot window**: TBD. At Pilot end (2026-05-02), owner and Orchestrator evaluate `docs/context-store/brewing-log.md` and `_proposals/` acceptance rate, then decide: continue as-is, tighten / loosen frequency, or retire.
+
+**Not applicable**:
+- PRs that never reach main (closed / abandoned) — skip entirely
+- Horizontal deployments outside agent-console (e.g., conteditor) — have their own Pilot design, not yet underway
+
 ## Role separation
 
 | Component | Role |
@@ -140,7 +150,7 @@ Reason categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`,
 
 - Invoked via: `node .claude/skills/orchestrator/brew-invariants.js <PR>`
 - Results reviewed by: owner (accept → edit catalog) or CTO (pre-review)
-- Metrics tracked in: `docs/context-store/backtest-log.md` (for Pilot) or future dashboards
+- Metrics tracked in: `docs/context-store/brewing-log.md` (§2 Live Pilot Log, updated per §7f invocation) or future dashboards
 
 ## Rubric reminders for the judge (quick reference)
 

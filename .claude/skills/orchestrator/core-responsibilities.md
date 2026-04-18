@@ -168,3 +168,26 @@ Only remove worktrees for sessions that have completed their task and whose PR h
 4. After approval, re-invoke `ExitWorktree` with `action: "remove"` and `discard_changes: true`.
 
 This is a recurring interaction between GitHub's squash-merge default and the tool's strict branch-commit comparison. Do not use `discard_changes: true` proactively without owner approval, even when you are sure the content landed.
+
+### 7f. Brewing (Pilot 2026-04-18 — 2026-05-02)
+
+After 7a-7e, run brewing against the just-merged PR:
+
+```bash
+node .claude/skills/orchestrator/brew-invariants.js <merged-PR>
+```
+
+The script prints structured brewing context (PR metadata, linked Issue, diff) to stdout. Read the context, then apply the rubric in `.claude/skills/brewing/SKILL.md`:
+
+- **If all four catalog criteria hold** (cross-cutting / high-leverage / named failure / concrete incident), and no existing I-N in `.claude/skills/architectural-invariants/SKILL.md` covers it: write a proposal to `docs/context-store/_proposals/I-<next>-<slug>-pr<PR>.md`. Notify the owner via `write_memo` or add the PR to the Review Queue.
+- **Otherwise**: append one row to `docs/context-store/brewing-log.md` under the Live Pilot Log section:
+  ```
+  | YYYY-MM-DD | #<PR> | skip | <reason-category>: <short explanation> |
+  ```
+  Reason categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`, `duplicates-I-<M>`, `other`.
+
+**Why**: Brewing surfaces candidate architectural invariants from shipped code. Running after merge (not before) ensures the diff is stable and the pattern has actually landed in main. Propagation value: a new invariant added to the catalog protects all subsequent PRs via acceptance-check Q8, not just the PR that surfaced it.
+
+**Pilot end date**: 2026-05-02. At the end of the Pilot, review `brewing-log.md` metrics and `_proposals/` acceptance rate to decide: continue, adjust frequency, or retire.
+
+**Future direction**: Wrap 7a-7c + 7f into a single `post-merge.js` runner for consistency. 7d / 7e remain manual per-session due to state-dependent judgment. Deferred until brewing Pilot stabilizes (post 2026-05-02 review).
