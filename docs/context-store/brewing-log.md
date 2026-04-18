@@ -1,7 +1,17 @@
-# Brewing Pilot — Backtest Log
+# Brewing Log
 
-**Date:** 2026-04-18
-**Pilot commit:** feat/brewing-pilot
+Ongoing record of brewing session decisions on merged PRs. Maintained by the Orchestrator as step 7f of the Post-Merge Flow (see `.claude/skills/orchestrator/core-responsibilities.md` §7f).
+
+## Sections
+
+- **§1. Initial Backtest (2026-04-18)** — pre-Pilot validation on 4 historical PRs + 1 counterfactual, establishing precision and recall signals before Live Pilot began.
+- **§2. Live Pilot Log (2026-04-18 — 2026-05-02)** — append one row per merged PR during the Pilot window.
+- **§3. Metrics & Learnings** — populated at Pilot end (2026-05-02).
+
+---
+
+## §1. Initial Backtest (2026-04-18)
+
 **Judge:** Orchestrator session `5637ab94-13f6-4f03-8df7-31c66f87fe3d` (agent-console)
 **Catalog at test time:** `.claude/skills/architectural-invariants/SKILL.md` contains I-1..I-7
 
@@ -132,16 +142,54 @@ would need to tighten wording but would not need to re-derive the concept.
    The brewing skill's "read catalog before proposing" instruction is
    load-bearing.
 5. **Borderline cases need recorded reasoning even when skipped.** #655 is
-   arguably proposable. Recording the argument for/against in `backtest-log`
+   arguably proposable. Recording the argument for/against in the log
    captures the judgment for future brewing sessions to grep against.
 
 ## Open questions for Pilot evolution
 
-- **Automation level.** Currently runs on human trigger. PR merge hook or
-  daily cron would produce real Pilot data over weeks.
+- **Automation level.** Currently runs on human trigger per §7f. PR merge
+  hook or `create_timer` based invocation could produce real Pilot data
+  without Orchestrator intervention.
 - **Metrics durability.** This log is hand-maintained. A `bun run brew:metrics`
   aggregator could count proposals / skips / acceptances from directory state.
-- **conteditor horizontal deployment.** After 2 weeks of agent-console Pilot,
-  port brewing to conteditor where `architectural-invariants` catalog does not
-  yet exist. That deployment is both (a) initial-populate brewing from past
-  PRs and (b) ongoing brewing — a richer Pilot.
+- **conteditor horizontal deployment.** After the agent-console Pilot (ending
+  2026-05-02), port brewing to conteditor where `architectural-invariants`
+  catalog does not yet exist. That deployment is both (a) initial-populate
+  brewing from past PRs and (b) ongoing brewing — a richer Pilot.
+
+---
+
+## §2. Live Pilot Log (2026-04-18 — 2026-05-02)
+
+Append one row per merged agent-console PR brewed during the Pilot window. Reason categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`, `duplicates-I-<M>`, `other`.
+
+| Date | PR | Decision | Reason / Link |
+|------|------|------|------|
+| _(first row appended on first Pilot brewing after this PR merges)_ | | | |
+
+For `propose` rows, link to the proposal file in `_proposals/` in the "Reason / Link" column. For `skip` rows, write the reason category and a short explanation.
+
+### Running brewing (reminder)
+
+```bash
+# After each PR merge, as part of Post-Merge Flow step 7f:
+node .claude/skills/orchestrator/brew-invariants.js <merged-PR>
+# Then apply .claude/skills/brewing/SKILL.md rubric and append row below.
+```
+
+---
+
+## §3. Metrics & Learnings (populated at Pilot end, 2026-05-02)
+
+### Counts
+- Total PRs brewed: _TBD_
+- Proposals generated: _TBD_
+- Proposals accepted into catalog: _TBD_
+- Proposals rejected (moved to `_rejected/`): _TBD_
+- Skip distribution: _TBD_
+
+### Qualitative learnings
+_TBD at Pilot end._
+
+### Decision
+_TBD: continue / tighten / loosen / retire._
