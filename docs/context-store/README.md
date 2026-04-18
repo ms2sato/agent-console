@@ -23,9 +23,9 @@ The trigger and rubric for brewing are specified in:
 
 The original design framing (`docs/narratives/2026-04-18-brewing-pilot-founding.md`) anticipates additional Context Store artifacts once Phase 1 brewing mechanics are proven. Phase 2 candidates, identified by the conteditor CTO during the same Sprint:
 
-- **Task-specific 参照 index** — "for this task, reference these existing implementations" (replaces manual grep during dispatch)
+- **Task-specific reference index** — "for this task, reference these existing implementations" (replaces manual grep during dispatch)
 - **Decision Log** — "why this pattern was adopted" (ADR-style summaries that prevent re-deriving the same decision)
-- **Worker 実績 profile** — "which agent is strong / weak at what" (informs dispatch routing)
+- **Worker performance profile** — "which agent is strong / weak at what" (informs dispatch routing)
 
 These are *not* scaffolded yet. The Context Store grows only as brewing is validated and specific needs surface from real operation. The decision on whether to populate them is scheduled for 2026-05-02 (Pilot end review).
 
