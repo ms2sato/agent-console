@@ -49,6 +49,16 @@ Follow GitHub-Flow. The `main` branch is always kept GREEN.
 - **Conflict assessment before PR:** Always check conflicts with latest main before opening a PR.
 - **Never merge PRs:** Merging is always the user's decision.
 
+### Force-Push and Rebase Gating
+
+`git push --force` and `git push --force-with-lease` require **explicit per-PR approval from the owner**. A general "merge this sequence" approval does NOT imply force-push approval for individual PRs within the sequence. Always confirm before force-pushing, even when the technical need is obvious (e.g., stacked PRs broken by squash-merge of the base PR).
+
+The same applies to `git rebase` on a pushed branch: if the rebase will require force-push to publish, get approval first.
+
+When the situation is a known operational pattern (stacked PR + base squash-merge), prefer to describe the patch set (commit subjects) and the intended rebase target, then request approval. Do not perform force-push "to save a round trip" — the memory `feedback_no_unauthorized_rebase.md` captures the reasoning.
+
+This rule does not apply to the initial push of a brand-new feature branch (no force involved) or to rebasing a local branch that has never been pushed (no remote divergence).
+
 ## Testing Requirements
 
 - **Testing with code changes:** Always update or add tests. Code without tests is incomplete.
