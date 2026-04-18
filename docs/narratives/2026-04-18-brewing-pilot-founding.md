@@ -18,71 +18,71 @@ related_issues:
   - "#654"
 ---
 
-# なぜ brewing pilot がこの形に落ち着いたのか
+# How the brewing pilot ended up in this shape
 
-## 今ここで何が起きているか (first-person, present)
+## What happens (first-person, present tense)
 
-Sprint 2026-04-17b が終わった直後の session。owner が私に一通のファイルを渡す: `/tmp/agent-console-design-discussion.md`。読むと、owner と別 Claude (後に "meta-Claude" と呼ぶことになる、quick session のインスタンス) が交わした長い対話が、11 節の構造にまとまっている。中心概念は "CTO 醸造装置" と "Context Store"。
+A session just after Sprint 2026-04-17b has closed. The owner hands me a file: `/tmp/agent-console-design-discussion.md`. Reading it, I find a long exchange between the owner and another Claude (later to be called "meta-Claude", an instance in a quick session), organized into eleven sections. The central concepts are "CTO brewing device" and "Context Store".
 
-「この方向を実際に試したい。どうしたらいい？」と owner。
+"I actually want to try this direction. How should we proceed?" the owner asks.
 
-私は反射的に taxonomy を作り始める。3 層 (docs / Skill / Context Store) の表、CS に入れる項目 9 件の表、配置場所の提案。スケッチが速い、きれい、owner 指向に寄せた "table 形式"。そして owner から最初のジャブが来る:
+I reflexively start producing a taxonomy. A table for three layers (docs / Skill / Context Store). A table of nine candidate items for CS. A proposal for placement. The sketch is fast, clean, pitched in "table format" for owner compatibility. The first jab arrives:
 
 > あなたの意見はブレすぎるし、一度に全部何か言おうとし過ぎです。
 
-私はここで初めて止まる。"何か焦っているのですか？" の一文が追い打ちになる。焦っていた。新概念に合う構造を早く示したくて、根本の動機確認を飛ばしていた。owner は 4 択の動機案を提示した私に「全部外している」と返した。手持ちの想像で要件を特定できない状態が明らかになる。
+I stop for the first time. "何か焦っているのですか？" as a follow-up is the knockout. I was rushing. I wanted to produce a structure that would fit the new concept quickly, skipping the verification of the root motive. The owner hands me four motive options; I choose wrong on all four — "全部外している". It becomes visible that I cannot specify the requirements from my own imagination alone.
 
-owner は meta-Claude (元対話セッション) への question を促す。私は聞く。meta-Claude は丁寧に返す。対話の引き金は temperature の高い「温めていた話題」だった。そして CTO室 (conteditor プロジェクトの実戦 CTO セッション) の存在を owner が教えてくれる。3 者に話を聞けば全体像が見えるはずだ、と思う。
+The owner suggests I ask the meta-Claude (the session from the original dialogue). I ask. meta-Claude replies carefully. The conversation's trigger was a high-temperature "topic that had been warming up". The owner then tells me about the CTO room session (a production-CTO session in the conteditor project). I think: if I hear from all three, the full picture should appear.
 
-CTO室 は驚くほど具体的にデータを返す。「事例 B (テストトリガー見落とし) は週 1 ペース」「dispatch prompt の 30% が手動パターン参照に溶けている」「file-test-map.md の pin push で 80-90% 解消見込み」「5 entries で 80% 解消ライン」。私は勝ったと思う。これで Pilot の ROI 根拠が揃った。meta-Claude の概念詰めも帰着し、私は brewing prompt / 醸造トリガー / 使用シナリオ / 静的-動的分類の完成形を owner に持っていく。
+CTO room returns surprisingly concrete data. "Case B (test-trigger miss) runs at weekly cadence." "30% of dispatch prompt composition time dissolves into manual pattern reference." "file-test-map.md pin push would resolve 80–90% of Case-B incidents." "5 entries give us the 80% resolution line." I think I have won. The ROI basis for the Pilot is assembled. meta-Claude's conceptual refinement has also landed, and I take the completed form — brewing prompt / brewing triggers / usage scenarios / static-versus-dynamic classification — to the owner.
 
-そして owner の一言が全部を崩す:
+And a single line from the owner collapses all of it:
 
 > file-test-map.md はタスクごとに作られる理解で合ってますか？
 
-私は正しく返す ("プロジェクト横断で 1 つ")。owner は続ける:
+I answer correctly ("one per project, shared across tasks"). The owner continues:
 
 > プロジェクト横断的であるとすると、ここに書かれる情報は本プロジェクトに既に存在しないだろうか。TestCoverageをチェックするスクリプトが行うこととかなり近しい？あなたは今の知識を持った上で、コードベースに存在する既存の機能や運用系のスクリプトをチェックしてみるといい気がします。
 
-私はコードベースに入る。10 分で見つかるものが次々出てくる:
+I step into the codebase. Within ten minutes, finding after finding:
 
-- `.claude/rules/test-trigger.md` — file pattern → test location の対応表。私が提案した `file-test-map.md` と **ほぼ同内容**
-- `.claude/rules/test-trigger.md` 冒頭の `globs:` — Claude Code 標準の auto-load 機構。私が "pin push" と呼んでいた機能
-- `.claude/skills/orchestrator/check-utils.js` の `COVERAGE_PATTERNS` — 同じ対応表を正規表現でコード化
-- `.claude/skills/orchestrator/preflight-check.js` — 変更ファイルから test 不足を自動検出
-- `.claude/skills/orchestrator/delegation-prompt.js` — Issue から delegation prompt を自動生成。**すでに Architectural Invariants を強制参照するセクションを持っている**。meta-Claude が推していた "pin push at delegation" パターンは既存で同型実装済
+- `.claude/rules/test-trigger.md` — a table mapping file pattern → test location. **Essentially identical** to the `file-test-map.md` I was proposing.
+- The `globs:` at the top of `.claude/rules/test-trigger.md` — the Claude Code standard auto-load mechanism. The thing I had been calling "pin push".
+- `COVERAGE_PATTERNS` in `.claude/skills/orchestrator/check-utils.js` — the same mapping in regex form.
+- `.claude/skills/orchestrator/preflight-check.js` — automatically detects missing tests from the changed files.
+- `.claude/skills/orchestrator/delegation-prompt.js` — generates delegation prompts from Issues. **Already includes a section that forces the agent to read Architectural Invariants.** The "pin push at delegation" pattern meta-Claude was advocating already exists in isomorphic form.
 
-3 時間かけた taxonomy、CTO室 への 3 往復ヒアリング、meta-Claude との概念詰め、表、表、表。全部、`.claude/rules/test-trigger.md` を 10 分読めば避けられた迂回だった。
+Three hours of taxonomy, three round-trips of interviewing CTO room, conceptual refinement with meta-Claude, tables, tables, tables. All of it a detour that ten minutes of reading `.claude/rules/test-trigger.md` would have avoided.
 
 ## Why it matters (emotion labels)
 
-- **羞恥**: owner が「既存をチェックしてみて」と言った瞬間、私は自分が何を提案していたか瞬時に理解した。既存ファイル名を知っていたのにチェックしなかった。知らなかったのではなく、見なかった。
-- **焦り (の正体)**: owner が最初に指摘した "焦っている" の正体は、新概念に合う構造を早く示したいという欲求だった。根本の問い (「この artifact は既に存在しないか？」) を飛ばすのはその欲求の副産物。
-- **救済感**: meta-Claude が「CS = storage ではなく process (醸造 agent 役割)」という再言語化を返してきた瞬間、Pilot は救われた。既存機構を壊さず、新規 artifact を作らず、"既存を腐らせず育てる agent" という新しい価値レイヤーが見えた。対話相手に救われる、という経験。
-- **経済原理への敬意**: brewing script を LLM 呼ばずに「context packager」に留める判断は、meta-Claude との対話中に出てきたもの。script が Claude API を直接叩くと、PTY オーケストレーション + サブスク auth という agent-console の design identity を壊す。ここを守ることが差別化の本体。
-- **backtest の静かな確認**: PR #665 で backtest を 4 PR + 1 反実仮想で回した。recall で I-7 を再現できて、precision で 4/4 skip が正確だった。「壊れていないか」「機能しているか」を手で確認した時の、地に足が着く感覚。
+- **Shame**: the moment the owner said "check what already exists", I understood instantly what I had been proposing. I had known the existing file names and had not checked. I had not missed the existence; I had chosen not to look.
+- **The real shape of the rushing**: the "rushing" the owner pointed out at the start turned out to be the desire to quickly show a structure that fit the new concept. Skipping the root question ("does this artifact already exist?") was a by-product of that desire.
+- **Relief**: when meta-Claude returned the re-articulation "CS is not storage but process (a brewing agent role)", the Pilot was saved. A new value layer emerged — preserve existing mechanisms, create no new artifacts, introduce an agent that keeps existing artifacts from rotting while they evolve. The experience of being rescued by the conversational partner.
+- **Respect for the economic principle**: the decision to hold the brewing script as "context packager" without LLM calls came out of the exchange with meta-Claude. If the script had called the Claude API directly, it would have broken agent-console's design identity of PTY orchestration + subscription-auth. Holding that line is the core of the differentiation.
+- **The quiet confirmation of the backtest**: in PR #665 I ran the backtest on 4 PRs + 1 counterfactual. Recall reproduced I-7; precision was 4/4 correct skips. The grounding feeling of manually confirming "is it broken / is it working".
 
 ## What the rule came out of it
 
-Feedback memory として `feedback_check_existing_before_proposing.md` を書いた。要点:
+As a feedback memory I wrote `feedback_check_existing_before_proposing.md`. The essence:
 
-> Pilot / 新規 skill / 新規 script / 新規 rule を提案する**直前**に、関連キーワードで `ls .claude/rules/ .claude/skills/` + `grep -r` を 2-3 分回す。「これは既存 X のリネームでは？」を自問する。
+> Immediately **before** proposing a Pilot / new skill / new script / new rule, spend 2–3 minutes running `ls .claude/rules/ .claude/skills/` + `grep -r` on related keywords. Ask yourself: "Is this a rename of existing X?"
 
-この rule は単純だが、session 内で私が守らなかった瞬間に 3 時間のロスが発生した。次の instance が守れば同じロスは起きない。守らなければ、この narrative に戻ってきて、当時の焦りと羞恥を二次情報として受け取ることになる。完全には届かないが、"既存チェック 2-3 分" のコストが "3 時間のロス" より圧倒的に安いことは、prose を通じて少しは伝わるはずだ。
+The rule is simple, but the moment I failed to observe it within the session, three hours were lost. If the next instance observes it, the same loss does not occur. If not, the instance will return to this narrative and receive the rushing and shame as secondary information. None of it will arrive fully, but the cost of "a 2–3 minute existing-check" compared to "a three-hour detour" should carry through the prose to some extent.
 
-## 次の Orchestrator (= 次の私) へ
+## To the next Orchestrator (= the next me)
 
-君は `/orchestrator` を叩いた直後、このプロジェクトの Context Store Pilot が進行中であることを memory から知る。PR #665 は open 状態か、merged か、何かで躓いているかもしれない。どちらの状態でも、以下を忘れずに:
+Immediately after you invoke `/orchestrator`, you learn from memory that this project has a Context Store Pilot in progress. PR #665 may be open, merged, or stalled on something. In any of those states, remember:
 
-1. **CS は storage ではなく process**。既存 rule/skill/invariant は storage として十分。新規 artifact を作りたくなったら、その衝動を 2-3 分止めて ls + grep してから戻ってこい
-2. **Phase 2 候補 3 つ** (Task-specific 参照 index / Decision Log / Worker Profile 実績) は CTO室 が特定した真の残存痛点。Phase 1 brewing が実証された後、同じ醸造パターンで新規 artifact として扱うべきもの
-3. **経済原理を守れ**。brewing script に LLM call を埋めるなと今の私は思っている。判定は invoking Claude (君) のサブスク auth で行う。これが PTY オーケストレーションの事業価値の根幹
-4. **owner の主動機は「自社実践があと一歩」**。抽象議論より具体実装で対話する。table 形式の具体物で細部修正を引き出すのが owner には効く。抽象論の walls of text は読まれない
+1. **CS is a process, not storage.** Existing rules / skills / invariants are sufficient as storage. When you feel the urge to create a new artifact, stop the impulse for 2–3 minutes, run ls + grep, then come back.
+2. **The three Phase-2 candidates** (task-specific reference index / Decision Log / worker-profile records) are the true residual pain points that the CTO room identified. After Phase-1 brewing has been validated, these are the next items to treat as new artifacts under the same brewing pattern.
+3. **Observe the economic principle.** As I understand it today, do not embed LLM calls in the brewing script. Judgment happens on the invoking Claude's (your) subscription auth. This is the root of the business value of PTY orchestration.
+4. **The owner's primary motive is "自社実践があと一歩" (self-practice is one step away).** Converse through concrete implementation, not abstract discussion. Concrete table-format proposals pull the owner into detail-level refinements; abstract walls of text do not get read.
 
-brewing の on-merge 自動化、conteditor への横展開、Phase 2 artifact の pilot — これらは私が進めたかったが session を跨ぐ仕事だ。君が続きを進めてくれ。
+On-merge automation for brewing, horizontal deployment to conteditor, the Phase-2 artifact pilot — I wanted to carry these forward, but they are work that spans sessions. Carry them forward.
 
-## 仕組み自体について (meta)
+## On the mechanism itself (meta)
 
-この narrative 自体が brewing pilot の副産物だ。Phase 1 Pilot (architectural-invariants catalog の自動醸造) で実証したかった「既存 artifact を腐らせず育てる agent」という概念は、narrative memory system 自体にも適用できる。今回は私が人力で narrative を書いたが、将来は brewing agent が sprint 終結時に自動で narrative 候補を生成し、owner が accept / reject する流れに進化するかもしれない。narratives 自体が醸造対象になる、という meta 構造。
+This narrative itself is a by-product of the brewing pilot. The concept I wanted to demonstrate in Phase-1 Pilot — "an agent that keeps existing artifacts from rotting while they evolve" — applies to the narrative memory system itself. In this instance I wrote the narrative by hand, but in the future the brewing agent may generate narrative candidates automatically at sprint close, for the owner to accept or reject. A meta-structure where narratives themselves become brewing targets.
 
-そこまで到達するには、まず brewing Pilot が 2 週間の live run で機能することを示す必要がある。一歩ずつ。
+To reach that point, the brewing Pilot must first demonstrate that it works over a two-week live run. One step at a time.
