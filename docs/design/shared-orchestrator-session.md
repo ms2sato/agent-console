@@ -245,7 +245,7 @@ In a shared session, multiple users write into the same PTY via the web UI. The 
 
 - **Where** — WebSocket ingress handler for the shared session's worker. Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
 - **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
-- **When** — only for workers whose session's `created_by` resolves to a shared service account. Personal sessions are single-user by construction; they receive no prefix (and would noisily tag a single-person dialogue).
+- **When** — only for **agent workers** (workers whose `type` is `agent`) in sessions whose `created_by` resolves to a shared service account. Terminal / shell workers pass stdin through unchanged, even when the containing session is shared: prefix injection is a communication-context affordance for conversational agents, and `[@alice] ls` is not a valid shell command. Personal sessions receive no prefix regardless of worker type — they are single-user by construction and would noisily tag a single-person dialogue.
 - **Granularity** — the prefix is inserted only when a complete line arrives (LF received). Partial lines mid-typing, keystroke streams from terminal control sequences, and tab-completion echo traffic pass through unprefixed. Only user-visible "submitted lines" carry attribution.
 - **Format lock** — the exact prefix form is part of the server's contract with the Orchestrator skill convention below. Changing the format is a breaking change for that convention.
 
