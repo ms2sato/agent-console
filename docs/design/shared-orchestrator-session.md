@@ -104,6 +104,118 @@ End user `userA` clicks "Create shared session" in the UI. If the server is conf
 
 End-user perspective: a shared session appears in the session list. Any authenticated user can click it, open its worker's PTY, and type into it — exactly like a personal session, except the PTY process is running as the shared service account and the participants include the whole team.
 
+## Per-user Worktree Dispatch
+
+The shared session is only half the multi-user story. The other half is what happens when the Orchestrator inside the shared session delegates work to an individual team member: the resulting worktree must live under the **assignee's** own home directory, and all commits made there must bear the assignee's git identity.
+
+### Identity × filesystem boundary
+
+A hard invariant: **no process writes into a user's `$HOME` unless it is running as that user.**
+
+- The server process (running as `agentconsole`) never writes files into `alice`'s home directory.
+- The shared service account (e.g. `agent-console-shared`) never writes files into `alice`'s home directory.
+- All filesystem operations that land under `alice`'s home — initial clone, `git worktree add`, template file copy, any post-setup hook — are executed via `sudo -u alice -H <command>`.
+
+This preserves two properties at once: filesystem permissions stay sound (alice owns her own files), and git attribution stays honest (alice's `.gitconfig`, SSH key, and GPG key are in scope for every commit that originates there).
+
+### Path convention (derived, not stored)
+
+Per-user clone and worktree locations follow a fixed convention:
+
+```text
+${user.homeDir}/.agent-console/repositories/<org>/<repo>/                        ← per-user clone
+${user.homeDir}/.agent-console/repositories/<org>/<repo>/worktrees/wt-NNN-xxxx/  ← per-user worktree
+```
+
+The server derives these paths from `users.home_dir` and the repository's `<org>/<repo>` slug. They are **not** stored in the `repositories` or `worktrees` tables — the filesystem is the source of truth; the DB caches only intent (which user was asked to work on which repo, at which session).
+
+Rationale: in a multi-user deployment, users come and go, home directories move, deployments migrate. Storing literal paths ties the DB to a particular filesystem snapshot. Derivation keeps path-resolution in one place and lets the server self-heal by re-bootstrapping a clone when the derived path is missing.
+
+`sessions.location_path` continues to store the literal worktree path for each session (current behaviour) — acceptable because a session is tied to a physical working directory at creation time. If that path disappears, the session is marked broken through the existing missing-path skip logic in `RepositoryManager.initialize()`.
+
+### Repository registration via URL
+
+Today's `RepositoryManager.registerRepository(path)` accepts an existing local directory (`packages/server/src/services/repository-manager.ts:106`). This is insufficient for multi-user dispatch — the server cannot clone into a user's home on behalf of a user whose home it cannot write to.
+
+The extension:
+
+```typescript
+RepositoryManager.registerRepositoryFromUrl({
+  url: string,           // e.g. git@github.com:ms2sato/agent-console.git
+  description?: string,
+})
+```
+
+The server records the URL and canonical `<org>/<repo>` slug. Per-user clones are created **lazily on first dispatch**, not eagerly. Each user's access to the remote is their own concern (their SSH key, their HTTPS credentials); if alice lacks access, her first dispatch fails with an actionable error and the operator resolves access separately — the design does not conceal or retry auth failures.
+
+### `delegate_to_worktree` assignee parameter
+
+The existing MCP tool has no concept of "who will own this work" beyond the caller's identity. For shared-session dispatch we add an explicit `assignee`:
+
+```typescript
+delegate_to_worktree({
+  repositoryId: string,
+  assignee?: string,     // users.username (or users.id) of the target user; defaults to caller
+  branch: string,
+  prompt: string,
+  // ...existing parameters
+})
+```
+
+Resolution and authorisation:
+
+1. **Resolve** — `assignee` is looked up in the `users` table. If it does not resolve, the tool returns an error; the Orchestrator sees it and can ask the operator to verify the user.
+2. **Authorise** — only sessions running under a shared service account may set `assignee` to someone other than the caller. A personal session attempting to dispatch to another user is rejected. This is the minimum permission boundary; richer role models can be added later.
+3. **Dispatch** — the server computes the target user's clone and worktree paths by convention, bootstraps the clone if absent (`sudo -u <assignee> -H git clone ...`), creates the worktree (`sudo -u <assignee> -H git -C <clone> worktree add ...`), copies template files (see below), creates a session row with `created_by = <assignee>.id`, and spawns the session's PTY via the existing `MultiUserMode.spawnPty` with `username = <assignee>`.
+
+In `AUTH_MODE=none`, `assignee` is either absent or equals the server process user; the existing direct-spawn and direct-git paths are taken. Single-user behaviour is unchanged.
+
+### Template file handling
+
+`copyTemplateFiles` in `packages/server/src/services/worktree-service.ts` currently uses `fsPromises.writeFile`, which writes as the server process user. This is incompatible with the identity-filesystem boundary above.
+
+The replacement pattern: the server reads each template file's content in memory, then writes each destination file as the target user via a `sudo -u <user> -H sh -c 'cat > <path>'` pipe (content supplied on stdin). Ownership and group are correct from the moment of creation.
+
+Alternatives considered and rejected:
+
+- **Staging directory + `sudo -u <user> mv`** — the staged file is briefly owned by the server process user; partial failure leaves orphaned files the user cannot clean up. Violates the boundary rule during the staging window.
+- **Ship templates inside the repo and let `git worktree add` populate them** — requires templates to live in the repository, which is not the current model (`.agent-console/` templates live outside or alongside the repo). Would require a separate large migration.
+
+### Single-user compatibility
+
+In `AUTH_MODE=none`:
+
+- Exactly one user (the server process user) exists in the `users` table.
+- `delegate_to_worktree` with no `assignee` resolves to that user; `assignee` set to the same user is a no-op special case.
+- The per-user path convention collapses to `${serverProcessUser.homeDir}/.agent-console/repositories/<org>/<repo>/...` — the path `getConfigDir()` already yields today.
+- All `sudo -u <user>` invocations detect `username === serverProcessUsername` and fall back to direct `Bun.spawn(['git', ...])` — extending the existing sudo-skip optimisation already used for PTY spawn in `MultiUserMode.spawnPty` (`packages/server/src/services/user-mode.ts:328`) to git operations as well.
+
+Single-user behaviour is preserved exactly. The multi-user dispatch path is a superset; the single-user path is its degenerate case.
+
+### Failure modes
+
+| Condition | Behaviour |
+|---|---|
+| `AGENT_CONSOLE_SHARED_USERNAME` unset | Shared-session feature disabled; personal sessions only (existing fail-safe). |
+| Configured shared account's OS user missing | Server fails fast at startup (existing behaviour). |
+| `delegate_to_worktree` called with unknown `assignee` | Tool returns error; Orchestrator receives it and can ask the operator. |
+| `assignee` exists in DB but the OS account is gone | Dispatch fails at the first `sudo -u` step; returned as a clone or spawn error. |
+| Assignee lacks `git clone` access to the repository URL | Lazy bootstrap fails during `git clone`; error returned to the Orchestrator (no silent retry). |
+| Assignee's home directory is missing or unwritable | `sudo -u` succeeds but subsequent `git` operations fail; returned as a clone error. |
+| Personal session attempts to dispatch with a non-self `assignee` | Rejected at authorisation step; returns error. |
+
+### Implementation dependencies
+
+Landing this design requires the following server-side extensions, none of which exist today (verified against the codebase on 2026-04-21):
+
+1. **`packages/server/src/lib/git.ts` — `runAs` support.** `git(args, cwd, { runAs?: { osUser: string, homeDir: string } })`. When `runAs` is set and `osUser` is not the server process user, the command is wrapped in `sudo -u <osUser> -H git ...`.
+2. **`packages/server/src/services/worktree-service.ts` — target-user-aware creation.** `createWorktree` accepts an `ownerUser: AuthUser` parameter. Path resolution, git invocation, and template file copy all use that user's identity.
+3. **`packages/server/src/services/repository-manager.ts` — URL registration.** A new `registerRepositoryFromUrl` method; the lazy-per-user-clone bootstrap lives in the worktree creation path, not in registration.
+4. **MCP `delegate_to_worktree` — `assignee` parameter.** Plus the authorisation check that restricts cross-user dispatch to shared-session callers.
+5. **Sudoers policy extension.** The server operator grants the service account `NOPASSWD` sudo to `/usr/bin/git` in addition to the shells it already has. Documented alongside the existing sudoers fragment in [`multi-user-shared-setup.md`](./multi-user-shared-setup.md).
+
+These land together as a single multi-user-dispatch iteration; partial adoption leaves the system in an inconsistent state.
+
 ## Permission Model (Initial: Open)
 
 - **Create** — any authenticated user may create a shared session.
