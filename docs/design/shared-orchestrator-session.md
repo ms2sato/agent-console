@@ -216,6 +216,51 @@ Landing this design requires the following server-side extensions, none of which
 
 These land together as a single multi-user-dispatch iteration; partial adoption leaves the system in an inconsistent state.
 
+## Orchestrator-facing Interface
+
+The server-side extensions above are invisible to the Orchestrator's skill. What the Orchestrator actually sees — and what must therefore be captured as a short, non-overlookable convention — is a small surface.
+
+### Tool surface
+
+Only **one new MCP tool** and **one existing-tool parameter** are introduced on top of today's surface:
+
+- **`delegate_to_worktree({ ..., assignee?: string })`** — existing tool, new parameter. When `assignee` is set, the resulting worktree is created under that user's home and the session is spawned under that user's identity; when omitted, the caller's own identity is used. Shared-session callers may name any user; personal-session callers may only name themselves (see the Permission Model section below, which governs authorisation).
+- **`list_users()`** — new tool. Returns `{ id: string, username: string, hasActiveSession: boolean }[]` for all users known to the server. Used by the Orchestrator to validate an `assignee` name, or to present a choice back to a requester whose intent is ambiguous.
+
+All other information the Orchestrator needs — ongoing sessions, delegated-work callbacks, PR/CI events — is served by existing tools (`list_sessions`, `get_session_status`, `send_session_message`, `write_memo`) and existing inbound routing (the parent-bubble behaviour referenced earlier via `send_session_message` and the webhook pipeline). Nothing else needs to be added.
+
+### Request attribution convention (server-side stdin prefix)
+
+In a shared session, multiple users write into the same PTY via the web UI. The raw stdin stream carries no attribution by default. To make multi-human dispatch reliable without relying on the Orchestrator to ask "誰ですか?" on every turn, the **server** attaches a short prefix to every chunk of stdin that enters a shared session's worker:
+
+```text
+[@<username>] <user's typed content>
+```
+
+- **Where** — WebSocket ingress handler for the shared session's worker. Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
+- **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
+- **When** — only for workers whose session's `created_by` resolves to a shared service account. Personal sessions are single-user by construction; they receive no prefix (and would noisily tag a single-person dialogue).
+- **Format lock** — the exact prefix form is part of the server's contract with the Orchestrator skill convention below. Changing the format is a breaking change for that convention.
+
+This is a format, not a procedure. The prefix is present as literal bytes in the Orchestrator's input stream; even if the skill convention is skim-read, the prefix remains parseable.
+
+### Orchestrator skill convention
+
+The `/orchestrator` skill adds three short lines, stated as contract rather than walk-through so that skim-reading still yields correct behaviour:
+
+```
+- delegate_to_worktree(assignee) creates the worktree under that user's
+  home and spawns the session as that user. Use when work should attach
+  to a specific team member.
+- list_users() enumerates valid assignees; call it when an `assignee`
+  name is not already known to be valid.
+- In a shared session, every stdin line is prefixed by [@<username>] by
+  the server. The <username> is authoritative — use it to attribute
+  requests and pick assignees.
+```
+
+Anything more elaborate — when to delegate vs handle directly, how to phrase callback responses — is general Orchestrator judgment, not mechanics of this feature, and does not belong in the convention.
+
 ## Permission Model (Initial: Open)
 
 - **Create** — any authenticated user may create a shared session.
