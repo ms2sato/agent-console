@@ -33,17 +33,22 @@ This document specifies how to add shared sessions on top of the existing multi-
 
 ### Storage layer — reuse existing
 
-```
+```text
 $AGENT_CONSOLE_HOME/data.db        ← single DB (unchanged)
     users                          ← includes shared account record
-    sessions                       ← created_by → users.id (shared account for shared sessions)
+    sessions                       ← created_by associates with users.id
+                                     (application-level linkage; the shared
+                                      account record is the one referenced
+                                      for shared sessions)
 ```
 
 No schema changes are required for the minimum viable version. Optional additions below are for future observability.
 
+Note on `sessions.created_by`: the schema declares `REFERENCES users(id)` (see `multi-user-shared-setup.md` §"Database Migration"), but SQLite enforces foreign keys only when `PRAGMA foreign_keys = ON` is set on the connection. Integrity is primarily maintained at the application layer today; this is a characterisation of current behaviour, not a design choice of this doc.
+
 ### Identity layer — one additional OS account
 
-```
+```text
 agentconsole          (service user)         runs server process,
                                              NOPASSWD sudo to any user
 
@@ -79,7 +84,7 @@ End user `userA` clicks "Create shared Orchestrator session" in the UI.
 5. When the session's PTY is spawned, the server uses `sudo -u <shared-account-name> -i sh -c '...'`. The existing `agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh` sudoers rule covers this — no additional sudoers configuration.
 6. The PTY runs with the shared account's environment: `$HOME` points to the shared account's home, which contains the API-key credentials. The `claude` CLI (or any LLM CLI) authenticates using those credentials.
 
-End user perspective: a shared session appears. They can write to its stdin and receive its stdout like any personal session. No `sudo`, no account switching.
+End-user perspective: a shared session appears. Users who join can write to its stdin and receive its stdout like any personal session. No `sudo`, no account switching.
 
 ## Permission Model (Initial: Open)
 
