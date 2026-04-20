@@ -58,7 +58,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 ### PR Merge Authority
 
 **Orchestrator can merge (no owner approval needed):**
-- Pure test additions (*.test.ts — new files only, no production code changes)
+- Test-only changes (*.test.ts — new files or modifications to existing test files, no production code changes)
 - Documentation-only changes (*.md, skill definitions, agent definitions)
 - Refactoring with adequate test harness (confirm test coverage BEFORE merging — if existing tests do not serve as a sufficient regression harness, owner approval is required)
 

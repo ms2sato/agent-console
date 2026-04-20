@@ -107,6 +107,19 @@ Use `[skip ci]` only for commits that **only** change non-production files (`doc
 
 Design documents (`docs/design/`) are specifications. Code is their implementation. Update the design document FIRST as the spec, then implement code to match. The spec and implementation must never silently diverge.
 
+## Strategy / Narrative Doc Drafting
+
+When writing a new document under `docs/strategy/` or a `docs/narratives/` entry (especially `nature: founding`), prefer an **outline-first pattern** over drafting full content in one pass:
+
+1. Produce a section-level outline (headings + 1-line summaries of each section's intent).
+2. Ask the owner to confirm the outline — accept shape / scope / what to add / cut.
+3. Draft full content for each confirmed section.
+4. Ask the owner to review wording and framing, especially for strategic terminology, tone, and vendor-facing language.
+
+Rationale: strategy and narrative docs lean on the owner's voice more than code documentation does. Drafting full content before the owner has reviewed the shape produces churn — wording revisions cascade across sections, translations arrive after the structure is set, and terminology ambiguities surface late. The Orchestrator's self-review hits its strongest calibration on content correctness and its weakest on strategic framing; outline-first trades a small amount of upfront latency for substantially less rewriting. (Lesson: Sprint 2026-04-20 — PR #674 strategic-position doc had 4 commits / 86 min TTM and PR #677 shared-orchestrator design had 3 commits / 1094 min TTM, both driven by owner-initiated reshaping of wording after full drafts were opened as PRs.)
+
+This rule does not apply to design docs under `docs/design/` where architectural decisions are code-adjacent — the normal PR flow is sufficient there.
+
 ## Language Policy
 
 **Public artifacts:** Write all code comments, commit messages, issues, pull requests, and documentation in English.

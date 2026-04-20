@@ -186,6 +186,10 @@ The script prints structured brewing context (PR metadata, linked Issue, diff) t
   ```
   Reason categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`, `duplicates-I-<M>`, `other`.
 
+**Batching the log**: to reduce PR churn, batch 2 or more pending brewing-log entries into a single log-maintenance PR rather than opening one PR per brewed PR. A log-maintenance PR whose only diff is `docs/context-store/brewing-log.md` skips its own §7f self-log-entry (recording it would recurse indefinitely); note its decision inline in the next batch if needed.
+
+**Operational note — manual polling for self-authored PRs**: PRs opened by the Orchestrator via raw `git worktree add` (as opposed to `delegate_to_worktree`) do not carry an MCP session, so `[inbound:ci:completed]` / `[inbound:pr:merged]` webhook events do not route to the Orchestrator. Until [#676](https://github.com/ms2sato/agent-console/issues/676) lands the `subscribe_pr_events` MCP surface, poll `gh pr checks <N>` manually after each push. This affects §7f timing (brewing runs only after merge is confirmed) and log-maintenance PR merges (Orchestrator-mergeable under the rule above).
+
 **Why**: Brewing surfaces candidate architectural invariants from shipped code. Running after merge (not before) ensures the diff is stable and the pattern has actually landed in main. Propagation value: a new invariant added to the catalog protects all subsequent PRs via acceptance-check Q8, not just the PR that surfaced it.
 
 **Pilot end date**: 2026-05-02. At the end of the Pilot, review `brewing-log.md` metrics and `_proposals/` acceptance rate to decide: continue, adjust frequency, or retire.
