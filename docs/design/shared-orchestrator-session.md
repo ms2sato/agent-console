@@ -44,7 +44,7 @@ $AGENT_CONSOLE_HOME/data.db        ← single DB (unchanged)
 
 No schema changes are required for the minimum viable version. Optional additions below are for future observability.
 
-Note on `sessions.created_by`: the schema declares `REFERENCES users(id)` (see `multi-user-shared-setup.md` §"Database Migration"), but SQLite enforces foreign keys only when `PRAGMA foreign_keys = ON` is set on the connection. Integrity is primarily maintained at the application layer today; this is a characterisation of current behaviour, not a design choice of this doc.
+Note on `sessions.created_by`: the column is a plain `text` with no foreign-key DDL (see `packages/server/src/database/connection.ts` migration v14 — `addColumn('created_by', 'text')`). Association with `users.id` is maintained by the application layer. This characterises the current state; whether to add a DB-level foreign key later is a separate question, outside the scope of this design.
 
 ### Identity layer — one additional OS account
 
@@ -219,7 +219,7 @@ Keeping the shared account distinct from the service user preserves defense-in-d
 
 Any authenticated user can type into a shared session. This is an intentional property of the "single entry point for team coordination" use case, not a bug. Practical considerations:
 
-- **Visible to all**: operators should remind users that shared sessions are public within the team. The UI affordance above reinforces this.
+- **Visible to all**: operators should remind the team that content typed into a shared session is visible to every team member. The UI affordance above reinforces this.
 - **No content moderation in the first version**: the session is trusted within the team's trust boundary.
 - **Audit**: `sessions.initiated_by` records the creator. A future `participant_events` table could log per-message authorship if needed.
 
