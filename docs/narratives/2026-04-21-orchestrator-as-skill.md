@@ -129,10 +129,14 @@ No new rule is created by this narrative. Existing rules were already sufficient
 
 ## What remains for the next sprint
 
-1. Rewrite `docs/design/shared-orchestrator-session.md` to reflect the new frame (shared service-account session; Orchestrator as use-case). This narrative and the rewritten design doc land in the same PR.
-2. Per-user git clone bootstrap and `sudo -u` dispatch design — carry over from this conversation, not yet written as a design doc.
-3. Path fragility policy (FS as truth, DB as intent cache, convention-derived paths, lazy self-heal) — needs to be captured in the multi-user design when that implementation is picked up.
-4. Repository registration currently accepts only existing local paths, not clone URLs (`services/repository-manager.ts:106`). Multi-user setup will need a clone-from-URL feature. This is a prerequisite Issue worth filing.
+The initial commit of this PR rewrote the design doc around the new frame. Follow-up commits on the same branch expanded it with the dispatch mechanics (per-user worktree paths via `sudo`, URL-based repository registration, the `assignee` parameter) and the Orchestrator-facing interface (the new `list_users` tool, the stdin attribution convention, the three-line skill contract). Design coverage for shared session + per-user dispatch is complete within this PR.
+
+What remains is implementation, tracked by Issue [#678](https://github.com/ms2sato/agent-console/issues/678). The server-side work enumerated in the design doc's "Implementation dependencies" section (`lib/git.ts` `runAs`, `worktree-service` target-user awareness, `repository-manager` URL registration, MCP `delegate_to_worktree` `assignee`, sudoers extension for `git`) lands together in a single multi-user-dispatch iteration.
+
+Supporting UX follow-ups are tracked separately:
+
+- Issue [#683](https://github.com/ms2sato/agent-console/issues/683) — session list tree view (parent-child navigation; makes the Orchestrator and its dispatched children visually coherent).
+- Issue [#684](https://github.com/ms2sato/agent-console/issues/684) — assignee display in session detail header and dashboard list.
 
 ## Rejected alternatives, for future reference
 
@@ -146,4 +150,4 @@ No new rule is created by this narrative. Existing rules were already sufficient
 
 The courage the owner predicted did arrive, but through a longer path than I thought. I had to propose the wrong thing twice — once by removing the Orchestrator from the system, once by making it too special inside the system — before the middle path ("it is just a skill") felt like a conclusion rather than a default. The original 2026-04-18 strategic position doc already pointed at this: Agent Console is a PTY platform and a set of parts, not an opinionated orchestration product. The Orchestrator as skill is that principle playing out in the orchestration layer itself. I missed the application until I had exhausted the alternatives.
 
-The design doc rewrite that accompanies this narrative is smaller than the original. That is the evidence.
+The rewrite removed the Orchestrator-specific product machinery the earlier version had built up. The additions that followed — per-user dispatch, the stdin attribution convention, the Orchestrator-facing interface — belong to multi-user infrastructure rather than to orchestration, and fit the new frame without re-introducing the product-concept weight the reframe shed. What stayed narrow is the role the doc assigns to "Orchestrator". What grew is coverage of the mechanics that hold up once that role is relieved of special status.

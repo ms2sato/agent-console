@@ -93,12 +93,12 @@ Rationale for API keys on shared accounts: a shared account serves multiple peop
 
 End user `userA` clicks "Create shared session" in the UI. If the server is configured with multiple shared service accounts, the UI presents a picker for which account to create under.
 
-1. Client sends a standard session-create request with a `shared` indicator (concrete API schema deferred to implementation) and, if applicable, the chosen shared-account identifier.
+1. Client sends a standard session-create request with a `shared` indicator (concrete API schema deferred to implementation). When multiple shared service accounts are configured, the chosen account's identifier accompanies the request; its form (username, id, or another key) is resolved together with the multi-account config form — see Open Questions.
 2. Server validates `userA`'s JWT via normal auth middleware and checks the shared-session-creation permission (default: all authenticated users may create).
 3. Server resolves the selected shared service account's `users.id` from its configuration (see Configuration below).
 4. Server creates the session with:
    - `sessions.created_by` = shared service account's `users.id`
-   - `sessions.initiated_by` = `userA.id` (optional column, for audit)
+   - `sessions.initiated_by` = `userA.id` (records the authenticated user who clicked "Create shared session"; persisted for audit — see Schema Notes)
 5. When the session's PTY is spawned, the server uses `sudo -u <service-account-name> -i sh -c '...'`. The existing `agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh` sudoers rule covers this — no additional sudoers configuration.
 6. The PTY runs with the service account's environment: `$HOME` points to the service account's home, which contains the API-key credentials. The `claude` CLI (or any LLM CLI) authenticates using those credentials.
 
@@ -155,12 +155,14 @@ The existing MCP tool has no concept of "who will own this work" beyond the call
 ```typescript
 delegate_to_worktree({
   repositoryId: string,
-  assignee?: string,     // users.username (or users.id) of the target user; defaults to caller
+  assignee?: string,     // users.username of the target user; defaults to caller
   branch: string,
   prompt: string,
   // ...existing parameters
 })
 ```
+
+The `assignee` is a username, not a UUID — this is the identifier a human-in-the-loop Orchestrator skill naturally uses when a team member is mentioned. The server resolves it to a stable `users.id` at dispatch time. A username change between dispatch and PTY spawn (an operationally rare event) surfaces as a clear error, not a silent redirection to a different user.
 
 Resolution and authorisation:
 
@@ -225,13 +227,17 @@ The server-side extensions above are invisible to the Orchestrator's skill. What
 Only **one new MCP tool** and **one existing-tool parameter** are introduced on top of today's surface:
 
 - **`delegate_to_worktree({ ..., assignee?: string })`** — existing tool, new parameter. When `assignee` is set, the resulting worktree is created under that user's home and the session is spawned under that user's identity; when omitted, the caller's own identity is used. Shared-session callers may name any user; personal-session callers may only name themselves (see the Permission Model section below, which governs authorisation).
-- **`list_users()`** — new tool. Returns `{ id: string, username: string, hasActiveSession: boolean }[]` for all users known to the server. Used by the Orchestrator to validate an `assignee` name, or to present a choice back to a requester whose intent is ambiguous.
+- **`list_users()`** — new tool. Returns `{ id: string, username: string, hasActiveSession: boolean }[]` for all users known to the server. `hasActiveSession` is `true` when the user currently has at least one session with a live PTY worker (stopped or closed sessions do not count). A user appears in this list only after their first login — the `users` row is upserted at that point. Invited-but-not-yet-logged-in team members are therefore not visible until they first log in; this is a point worth surfacing to operators onboarding a new team member.
 
 All other information the Orchestrator needs — ongoing sessions, delegated-work callbacks, PR/CI events — is served by existing tools (`list_sessions`, `get_session_status`, `send_session_message`, `write_memo`) and existing inbound routing (the parent-bubble behaviour referenced earlier via `send_session_message` and the webhook pipeline). Nothing else needs to be added.
 
+### Orchestrator in a personal session
+
+`/orchestrator` can be invoked in a personal session (any non-shared session), not only in shared sessions. In that case the Orchestrator can still call `delegate_to_worktree` and `list_users`, but `assignee` is restricted to the session's own user (rejected at the authorisation step described above). Cross-user dispatch requires a shared session. Single-human workflows — one individual using the Orchestrator as a personal coordination aid — work unchanged.
+
 ### Request attribution convention (server-side stdin prefix)
 
-In a shared session, multiple users write into the same PTY via the web UI. The raw stdin stream carries no attribution by default. To make multi-human dispatch reliable without relying on the Orchestrator to ask "誰ですか?" on every turn, the **server** attaches a short prefix to every chunk of stdin that enters a shared session's worker:
+In a shared session, multiple users write into the same PTY via the web UI. The raw stdin stream carries no attribution by default. To make multi-human dispatch reliable without relying on the Orchestrator to ask "誰ですか?" on every turn, the **server** attaches a short prefix to every **LF-terminated line** of stdin that enters a shared session's worker:
 
 ```text
 [@<username>] <user's typed content>
@@ -240,6 +246,7 @@ In a shared session, multiple users write into the same PTY via the web UI. The 
 - **Where** — WebSocket ingress handler for the shared session's worker. Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
 - **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
 - **When** — only for workers whose session's `created_by` resolves to a shared service account. Personal sessions are single-user by construction; they receive no prefix (and would noisily tag a single-person dialogue).
+- **Granularity** — the prefix is inserted only when a complete line arrives (LF received). Partial lines mid-typing, keystroke streams from terminal control sequences, and tab-completion echo traffic pass through unprefixed. Only user-visible "submitted lines" carry attribution.
 - **Format lock** — the exact prefix form is part of the server's contract with the Orchestrator skill convention below. Changing the format is a breaking change for that convention.
 
 This is a format, not a procedure. The prefix is present as literal bytes in the Orchestrator's input stream; even if the skill convention is skim-read, the prefix remains parseable.
@@ -251,12 +258,17 @@ The `/orchestrator` skill adds three short lines, stated as contract rather than
 ```
 - delegate_to_worktree(assignee) creates the worktree under that user's
   home and spawns the session as that user. Use when work should attach
-  to a specific team member.
+  to a specific team member. In a personal (non-shared) session,
+  assignee is restricted to the session's own user.
 - list_users() enumerates valid assignees; call it when an `assignee`
   name is not already known to be valid.
-- In a shared session, every stdin line is prefixed by [@<username>] by
-  the server. The <username> is authoritative — use it to attribute
-  requests and pick assignees.
+- In a shared session, every LF-terminated stdin line is prefixed by
+  [@<username>] by the server. The <username> is authoritative — use
+  it to attribute requests and pick assignees.
+- Inbound messages from other sessions via send_session_message arrive
+  as file-based notifications with a `from: <sessionId>` field, not as
+  prefixed stdin. Team requests can arrive via either path; check both
+  when identifying the originator.
 ```
 
 Anything more elaborate — when to delegate vs handle directly, how to phrase callback responses — is general Orchestrator judgment, not mechanics of this feature, and does not belong in the convention.
@@ -342,7 +354,7 @@ Start the server, log in as any user, create a shared session, verify:
 
 - The session appears in the UI with a visible "shared" indicator.
 - The session's worker terminal runs as the shared service account (`whoami` inside the terminal returns the account's username).
-- `echo $ANTHROPIC_API_KEY` (or equivalent check) confirms the API-key credentials are present.
+- Credentials are in place — the check depends on the setup chosen in step 2. For the env-var path, `echo $ANTHROPIC_API_KEY` shows a value. For the login-based path, an authenticated CLI probe (e.g., `claude --help` returning without a login prompt, or the equivalent for the chosen CLI) succeeds. Either path is acceptable.
 - Other authenticated users can see and write to the same session.
 
 ## Credential Rotation
@@ -400,13 +412,26 @@ Any authenticated user can type into a shared session. This is an intentional pr
 - **No content moderation in the first version** — the session is trusted within the team's trust boundary.
 - **Audit** — `sessions.initiated_by` records the session creator. A future `participant_events` table could log per-stdin-message authorship if needed.
 
+### Shared account rename and identity stability
+
+`sessions.created_by` references `users.id` (a UUID), stable across OS account renames. The sudo target uses `users.username`, which is re-read from the `users` table on each PTY spawn. The `users` row is upserted at server startup for configured shared service accounts (see Configuration), and re-upserted on each user's login.
+
+Operator workflow for renaming a shared service account (rare):
+
+1. Rename the OS account (`usermod -l ...` on Linux, equivalent on macOS).
+2. Update `AGENT_CONSOLE_SHARED_USERNAME` to the new name.
+3. Restart the server. The startup upsert reconciles the `users` row by `os_uid` and writes the new username. Existing `sessions.created_by` references remain valid.
+
+Per-user accounts (alice, bob) follow the same pattern: their `users` row is keyed by `os_uid`, so a rename plus a subsequent login writes the updated username without orphaning any session record.
+
 ## Schema Notes
 
-Initial minimum schema changes: **none required**. The existing `users` and `sessions` tables handle shared service accounts via `created_by`.
+Required schema addition for this design: **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
+
+Aside from this one column, the existing `users` and `sessions` tables already handle shared service accounts via the `created_by` mechanism; no further schema changes are required for the minimum viable version.
 
 Optional additions considered but deferred:
 
-- `sessions.initiated_by` — who created the shared session (distinct from `created_by` which represents the PTY identity). Useful for audit. Can be added as a nullable column in a later migration.
 - `sessions.visibility` enum (`personal`, `shared`, `team-private`) — generalises beyond "all-or-nothing" for future permission extensions.
 - `participants` table — for invite-only shared sessions.
 
@@ -414,10 +439,10 @@ Decisions about `sessions.created_by` gaining a DB-level `REFERENCES users(id)` 
 
 ## Open Questions
 
-- **Multiple shared service accounts.** Concrete config form for more than one account (comma-separated env var, config file, or per-repository association). Schema-wise free; runtime form is an implementation choice.
+- **Multiple shared service accounts.** Concrete config form for more than one account (comma-separated env var, config file, or per-repository association). Schema-wise free; runtime form is an implementation choice. The session-create API's shared-account identifier (Session Creation Flow step 1) is resolved alongside this.
 - **Shared session audit depth.** Current design records creator. Per-stdin-message authorship would require an additional table — revisit if team operators report need.
 - **API-key storage form inside the shared account's home.** Two equivalent options: env-var export in shell profile, or CLI-native credential file. Operator choice; does not affect the server.
-- **Repository registration via clone URL.** Shared-service-account sessions operating on a repository currently assume the shared account already has a local clone (registered via the existing path-based `registerRepository` flow in `packages/server/src/services/repository-manager.ts`). Multi-user rollout likely benefits from a "clone from URL on behalf of account X" flow. Tracked as a pre-requisite design item for multi-user implementation.
+- **Rate limiting and abuse control.** The initial design does not rate-limit shared-session creation or stdin throughput. Runaway consumption by a compromised or misbehaving internal actor is an operator concern, handled externally (reverse proxy limits, vendor-side billing caps). Revisit if self-service shared sessions become available to a larger audience.
 
 ## Migration / Rollout
 
