@@ -28,7 +28,7 @@ I assume, going into this conversation, that we are refining an already-correct 
 
 ### Step 1 — I get the single-user model wrong
 
-The conversation opens with git management for multiple users. I sketch per-user independent clones with `sudo -u <user>` dispatch. The owner accepts the mechanism. Then, almost parenthetically, he asks: "Orchestrator が ユーザーと対話する際に、自身が担当するコードベースのルートで起動する必要があります。これはつまり、自身専用のディレクトリは持つべき、という形に帰結しませんか？"
+The conversation opens with git management for multiple users. I sketch per-user independent clones with `sudo -u <user>` dispatch. The owner accepts the mechanism. Then, almost parenthetically, he asks: "When the Orchestrator converses with users, it has to start at the root of the codebase it is responsible for. Doesn't that imply it should have its own dedicated directory?"
 
 I agree and draw a directory layout. The shared Orchestrator account has its own clone at `/home/agent-console-shared/...`, which serves as its cwd (for auto-load of CLAUDE.md, rules, skills). I present this as a three-role primary clone in single-user mode, analogously split in multi-user.
 
@@ -42,7 +42,7 @@ This is a correction on a concrete fact about the current system. I had convince
 
 Having fixed the single-user picture, I propose a multi-user design where the shared Orchestrator account runs with main-as-cwd (read-only discipline, no accidental writes because the skill rule forbids writing code directly). The owner pushes back with an important constraint:
 
-"私はできればsingleuserとmultiuserが一貫していて欲しいので、今回 orchestoratorを特別視するのであれば、singleuserでも同様のことは考えたい。というより、まずその設計変更をした上で、multiuserが実装されるべきな気がする。ここで考えておかないといけないのは、singleuserが必ずしもprimaryにorchestoratorを置きたいわけではない、という前提です。orchestoratorを必要としているのはおそらくある程度のAi経験値が高い人です。最初から強制したくない。"
+"I'd like single-user and multi-user to stay consistent if possible, so if we're going to treat the Orchestrator specially now, I want to think the same way in single-user as well. Actually, that design change should come first, and multi-user should be implemented on top of it. The premise we have to keep in mind here is that single-user doesn't necessarily want the Orchestrator on the primary. The people who need the Orchestrator are probably ones with a certain level of AI experience. I don't want to force it on everyone from the start."
 
 Two constraints land at once:
 
@@ -55,7 +55,7 @@ I pivot. Rather than a main-as-cwd scheme that only exists in multi-user, I prop
 
 The owner then proposes stepping outside the current frame entirely:
 
-"一回全然別の方向性を考えてみるべきなのかもしれない。もしかしたオーケストレーターは本システム内に直接住まなくてもいいのではないか？という問いは考える価値がありそう。なぜなら、オーケストレーターのやっていることはMCP経由でWorktreeを作成し、メッセージのやり取りをするのとユーザーとの対話が基本なので。この方向をあえて考えても、やはりシステム内にいるべきだと結論できると今の方向性に勇気が湧く。"
+"Maybe we should try a completely different direction for once. 'Does the Orchestrator really have to live inside this system directly?' — that question feels worth considering. What the Orchestrator does is basically create worktrees and exchange messages through MCP, plus hold a conversation with the user. Even if we deliberately pursue this direction, if we still conclude that it should live inside the system, it gives courage to the current direction."
 
 I take the thought experiment seriously. What does an "outside" Orchestrator look like? It runs on the team-lead's local Claude Code, has a local clone of the repository for auto-load, and connects to Agent Console via MCP. Team members interact with Agent Console through its normal UI. Orchestrator coordinates from outside by reading the shared state.
 
@@ -65,7 +65,7 @@ I am wrong. I get corrected for two reasons at once.
 
 ### Step 4 — The PTY UI is the shared surface
 
-The first correction: "あなたは一度コードベース全体や、提供されている機能を確認してからの方が良くないかな？例えばWebhook連携のような機能はどう判断されるだろうか。また、orchestoratorに対して多数の人間が依頼できることが私の望みだよ。そこを勘違いしてない？"
+The first correction: "Wouldn't it be better for you to check the whole codebase and the provided features first? For example, how would a feature like webhook integration factor into the judgment? Also, my wish is that many humans can make requests to the Orchestrator. Aren't you misreading that?"
 
 I go read the code. Three findings, each sharpening the picture:
 
@@ -83,7 +83,7 @@ With the outside-model collapse confirmed, I swing toward the opposite extreme. 
 
 The owner corrects again, shorter and sharper:
 
-"1-3 の課題だと痛みは大きくないような。1はタイトルで十分ですよ。2は画面にPTYのターミナルがあるんで送れます。3は実は規模の大きいシステムでは複数のオーケストレーターは構想にあります。例えばユーザー向けUIを作る人と、管理画面の人とか。"
+"Problems 1–3 don't seem particularly painful to me. For 1, the session title is enough. For 2, the PTY terminal is right there on the screen — you can send requests that way. For 3, actually, larger systems anticipate multiple Orchestrators — one person on the user-facing UI, another on the admin panel, for instance."
 
 Three problems I thought required a first-class designation evaporate under three one-line answers:
 

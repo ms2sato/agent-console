@@ -245,7 +245,7 @@ All other information the Orchestrator needs — ongoing sessions, delegated-wor
 
 ### Request attribution convention (server-side stdin prefix)
 
-In a shared session, multiple users write into the same PTY via the web UI. The raw stdin stream carries no attribution by default. To make multi-human dispatch reliable without relying on the Orchestrator to ask "誰ですか?" on every turn, the **server** attaches a short prefix to every **LF-terminated line** of stdin that enters a shared session's worker:
+In a shared session, multiple users write into the same PTY via the web UI. The raw stdin stream carries no attribution by default. To make multi-human dispatch reliable without relying on the Orchestrator to ask "who is this?" on every turn, the **server** attaches a short prefix to every **LF-terminated line** of stdin that enters a shared session's worker:
 
 ```text
 [@<username>] <user's typed content>

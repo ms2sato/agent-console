@@ -40,6 +40,8 @@ related_issues: [#123]
 
 Body sections are flexible but first-person present tense is encouraged — it carries more of the raw texture than third-person past.
 
+**Language.** Write narratives entirely in English, including quoted speech. When a quote was originally spoken or written in another language, translate it into English — preserve semantic content and, where possible, tone — and do not retain the original-language text verbatim. (A term of art with no English equivalent is the rare exception.) A monolingual narrative stays readable for any future reader regardless of their native language and keeps search / grep uniform across the collection.
+
 Suggested body outline:
 
 - **What happens (first-person, present tense)** — the scene. Concrete timestamps, specific quotes, the sequence of realizations.
