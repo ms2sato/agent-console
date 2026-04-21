@@ -167,8 +167,10 @@ The `assignee` is a username, not a UUID — this is the identifier a human-in-t
 Resolution and authorisation:
 
 1. **Resolve** — `assignee` is looked up in the `users` table. If it does not resolve, the tool returns an error; the Orchestrator sees it and can ask the operator to verify the user.
-2. **Authorise** — only sessions running under a shared service account may set `assignee` to someone other than the caller. A personal session attempting to dispatch to another user is rejected. This is the minimum permission boundary; richer role models can be added later.
-3. **Dispatch** — the server computes the target user's clone and worktree paths by convention, bootstraps the clone if absent (`sudo -u <assignee> -H git clone ...`), creates the worktree (`sudo -u <assignee> -H git -C <clone> worktree add ...`), copies template files (see below), creates a session row with `created_by = <assignee>.id`, and spawns the session's PTY via the existing `MultiUserMode.spawnPty` with `username = <assignee>`.
+2. **Authorise** — only sessions running under a shared service account may set `assignee` to someone other than the caller. The server determines whether the calling session is a shared-session by looking up the session's `created_by`, then checking whether that `users.id` is in the set of configured shared service account identities (the set upserted at startup per `AGENT_CONSOLE_SHARED_USERNAME`; when multi-account config lands, the set becomes larger). Rejected cases: a personal session attempting to dispatch to another user; **a shared session attempting to dispatch to a shared service account (including its own caller account)** — this prevents recursive self-delegation, the Orchestrator delegating work back to its own OS identity. This is the minimum permission boundary; richer role models can be added later.
+3. **Dispatch** — the server computes the target user's clone and worktree paths by convention. If the clone is absent, the server first creates the parent directory (`sudo -u <assignee> -H mkdir -p <clone-parent>`) — `git clone` creates only the leaf, not intermediate path segments — then bootstraps the clone (`sudo -u <assignee> -H git clone <url> <clone-path>`). Next it creates the worktree (`sudo -u <assignee> -H git -C <clone> worktree add ...`), copies template files (see Template file handling below), creates a session row with `created_by = <assignee>.id`, and spawns the session's PTY via the existing `MultiUserMode.spawnPty` with `username = <assignee>`.
+
+The Dispatch step for a single (assignee, repository) pair is serialised by an in-memory lock keyed on `{assignee.users.id, repository.id}`. Two concurrent `delegate_to_worktree` calls targeting the same pair do not race on the lazy clone bootstrap — the second waits on the first (preferred) or receives an "already in progress" error the Orchestrator can retry. The lock is held throughout bootstrap-plus-worktree so the dispatch appears atomic from the Orchestrator's perspective. Per-worktree creation after the clone exists does not need global serialisation — `git worktree add` is atomic against a single clone — but the lock spans the whole sequence for simplicity.
 
 In `AUTH_MODE=none`, `assignee` is either absent or equals the server process user; the existing direct-spawn and direct-git paths are taken. Single-user behaviour is unchanged.
 
@@ -176,7 +178,13 @@ In `AUTH_MODE=none`, `assignee` is either absent or equals the server process us
 
 `copyTemplateFiles` in `packages/server/src/services/worktree-service.ts` currently uses `fsPromises.writeFile`, which writes as the server process user. This is incompatible with the identity-filesystem boundary above.
 
-The replacement pattern: the server reads each template file's content in memory, then writes each destination file as the target user via a `sudo -u <user> -H sh -c 'cat > <path>'` pipe (content supplied on stdin). Ownership and group are correct from the moment of creation.
+The replacement pattern preserves the recursive, binary-safe, permission-preserving behaviour of the current `copyTemplateFiles`, executed as the target user:
+
+1. For each sub-directory in the template tree, run `sudo -u <user> -H mkdir -p <dest-dir>` before writing files into it. `git worktree add` does not pre-create template sub-directories.
+2. For each file, pipe its bytes to `sudo -u <user> -H sh -c 'cat > <dest-path>'` with the content supplied on stdin. This is binary-safe — text and non-text template files are handled uniformly.
+3. Preserve the source file's mode bits: after writing, run `sudo -u <user> -H chmod <mode> <dest-path>` so that executable templates (e.g., `.sh` hooks) stay executable.
+
+Ownership and group are correct from the moment of creation because every step runs under the target user's identity.
 
 Alternatives considered and rejected:
 
@@ -243,7 +251,7 @@ In a shared session, multiple users write into the same PTY via the web UI. The 
 [@<username>] <user's typed content>
 ```
 
-- **Where** — WebSocket ingress handler for the shared session's worker. Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
+- **Where** — the WebSocket ingress handler that forwards browser stdin to a worker's PTY (today resident in `packages/server/src/websocket/`; the specific file and symbol are confirmed at implementation time). Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
 - **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
 - **When** — only for **agent workers** (workers whose `type` is `agent`) in sessions whose `created_by` resolves to a shared service account. Terminal / shell workers pass stdin through unchanged, even when the containing session is shared: prefix injection is a communication-context affordance for conversational agents, and `[@alice] ls` is not a valid shell command. Personal sessions receive no prefix regardless of worker type — they are single-user by construction and would noisily tag a single-person dialogue.
 - **Granularity** — the prefix is inserted only when a complete line arrives (LF received). Partial lines mid-typing, keystroke streams from terminal control sequences, and tab-completion echo traffic pass through unprefixed. Only user-visible "submitted lines" carry attribution.
