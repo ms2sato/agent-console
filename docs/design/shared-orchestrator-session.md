@@ -1,21 +1,21 @@
-# Shared Service-Account Sessions — Design
+# Shared-Account Sessions — Design
 
-> **Scope.** This document specifies a multi-user affordance: running a session under a dedicated OS service account so that all authenticated users can see and interact with the same PTY through the normal session UI. The **Orchestrator** (invoked via the `/orchestrator` skill) is the primary motivating use-case, but nothing in this design treats the Orchestrator as a product-level concept. The filename retains "orchestrator" for cross-reference stability; the mechanism is general.
+> **Scope.** This document specifies a multi-user affordance: running a session under a dedicated OS shared account so that all authenticated users can see and interact with the same PTY through the normal session UI. The **Orchestrator** (invoked via the `/orchestrator` skill) is the primary motivating use-case, but nothing in this design treats the Orchestrator as a product-level concept. The filename retains "orchestrator" for cross-reference stability; the mechanism is general.
 >
-> **Background on the reframe.** An earlier version of this document positioned the "shared Orchestrator session" as a first-class entity. The April 2026 design conversation captured in [`docs/narratives/2026-04-21-orchestrator-as-skill.md`](../narratives/2026-04-21-orchestrator-as-skill.md) concluded that no first-class designation is needed — the PTY UI already supports multi-human interaction with any session, and the Orchestrator remains a skill. What remains as a design artifact is the service-account mechanism itself, described below.
+> **Background on the reframe.** An earlier version of this document positioned the "shared Orchestrator session" as a first-class entity. The April 2026 design conversation captured in [`docs/narratives/2026-04-21-orchestrator-as-skill.md`](../narratives/2026-04-21-orchestrator-as-skill.md) concluded that no first-class designation is needed — the PTY UI already supports multi-human interaction with any session, and the Orchestrator remains a skill. What remains as a design artifact is the shared-account mechanism itself, described below.
 
 ## Context
 
 Agent Console supports multi-user operation via `AUTH_MODE=multi-user` (see [`multi-user-shared-setup.md`](./multi-user-shared-setup.md)). In that mode, each authenticated OS user has their own personal sessions, and PTY processes are spawned as that user via `sudo -u`. Session records live in a single server-side SQLite at `$AGENT_CONSOLE_HOME/data.db`, with `sessions.created_by` identifying the session owner.
 
-What is not yet supported: a session whose PTY process runs under a **dedicated service account** rather than any individual user. The motivating use-case is team coordination: a single Orchestrator session that all team members submit requests to through the normal session UI. But the mechanism is general — any workflow that needs a shared compute identity separate from any individual user (shared bots, team dashboards, coordination surfaces) fits here.
+What is not yet supported: a session whose PTY process runs under a **dedicated shared account** rather than any individual user. The motivating use-case is team coordination: a single Orchestrator session that all team members submit requests to through the normal session UI. But the mechanism is general — any workflow that needs a shared compute identity separate from any individual user (shared bots, team dashboards, coordination surfaces) fits here.
 
-This document specifies how to add service-account sessions on top of the existing multi-user foundation.
+This document specifies how to add shared-account sessions on top of the existing multi-user foundation.
 
 ## Terminology
 
-- **Shared service account** — a dedicated OS account on the server, distinct from the server's service user (`agentconsole`) and from any individual end-user. Operators choose the account name freely. The examples in this document use `agent-console-shared`; that specific name is not a product-level identifier.
-- **Shared session** — a session whose `created_by` references the shared service account's `users.id`. Visible and writable by all authenticated users by default; this is the basis on which multiple humans interact with the same PTY through the UI.
+- **Shared account** — a dedicated OS account on the server, distinct from the server's service user (`agentconsole`) and from any individual end-user. Operators choose the account name freely. The examples in this document use `agent-console-shared`; that specific name is not a product-level identifier.
+- **Shared session** — a session whose `created_by` references the shared account's `users.id`. Visible and writable by all authenticated users by default; this is the basis on which multiple humans interact with the same PTY through the UI.
 - **Personal session** — the existing per-user session (`created_by` references the authenticated user's `users.id`).
 
 ## Orchestrator is a Skill, Not a Session Type
@@ -26,7 +26,7 @@ Consequently:
 
 - A team may run a single shared session with `/orchestrator` invoked and call it "the team Orchestrator".
 - A larger organisation may run multiple shared sessions each with `/orchestrator` invoked, each scoped to a different surface (user-facing UI, admin console, infrastructure) and titled accordingly.
-- The same service-account mechanism also supports non-Orchestrator shared sessions (team terminal for a shared tool, a coordination channel, etc.).
+- The same shared-account mechanism also supports non-Orchestrator shared sessions (team terminal for a shared tool, a coordination channel, etc.).
 
 The **session type** here is "shared" (distinguished from "personal" by whose OS account spawns the PTY). The **role** played by a session is determined by which skill was invoked and what the users ask of it. These two axes are independent.
 
@@ -34,8 +34,8 @@ The **session type** here is "shared" (distinguished from "personal" by whose OS
 
 1. **Multi-human access through the PTY UI.** Any authenticated user can open a shared session's worker and type into its PTY. No additional inbound-routing machinery is introduced; the session list and PTY terminal already in Agent Console are the interaction surface.
 2. **No change to existing storage model.** The single server-side `data.db` and the `sessions.created_by` column already support the distinction.
-3. **Clean OS account separation.** The shared service account is distinct from the server's service user (`agentconsole`) — no privilege conflation, no credential sharing between the server process and the spawned CLI processes.
-4. **API-key authentication for shared service accounts.** The shared account authenticates to the LLM vendor via an organisation-owned API key (Commercial Terms), independent of any individual user's subscription. Personal sessions continue to use subscription authentication in each user's own OS account.
+3. **Clean OS account separation.** The shared account is distinct from the server's service user (`agentconsole`) — no privilege conflation, no credential sharing between the server process and the spawned CLI processes.
+4. **API-key authentication for shared accounts.** The shared account authenticates to the LLM vendor via an organisation-owned API key (Commercial Terms), independent of any individual user's subscription. Personal sessions continue to use subscription authentication in each user's own OS account.
 5. **No user-side impersonation burden.** End users click a button; the server handles OS-level impersonation via the existing `agentconsole` sudo privilege. No `sudo` or account switching from end-user terminals.
 
 ## Non-Goals
@@ -52,10 +52,10 @@ The **session type** here is "shared" (distinguished from "personal" by whose OS
 
 ```text
 $AGENT_CONSOLE_HOME/data.db        ← single DB (unchanged)
-    users                          ← includes shared service account record(s)
+    users                          ← includes shared account record(s)
     sessions                       ← created_by associates with users.id
                                      (application-level linkage; the shared
-                                      service account record is the one
+                                      shared account record is the one
                                       referenced for shared sessions)
 ```
 
@@ -72,37 +72,37 @@ agentconsole          (service user)             runs the server process,
 userA, userB, ...     (authenticated users)      personal sessions spawn
                                                  as these users
 
-<service-account-1>   (shared service account)   shared sessions spawn
-<service-account-2>                              as these users
+<shared-account-1>   (shared account)   shared sessions spawn
+<shared-account-2>                              as these users
 ...                                              (examples: agent-console-shared,
                                                   team-frontend-shared, etc.)
 ```
 
-A shared service account is a normal OS user with its own `$HOME`, its own credential storage, and an entry in the `users` table. Exactly like any authenticated user in structure — the only distinction is that its PTY is reachable by all authenticated users (by policy), and its authentication to the LLM vendor is API-key-based rather than subscription-based.
+A shared account is a normal OS user with its own `$HOME`, its own credential storage, and an entry in the `users` table. Exactly like any authenticated user in structure — the only distinction is that its PTY is reachable by all authenticated users (by policy), and its authentication to the LLM vendor is API-key-based rather than subscription-based.
 
 ### Authentication model
 
 | Session type | PTY runs as | Auth method |
 |---|---|---|
 | Personal session | Authenticated OS user | Subscription (individual `claude login` in that user's home) |
-| Shared session | Shared service account | **API key** configured in the service account's home |
+| Shared session | Shared account | **API key** configured in the shared account's home |
 
 Rationale for API keys on shared accounts: a shared account serves multiple people, which fits organisation-level (Commercial Terms) access rather than individual subscription terms. API keys also rotate cleanly and do not break when any one individual's subscription lapses. This is compatible with vendor offerings that provide organisation-level API access.
 
 ## Session Creation Flow
 
-End user `userA` clicks "Create shared session" in the UI. If the server is configured with multiple shared service accounts, the UI presents a picker for which account to create under.
+End user `userA` clicks "Create shared session" in the UI. If the server is configured with multiple shared accounts, the UI presents a picker for which account to create under.
 
-1. Client sends a standard session-create request with a `shared` indicator (concrete API schema deferred to implementation). When multiple shared service accounts are configured, the chosen account's identifier accompanies the request; its form (username, id, or another key) is resolved together with the multi-account config form — see Open Questions.
+1. Client sends a standard session-create request with a `shared` indicator (concrete API schema deferred to implementation). When multiple shared accounts are configured, the chosen account's identifier accompanies the request; its form (username, id, or another key) is resolved together with the multi-account config form — see Open Questions.
 2. Server validates `userA`'s JWT via normal auth middleware and checks the shared-session-creation permission (default: all authenticated users may create).
-3. Server resolves the selected shared service account's `users.id` from its configuration (see Configuration below).
+3. Server resolves the selected shared account's `users.id` from its configuration (see Configuration below).
 4. Server creates the session with:
-   - `sessions.created_by` = shared service account's `users.id`
+   - `sessions.created_by` = shared account's `users.id`
    - `sessions.initiated_by` = `userA.id` (records the authenticated user who clicked "Create shared session"; persisted for audit — see Schema Notes)
-5. When the session's PTY is spawned, the server uses `sudo -u <service-account-name> -i sh -c '...'`. The existing `agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh` sudoers rule covers this — no additional sudoers configuration.
-6. The PTY runs with the service account's environment: `$HOME` points to the service account's home, which contains the API-key credentials. The `claude` CLI (or any LLM CLI) authenticates using those credentials.
+5. When the session's PTY is spawned, the server uses `sudo -u <shared-account-name> -i sh -c '...'`. The existing `agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh` sudoers rule covers this — no additional sudoers configuration.
+6. The PTY runs with the shared account's environment: `$HOME` points to the shared account's home, which contains the API-key credentials. The `claude` CLI (or any LLM CLI) authenticates using those credentials.
 
-End-user perspective: a shared session appears in the session list. Any authenticated user can click it, open its worker's PTY, and type into it — exactly like a personal session, except the PTY process is running as the shared service account and the participants include the whole team.
+End-user perspective: a shared session appears in the session list. Any authenticated user can click it, open its worker's PTY, and type into it — exactly like a personal session, except the PTY process is running as the shared account and the participants include the whole team.
 
 ## Per-user Worktree Dispatch
 
@@ -113,7 +113,7 @@ The shared session is only half the multi-user story. The other half is what hap
 A hard invariant: **no process writes into a user's `$HOME` unless it is running as that user.**
 
 - The server process (running as `agentconsole`) never writes files into `alice`'s home directory.
-- The shared service account (e.g. `agent-console-shared`) never writes files into `alice`'s home directory.
+- The shared account (e.g. `agent-console-shared`) never writes files into `alice`'s home directory.
 - All filesystem operations that land under `alice`'s home — initial clone, `git worktree add`, template file copy, any post-setup hook — are executed via `sudo -u alice -H <command>`.
 
 This preserves two properties at once: filesystem permissions stay sound (alice owns her own files), and git attribution stays honest (alice's `.gitconfig`, SSH key, and GPG key are in scope for every commit that originates there).
@@ -167,7 +167,7 @@ The `assignee` is a username, not a UUID — this is the identifier a human-in-t
 Resolution and authorisation:
 
 1. **Resolve** — `assignee` is looked up in the `users` table. If it does not resolve, the tool returns an error; the Orchestrator sees it and can ask the operator to verify the user.
-2. **Authorise** — only sessions running under a shared service account may set `assignee` to someone other than the caller. The server determines whether the calling session is a shared-session by looking up the session's `created_by`, then checking whether that `users.id` is in the set of configured shared service account identities (the set upserted at startup per `AGENT_CONSOLE_SHARED_USERNAME`; when multi-account config lands, the set becomes larger). Rejected cases: a personal session attempting to dispatch to another user; **a shared session attempting to dispatch to a shared service account (including its own caller account)** — this prevents recursive self-delegation, the Orchestrator delegating work back to its own OS identity. This is the minimum permission boundary; richer role models can be added later.
+2. **Authorise** — only sessions running under a shared account may set `assignee` to someone other than the caller. The server determines whether the calling session is a shared-session by looking up the session's `created_by`, then checking whether that `users.id` is in the set of configured shared account identities (the set upserted at startup per `AGENT_CONSOLE_SHARED_USERNAME`; when multi-account config lands, the set becomes larger). Rejected cases: a personal session attempting to dispatch to another user; **a shared session attempting to dispatch to a shared account (including its own caller account)** — this prevents recursive self-delegation, the Orchestrator delegating work back to its own OS identity. This is the minimum permission boundary; richer role models can be added later.
 3. **Dispatch** — the server computes the target user's clone and worktree paths by convention. If the clone is absent, the server first creates the parent directory (`sudo -u <assignee> -H mkdir -p <clone-parent>`) — `git clone` creates only the leaf, not intermediate path segments — then bootstraps the clone (`sudo -u <assignee> -H git clone <url> <clone-path>`). Next it creates the worktree (`sudo -u <assignee> -H git -C <clone> worktree add ...`), copies template files (see Template file handling below), creates a session row with `created_by = <assignee>.id`, and spawns the session's PTY via the existing `MultiUserMode.spawnPty` with `username = <assignee>`.
 
 The Dispatch step for a single (assignee, repository) pair is serialised by an in-memory lock keyed on `{assignee.users.id, repository.id}`. Two concurrent `delegate_to_worktree` calls targeting the same pair do not race on the lazy clone bootstrap — the second waits on the first (preferred) or receives an "already in progress" error the Orchestrator can retry. The lock is held throughout bootstrap-plus-worktree so the dispatch appears atomic from the Orchestrator's perspective. Per-worktree creation after the clone exists does not need global serialisation — `git worktree add` is atomic against a single clone — but the lock spans the whole sequence for simplicity.
@@ -222,7 +222,7 @@ Landing this design requires the following server-side extensions, none of which
 2. **`packages/server/src/services/worktree-service.ts` — target-user-aware creation.** `createWorktree` accepts an `ownerUser: AuthUser` parameter. Path resolution, git invocation, and template file copy all use that user's identity.
 3. **`packages/server/src/services/repository-manager.ts` — URL registration.** A new `registerRepositoryFromUrl` method; the lazy-per-user-clone bootstrap lives in the worktree creation path, not in registration.
 4. **MCP `delegate_to_worktree` — `assignee` parameter.** Plus the authorisation check that restricts cross-user dispatch to shared-session callers.
-5. **Sudoers policy extension.** The server operator grants the service account `NOPASSWD` sudo to `/usr/bin/git` in addition to the shells it already has. Documented alongside the existing sudoers fragment in [`multi-user-shared-setup.md`](./multi-user-shared-setup.md).
+5. **Sudoers policy extension.** The server operator grants the shared account `NOPASSWD` sudo to `/usr/bin/git` in addition to the shells it already has. Documented alongside the existing sudoers fragment in [`multi-user-shared-setup.md`](./multi-user-shared-setup.md).
 
 These land together as a single multi-user-dispatch iteration; partial adoption leaves the system in an inconsistent state.
 
@@ -253,7 +253,7 @@ In a shared session, multiple users write into the same PTY via the web UI. The 
 
 - **Where** — the WebSocket ingress handler that forwards browser stdin to a worker's PTY (today resident in `packages/server/src/websocket/`; the specific file and symbol are confirmed at implementation time). Not the browser client: client-side tagging would be forgeable by a malicious client; server-side tagging is authoritative.
 - **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
-- **When** — only for **agent workers** (workers whose `type` is `agent`) in sessions whose `created_by` resolves to a shared service account. Terminal / shell workers pass stdin through unchanged, even when the containing session is shared: prefix injection is a communication-context affordance for conversational agents, and `[@alice] ls` is not a valid shell command. Personal sessions receive no prefix regardless of worker type — they are single-user by construction and would noisily tag a single-person dialogue.
+- **When** — only for **agent workers** (workers whose `type` is `agent`) in sessions whose `created_by` resolves to a shared account. Terminal / shell workers pass stdin through unchanged, even when the containing session is shared: prefix injection is a communication-context affordance for conversational agents, and `[@alice] ls` is not a valid shell command. Personal sessions receive no prefix regardless of worker type — they are single-user by construction and would noisily tag a single-person dialogue.
 - **Granularity** — the prefix is inserted only when a complete line arrives (LF received). Partial lines mid-typing, keystroke streams from terminal control sequences, and tab-completion echo traffic pass through unprefixed. Only user-visible "submitted lines" carry attribution.
 - **Format lock** — the exact prefix form is part of the server's contract with the Orchestrator skill convention below. Changing the format is a breaking change for that convention.
 
@@ -294,21 +294,21 @@ This open model matches the "small-team coordination hub" usage described in `do
 
 - All session rows live in the server-side `data.db`.
 - All worker output files live under `$AGENT_CONSOLE_HOME/...` as specified by [`session-data-path.md`](./session-data-path.md), owned by the `agentconsole` service user (same as personal sessions).
-- The shared service account's `$HOME` is used only for CLI credentials and any user-facing state the CLI itself writes (shell history, `.claude/` config, etc.). It is not used for session persistence.
+- The shared account's `$HOME` is used only for CLI credentials and any user-facing state the CLI itself writes (shell history, `.claude/` config, etc.). It is not used for session persistence.
 
 ## Configuration
 
-Shared service-account sessions are **opt-in**. Deployments that do not want them leave the relevant variables unset; the feature is simply off. Deployments that do want them set the variables to the OS username(s) of the shared account(s).
+Shared-account sessions are **opt-in**. Deployments that do not want them leave the relevant variables unset; the feature is simply off. Deployments that do want them set the variables to the OS username(s) of the shared account(s).
 
 | Variable | Default | Semantics |
 |---|---|---|
-| `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared service account (single-account case). |
+| `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared account (single-account case). |
 
 Multiple shared accounts (a natural extension for larger organisations) would use a comma-separated list, a separate per-account config file, or an equivalent mechanism. The initial implementation targets exactly one account via the single variable above; the extension is straightforward when needed.
 
 ### Startup behaviour
 
-- **Unset** — shared feature disabled. Server logs one informational line (`"shared service account: disabled (AGENT_CONSOLE_SHARED_USERNAME not set)"`) and continues. UI does not display shared-session affordances.
+- **Unset** — shared feature disabled. Server logs one informational line (`"shared account: disabled (AGENT_CONSOLE_SHARED_USERNAME not set)"`) and continues. UI does not display shared-session affordances.
 - **Set, and the OS account exists** — server upserts the account into `users` on startup, enables shared-session creation endpoints and UI.
 - **Set, and the OS account does not exist** — server **fails fast at startup** with a clear error instructing the operator to create the OS account or unset the variable. This catches misconfiguration (typos, accidental unset during deployment) before users encounter a missing button.
 
@@ -340,7 +340,7 @@ sudo useradd -m -s /bin/bash agent-console-shared
 
 ### 2. Configure the LLM CLI with an API key
 
-The server operator becomes the shared service account and sets up credentials once.
+The server operator becomes the shared account and sets up credentials once.
 
 ```bash
 sudo -u agent-console-shared -i
@@ -361,7 +361,7 @@ Set `AGENT_CONSOLE_SHARED_USERNAME=<shared-account-name>` in the server's enviro
 Start the server, log in as any user, create a shared session, verify:
 
 - The session appears in the UI with a visible "shared" indicator.
-- The session's worker terminal runs as the shared service account (`whoami` inside the terminal returns the account's username).
+- The session's worker terminal runs as the shared account (`whoami` inside the terminal returns the account's username).
 - Credentials are in place — the check depends on the setup chosen in step 2. For the env-var path, `echo $ANTHROPIC_API_KEY` shows a value. For the login-based path, an authenticated CLI probe (e.g., `claude --help` returning without a login prompt, or the equivalent for the chosen CLI) succeeds. Either path is acceptable.
 - Other authenticated users can see and write to the same session.
 
@@ -370,7 +370,7 @@ Start the server, log in as any user, create a shared session, verify:
 Rotation is manual, triggered when a key is compromised or reaching expiry:
 
 ```bash
-sudo -u <service-account-name> -i
+sudo -u <shared-account-name> -i
   # Update the CLI's stored credential with the new API key.
   # Env-var based setup: edit ~/.zshrc (or equivalent).
   # Login-based setup: re-run the login command with the new key.
@@ -386,7 +386,7 @@ Rotation frequency is an operator decision; typical: every 6–12 months, or imm
 
 Minimum viable changes:
 
-1. **"Create shared session" affordance** — a distinct button or menu item, visible when at least one shared service account is configured.
+1. **"Create shared session" affordance** — a distinct button or menu item, visible when at least one shared account is configured.
 2. **Visual distinction for shared sessions** — badge, colour, or label so users know they are typing into a shared space (reduces accidental secret leakage into a visible-to-all terminal).
 3. **List / filter** — shared sessions appear in all users' session lists by default. The existing per-user filter can be extended with a "shared only" or "personal only" toggle.
 4. **Indicator of other active participants** (optional) — "3 users currently viewing" — useful for coordination but out of scope for the minimum viable implementation.
@@ -395,7 +395,7 @@ The Orchestrator-role session, when a team runs one, is discovered the same way 
 
 ## Security Considerations
 
-### Why shared service accounts are separate from the server service user
+### Why shared accounts are separate from the server service user
 
 The server's service user (`agentconsole`) runs the Hono process and has `NOPASSWD` sudo to any OS user. Running a shared session as the service user would introduce these risks:
 
@@ -403,9 +403,9 @@ The server's service user (`agentconsole`) runs the Hono process and has `NOPASS
 2. **Direct DB write capability** — `data.db` is owned by the service user. A PTY running as the service user bypasses the server's validation layer.
 3. **Sudo privilege amplification** — the service user can `sudo -u` to any account. A PTY with that identity can be coerced into elevating privileges.
 
-Keeping the shared service account distinct from the service user preserves defense-in-depth: the service process only spawns PTYs; the LLM process only runs the LLM.
+Keeping the shared account distinct from the service user preserves defense-in-depth: the service process only spawns PTYs; the LLM process only runs the LLM.
 
-### Why API key, not subscription, for shared service accounts
+### Why API key, not subscription, for shared accounts
 
 - **Commercial compliance** — personal subscription terms typically preclude multi-user business use. An organisation-owned API key (Commercial Terms) is the appropriate authentication form for shared infrastructure.
 - **Operational independence** — the shared account does not break when any individual's subscription lapses.
@@ -422,9 +422,9 @@ Any authenticated user can type into a shared session. This is an intentional pr
 
 ### Shared account rename and identity stability
 
-`sessions.created_by` references `users.id` (a UUID), stable across OS account renames. The sudo target uses `users.username`, which is re-read from the `users` table on each PTY spawn. The `users` row is upserted at server startup for configured shared service accounts (see Configuration), and re-upserted on each user's login.
+`sessions.created_by` references `users.id` (a UUID), stable across OS account renames. The sudo target uses `users.username`, which is re-read from the `users` table on each PTY spawn. The `users` row is upserted at server startup for configured shared accounts (see Configuration), and re-upserted on each user's login.
 
-Operator workflow for renaming a shared service account (rare):
+Operator workflow for renaming a shared account (rare):
 
 1. Rename the OS account (`usermod -l ...` on Linux, equivalent on macOS).
 2. Update `AGENT_CONSOLE_SHARED_USERNAME` to the new name.
@@ -436,7 +436,7 @@ Per-user accounts (alice, bob) follow the same pattern: their `users` row is key
 
 Required schema addition for this design: **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
 
-Aside from this one column, the existing `users` and `sessions` tables already handle shared service accounts via the `created_by` mechanism; no further schema changes are required for the minimum viable version.
+Aside from this one column, the existing `users` and `sessions` tables already handle shared accounts via the `created_by` mechanism; no further schema changes are required for the minimum viable version.
 
 Optional additions considered but deferred:
 
@@ -447,7 +447,7 @@ Decisions about `sessions.created_by` gaining a DB-level `REFERENCES users(id)` 
 
 ## Open Questions
 
-- **Multiple shared service accounts.** Concrete config form for more than one account (comma-separated env var, config file, or per-repository association). Schema-wise free; runtime form is an implementation choice. The session-create API's shared-account identifier (Session Creation Flow step 1) is resolved alongside this.
+- **Multiple shared accounts.** Concrete config form for more than one account (comma-separated env var, config file, or per-repository association). Schema-wise free; runtime form is an implementation choice. The session-create API's shared-account identifier (Session Creation Flow step 1) is resolved alongside this.
 - **Shared session audit depth.** Current design records creator. Per-stdin-message authorship would require an additional table — revisit if team operators report need.
 - **API-key storage form inside the shared account's home.** Two equivalent options: env-var export in shell profile, or CLI-native credential file. Operator choice; does not affect the server.
 - **Rate limiting and abuse control.** The initial design does not rate-limit shared-session creation or stdin throughput. Runaway consumption by a compromised or misbehaving internal actor is an operator concern, handled externally (reverse proxy limits, vendor-side billing caps). Revisit if self-service shared sessions become available to a larger audience.

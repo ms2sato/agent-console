@@ -105,9 +105,9 @@ The Orchestrator is a skill. Nothing more at the product level.
 - Multiple Orchestrators per project are valid — UI team's Orchestrator, admin surface team's Orchestrator, etc.
 - There is no `orchestrator_session_id` column. There is no claim/release API. There is no session type named `orchestrator`. None of these are needed.
 
-What is needed, and what the `#677` design actually produced, is multi-user Agent Console infrastructure: `AUTH_MODE=multi-user`, a dedicated OS service account, API-key auth on that account, per-user git attribution via `sudo -u`, per-user clones under each user's `$HOME`. The "shared Orchestrator" is just the natural first use-case of this infrastructure: a session running on a team-shared service account, visible through the PTY UI to all authenticated team members.
+What is needed, and what the `#677` design actually produced, is multi-user Agent Console infrastructure: `AUTH_MODE=multi-user`, a dedicated OS user account (the shared account), API-key auth on that account, per-user git attribution via `sudo -u`, per-user clones under each user's `$HOME`. The "shared Orchestrator" is just the natural first use-case of this infrastructure: a session running on a team-shared account, visible through the PTY UI to all authenticated team members.
 
-The frame "shared Orchestrator session" over-specialised the mechanism. The frame "shared service-account session" is accurate. Orchestrator is an example.
+The frame "shared Orchestrator session" over-specialised the mechanism. The frame "shared-account session" is accurate. Orchestrator is an example.
 
 ## Why it matters
 
