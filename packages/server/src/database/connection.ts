@@ -1007,14 +1007,25 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
  * Migration v19: Add FK constraint to sessions.created_by referencing users(id) ON DELETE SET NULL.
  *
  * SQLite does not support ALTER TABLE ADD CONSTRAINT, so we use the standard
- * table-recreation pattern (https://www.sqlite.org/lang_altertable.html#otheralter):
+ * table-recreation pattern (https://www.sqlite.org/lang_altertable.html#otheralter).
+ * To avoid SQLite ≥ 3.25.0's default "ALTER TABLE RENAME also rewrites foreign-key
+ * references in dependent tables" behavior — which would silently rewrite
+ * `workers.session_id REFERENCES sessions(id)` to point at `sessions_old` and
+ * leave the FK dangling after we drop `sessions_old` — we use the inverse
+ * recreate pattern: build the new table under a temporary name, copy data,
+ * drop the original table, then rename the new table into place. After the
+ * final rename completes, dependent FK declarations still reference `sessions`
+ * (the canonical name), and SQLite's RENAME-based FK rewrite leaves them alone
+ * because no dependent table references `sessions_new`.
+ *
+ * Sequence:
  *   1. PRAGMA foreign_keys = OFF (must be outside transaction)
  *   2. Snapshot existing index/trigger DDL on the sessions table
  *   3. Inside a transaction:
- *      a. Rename sessions to sessions_old
- *      b. Create the new sessions table with the FK constraint
- *      c. Copy all rows from sessions_old to sessions
- *      d. Drop sessions_old
+ *      a. Create sessions_new with the FK constraint
+ *      b. Copy all rows from sessions to sessions_new
+ *      c. Drop sessions
+ *      d. Rename sessions_new to sessions
  *      e. Recreate the captured indexes/triggers
  *      f. PRAGMA user_version = 19
  *   4. PRAGMA foreign_key_check
@@ -1063,14 +1074,11 @@ async function migrateToV19(database: Kysely<Database>): Promise<void> {
     const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
 
     await database.transaction().execute(async (trx) => {
-      // Step 1: rename existing table out of the way.
-      await sql`ALTER TABLE sessions RENAME TO sessions_old`.execute(trx);
-
-      // Step 2: create the new table with the FK constraint. Column order
+      // Step 1: create the new table under a temporary name. Column order
       // and types mirror the v18 schema; the only addition is the inline
       // FK clause on `created_by`.
       await sql`
-        CREATE TABLE sessions (
+        CREATE TABLE sessions_new (
           id TEXT PRIMARY KEY,
           type TEXT NOT NULL,
           location_path TEXT NOT NULL,
@@ -1093,10 +1101,10 @@ async function migrateToV19(database: Kysely<Database>): Promise<void> {
         )
       `.execute(trx);
 
-      // Step 3: copy data. Listing columns explicitly guards against any
+      // Step 2: copy data. Listing columns explicitly guards against any
       // future column-order drift between the old and new tables.
       await sql`
-        INSERT INTO sessions (
+        INSERT INTO sessions_new (
           id, type, location_path, server_pid, created_at, updated_at,
           initial_prompt, title, repository_id, worktree_id, paused_at,
           parent_session_id, parent_worker_id, created_by, data_scope,
@@ -1107,11 +1115,18 @@ async function migrateToV19(database: Kysely<Database>): Promise<void> {
           initial_prompt, title, repository_id, worktree_id, paused_at,
           parent_session_id, parent_worker_id, created_by, data_scope,
           data_scope_slug, recovery_state, orphaned_at, orphaned_reason
-        FROM sessions_old
+        FROM sessions
       `.execute(trx);
 
-      // Step 4: drop the old table.
-      await sql`DROP TABLE sessions_old`.execute(trx);
+      // Step 3: drop the original table. Indexes and triggers attached to it
+      // are dropped automatically by SQLite; we recreate them in step 5.
+      await sql`DROP TABLE sessions`.execute(trx);
+
+      // Step 4: rename the new table into place. After this rename, any
+      // dependent FK declarations (e.g. workers.session_id) continue to
+      // reference `sessions` because no dependent table references
+      // `sessions_new` — so SQLite's FK-rewrite-on-rename has nothing to do.
+      await sql`ALTER TABLE sessions_new RENAME TO sessions`.execute(trx);
 
       // Step 5: recreate captured indexes/triggers. Each row's `sql` is the
       // exact CREATE statement SQLite stored, so re-executing it restores the

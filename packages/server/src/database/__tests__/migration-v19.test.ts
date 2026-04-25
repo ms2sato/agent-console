@@ -160,10 +160,8 @@ async function runV19Migration(db: Kysely<Database>): Promise<void> {
     const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
 
     await db.transaction().execute(async (trx) => {
-      await sql`ALTER TABLE sessions RENAME TO sessions_old`.execute(trx);
-
       await sql`
-        CREATE TABLE sessions (
+        CREATE TABLE sessions_new (
           id TEXT PRIMARY KEY,
           type TEXT NOT NULL,
           location_path TEXT NOT NULL,
@@ -187,7 +185,7 @@ async function runV19Migration(db: Kysely<Database>): Promise<void> {
       `.execute(trx);
 
       await sql`
-        INSERT INTO sessions (
+        INSERT INTO sessions_new (
           id, type, location_path, server_pid, created_at, updated_at,
           initial_prompt, title, repository_id, worktree_id, paused_at,
           parent_session_id, parent_worker_id, created_by, data_scope,
@@ -198,10 +196,11 @@ async function runV19Migration(db: Kysely<Database>): Promise<void> {
           initial_prompt, title, repository_id, worktree_id, paused_at,
           parent_session_id, parent_worker_id, created_by, data_scope,
           data_scope_slug, recovery_state, orphaned_at, orphaned_reason
-        FROM sessions_old
+        FROM sessions
       `.execute(trx);
 
-      await sql`DROP TABLE sessions_old`.execute(trx);
+      await sql`DROP TABLE sessions`.execute(trx);
+      await sql`ALTER TABLE sessions_new RENAME TO sessions`.execute(trx);
 
       for (const obj of objectsToRestore) {
         await sql.raw(obj.sql as string).execute(trx);
@@ -253,6 +252,38 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
     const createTableSql = fkInfo.rows[0]?.sql ?? '';
     expect(createTableSql).toContain('REFERENCES users(id)');
     expect(createTableSql).toContain('ON DELETE SET NULL');
+  });
+
+  it('preserves dependent FK references on the workers table', async () => {
+    // Regression: SQLite ≥ 3.25 rewrites FK declarations in dependent tables
+    // when ALTER TABLE RENAME affects the referenced table. The original v19
+    // migration used "RENAME sessions TO sessions_old" which silently rewrote
+    // workers.session_id to point at sessions_old; after we then dropped
+    // sessions_old, the workers FK was dangling and any DELETE on workers
+    // raised "no such table: main.sessions_old" on SQLite ≥ 3.25 (e.g. CI).
+    // The migration now uses the inverse pattern (create sessions_new, copy,
+    // drop sessions, rename sessions_new to sessions) to keep dependent FK
+    // references pointing at `sessions`.
+    const db = await initializeDatabase(':memory:');
+
+    const fkRows = await sql<{
+      id: number;
+      seq: number;
+      table: string;
+      from: string;
+      to: string;
+    }>`PRAGMA foreign_key_list(workers)`.execute(db);
+
+    const sessionFk = fkRows.rows.find((row) => row.from === 'session_id');
+    expect(sessionFk).toBeDefined();
+    expect(sessionFk!.table).toBe('sessions');
+
+    // Sanity: a DELETE that engages the FK (workers references sessions)
+    // must not throw. Pre-fix this raised "no such table: main.sessions_old".
+    await db
+      .deleteFrom('workers')
+      .where('session_id', '=', 'no-such-session')
+      .execute();
   });
 
   it('preserves existing session data during table recreation', async () => {
