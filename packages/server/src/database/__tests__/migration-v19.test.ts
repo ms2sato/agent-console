@@ -11,12 +11,18 @@
  *     the production implementation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
+import * as fsPromises from 'fs/promises';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV19 } from '../connection.js';
+import {
+  initializeDatabase,
+  closeDatabase,
+  migrateToV19,
+  backupDatabaseFile,
+} from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -436,5 +442,154 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
     expect(sessions[1].created_by).toBeNull();
 
     await db.destroy();
+  });
+
+  describe('pre-flight database backup', () => {
+    /**
+     * The migration-v19 backup logic copies the SQLite file via
+     * `fs.promises.copyFile`. The test file already mocks `fs/promises` via
+     * memfs, so:
+     *   - Pre-seeding a memfs file at `dbPath` lets us assert `copyFile`
+     *     was actually invoked and produced a sibling file with the same
+     *     bytes.
+     *   - The Kysely database used to drive the migration is independent
+     *     of that memfs file (Bun's native SQLite cannot read memfs paths),
+     *     which is fine: backup correctness and migration correctness are
+     *     orthogonal here. The migration only needs `dbPath` to know
+     *     *where* to write the backup, not to read SQL from it.
+     */
+    it('takes a backup before migrating and proceeds with migration', async () => {
+      const dbPath = `${TEST_CONFIG_DIR}/agentconsole.db`;
+      const fakeDbBytes = 'SQLITE format 3 -pretend-db-content';
+      // memfs-backed source file. Migration backup will copy these bytes.
+      setupMemfs({
+        [dbPath]: fakeDbBytes,
+      });
+
+      const db = await seedV18Database({
+        users: [{ id: 'u', os_uid: 1, username: 'a', home_dir: '/h' }],
+        sessions: [
+          {
+            id: 's',
+            type: 'worktree',
+            location_path: '/tmp/x',
+            repository_id: null,
+            worktree_id: null,
+            created_by: 'u',
+          },
+        ],
+      });
+
+      await migrateToV19(db, dbPath);
+
+      // Migration progressed past version bump.
+      const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(versionRes.rows[0]?.user_version).toBe(19);
+
+      // Exactly one backup file was written next to the source.
+      const dirEntries = await fsPromises.readdir(TEST_CONFIG_DIR);
+      const backups = dirEntries.filter((name) =>
+        name.startsWith('agentconsole.db.bak.v18-to-v19.')
+      );
+      expect(backups).toHaveLength(1);
+
+      // Backup file name encodes the version transition AND a colon-free
+      // timestamp suffix. We don't pin the exact timestamp (it is now()),
+      // but we do pin the structural shape — `T??-??-??-???Z` — so a
+      // future change that drops the colon-replacement step would fail
+      // here rather than producing un-portable filenames.
+      const backupName = backups[0];
+      expect(backupName).toMatch(
+        /^agentconsole\.db\.bak\.v18-to-v19\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
+      );
+
+      // Backup content matches the source bytes.
+      const backupContent = await fsPromises.readFile(`${TEST_CONFIG_DIR}/${backupName}`, 'utf-8');
+      expect(backupContent).toBe(fakeDbBytes);
+
+      await db.destroy();
+    });
+
+    it('aborts the migration when the backup copy fails', async () => {
+      const dbPath = `${TEST_CONFIG_DIR}/agentconsole.db`;
+      setupMemfs({
+        [dbPath]: 'irrelevant',
+      });
+
+      const db = await seedV18Database({
+        users: [],
+        sessions: [
+          {
+            id: 's',
+            type: 'quick',
+            location_path: '/tmp/q',
+            repository_id: null,
+            worktree_id: null,
+            created_by: null,
+          },
+        ],
+      });
+
+      // Force the backup copy to fail. The migration must surface the
+      // error AND leave the schema untouched (user_version stays at 18,
+      // sessions table keeps its v18 shape with no FK on created_by).
+      const copySpy = spyOn(fsPromises, 'copyFile').mockImplementation(() => {
+        return Promise.reject(new Error('disk full'));
+      });
+
+      try {
+        await expect(migrateToV19(db, dbPath)).rejects.toThrow('disk full');
+
+        const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+        expect(versionRes.rows[0]?.user_version).toBe(18);
+
+        // Sanity-check that the FK was not silently introduced. v18's
+        // sessions table has no FK clause referencing users.
+        const tblRes = await sql<{ sql: string }>`
+          SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'
+        `.execute(db);
+        expect(tblRes.rows[0]?.sql ?? '').not.toContain('REFERENCES users(id)');
+      } finally {
+        copySpy.mockRestore();
+      }
+
+      await db.destroy();
+    });
+
+    it('skips the backup for in-memory databases', async () => {
+      const db = await seedV18Database({
+        users: [],
+        sessions: [],
+      });
+
+      // No source file exists, but the migration must still succeed
+      // because `:memory:` opts out of backup entirely. A spy ensures
+      // the copy was not even attempted.
+      const copySpy = spyOn(fsPromises, 'copyFile');
+
+      try {
+        await migrateToV19(db, ':memory:');
+        expect(copySpy).not.toHaveBeenCalled();
+
+        const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+        expect(versionRes.rows[0]?.user_version).toBe(19);
+      } finally {
+        copySpy.mockRestore();
+      }
+
+      await db.destroy();
+    });
+
+    it('backupDatabaseFile returns null and performs no copy for in-memory databases', async () => {
+      const copySpy = spyOn(fsPromises, 'copyFile');
+
+      try {
+        const result = await backupDatabaseFile(':memory:', 18, 19);
+        expect(result).toBeNull();
+        expect(copySpy).not.toHaveBeenCalled();
+      } finally {
+        copySpy.mockRestore();
+      }
+    });
   });
 });

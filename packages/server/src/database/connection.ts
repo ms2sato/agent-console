@@ -3,6 +3,7 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
@@ -23,6 +24,47 @@ const logger = createLogger('database');
  */
 function isDuplicateColumnError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('duplicate column name');
+}
+
+/**
+ * Sentinel value used by callers (and tests) to opt out of pre-migration
+ * backup. Matches the path that Bun SQLite uses for in-memory databases.
+ */
+const IN_MEMORY_DB_PATH = ':memory:';
+
+/**
+ * Create a sibling backup copy of the SQLite database file before running a
+ * disruptive migration (e.g. table-recreation in v19).
+ *
+ * The backup file lives next to the database with a deterministic suffix that
+ * encodes the version transition and a timestamp, e.g.:
+ *   /path/to/agentconsole.db.bak.v18-to-v19.2026-04-25T20-39-00-000Z
+ *
+ * Behaviour:
+ *   - In-memory databases (`:memory:`) are skipped — there is no file to copy.
+ *     Returns `null` so callers can distinguish "skipped" from "succeeded".
+ *   - On copy failure, the underlying error is re-thrown unchanged so the
+ *     caller can abort the migration without bumping the schema version.
+ *   - Colons and dots in the ISO-8601 timestamp are replaced with `-` so the
+ *     filename is portable across filesystems.
+ *
+ * @returns The absolute path to the backup file, or `null` when skipped.
+ */
+export async function backupDatabaseFile(
+  dbPath: string,
+  fromVersion: number,
+  toVersion: number
+): Promise<string | null> {
+  if (dbPath === IN_MEMORY_DB_PATH) {
+    return null;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${dbPath}.bak.v${fromVersion}-to-v${toVersion}.${timestamp}`;
+
+  await fsPromises.copyFile(dbPath, backupPath);
+
+  return backupPath;
 }
 
 let db: Kysely<Database> | null = null;
@@ -109,7 +151,7 @@ async function doInitializeDatabase(customDbPath?: string): Promise<Kysely<Datab
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(database);
+  await runMigrations(database, dbPath);
 
   // Migrate data from JSON (one-time, skip for in-memory database)
   if (!isInMemory) {
@@ -165,7 +207,7 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(database);
+  await runMigrations(database, IN_MEMORY_DB_PATH);
 
   return database;
 }
@@ -173,8 +215,13 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
 /**
  * Run database migrations based on PRAGMA user_version.
  * Each migration increments the version number.
+ *
+ * @param dbPath - Filesystem path of the database, or `:memory:` for an
+ *                 in-memory database. Migrations that need to take a
+ *                 pre-flight backup (e.g. v19) use this to locate the file
+ *                 and skip the backup for in-memory databases.
  */
-async function runMigrations(database: Kysely<Database>): Promise<void> {
+async function runMigrations(database: Kysely<Database>, dbPath: string): Promise<void> {
   // Get current schema version using PRAGMA user_version
   const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
   const currentVersion = result.rows[0]?.user_version ?? 0;
@@ -255,7 +302,7 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   }
 
   if (currentVersion < 19) {
-    await migrateToV19(database);
+    await migrateToV19(database, dbPath);
   }
 }
 
@@ -1019,9 +1066,12 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
  * because no dependent table references `sessions_new`.
  *
  * Sequence:
- *   1. PRAGMA foreign_keys = OFF (must be outside transaction)
- *   2. Snapshot existing index/trigger DDL on the sessions table
- *   3. Inside a transaction:
+ *   1. Pre-flight backup of the database file (skipped for `:memory:`).
+ *      A backup failure aborts the migration before any schema change so the
+ *      caller can recover from a known-good state.
+ *   2. PRAGMA foreign_keys = OFF (must be outside transaction)
+ *   3. Snapshot existing index/trigger DDL on the sessions table
+ *   4. Inside a transaction:
  *      a. Create sessions_new with the FK constraint
  *      b. Copy all rows from sessions to sessions_new
  *      c. Drop sessions
@@ -1029,15 +1079,25 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
  *      e. Recreate the captured indexes/triggers
  *      f. PRAGMA foreign_key_check (rolls back on violation)
  *      g. PRAGMA user_version = 19
- *   4. PRAGMA foreign_keys = ON
+ *   5. PRAGMA foreign_keys = ON
  *
  * Idempotent: if user_version is already >= 19 the function returns early.
  * pre-v14 NULL `created_by` rows are preserved as NULL — the FK is satisfied
  * by NULL.
  *
+ * @param database - Kysely database handle to migrate.
+ * @param dbPath   - Filesystem path of the database. Defaults to `:memory:`
+ *                   so direct test invocations against an in-memory Kysely
+ *                   instance opt out of the backup step automatically. When
+ *                   called from `runMigrations` against a real file, the
+ *                   real path is supplied and a backup is taken.
+ *
  * @internal Exported for testing.
  */
-export async function migrateToV19(database: Kysely<Database>): Promise<void> {
+export async function migrateToV19(
+  database: Kysely<Database>,
+  dbPath: string = IN_MEMORY_DB_PATH
+): Promise<void> {
   // Idempotency guard: if the migration has already been applied (e.g. on
   // re-run against a v19+ database) return without touching the schema. The
   // production gate in `runMigrations` already prevents this, but the same
@@ -1047,6 +1107,15 @@ export async function migrateToV19(database: Kysely<Database>): Promise<void> {
   if (currentVersion >= 19) {
     logger.info({ currentVersion }, 'Skipping migration to v19: already applied');
     return;
+  }
+
+  // Take a pre-flight backup BEFORE any schema mutation. A copy failure
+  // throws and aborts the migration so user_version stays at 18 and the
+  // caller can investigate (disk full, permissions, etc.) without a
+  // partially-rebuilt sessions table. Skipped for in-memory databases.
+  const backupPath = await backupDatabaseFile(dbPath, 18, 19);
+  if (backupPath !== null) {
+    logger.info({ backupPath }, 'Database backup created');
   }
 
   logger.info('Running migration to v19: Adding FK constraint to sessions.created_by');
