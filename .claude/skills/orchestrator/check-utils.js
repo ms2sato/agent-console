@@ -28,15 +28,14 @@ export function getChangedFiles(prNumber) {
 }
 
 export function getLocalChangedFiles() {
+  // Use gh pr diff equivalent for local mode to ensure parity with CI mode.
+  // gh pr diff compares against the target branch, which is typically 'main'.
+  // The equivalent git command is: git diff --name-only origin/main...HEAD
+  // This ensures both local and CI modes produce the same file list.
   const baseBranch = process.env.BASE_BRANCH || 'origin/main';
-  const mergeBase = exec(`git merge-base ${baseBranch} HEAD`);
-  if (!mergeBase) {
-    console.error(`Error: Could not determine merge-base with ${baseBranch}. Ensure git is available and the branch exists.`);
-    process.exit(1);
-  }
-  const result = exec(`git diff --name-only ${mergeBase}...HEAD`);
+  const result = exec(`git diff --name-only ${baseBranch}...HEAD`);
   if (result === null) {
-    console.error('Error: Could not retrieve local git diff.');
+    console.error(`Error: Could not retrieve local git diff against ${baseBranch}.`);
     process.exit(1);
   }
   return result.split('\n').filter(Boolean);

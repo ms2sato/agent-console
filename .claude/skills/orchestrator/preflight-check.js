@@ -10,9 +10,12 @@
  * This is the CI-facing script. For full acceptance checks requiring
  * human judgment (Q1-Q7), use acceptance-check.js via run_process.
  *
+ * Local and CI modes produce the same verdict for the same branch state.
+ * Both modes use equivalent commands to ensure consistent file lists.
+ *
  * Usage:
- *   node .claude/skills/orchestrator/preflight-check.js <PR number>
- *   node .claude/skills/orchestrator/preflight-check.js              (uses local git diff against main)
+ *   node .claude/skills/orchestrator/preflight-check.js <PR number>   (CI mode: uses gh pr diff)
+ *   node .claude/skills/orchestrator/preflight-check.js              (local mode: uses git diff with same semantic)
  */
 
 import {
