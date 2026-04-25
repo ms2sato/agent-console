@@ -1027,15 +1027,17 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
  *      c. Drop sessions
  *      d. Rename sessions_new to sessions
  *      e. Recreate the captured indexes/triggers
- *      f. PRAGMA user_version = 19
- *   4. PRAGMA foreign_key_check
- *   5. PRAGMA foreign_keys = ON
+ *      f. PRAGMA foreign_key_check (rolls back on violation)
+ *      g. PRAGMA user_version = 19
+ *   4. PRAGMA foreign_keys = ON
  *
  * Idempotent: if user_version is already >= 19 the function returns early.
  * pre-v14 NULL `created_by` rows are preserved as NULL — the FK is satisfied
  * by NULL.
+ *
+ * @internal Exported for testing.
  */
-async function migrateToV19(database: Kysely<Database>): Promise<void> {
+export async function migrateToV19(database: Kysely<Database>): Promise<void> {
   // Idempotency guard: if the migration has already been applied (e.g. on
   // re-run against a v19+ database) return without touching the schema. The
   // production gate in `runMigrations` already prevents this, but the same
@@ -1135,20 +1137,24 @@ async function migrateToV19(database: Kysely<Database>): Promise<void> {
         await sql.raw(obj.sql as string).execute(trx);
       }
 
-      // Step 6: bump the schema version inside the transaction so that a
+      // Step 6: verify the rebuild left no dangling FK references. Performed
+      // inside the transaction so any violation triggers a rollback rather
+      // than leaving the database in a partially-committed state with a
+      // bumped schema version. PRAGMA foreign_key_check is read-only and
+      // safe to run within a transaction.
+      const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+        PRAGMA foreign_key_check
+      `.execute(trx);
+      if (fkCheck.rows.length > 0) {
+        throw new Error(
+          `Foreign key check failed after v19 migration: ${JSON.stringify(fkCheck.rows)}`
+        );
+      }
+
+      // Step 7: bump the schema version inside the transaction so that a
       // failure anywhere above leaves the version unchanged.
       await sql`PRAGMA user_version = 19`.execute(trx);
     });
-
-    // Verify the rebuild left no dangling FK references.
-    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
-      PRAGMA foreign_key_check
-    `.execute(database);
-    if (fkCheck.rows.length > 0) {
-      throw new Error(
-        `Foreign key check failed after v19 migration: ${JSON.stringify(fkCheck.rows)}`
-      );
-    }
   } finally {
     // Always re-enable FK enforcement, even if the migration failed.
     await sql`PRAGMA foreign_keys = ON`.execute(database);

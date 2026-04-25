@@ -110,6 +110,20 @@ export async function setupTestEnvironment(): Promise<void> {
 }
 
 /**
+ * Default AuthUser for tests.
+ * Used when tests need a simple user identity without setting up a UserRepository.
+ *
+ * Declared before any function that references it so the value is initialised
+ * before module-evaluation-order-sensitive callers (e.g. a top-level test that
+ * imports a helper which closes over `TEST_AUTH_USER`).
+ */
+export const TEST_AUTH_USER = {
+  id: 'test-user-id',
+  username: 'testuser',
+  homeDir: '/home/testuser',
+} as const;
+
+/**
  * Insert (or no-op if already present) the canonical test user row used
  * by tests that construct SingleUserMode with TEST_AUTH_USER. Required
  * since v19 added a FK constraint sessions.created_by -> users(id).
@@ -165,16 +179,6 @@ export async function createTestApp(appContext?: Partial<AppContext>): Promise<H
 export function getTestConfigDir(): string {
   return TEST_CONFIG_DIR;
 }
-
-/**
- * Default AuthUser for tests.
- * Used when tests need a simple user identity without setting up a UserRepository.
- */
-export const TEST_AUTH_USER = {
-  id: 'test-user-id',
-  username: 'testuser',
-  homeDir: '/home/testuser',
-} as const;
 
 /**
  * Create an AppContext from a partial object for testing.

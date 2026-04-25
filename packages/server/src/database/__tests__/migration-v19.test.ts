@@ -5,10 +5,10 @@
  *   - `adds FK constraint to created_by` test exercises the real production path
  *     via `initializeDatabase(':memory:')`.
  *   - FK behavior tests construct a v18-shaped schema directly against a raw
- *     Bun SQLite instance, seed it with users and sessions, then re-apply the same
- *     DDL that the production `migrateToV19` performs (kept in `runV19Migration`
- *     here). Table-recreation pattern is required because SQLite doesn't support
- *     ALTER TABLE ADD CONSTRAINT.
+ *     Bun SQLite instance, seed it with users and sessions, then invoke the
+ *     production `migrateToV19` directly. This ensures tests run against the
+ *     real migration code with no risk of drift between a test-local copy and
+ *     the production implementation.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -16,7 +16,7 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV19 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -39,7 +39,10 @@ interface SeedSession {
 
 /**
  * Build a v18-shaped database seeded with the caller's rows.
- * Creates users, sessions, and repositories tables with v18 schema (no FK constraint on created_by).
+ * Creates the users and sessions tables with v18 schema (no FK constraint on
+ * created_by). Only the tables required by the v19 migration are created;
+ * dependent tables not referenced by `migrateToV19` (e.g. `repositories`,
+ * `worktrees`, `workers`) are intentionally omitted to keep the seed minimal.
  */
 async function seedV18Database(options: {
   users: SeedUser[];
@@ -86,19 +89,6 @@ async function seedV18Database(options: {
       orphaned_reason TEXT
     );
 
-    CREATE TABLE repositories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      setup_command TEXT,
-      env_vars TEXT,
-      description TEXT,
-      cleanup_command TEXT,
-      default_agent_id TEXT
-    );
-
     PRAGMA user_version = 18;
   `);
 
@@ -128,98 +118,6 @@ async function seedV18Database(options: {
   }
 
   return db;
-}
-
-/**
- * Apply the v19 migration body (table recreation with FK constraint) against a caller-
- * owned DB. Kept in sync with `migrateToV19` in connection.ts.
- */
-async function runV19Migration(db: Kysely<Database>): Promise<void> {
-  // Idempotency guard mirrors `migrateToV19`.
-  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
-  if (currentVersion >= 19) {
-    return;
-  }
-
-  // FK toggling cannot happen inside a transaction.
-  await sql`PRAGMA foreign_keys = OFF`.execute(db);
-
-  try {
-    const objectsResult = await sql<{
-      type: string;
-      name: string;
-      sql: string | null;
-    }>`
-      SELECT type, name, sql
-      FROM sqlite_master
-      WHERE tbl_name = 'sessions'
-        AND type IN ('index', 'trigger')
-        AND name NOT LIKE 'sqlite_autoindex%'
-    `.execute(db);
-    const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
-
-    await db.transaction().execute(async (trx) => {
-      await sql`
-        CREATE TABLE sessions_new (
-          id TEXT PRIMARY KEY,
-          type TEXT NOT NULL,
-          location_path TEXT NOT NULL,
-          server_pid INTEGER,
-          created_at TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-          initial_prompt TEXT,
-          title TEXT,
-          repository_id TEXT,
-          worktree_id TEXT,
-          paused_at TEXT,
-          parent_session_id TEXT,
-          parent_worker_id TEXT,
-          created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-          data_scope TEXT,
-          data_scope_slug TEXT,
-          recovery_state TEXT NOT NULL DEFAULT 'healthy',
-          orphaned_at INTEGER,
-          orphaned_reason TEXT
-        )
-      `.execute(trx);
-
-      await sql`
-        INSERT INTO sessions_new (
-          id, type, location_path, server_pid, created_at, updated_at,
-          initial_prompt, title, repository_id, worktree_id, paused_at,
-          parent_session_id, parent_worker_id, created_by, data_scope,
-          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
-        )
-        SELECT
-          id, type, location_path, server_pid, created_at, updated_at,
-          initial_prompt, title, repository_id, worktree_id, paused_at,
-          parent_session_id, parent_worker_id, created_by, data_scope,
-          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
-        FROM sessions
-      `.execute(trx);
-
-      await sql`DROP TABLE sessions`.execute(trx);
-      await sql`ALTER TABLE sessions_new RENAME TO sessions`.execute(trx);
-
-      for (const obj of objectsToRestore) {
-        await sql.raw(obj.sql as string).execute(trx);
-      }
-
-      await sql`PRAGMA user_version = 19`.execute(trx);
-    });
-
-    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
-      PRAGMA foreign_key_check
-    `.execute(db);
-    if (fkCheck.rows.length > 0) {
-      throw new Error(
-        `Foreign key check failed after v19 migration: ${JSON.stringify(fkCheck.rows)}`
-      );
-    }
-  } finally {
-    await sql`PRAGMA foreign_keys = ON`.execute(db);
-  }
 }
 
 describe('migration v19 (sessions.created_by FK constraint)', () => {
@@ -316,7 +214,7 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
       sessions: testSessions,
     });
 
-    await runV19Migration(db);
+    await migrateToV19(db);
 
     // Verify all data preserved
     const sessions = await db
@@ -358,7 +256,7 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
       sessions: testSessions,
     });
 
-    await runV19Migration(db);
+    await migrateToV19(db);
 
     // Verify session references user before deletion
     let session = await db
@@ -406,7 +304,7 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
       AND name NOT LIKE 'sqlite_autoindex%'
     `.execute(db);
 
-    await runV19Migration(db);
+    await migrateToV19(db);
 
     // Get all indexes/triggers after migration
     const afterObjects = await sql<{
@@ -420,8 +318,19 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
       AND name NOT LIKE 'sqlite_autoindex%'
     `.execute(db);
 
-    // Verify all non-automatic indexes/triggers are preserved
+    // Verify all non-automatic indexes/triggers are preserved with identical
+    // DDL. A simple length comparison would miss cases where an object was
+    // recreated under the same name but with a different definition; matching
+    // by name and asserting `sql` equality catches such drift.
     expect(afterObjects.rows).toHaveLength(beforeObjects.rows.length);
+
+    const beforeByName = new Map(beforeObjects.rows.map((row) => [row.name, row]));
+    for (const after of afterObjects.rows) {
+      const before = beforeByName.get(after.name);
+      expect(before).toBeDefined();
+      expect(after.type).toBe(before!.type);
+      expect(after.sql).toBe(before!.sql);
+    }
 
     const afterNames = afterObjects.rows.map(r => r.name);
     expect(afterNames).toContain('test_sessions_type_idx');
@@ -451,8 +360,8 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
     });
 
     // Run migration twice
-    await runV19Migration(db);
-    await runV19Migration(db);
+    await migrateToV19(db);
+    await migrateToV19(db);
 
     // Verify schema version is correct
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
@@ -463,6 +372,19 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].id).toBe('sess-1');
     expect(sessions[0].created_by).toBe('user-1');
+
+    // Re-verify FK behavior is still active after the second (no-op) run.
+    // The idempotency guard must not silently drop the FK constraint.
+    await db
+      .deleteFrom('users')
+      .where('id', '=', 'user-1')
+      .execute();
+    const afterDelete = await db
+      .selectFrom('sessions')
+      .select(['id', 'created_by'])
+      .where('id', '=', 'sess-1')
+      .executeTakeFirstOrThrow();
+    expect(afterDelete.created_by).toBeNull();
 
     await db.destroy();
   });
@@ -496,7 +418,7 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
       sessions: testSessions,
     });
 
-    await runV19Migration(db);
+    await migrateToV19(db);
 
     const sessions = await db
       .selectFrom('sessions')
