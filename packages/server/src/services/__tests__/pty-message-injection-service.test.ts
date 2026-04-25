@@ -34,14 +34,35 @@ describe('PtyMessageInjectionService', () => {
     expect(writeInput).toHaveBeenCalledTimes(2);
   });
 
-  it('should convert newlines to carriage returns in content', () => {
+  it('should preserve LF newlines as soft newlines in content (Issue #660)', () => {
     service.injectMessage('s1', 'w1', 'line1\nline2\nline3');
-    expect(writeInput).toHaveBeenCalledWith('s1', 'w1', 'line1\rline2\rline3');
+    expect(writeInput).toHaveBeenCalledWith('s1', 'w1', 'line1\nline2\nline3');
   });
 
-  it('should convert CRLF to single CR', () => {
+  it('should normalize CRLF to LF (single soft newline) in content', () => {
     service.injectMessage('s1', 'w1', 'line1\r\nline2\r\nline3');
-    expect(writeInput).toHaveBeenCalledWith('s1', 'w1', 'line1\rline2\rline3');
+    expect(writeInput).toHaveBeenCalledWith('s1', 'w1', 'line1\nline2\nline3');
+  });
+
+  it('preserves multiple consecutive newlines as soft newlines (Issue #660)', () => {
+    // Regression test: previously \n was converted to \r (submit), so 3 blank
+    // lines split a single message into 3 separate submissions to the agent.
+    const result = service.injectMessage('s1', 'w1', 'First line\n\n\nSecond line');
+
+    expect(result).toBe(true);
+    // Newlines preserved verbatim as part of the same message body.
+    expect(writeInput).toHaveBeenCalledWith('s1', 'w1', 'First line\n\n\nSecond line');
+    // Only ONE write before any timer advances — body is not split.
+    expect(writeInput).toHaveBeenCalledTimes(1);
+
+    // Exactly one final \r submit is queued (no premature submits inside body).
+    jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+    expect(writeInput).toHaveBeenCalledTimes(2);
+    expect(writeInput).toHaveBeenLastCalledWith('s1', 'w1', '\r');
+
+    // No further writes after the single submit.
+    jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS * 5);
+    expect(writeInput).toHaveBeenCalledTimes(2);
   });
 
   it('should inject content followed by file paths with delays', () => {

@@ -159,14 +159,16 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Echo response content to worker PTY (CR-converted, no Enter yet).
-      // The Enter (\r) will be sent by writePtyNotification when process
-      // output settles and onOutput is called.
+      // Echo response content to worker PTY (newlines normalized to LF so
+      // they remain soft newlines, no Enter yet). The Enter (\r) will be sent
+      // by writePtyNotification when process output settles and onOutput is
+      // called. See Issue #660 — converting \n to \r here previously caused
+      // multi-line responses to be submitted as multiple messages.
       if (this.ptyMessageInjector) {
         this.ptyMessageInjector.writePtyData(
           stored.info.sessionId,
           stored.info.workerId,
-          content.replace(/\r?\n/g, '\r'),
+          content.replace(/\r?\n/g, '\n'),
         );
       }
 
