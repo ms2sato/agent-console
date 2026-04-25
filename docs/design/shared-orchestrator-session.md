@@ -28,7 +28,7 @@ Consequently:
 - A larger organisation may run multiple shared sessions each with `/orchestrator` invoked, each scoped to a different surface (user-facing UI, admin console, infrastructure) and titled accordingly.
 - The same shared-account mechanism also supports non-Orchestrator shared sessions (team terminal for a shared tool, a coordination channel, etc.).
 
-The **session type** here is "shared" (distinguished from "personal" by whose OS account spawns the PTY). The **role** played by a session is determined by which skill was invoked and what the users ask of it. These two axes are independent.
+The **session class** here is "shared" (distinguished from "personal" by whose OS account spawns the PTY). This is orthogonal to the existing `Session.type` field (`worktree` / `quick`), which classifies *where the session runs*; "class" classifies *whose identity it runs as*. The **role** played by a session is determined by which skill was invoked and what the users ask of it. These three axes — type, class, role — are independent.
 
 ## Design Goals
 
@@ -59,7 +59,7 @@ $AGENT_CONSOLE_HOME/data.db        ← single DB (unchanged)
                                       referenced for shared sessions)
 ```
 
-No schema changes are required for the minimum viable version. Optional additions are discussed under Schema Notes below.
+The shared-account mechanism reuses the existing `users` and `sessions` shape; the minimum required schema additions are listed in Schema Notes below (a `sessions.initiated_by` column, and a `repositories.remote_url` column when a repository is registered from a URL rather than an existing local path).
 
 Note on `sessions.created_by`: the column is a plain `text` with no foreign-key DDL (see `packages/server/src/database/connection.ts` migration v14 — `addColumn('created_by', 'text')`). Association with `users.id` is maintained by the application layer. Whether to add a DB-level foreign key later is a separate decision (tracked in Issue [#680](https://github.com/ms2sato/agent-console/issues/680)).
 
@@ -146,7 +146,7 @@ RepositoryManager.registerRepositoryFromUrl({
 })
 ```
 
-The server records the URL and canonical `<org>/<repo>` slug. Per-user clones are created **lazily on first dispatch**, not eagerly. Each user's access to the remote is their own concern (their SSH key, their HTTPS credentials); if alice lacks access, her first dispatch fails with an actionable error and the operator resolves access separately — the design does not conceal or retry auth failures.
+The server stores the URL in a new nullable column `repositories.remote_url`; the canonical `<org>/<repo>` slug is derived from the URL by the existing `parseOrgRepo()` helper. The pre-existing `repositories.path` column remains the cache for the post-clone working location; for URL-only registrations its value is populated when a clone first lands locally, otherwise null. Per-user clones are created **lazily on first dispatch**, not eagerly. Each user's access to the remote is their own concern (their SSH key, their HTTPS credentials); if alice lacks access, her first dispatch fails with an actionable error and the operator resolves access separately — the design does not conceal or retry auth failures.
 
 ### `delegate_to_worktree` assignee parameter
 
@@ -174,11 +174,13 @@ The Dispatch step for a single (assignee, repository) pair is serialised by an i
 
 In `AUTH_MODE=none`, `assignee` is either absent or equals the server process user; the existing direct-spawn and direct-git paths are taken. Single-user behaviour is unchanged.
 
+**Contract change worth calling out.** Today's `delegate_to_worktree` inherits the parent session's `created_by` for the child worktree session (`packages/server/src/mcp/mcp-server.ts:624`). The proposed flow above sets `created_by = <assignee>.id` instead — the child belongs to whoever was dispatched to, not to whoever dispatched. This is intentional: it lets the assignee see the dispatched session in their personal view, makes per-user filtering coherent, and is required for git attribution to be honest. It is a behavioural change for any caller that today expects `delegate_to_worktree` to keep the dispatched session under the parent's identity. The compatibility note for callers: in `AUTH_MODE=none` and in personal sessions (where `assignee` is restricted to self), the resulting `created_by` is the same as today; the divergence is observable only in shared-session cross-user dispatch.
+
 ### Template file handling
 
 `copyTemplateFiles` in `packages/server/src/services/worktree-service.ts` currently uses `fsPromises.writeFile`, which writes as the server process user. This is incompatible with the identity-filesystem boundary above.
 
-The replacement pattern preserves the recursive, binary-safe, permission-preserving behaviour of the current `copyTemplateFiles`, executed as the target user:
+The replacement pattern keeps the recursive directory walk that the current `copyTemplateFiles` already does, **adds** binary safety and mode-bit preservation that the current implementation lacks (today it reads UTF-8 and writes plain files via `fsPromises.writeFile`), and runs every step as the target user:
 
 1. For each sub-directory in the template tree, run `sudo -u <user> -H mkdir -p <dest-dir>` before writing files into it. `git worktree add` does not pre-create template sub-directories.
 2. For each file, pipe its bytes to `sudo -u <user> -H sh -c 'cat > <dest-path>'` with the content supplied on stdin. This is binary-safe — text and non-text template files are handled uniformly.
@@ -206,8 +208,8 @@ Single-user behaviour is preserved exactly. The multi-user dispatch path is a su
 
 | Condition | Behaviour |
 |---|---|
-| `AGENT_CONSOLE_SHARED_USERNAME` unset | Shared-session feature disabled; personal sessions only (existing fail-safe). |
-| Configured shared account's OS user missing | Server fails fast at startup (existing behaviour). |
+| `AGENT_CONSOLE_SHARED_USERNAME` unset | Shared-session feature disabled; personal sessions only (specified in Configuration → Startup behaviour). |
+| Configured shared account's OS user missing | Server fails fast at startup (specified in Configuration → Startup behaviour — proposed, not yet implemented). |
 | `delegate_to_worktree` called with unknown `assignee` | Tool returns error; Orchestrator receives it and can ask the operator. |
 | `assignee` exists in DB but the OS account is gone | Dispatch fails at the first `sudo -u` step; returned as a clone or spawn error. |
 | Assignee lacks `git clone` access to the repository URL | Lazy bootstrap fails during `git clone`; error returned to the Orchestrator (no silent retry). |
@@ -222,7 +224,7 @@ Landing this design requires the following server-side extensions, none of which
 2. **`packages/server/src/services/worktree-service.ts` — target-user-aware creation.** `createWorktree` accepts an `ownerUser: AuthUser` parameter. Path resolution, git invocation, and template file copy all use that user's identity.
 3. **`packages/server/src/services/repository-manager.ts` — URL registration.** A new `registerRepositoryFromUrl` method; the lazy-per-user-clone bootstrap lives in the worktree creation path, not in registration.
 4. **MCP `delegate_to_worktree` — `assignee` parameter.** Plus the authorisation check that restricts cross-user dispatch to shared-session callers.
-5. **Sudoers policy extension.** The server operator grants the shared account `NOPASSWD` sudo to `/usr/bin/git` in addition to the shells it already has. Documented alongside the existing sudoers fragment in [`multi-user-shared-setup.md`](./multi-user-shared-setup.md).
+5. **Sudoers policy extension.** The server runs as `agentconsole`, which already has `NOPASSWD` sudo to `/bin/sh`, `/bin/bash`, `/bin/zsh` for PTY spawn. Per-user filesystem operations introduced here (`mkdir -p`, `git clone`, `git -C ... worktree add`, `cat > <file>`, `chmod`) are issued as `sudo -u <target-user> -H <cmd>` from the server process — i.e., the **`agentconsole`** identity is the sudo invoker, not the shared account. Either (a) extend `agentconsole`'s sudoers fragment to add `NOPASSWD` access to the additional commands (`/usr/bin/git`, `/bin/mkdir`, `/bin/chmod`), or (b) keep sudoers unchanged and wrap each command in `sudo -u <user> -H sh -c '<cmd>'` so the existing shell allow-list is sufficient. The choice is operational; (b) is simpler operationally but adds a shell layer per call. Documented alongside the existing sudoers fragment in [`multi-user-shared-setup.md`](./multi-user-shared-setup.md).
 
 These land together as a single multi-user-dispatch iteration; partial adoption leaves the system in an inconsistent state.
 
@@ -235,7 +237,7 @@ The server-side extensions above are invisible to the Orchestrator's skill. What
 Only **one new MCP tool** and **one existing-tool parameter** are introduced on top of today's surface:
 
 - **`delegate_to_worktree({ ..., assignee?: string })`** — existing tool, new parameter. When `assignee` is set, the resulting worktree is created under that user's home and the session is spawned under that user's identity; when omitted, the caller's own identity is used. Shared-session callers may name any user; personal-session callers may only name themselves (see the Permission Model section below, which governs authorisation).
-- **`list_users()`** — new tool. Returns `{ id: string, username: string, hasActiveSession: boolean }[]` for all users known to the server. `hasActiveSession` is `true` when the user currently has at least one session with a live PTY worker (stopped or closed sessions do not count). A user appears in this list only after their first login — the `users` row is upserted at that point. Invited-but-not-yet-logged-in team members are therefore not visible until they first log in; this is a point worth surfacing to operators onboarding a new team member.
+- **`list_users()`** — new tool. Returns `{ id: string, username: string, hasActiveSession: boolean }[]` for users that are valid `assignee` candidates — that is, **excluding configured shared accounts**. Shared accounts are present in the `users` table (upserted at startup so that `sessions.created_by` can reference them), but they are not valid dispatch targets: the authorisation rule above rejects dispatch to any shared account. Filtering them out here keeps the list aligned with what the Orchestrator may legitimately do. `hasActiveSession` is `true` when the user currently has at least one session with a live PTY worker (stopped or closed sessions do not count). A user appears in this list only after their first login — the `users` row is upserted at that point. Invited-but-not-yet-logged-in team members are therefore not visible until they first log in; this is a point worth surfacing to operators onboarding a new team member.
 
 All other information the Orchestrator needs — ongoing sessions, delegated-work callbacks, PR/CI events — is served by existing tools (`list_sessions`, `get_session_status`, `send_session_message`, `write_memo`) and existing inbound routing (the parent-bubble behaviour referenced earlier via `send_session_message` and the webhook pipeline). Nothing else needs to be added.
 
@@ -255,6 +257,7 @@ In a shared session, multiple users write into the same PTY via the web UI. The 
 - **Who** — the `<username>` is `users.username` resolved from the authenticated WebSocket's identity, not free text.
 - **When** — only for **agent workers** (workers whose `type` is `agent`) in sessions whose `created_by` resolves to a shared account. Terminal / shell workers pass stdin through unchanged, even when the containing session is shared: prefix injection is a communication-context affordance for conversational agents, and `[@alice] ls` is not a valid shell command. Personal sessions receive no prefix regardless of worker type — they are single-user by construction and would noisily tag a single-person dialogue.
 - **Granularity** — the prefix is inserted only when a complete line arrives (LF received). Partial lines mid-typing, keystroke streams from terminal control sequences, and tab-completion echo traffic pass through unprefixed. Only user-visible "submitted lines" carry attribution.
+- **Buffering and edge cases** — buffering is **per-WebSocket connection** (not global per worker), so concurrent users do not interleave bytes within a single line. Line termination is normalised before injection: `\r\n` is treated as `\n`, and bare `\r` (carriage return without line feed) does not trigger prefix insertion. A pasted multi-line block produces one prefixed line per `\n` in the paste. If a WebSocket closes with an unterminated buffer, the residual bytes are flushed without a prefix (incomplete fragment, not a "submitted line"); this matches today's behaviour where the underlying PTY would receive whatever the user had typed at disconnect.
 - **Format lock** — the exact prefix form is part of the server's contract with the Orchestrator skill convention below. Changing the format is a breaking change for that convention.
 
 This is a format, not a procedure. The prefix is present as literal bytes in the Orchestrator's input stream; even if the skill convention is skim-read, the prefix remains parseable.
@@ -286,7 +289,7 @@ Anything more elaborate — when to delegate vs handle directly, how to phrase c
 - **Create** — any authenticated user may create a shared session.
 - **Read** — any authenticated user may view any shared session's state and worker output.
 - **Write (stdin)** — any authenticated user may send input to any shared session's worker PTY.
-- **Delete** — any authenticated user may delete any shared session they can see.
+- **Delete** — any authenticated user may delete any shared session they can see. **This is an intentional consequence of the open model and a real operational risk worth naming.** Today's session-delete handler (`packages/server/src/routes/sessions.ts:88`) has no ownership guard, so the policy described here is what already happens — the design does not introduce the risk, it acknowledges it. Mitigating it (e.g., restricting deletion to the original `initiated_by` user, or to operators) is a follow-up that fits naturally with the deferred `participants` table; it is not in scope for the initial implementation.
 
 This open model matches the "small-team coordination hub" usage described in `docs/strategy/strategy-overview.md` §5 (small-team orchestration). Participant restrictions, role-based access, and admin-only creation can be layered on later via a `sessions.visibility` / `participants` table extension — out of scope for the initial design.
 
@@ -321,7 +324,7 @@ Multiple shared accounts (a natural extension for larger organisations) would us
 
 One-time setup on the server (only in `AUTH_MODE=multi-user`):
 
-### 1. Create the shared service OS account
+### 1. Create the shared OS account
 
 Operators choose the name; the example below uses `agent-console-shared`.
 
@@ -386,8 +389,8 @@ Rotation frequency is an operator decision; typical: every 6–12 months, or imm
 
 Minimum viable changes:
 
-1. **"Create shared session" affordance** — a distinct button or menu item, visible when at least one shared account is configured.
-2. **Visual distinction for shared sessions** — badge, colour, or label so users know they are typing into a shared space (reduces accidental secret leakage into a visible-to-all terminal).
+1. **"Create shared session" affordance** — a distinct button or menu item, visible when at least one shared account is configured. The client learns this through the existing `/api/config` endpoint (the same surface that already exposes `authMode`); a new field — provisional shape `sharedAccountsAvailable: boolean` (with room to evolve to a list of `{ id, displayName }` once multi-account configuration lands) — flips the UI on.
+2. **Visual distinction for shared sessions** — badge, colour, or label so users know they are typing into a shared space (reduces accidental secret leakage into a visible-to-all terminal). The client learns whether a session is shared via a new boolean on the session payload (provisional name `isShared`), derived server-side from `sessions.created_by` resolving to a configured shared account. Storing it as a derived field rather than a stored column keeps the source of truth in `users` / configuration; the alternative — exposing `created_by` and the shared-account user-id list to the client — is rejected to avoid leaking internal identity layout.
 3. **List / filter** — shared sessions appear in all users' session lists by default. The existing per-user filter can be extended with a "shared only" or "personal only" toggle.
 4. **Indicator of other active participants** (optional) — "3 users currently viewing" — useful for coordination but out of scope for the minimum viable implementation.
 
@@ -434,9 +437,12 @@ Per-user accounts (alice, bob) follow the same pattern: their `users` row is key
 
 ## Schema Notes
 
-Required schema addition for this design: **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
+Required schema additions for this design:
 
-Aside from this one column, the existing `users` and `sessions` tables already handle shared accounts via the `created_by` mechanism; no further schema changes are required for the minimum viable version.
+1. **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
+2. **`repositories.remote_url`** (nullable text). Stores the source URL when a repository is registered via `registerRepositoryFromUrl` (per-user lazy clone bootstrap reads it). Existing path-based registrations leave this null — `getRemoteUrl(path)` continues to derive the URL on demand from the cloned repo's `origin` remote, as today.
+
+Aside from these two columns, the existing `users`, `sessions`, and `repositories` tables already cover the shared-account mechanism via the `created_by` linkage; no further schema changes are required for the minimum viable version.
 
 Optional additions considered but deferred:
 
