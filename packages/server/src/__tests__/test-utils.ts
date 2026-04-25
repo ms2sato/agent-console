@@ -27,6 +27,8 @@ import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import type { AppBindings, AppContext } from '../app-context.js';
 import { SingleUserMode } from '../services/user-mode.js';
 import { bunPtyProvider } from '../lib/pty-provider.js';
@@ -84,7 +86,14 @@ export async function setupTestEnvironment(): Promise<void> {
   process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
   // Initialize in-memory database (bypasses native file operations)
-  await initializeDatabase(':memory:');
+  const db = await initializeDatabase(':memory:');
+
+  // Seed the canonical test user so that sessions can satisfy the v19
+  // FK constraint (sessions.created_by REFERENCES users(id)). Production
+  // upserts the server-process user during SingleUserMode.create();
+  // tests construct SingleUserMode directly with TEST_AUTH_USER, so the
+  // matching users row has to be inserted explicitly.
+  await ensureTestAuthUser(db);
 
   // Reset PTY tracking
   mockPtyInstances.length = 0;
@@ -98,6 +107,26 @@ export async function setupTestEnvironment(): Promise<void> {
 
   // Reset open mock
   mockOpen.mockClear();
+}
+
+/**
+ * Insert (or no-op if already present) the canonical test user row used
+ * by tests that construct SingleUserMode with TEST_AUTH_USER. Required
+ * since v19 added a FK constraint sessions.created_by -> users(id).
+ */
+export async function ensureTestAuthUser(db: Kysely<Database>): Promise<void> {
+  await db
+    .insertInto('users')
+    .values({
+      id: TEST_AUTH_USER.id,
+      os_uid: null,
+      username: TEST_AUTH_USER.username,
+      home_dir: TEST_AUTH_USER.homeDir,
+      created_at: '2024-01-01T00:00:00.000Z',
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    .onConflict((oc) => oc.column('id').doNothing())
+    .execute();
 }
 
 /**

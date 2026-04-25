@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(18);
+      expect(result.rows[0]?.user_version).toBe(19);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(18);
+      expect(result.rows[0]?.user_version).toBe(19);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1372,6 +1372,20 @@ describe('migration', () => {
     it('should add created_by column to sessions table', async () => {
       const db = await initializeDatabase(':memory:');
 
+      // v19 added FK constraint sessions.created_by -> users(id), so the
+      // referenced user must exist before the session can be inserted.
+      await db
+        .insertInto('users')
+        .values({
+          id: 'alice',
+          os_uid: null,
+          username: 'alice',
+          home_dir: '/home/alice',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
       await db
         .insertInto('sessions')
         .values({
@@ -1418,12 +1432,12 @@ describe('migration', () => {
       expect(rows[0].created_by).toBeNull();
     });
 
-    it('should set schema version to 18 (latest)', async () => {
+    it('should set schema version to 19 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(18);
+      expect(result.rows[0]?.user_version).toBe(19);
     });
   });
 
@@ -1454,12 +1468,12 @@ describe('migration', () => {
       expect(rows[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     });
 
-    it('should set schema version to 18 (latest)', async () => {
+    it('should set schema version to 19 (latest)', async () => {
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(18);
+      expect(result.rows[0]?.user_version).toBe(19);
     });
   });
 

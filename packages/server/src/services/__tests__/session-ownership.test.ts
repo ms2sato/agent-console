@@ -39,6 +39,23 @@ describe('Session Ownership (createdBy)', () => {
     await initializeDatabase(':memory:');
 
     const db = getDatabase();
+    // Seed the user rows referenced by these tests' createdBy values.
+    // Required since v19 added a FK constraint sessions.created_by -> users(id).
+    for (const userId of ['test-user-id', 'alice', 'bob', 'charlie', 'dave', 'operator']) {
+      await db
+        .insertInto('users')
+        .values({
+          id: userId,
+          os_uid: null,
+          username: userId,
+          home_dir: `/home/${userId}`,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .onConflict((oc) => oc.column('id').doNothing())
+        .execute();
+    }
+
     testJobQueue = new JobQueue(db, { concurrency: 1 });
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
 

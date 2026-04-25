@@ -253,6 +253,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
   if (currentVersion < 18) {
     await migrateToV18(database);
   }
+
+  if (currentVersion < 19) {
+    await migrateToV19(database);
+  }
 }
 
 /**
@@ -997,6 +1001,145 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
     },
     'Migration to v18 completed'
   );
+}
+
+/**
+ * Migration v19: Add FK constraint to sessions.created_by referencing users(id) ON DELETE SET NULL.
+ *
+ * SQLite does not support ALTER TABLE ADD CONSTRAINT, so we use the standard
+ * table-recreation pattern (https://www.sqlite.org/lang_altertable.html#otheralter):
+ *   1. PRAGMA foreign_keys = OFF (must be outside transaction)
+ *   2. Snapshot existing index/trigger DDL on the sessions table
+ *   3. Inside a transaction:
+ *      a. Rename sessions to sessions_old
+ *      b. Create the new sessions table with the FK constraint
+ *      c. Copy all rows from sessions_old to sessions
+ *      d. Drop sessions_old
+ *      e. Recreate the captured indexes/triggers
+ *      f. PRAGMA user_version = 19
+ *   4. PRAGMA foreign_key_check
+ *   5. PRAGMA foreign_keys = ON
+ *
+ * Idempotent: if user_version is already >= 19 the function returns early.
+ * pre-v14 NULL `created_by` rows are preserved as NULL — the FK is satisfied
+ * by NULL.
+ */
+async function migrateToV19(database: Kysely<Database>): Promise<void> {
+  // Idempotency guard: if the migration has already been applied (e.g. on
+  // re-run against a v19+ database) return without touching the schema. The
+  // production gate in `runMigrations` already prevents this, but the same
+  // function is invoked from tests and should be safe to re-run.
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 19) {
+    logger.info({ currentVersion }, 'Skipping migration to v19: already applied');
+    return;
+  }
+
+  logger.info('Running migration to v19: Adding FK constraint to sessions.created_by');
+
+  // FK toggling cannot happen inside a transaction. Disable FK enforcement
+  // for the duration of the rebuild so the rename/drop steps don't trip on
+  // dependent constraints.
+  await sql`PRAGMA foreign_keys = OFF`.execute(database);
+
+  try {
+    // Snapshot non-automatic indexes and triggers attached to the sessions
+    // table BEFORE dropping it. SQLite drops these automatically when the
+    // backing table is dropped, so we recreate them after the new table is in
+    // place. `sqlite_autoindex%` are implicit (PRIMARY KEY/UNIQUE) and are
+    // re-created automatically by the new CREATE TABLE.
+    const objectsResult = await sql<{
+      type: string;
+      name: string;
+      sql: string | null;
+    }>`
+      SELECT type, name, sql
+      FROM sqlite_master
+      WHERE tbl_name = 'sessions'
+        AND type IN ('index', 'trigger')
+        AND name NOT LIKE 'sqlite_autoindex%'
+    `.execute(database);
+    const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+    await database.transaction().execute(async (trx) => {
+      // Step 1: rename existing table out of the way.
+      await sql`ALTER TABLE sessions RENAME TO sessions_old`.execute(trx);
+
+      // Step 2: create the new table with the FK constraint. Column order
+      // and types mirror the v18 schema; the only addition is the inline
+      // FK clause on `created_by`.
+      await sql`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          location_path TEXT NOT NULL,
+          server_pid INTEGER,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          initial_prompt TEXT,
+          title TEXT,
+          repository_id TEXT,
+          worktree_id TEXT,
+          paused_at TEXT,
+          parent_session_id TEXT,
+          parent_worker_id TEXT,
+          created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          data_scope TEXT,
+          data_scope_slug TEXT,
+          recovery_state TEXT NOT NULL DEFAULT 'healthy',
+          orphaned_at INTEGER,
+          orphaned_reason TEXT
+        )
+      `.execute(trx);
+
+      // Step 3: copy data. Listing columns explicitly guards against any
+      // future column-order drift between the old and new tables.
+      await sql`
+        INSERT INTO sessions (
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
+        )
+        SELECT
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
+        FROM sessions_old
+      `.execute(trx);
+
+      // Step 4: drop the old table.
+      await sql`DROP TABLE sessions_old`.execute(trx);
+
+      // Step 5: recreate captured indexes/triggers. Each row's `sql` is the
+      // exact CREATE statement SQLite stored, so re-executing it restores the
+      // object on the rebuilt table.
+      for (const obj of objectsToRestore) {
+        await sql.raw(obj.sql as string).execute(trx);
+      }
+
+      // Step 6: bump the schema version inside the transaction so that a
+      // failure anywhere above leaves the version unchanged.
+      await sql`PRAGMA user_version = 19`.execute(trx);
+    });
+
+    // Verify the rebuild left no dangling FK references.
+    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+      PRAGMA foreign_key_check
+    `.execute(database);
+    if (fkCheck.rows.length > 0) {
+      throw new Error(
+        `Foreign key check failed after v19 migration: ${JSON.stringify(fkCheck.rows)}`
+      );
+    }
+  } finally {
+    // Always re-enable FK enforcement, even if the migration failed.
+    await sql`PRAGMA foreign_keys = ON`.execute(database);
+  }
+
+  logger.info('Migration to v19 completed');
 }
 
 /**

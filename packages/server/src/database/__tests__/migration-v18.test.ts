@@ -212,7 +212,7 @@ describe('migration v18 (session-data-path)', () => {
     const db = await initializeDatabase(':memory:');
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(18);
+    expect(versionRes.rows[0]?.user_version).toBe(19);
 
     // Insert a quick session without specifying recovery_state; the DB
     // default should apply.
