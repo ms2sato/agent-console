@@ -202,7 +202,9 @@ This gives the service user the minimum privilege needed: the ability to start a
 - `packages/server/src/database/connection.ts` — Migration v14:
   - `CREATE TABLE users (id TEXT PRIMARY KEY, os_uid INTEGER, username TEXT NOT NULL, home_dir TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`
   - `CREATE UNIQUE INDEX idx_users_os_uid ON users(os_uid) WHERE os_uid IS NOT NULL`
-  - `ALTER TABLE sessions ADD COLUMN created_by TEXT REFERENCES users(id)`
+  - `ALTER TABLE sessions ADD COLUMN created_by TEXT` (FK constraint deferred to v19)
+  
+  > **Migration Note**: The foreign key constraint `REFERENCES users(id) ON DELETE SET NULL` was deferred to migration v19 due to SQLite's table-recreation requirement for adding constraints. Migration v14 added the column without constraint; v19 recreated the table with the FK constraint.
 
 ### Phase 3: UserMode (Backend)
 

@@ -114,7 +114,7 @@ import { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
-import { asAppContext, TEST_AUTH_USER } from './test-utils.js';
+import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
 
 // =============================================================================
@@ -174,6 +174,10 @@ describe('API Routes Integration', () => {
     // Close any existing database connection and initialize fresh in-memory database
     await closeDatabase();
     await initializeDatabase(':memory:');
+
+    // Seed the canonical test user so sessions created via the API can satisfy
+    // the v19 FK constraint sessions.created_by -> users(id).
+    await ensureTestAuthUser(getDatabase());
 
     // Set up mock system capabilities
     const mockCapabilities = new SystemCapabilitiesService();

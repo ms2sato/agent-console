@@ -61,7 +61,7 @@ $AGENT_CONSOLE_HOME/data.db        ← single DB (unchanged)
 
 The shared-account mechanism reuses the existing `users` and `sessions` shape; the minimum required schema additions are listed in Schema Notes below (a `sessions.initiated_by` column, and a `repositories.remote_url` column when a repository is registered from a URL rather than an existing local path).
 
-Note on `sessions.created_by`: the column is a plain `text` with no foreign-key DDL (see `packages/server/src/database/connection.ts` migration v14 — `addColumn('created_by', 'text')`). Association with `users.id` is maintained by the application layer. Whether to add a DB-level foreign key later is a separate decision (tracked in Issue [#680](https://github.com/ms2sato/agent-console/issues/680)).
+Note on `sessions.created_by`: the column includes a database-level foreign key constraint `REFERENCES users(id) ON DELETE SET NULL` (see `packages/server/src/database/connection.ts` migration v19). Migration v14 originally added the column without constraint; v19 recreated the table with the FK constraint using SQLite's table-recreation pattern (resolved Issue [#680](https://github.com/ms2sato/agent-console/issues/680)).
 
 ### Identity layer — one or more additional OS accounts
 

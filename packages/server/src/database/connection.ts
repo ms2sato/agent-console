@@ -3,6 +3,7 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
@@ -23,6 +24,47 @@ const logger = createLogger('database');
  */
 function isDuplicateColumnError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('duplicate column name');
+}
+
+/**
+ * Sentinel value used by callers (and tests) to opt out of pre-migration
+ * backup. Matches the path that Bun SQLite uses for in-memory databases.
+ */
+const IN_MEMORY_DB_PATH = ':memory:';
+
+/**
+ * Create a sibling backup copy of the SQLite database file before running a
+ * disruptive migration (e.g. table-recreation in v19).
+ *
+ * The backup file lives next to the database with a deterministic suffix that
+ * encodes the version transition and a timestamp, e.g.:
+ *   /path/to/agentconsole.db.bak.v18-to-v19.2026-04-25T20-39-00-000Z
+ *
+ * Behaviour:
+ *   - In-memory databases (`:memory:`) are skipped — there is no file to copy.
+ *     Returns `null` so callers can distinguish "skipped" from "succeeded".
+ *   - On copy failure, the underlying error is re-thrown unchanged so the
+ *     caller can abort the migration without bumping the schema version.
+ *   - Colons and dots in the ISO-8601 timestamp are replaced with `-` so the
+ *     filename is portable across filesystems.
+ *
+ * @returns The absolute path to the backup file, or `null` when skipped.
+ */
+export async function backupDatabaseFile(
+  dbPath: string,
+  fromVersion: number,
+  toVersion: number
+): Promise<string | null> {
+  if (dbPath === IN_MEMORY_DB_PATH) {
+    return null;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${dbPath}.bak.v${fromVersion}-to-v${toVersion}.${timestamp}`;
+
+  await fsPromises.copyFile(dbPath, backupPath);
+
+  return backupPath;
 }
 
 let db: Kysely<Database> | null = null;
@@ -109,7 +151,7 @@ async function doInitializeDatabase(customDbPath?: string): Promise<Kysely<Datab
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(database);
+  await runMigrations(database, dbPath);
 
   // Migrate data from JSON (one-time, skip for in-memory database)
   if (!isInMemory) {
@@ -165,7 +207,7 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(database);
+  await runMigrations(database, IN_MEMORY_DB_PATH);
 
   return database;
 }
@@ -173,8 +215,13 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
 /**
  * Run database migrations based on PRAGMA user_version.
  * Each migration increments the version number.
+ *
+ * @param dbPath - Filesystem path of the database, or `:memory:` for an
+ *                 in-memory database. Migrations that need to take a
+ *                 pre-flight backup (e.g. v19) use this to locate the file
+ *                 and skip the backup for in-memory databases.
  */
-async function runMigrations(database: Kysely<Database>): Promise<void> {
+async function runMigrations(database: Kysely<Database>, dbPath: string): Promise<void> {
   // Get current schema version using PRAGMA user_version
   const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
   const currentVersion = result.rows[0]?.user_version ?? 0;
@@ -252,6 +299,10 @@ async function runMigrations(database: Kysely<Database>): Promise<void> {
 
   if (currentVersion < 18) {
     await migrateToV18(database);
+  }
+
+  if (currentVersion < 19) {
+    await migrateToV19(database, dbPath);
   }
 }
 
@@ -997,6 +1048,188 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
     },
     'Migration to v18 completed'
   );
+}
+
+/**
+ * Migration v19: Add FK constraint to sessions.created_by referencing users(id) ON DELETE SET NULL.
+ *
+ * SQLite does not support ALTER TABLE ADD CONSTRAINT, so we use the standard
+ * table-recreation pattern (https://www.sqlite.org/lang_altertable.html#otheralter).
+ * To avoid SQLite ≥ 3.25.0's default "ALTER TABLE RENAME also rewrites foreign-key
+ * references in dependent tables" behavior — which would silently rewrite
+ * `workers.session_id REFERENCES sessions(id)` to point at `sessions_old` and
+ * leave the FK dangling after we drop `sessions_old` — we use the inverse
+ * recreate pattern: build the new table under a temporary name, copy data,
+ * drop the original table, then rename the new table into place. After the
+ * final rename completes, dependent FK declarations still reference `sessions`
+ * (the canonical name), and SQLite's RENAME-based FK rewrite leaves them alone
+ * because no dependent table references `sessions_new`.
+ *
+ * Sequence:
+ *   1. Pre-flight backup of the database file (skipped for `:memory:`).
+ *      A backup failure aborts the migration before any schema change so the
+ *      caller can recover from a known-good state.
+ *   2. PRAGMA foreign_keys = OFF (must be outside transaction)
+ *   3. Snapshot existing index/trigger DDL on the sessions table
+ *   4. Inside a transaction:
+ *      a. Create sessions_new with the FK constraint
+ *      b. Copy all rows from sessions to sessions_new
+ *      c. Drop sessions
+ *      d. Rename sessions_new to sessions
+ *      e. Recreate the captured indexes/triggers
+ *      f. PRAGMA foreign_key_check (rolls back on violation)
+ *      g. PRAGMA user_version = 19
+ *   5. PRAGMA foreign_keys = ON
+ *
+ * Idempotent: if user_version is already >= 19 the function returns early.
+ * pre-v14 NULL `created_by` rows are preserved as NULL — the FK is satisfied
+ * by NULL.
+ *
+ * @param database - Kysely database handle to migrate.
+ * @param dbPath   - Filesystem path of the database. Defaults to `:memory:`
+ *                   so direct test invocations against an in-memory Kysely
+ *                   instance opt out of the backup step automatically. When
+ *                   called from `runMigrations` against a real file, the
+ *                   real path is supplied and a backup is taken.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV19(
+  database: Kysely<Database>,
+  dbPath: string = IN_MEMORY_DB_PATH
+): Promise<void> {
+  // Idempotency guard: if the migration has already been applied (e.g. on
+  // re-run against a v19+ database) return without touching the schema. The
+  // production gate in `runMigrations` already prevents this, but the same
+  // function is invoked from tests and should be safe to re-run.
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 19) {
+    logger.info({ currentVersion }, 'Skipping migration to v19: already applied');
+    return;
+  }
+
+  // Take a pre-flight backup BEFORE any schema mutation. A copy failure
+  // throws and aborts the migration so user_version stays at 18 and the
+  // caller can investigate (disk full, permissions, etc.) without a
+  // partially-rebuilt sessions table. Skipped for in-memory databases.
+  const backupPath = await backupDatabaseFile(dbPath, 18, 19);
+  if (backupPath !== null) {
+    logger.info({ backupPath }, 'Database backup created');
+  }
+
+  logger.info('Running migration to v19: Adding FK constraint to sessions.created_by');
+
+  // FK toggling cannot happen inside a transaction. Disable FK enforcement
+  // for the duration of the rebuild so the rename/drop steps don't trip on
+  // dependent constraints.
+  await sql`PRAGMA foreign_keys = OFF`.execute(database);
+
+  try {
+    // Snapshot non-automatic indexes and triggers attached to the sessions
+    // table BEFORE dropping it. SQLite drops these automatically when the
+    // backing table is dropped, so we recreate them after the new table is in
+    // place. `sqlite_autoindex%` are implicit (PRIMARY KEY/UNIQUE) and are
+    // re-created automatically by the new CREATE TABLE.
+    const objectsResult = await sql<{
+      type: string;
+      name: string;
+      sql: string | null;
+    }>`
+      SELECT type, name, sql
+      FROM sqlite_master
+      WHERE tbl_name = 'sessions'
+        AND type IN ('index', 'trigger')
+        AND name NOT LIKE 'sqlite_autoindex%'
+    `.execute(database);
+    const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+    await database.transaction().execute(async (trx) => {
+      // Step 1: create the new table under a temporary name. Column order
+      // and types mirror the v18 schema; the only addition is the inline
+      // FK clause on `created_by`.
+      await sql`
+        CREATE TABLE sessions_new (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          location_path TEXT NOT NULL,
+          server_pid INTEGER,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          initial_prompt TEXT,
+          title TEXT,
+          repository_id TEXT,
+          worktree_id TEXT,
+          paused_at TEXT,
+          parent_session_id TEXT,
+          parent_worker_id TEXT,
+          created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          data_scope TEXT,
+          data_scope_slug TEXT,
+          recovery_state TEXT NOT NULL DEFAULT 'healthy',
+          orphaned_at INTEGER,
+          orphaned_reason TEXT
+        )
+      `.execute(trx);
+
+      // Step 2: copy data. Listing columns explicitly guards against any
+      // future column-order drift between the old and new tables.
+      await sql`
+        INSERT INTO sessions_new (
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
+        )
+        SELECT
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason
+        FROM sessions
+      `.execute(trx);
+
+      // Step 3: drop the original table. Indexes and triggers attached to it
+      // are dropped automatically by SQLite; we recreate them in step 5.
+      await sql`DROP TABLE sessions`.execute(trx);
+
+      // Step 4: rename the new table into place. After this rename, any
+      // dependent FK declarations (e.g. workers.session_id) continue to
+      // reference `sessions` because no dependent table references
+      // `sessions_new` — so SQLite's FK-rewrite-on-rename has nothing to do.
+      await sql`ALTER TABLE sessions_new RENAME TO sessions`.execute(trx);
+
+      // Step 5: recreate captured indexes/triggers. Each row's `sql` is the
+      // exact CREATE statement SQLite stored, so re-executing it restores the
+      // object on the rebuilt table.
+      for (const obj of objectsToRestore) {
+        await sql.raw(obj.sql as string).execute(trx);
+      }
+
+      // Step 6: verify the rebuild left no dangling FK references. Performed
+      // inside the transaction so any violation triggers a rollback rather
+      // than leaving the database in a partially-committed state with a
+      // bumped schema version. PRAGMA foreign_key_check is read-only and
+      // safe to run within a transaction.
+      const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+        PRAGMA foreign_key_check
+      `.execute(trx);
+      if (fkCheck.rows.length > 0) {
+        throw new Error(
+          `Foreign key check failed after v19 migration: ${JSON.stringify(fkCheck.rows)}`
+        );
+      }
+
+      // Step 7: bump the schema version inside the transaction so that a
+      // failure anywhere above leaves the version unchanged.
+      await sql`PRAGMA user_version = 19`.execute(trx);
+    });
+  } finally {
+    // Always re-enable FK enforcement, even if the migration failed.
+    await sql`PRAGMA foreign_keys = ON`.execute(database);
+  }
+
+  logger.info('Migration to v19 completed');
 }
 
 /**
