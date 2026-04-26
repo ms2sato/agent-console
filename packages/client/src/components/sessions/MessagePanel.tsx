@@ -121,7 +121,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
     setSending(true);
     try {
-      await sendWorkerMessage(sessionId, targetWorkerId, content.trim(), files.length > 0 ? files : undefined);
+      await sendWorkerMessage(sessionId, targetWorkerId, content, files.length > 0 ? files : undefined);
       clearDraft();
       setFiles([]);
       setHasUnread(false);

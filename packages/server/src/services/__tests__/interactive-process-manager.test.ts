@@ -367,7 +367,7 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
     });
 
-    it('should call writePtyData with CR-converted content on successful write', async () => {
+    it('should call writePtyData with content echoed to PTY on successful write', async () => {
       const process = await manager.runProcess({
         sessionId: 'session-1',
         workerId: 'worker-1',
@@ -389,6 +389,53 @@ describe('InteractiveProcessManager', () => {
       expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'hello');
       // injectPtyMessage should NOT be called for writeResponse path
       expect(mockInjectPtyMessage).not.toHaveBeenCalled();
+    });
+
+    it('should preserve LF newlines as soft newlines when echoing multi-line response (Issue #660)', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = manager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await manager.writeResponse(process.id, 'first\n\n\nsecond');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      // Newlines must be preserved as \n (soft newlines), not converted to \r
+      // (submit). Converting would split a single response into multiple
+      // submissions echoed to the agent PTY.
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'first\n\n\nsecond');
+    });
+
+    it('should normalize CRLF newlines to LF when echoing response', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = manager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await manager.writeResponse(process.id, 'first\r\nsecond');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'first\nsecond');
     });
 
     it('should not call writePtyData when ptyMessageInjector is not provided', async () => {

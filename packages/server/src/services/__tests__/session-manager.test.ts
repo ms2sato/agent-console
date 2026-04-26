@@ -563,7 +563,7 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances[0].writtenData).toContain('hello world');
     });
 
-    it('should convert newlines to carriage returns in multi-line content', async () => {
+    it('should preserve LF newlines as soft newlines in multi-line content (Issue #660)', async () => {
       const manager = await getSessionManager();
       const session = await manager.createSession({
         type: 'quick',
@@ -576,13 +576,14 @@ describe('SessionManager', () => {
       expect(message).not.toBeNull();
       // Content stored in message should retain original newlines
       expect(message!.content).toBe('line1\nline2\nline3');
-      // PTY input should use carriage returns instead of newlines
+      // PTY input must preserve newlines as soft newlines (\n), not submit (\r).
+      // Converting to \r would split this into 3 separate submissions to the agent.
       const pty = ptyFactory.instances[0];
-      expect(pty.writtenData).toContain('line1\rline2\rline3');
-      expect(pty.writtenData).not.toContain('line1\nline2\nline3');
+      expect(pty.writtenData).toContain('line1\nline2\nline3');
+      expect(pty.writtenData).not.toContain('line1\rline2\rline3');
     });
 
-    it('should handle CRLF line endings from form submissions', async () => {
+    it('should normalize CRLF line endings from form submissions to LF', async () => {
       const manager = await getSessionManager();
       const session = await manager.createSession({
         type: 'quick',
@@ -596,9 +597,11 @@ describe('SessionManager', () => {
       expect(message).not.toBeNull();
       expect(message!.content).toBe('line1\r\nline2\r\nline3');
       const pty = ptyFactory.instances[0];
-      // \r\n should become single \r, not \r\r
-      expect(pty.writtenData).toContain('line1\rline2\rline3');
+      // \r\n should be normalized to a single \n (soft newline), preserving body
+      // structure without triggering submit. See Issue #660.
+      expect(pty.writtenData).toContain('line1\nline2\nline3');
       expect(pty.writtenData).not.toContain('\r\r');
+      expect(pty.writtenData).not.toContain('line1\rline2\rline3');
     });
 
     it('should inject content with file paths when files provided', async () => {

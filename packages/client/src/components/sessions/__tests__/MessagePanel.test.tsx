@@ -485,6 +485,52 @@ describe('MessagePanel', () => {
     expect(_getDraftsMap().has('session-1:agent-1')).toBe(false);
   });
 
+  it('preserves multiple consecutive newlines when sending message', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    const messageWithBlankLines = 'First line\n\n\nSecond line after two blank lines\n\n\nThird line';
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: messageWithBlankLines } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
+
+    // Message should be sent with exact content including all newlines
+    expect(mockSendWorkerMessage).toHaveBeenCalledWith(
+      'session-1',
+      'agent-1',
+      messageWithBlankLines, // Should NOT be trimmed
+      undefined
+    );
+  });
+
+  it('preserves leading and trailing whitespace in messages', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    const messageWithWhitespace = '  \n\nMessage with leading/trailing whitespace\n\n  ';
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: messageWithWhitespace } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
+
+    // Message should be sent with exact content including all whitespace
+    expect(mockSendWorkerMessage).toHaveBeenCalledWith(
+      'session-1',
+      'agent-1',
+      messageWithWhitespace, // Should NOT be trimmed
+      undefined
+    );
+  });
+
   describe('slash command completion', () => {
     it('shows dropdown when typing /', async () => {
       const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
