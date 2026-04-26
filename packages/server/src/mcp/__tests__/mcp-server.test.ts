@@ -818,11 +818,16 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'task completed successfully',
-        fromSessionId: 'test-sender',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -838,13 +843,18 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const messageContent = JSON.stringify({ status: 'completed', summary: 'All tests pass' });
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: messageContent,
-        fromSessionId: 'sender-session',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -862,22 +872,27 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
-      // The agent worker's PTY is the first instance created
+      // The target agent worker's PTY is the first instance created
       const mockPty = ptyFactory.instances[0];
       expect(mockPty).toBeDefined();
 
       await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'check this out',
-        fromSessionId: 'sender-session-123',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       // Verify PTY received the inbound:message notification
       const allWritten = mockPty.writtenData.join('');
       expect(allWritten).toContain('[internal:message]');
       expect(allWritten).toContain('source=session');
-      expect(allWritten).toContain('from=sender-session-123');
+      expect(allWritten).toContain(`from=${senderSession.id}`);
       expect(allWritten).toContain('intent=triage');
     });
 
@@ -887,6 +902,11 @@ describe('MCP Server Tools', () => {
         const session = await sessionManager.createSession({
           type: 'quick',
           locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/sender-path',
           agentId: 'claude-code',
         });
 
@@ -899,7 +919,7 @@ describe('MCP Server Tools', () => {
         await callTool(app, mcpSessionId, 'send_session_message', {
           toSessionId: session.id,
           content: 'split test',
-          fromSessionId: 'sender-abc',
+          fromSessionId: senderSession.id,
         }, nextId++);
 
         // Before the timer fires, notification text + reply instructions should be written
@@ -909,7 +929,7 @@ describe('MCP Server Tools', () => {
         // The notification text should NOT end with \n (no trailing newline)
         expect(mockPty.writtenData[0].endsWith('\n')).toBe(false);
         expect(mockPty.writtenData[1]).toContain('[Reply Instructions]');
-        expect(mockPty.writtenData[1]).toContain('sender-abc');
+        expect(mockPty.writtenData[1]).toContain(senderSession.id);
 
         // Advance past the 150ms delay
         jest.advanceTimersByTime(150);
@@ -928,6 +948,11 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const mockPty = ptyFactory.instances[0];
       expect(mockPty).toBeDefined();
@@ -935,13 +960,13 @@ describe('MCP Server Tools', () => {
       await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: 'need your help',
-        fromSessionId: 'requester-session-456',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       // Reply instructions are the second write (index 1), after the notification (index 0)
       const replyInstructions = mockPty.writtenData[1];
       expect(replyInstructions).toContain('[Reply Instructions]');
-      expect(replyInstructions).toContain('toSessionId: "requester-session-456"');
+      expect(replyInstructions).toContain(`toSessionId: "${senderSession.id}"`);
       expect(replyInstructions).toContain('AGENT_CONSOLE_SESSION_ID');
     });
 
@@ -980,6 +1005,11 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const agentWorker = session.workers.find((w) => w.type === 'agent');
       expect(agentWorker).toBeDefined();
@@ -988,13 +1018,13 @@ describe('MCP Server Tools', () => {
         toSessionId: session.id,
         toWorkerId: agentWorker!.id,
         content: 'explicit target message',
-        fromSessionId: 'sender-x',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
 
       const data = parseToolResult(response) as { messageId: string; path: string };
-      expect(data.messageId).toContain('sender-x');
+      expect(data.messageId).toContain(senderSession.id);
       expect(data.path).toBeDefined();
 
       // Verify file content
@@ -1008,13 +1038,18 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const oversizedContent = 'x'.repeat(64 * 1024 + 1);
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
         content: oversizedContent,
-        fromSessionId: 'test-sender',
+        fromSessionId: senderSession.id,
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -1037,11 +1072,16 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/repo',
         agentId: 'claude-code',
       });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: targetSession.id,
         content: 'hello worktree',
-        fromSessionId: 'sender-1',
+        fromSessionId: senderSession.id,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -1050,6 +1090,39 @@ describe('MCP Server Tools', () => {
       // Path must be rooted under the repository scope, not _quick.
       expect(data.path).toContain(`${TEST_CONFIG_DIR}/repositories/test-repo/messages/`);
       expect(data.path).not.toContain(`${TEST_CONFIG_DIR}/_quick/`);
+    });
+
+    // Regression test for Issue #690 — non-existent fromSessionId rejected.
+    // Before the defense-in-depth fix, the server accepted any string and the
+    // resulting message recorded a session id that the receiver could not reply to.
+    it('should return error when fromSessionId does not reference an existing session', async () => {
+      const targetSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: targetSession.id,
+        content: 'this should be rejected',
+        // Plausible-looking but unknown sender id (the bug observed in production
+        // recorded ids that passed the regex validator but did not exist).
+        fromSessionId: 'e8094e4c-8de0-43ce-8c41-6b82b9e7ed31',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('Sender session');
+      expect(data.error).toContain('e8094e4c-8de0-43ce-8c41-6b82b9e7ed31');
+      expect(data.error).toContain('not found');
+
+      // No PTY notification should have been delivered — the message must not
+      // be persisted at all when the sender id is invalid.
+      const allPtyWrites = ptyFactory.instances
+        .map((p) => p.writtenData.join(''))
+        .join('|||');
+      expect(allPtyWrites).not.toContain('[internal:message]');
+      expect(allPtyWrites).not.toContain('e8094e4c-8de0-43ce-8c41-6b82b9e7ed31');
     });
 
     it('should return validation error when fromSessionId is omitted', async () => {
