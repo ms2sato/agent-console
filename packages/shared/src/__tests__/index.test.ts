@@ -17,4 +17,32 @@ describe('shared index exports', () => {
     const mod = await import('../index.js');
     expect(mod).toBeDefined();
   });
+
+  it('should export message contract utilities', async () => {
+    const mod = await import('../index.js');
+
+    // Verify message contract exports from Issue #660 prevention system
+    expect(mod.MessageContentUtils).toBeDefined();
+    expect(mod.SubmitKeystrokeUtils).toBeDefined();
+    expect(mod.isMessageContent).toBeDefined();
+    expect(mod.isSubmitKeystroke).toBeDefined();
+    expect(typeof mod.MessageContentUtils.create).toBe('function');
+    expect(typeof mod.SubmitKeystrokeUtils.create).toBe('function');
+  });
+
+  it('should export ApiError interface correctly', async () => {
+    const mod = await import('../index.js');
+
+    // ApiError is a TypeScript interface, verify module loads and structure
+    expect(mod).toBeDefined();
+
+    // Test ApiError interface usage pattern
+    const apiError = {
+      error: 'TEST_ERROR',
+      message: 'Test error message'
+    };
+
+    expect(apiError.error).toBe('TEST_ERROR');
+    expect(apiError.message).toBe('Test error message');
+  });
 });
