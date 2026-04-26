@@ -7,8 +7,31 @@ These rules apply to all code changes in this project. Contents span verificatio
 Before completing any code changes, always verify:
 
 1. **Run the full test suite:** Execute `bun run test` and ensure ALL tests pass — not just the tests you added or modified. The full suite must be green before every push.
-2. **Run type check:** Execute `bun run typecheck` and ensure no type errors
+   - **Test result is paste, not summary.** When reporting "tests pass" to the Orchestrator (or in any verification report), do not summarize counts (e.g., "2338 pass"). Always paste the last 100 lines of test output plus the actual test exit code. Run the tests under a bash-compatible shell using one of:
+     ```bash
+     # Option A: capture output and exit code separately
+     output=$(bun run test 2>&1); exitcode=$?; echo "$output" | tail -100; echo "TEST_EXIT: $exitcode"
+
+     # Option B: bash PIPESTATUS to read the test process's exit code
+     bun run test 2>&1 | tail -100; echo "TEST_EXIT: ${PIPESTATUS[0]}"
+     ```
+     Do NOT use `bun run test 2>&1 | tail -100; echo "TEST_EXIT: $?"` — `$?` returns `tail`'s exit code (always 0), masking real test failures. Summary-only or wrong-exit-code reports have caused false-positive "verified" claims that CI later contradicted. (Lesson: Sprint 2026-04-25 — agent reported "server: 2338 pass" but CI showed 61 failures due to local fixture state.)
+2. **Run type check:** Execute `bun run typecheck` and ensure no type errors. The script auto-generates `routeTree.gen.ts` (TanStack Router) via `vite build` if missing, so it runs correctly on a fresh worktree.
 3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
+
+   **Rate limit fallback (closes Issue #653):** When the local CLI is rate-limited (typically 48-min wait window), proceed to PR creation, rely on the GitHub-side CodeRabbit bot review (separate token, runs on PR open), and add a note to the PR body:
+   ```
+   ## Note on CodeRabbit
+   Local CodeRabbit CLI rate-limited during this sprint. Relying on GitHub-side CodeRabbit bot review.
+   ```
+   Before merge, confirm the GitHub bot review is APPROVED. If `CHANGES_REQUESTED`, follow the resolution flow in `core-responsibilities.md` §6 (CodeRabbit "CHANGES_REQUESTED" resolution). (Sprint 2026-04-25 — verified in PRs #687 / #688 / #691 / #694.)
+
+   **Pre-merge checks vs Review state — both required for "clean".** GitHub surfaces CodeRabbit info in two distinct layers that are easy to confuse:
+   - **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) — metadata validation, displayed as "5/5 passed" in the GitHub UI. **Not** code review.
+   - **Review state** (`gh pr view <N> --json reviewDecision`) — actual code-review verdict. Only `APPROVED` (or empty when no review submitted yet) counts as passing.
+   - **Inline comments** (`gh api repos/<owner>/<repo>/pulls/<N>/comments`) — must be addressed if actionable.
+
+   "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser
 6. **Duplication check:** When adding or modifying logic, grep the repository for the core processing part (method chains, regex patterns, transformation expressions) with variable names removed. For example, search for `.replace(/\r?\n/g, '\r')` rather than `content.replace(...)`. If hits are found, review whether they represent the same concern and should be consolidated into a shared function.
@@ -49,6 +72,21 @@ Follow GitHub-Flow. The `main` branch is always kept GREEN.
 - **Conflict assessment before PR:** Always check conflicts with latest main before opening a PR.
 - **Never merge PRs:** Merging is always the user's decision.
 
+### Continuing Work after a Squash Merge
+
+When a PR is squash-merged into main, the local feature branch keeps its original commit hashes while main gets a new single squash commit. The local branch is effectively obsolete for further work — do not continue commits on it. For follow-up work (a fix's prevention system, a refactor's continuation, etc.), branch fresh from `origin/main`:
+
+```bash
+git fetch origin
+git stash --include-untracked  # preserve any uncommitted / untracked work
+git checkout main
+git pull origin main
+git checkout -b <new-branch-name>
+git stash pop                   # bring uncommitted work into the new branch
+```
+
+(Sprint 2026-04-25 PR #694 — base worktree of merged PR #692 still contained 7 untracked prevention-system files. Without explicit instruction to follow this procedure, the agent would have continued committing on the obsolete `fix/660-message-input-newlines` branch.)
+
 ### Force-Push and Rebase Gating
 
 `git push --force` and `git push --force-with-lease` require **explicit per-PR approval from the owner**. A general "merge this sequence" approval does NOT imply force-push approval for individual PRs within the sequence. Always confirm before force-pushing, even when the technical need is obvious (e.g., stacked PRs broken by squash-merge of the base PR).
@@ -63,7 +101,13 @@ This rule does not apply to the initial push of a brand-new feature branch (no f
 
 - **Testing with code changes:** Always update or add tests. Code without tests is incomplete.
 - **TDD for bug fixes:** Write a failing test first, then implement the fix.
-- **Real-device verification for bug fixes:** When fixing bugs reported from real usage (dogfooding, production), verify the fix on the actual environment before considering it complete. The verification sequence is: reproduce on real device → identify code path via browser console/logs → implement fix → verify fix on real device. Do not rely solely on unit tests for bugs that were discovered through real usage. (Lesson: Sprint 2026-04-07 — two #627 fixes passed all tests but had no effect on the actual bug because the diagnosed code path was wrong.)
+- **Real-device verification for bug fixes:** When fixing bugs reported from real usage (dogfooding, production), verify on the actual environment before considering complete. Verification has **two parts**:
+  1. **Fix works** — the original bug symptom does not reproduce after the fix
+  2. **No regression** — existing functionality (especially adjacent or upstream of the fix point) still works as before
+
+  When the dev environment cannot reproduce the original symptom (environment-specific blocker), use **baseline comparison** as fallback: `git stash` the fix → verify the symptom + adjacent functionality on the unmodified base → `git stash pop` → re-verify after fix. If the baseline shows the same blocker, the fix is at least not the cause (transparency note required in the PR body). Lessons:
+  - Sprint 2026-04-07 — two #627 fixes passed all tests but had no effect on the actual bug because the diagnosed code path was wrong.
+  - Sprint 2026-04-25 — #660 fix passed unit tests but appeared to break the send pipeline. `git stash` baseline comparison proved the blocker was pre-existing, not caused by the fix.
 
 ## Commit Standards
 
