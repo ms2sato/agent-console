@@ -87,9 +87,11 @@ export const SubmitKeystrokeUtils = {
 
 /**
  * Type guard to check if a string represents message content.
+ * MessageContent must not carry submit keystroke characters.
  */
 export function isMessageContent(value: unknown): value is MessageContent {
-  return typeof value === 'string'
+  // MessageContent must not carry submit keystroke characters
+  return typeof value === 'string' && !value.includes('\r')
 }
 
 /**

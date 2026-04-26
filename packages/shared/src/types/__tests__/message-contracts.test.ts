@@ -154,10 +154,10 @@ describe('Message Contracts Type Safety', () => {
       // const mixedUp1: MessageContent = keystroke      // ❌ Type error
       // const mixedUp2: SubmitKeystroke = content       // ❌ Type error
 
-      // Runtime validation still works
+      // Runtime validation enforces semantic separation
       expect(isMessageContent(content)).toBe(true)
       expect(isSubmitKeystroke(content)).toBe(false)
-      expect(isMessageContent(keystroke)).toBe(true) // Keystroke is string
+      expect(isMessageContent(keystroke)).toBe(false) // Keystroke contains \r (submit operation)
       expect(isSubmitKeystroke(keystroke)).toBe(true)
     })
   })

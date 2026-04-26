@@ -82,11 +82,11 @@ describe('Message Contract Integration', () => {
 
       expect(() => {
         PTYOperationExecutor.injectMessage(content, null as any)
-      }).toThrow()
+      }).toThrow(/PTY write function is required/)
 
       expect(() => {
         PTYOperationExecutor.injectMessage(content, 'not a function' as any)
-      }).toThrow()
+      }).toThrow(/PTY write function is required/)
     })
   })
 

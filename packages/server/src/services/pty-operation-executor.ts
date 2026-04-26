@@ -26,6 +26,9 @@ export class PTYOperationExecutor {
     // Validate content purity (no operations mixed in)
     MessageContentProcessor.validatePurity(content)
 
+    // Validate PTY write function
+    PTYOperationExecutor.validatePTYWrite(ptyWrite)
+
     // Step 1: Send message content (data)
     const preservedContent = MessageContentProcessor.extractContent(content)
     ptyWrite(preservedContent)
