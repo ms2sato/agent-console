@@ -16,11 +16,12 @@ Before completing any code changes, always verify:
      bun run test 2>&1 | tail -100; echo "TEST_EXIT: ${PIPESTATUS[0]}"
      ```
      Do NOT use `bun run test 2>&1 | tail -100; echo "TEST_EXIT: $?"` — `$?` returns `tail`'s exit code (always 0), masking real test failures. Summary-only or wrong-exit-code reports have caused false-positive "verified" claims that CI later contradicted. (Lesson: Sprint 2026-04-25 — agent reported "server: 2338 pass" but CI showed 61 failures due to local fixture state.)
-2. **Run type check:** Execute `bun run typecheck` and ensure no type errors. The script auto-generates `routeTree.gen.ts` (TanStack Router) via `vite build` if missing, so it runs correctly on a fresh worktree.
+2. **Run type check:** Execute `bun run typecheck` and ensure no type errors. The script auto-generates `routeTree.gen.ts` (TanStack Router) via `vite build` if the file is missing, so it runs correctly on a fresh worktree.
+   - **Stale `routeTree.gen.ts` caveat:** The presence-only check accepts a stale `routeTree.gen.ts` when route files have been added / renamed / removed but the generated file was not regenerated. After modifying anything under `packages/client/src/routes/`, delete `packages/client/src/routeTree.gen.ts` (or run `bun run build`) before relying on `bun run typecheck`.
 3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
 
    **Rate limit fallback (closes Issue #653):** When the local CLI is rate-limited (typically 48-min wait window), proceed to PR creation, rely on the GitHub-side CodeRabbit bot review (separate token, runs on PR open), and add a note to the PR body:
-   ```
+   ```markdown
    ## Note on CodeRabbit
    Local CodeRabbit CLI rate-limited during this sprint. Relying on GitHub-side CodeRabbit bot review.
    ```
@@ -78,12 +79,15 @@ When a PR is squash-merged into main, the local feature branch keeps its origina
 
 ```bash
 git fetch origin
-git stash --include-untracked  # preserve any uncommitted / untracked work
+NEED_STASH=$(git status --porcelain)         # detect uncommitted / untracked changes
+[ -n "$NEED_STASH" ] && git stash --include-untracked
 git checkout main
 git pull origin main
 git checkout -b <new-branch-name>
-git stash pop                   # bring uncommitted work into the new branch
+[ -n "$NEED_STASH" ] && git stash pop        # only pop if we actually stashed
 ```
+
+The conditional stash/pop avoids `git stash pop` failing on an empty stash when the worktree was already clean.
 
 (Sprint 2026-04-25 PR #694 — base worktree of merged PR #692 still contained 7 untracked prevention-system files. Without explicit instruction to follow this procedure, the agent would have continued committing on the obsolete `fix/660-message-input-newlines` branch.)
 
