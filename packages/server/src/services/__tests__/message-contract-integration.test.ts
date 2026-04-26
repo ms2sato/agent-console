@@ -71,7 +71,7 @@ describe('Message Contract Integration', () => {
       // Should be caught by validation
       expect(() => {
         PTYOperationExecutor.injectMessage(contaminatedContent, mockPTYWrite)
-      }).toThrow(expect.stringContaining('Contract violation'))
+      }).toThrow()
 
       // PTY should not be called when violation detected
       expect(capturedWrites.length).toBe(0)

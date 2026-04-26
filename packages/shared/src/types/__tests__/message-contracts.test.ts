@@ -36,13 +36,18 @@ describe('Message Contracts Type Safety', () => {
       })
     })
 
-    it('raw() extracts original content', () => {
-      const inputs = ['test', 'with\nnewlines', '\r\n', '']
+    it('raw() extracts normalized content', () => {
+      const testCases = [
+        { input: 'test', expected: 'test' },
+        { input: 'with\nnewlines', expected: 'with\nnewlines' },
+        { input: '\r\n', expected: '\n' },
+        { input: '', expected: '' }
+      ]
 
-      inputs.forEach(input => {
+      testCases.forEach(({ input, expected }) => {
         const content = MessageContentUtils.create(input)
         const result = MessageContentUtils.raw(content)
-        expect(result).toBe(input)
+        expect(result).toBe(expected)
       })
     })
 

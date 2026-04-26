@@ -31,7 +31,10 @@ export const MessageContentUtils = {
    * Create MessageContent from raw string input.
    * Ensures all newlines are preserved as soft newlines (\n).
    */
-  create: (content: string): MessageContent => content as MessageContent,
+  create: (content: string): MessageContent => {
+    // Normalize all newline variations to \n (soft newlines)
+    return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n') as MessageContent
+  },
 
   /**
    * Extract preserved content with normalized newlines.
@@ -39,7 +42,7 @@ export const MessageContentUtils = {
    */
   preserveNewlines: (content: MessageContent): string => {
     // Normalize all newline variations to \n (soft newlines)
-    return (content as string).replace(/\r?\n/g, '\n')
+    return (content as string).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   },
 
   /**
@@ -50,9 +53,19 @@ export const MessageContentUtils = {
 
   /**
    * Check if content is empty or whitespace-only.
+   * Pure newlines are considered content, but mixed newlines+whitespace are empty.
    */
   isEmpty: (content: MessageContent): boolean => {
-    return (content as string).trim().length === 0
+    const str = content as string
+    // Empty string is empty
+    if (str === '') return true
+
+    // Check if it contains only newlines (no spaces/tabs)
+    const onlyNewlines = /^[\n]*$/.test(str)
+    if (onlyNewlines && str.length > 0) return false // Pure newlines = content
+
+    // Otherwise check if it's only whitespace
+    return str.trim().length === 0
   }
 }
 
