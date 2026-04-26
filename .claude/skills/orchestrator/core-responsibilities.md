@@ -51,6 +51,14 @@
   - `code-quality-reviewer` — for evaluating design and maintainability
 - **Follow-up timer**: After delegating, create a timer (15-20 min interval) via `create_timer`. On each tick, run `get_session_status` — if the agent is idle/stuck, send a check-in via `send_session_message`. Delete the timer once the agent reports completion. If a timer fires 3+ times with no progress, escalate to the owner via memo.
 - **Test instructions must be concrete.** When delegation includes test requirements, provide specific code patterns — not just "add tests". Include: which test infrastructure to use (e.g., Server Bridge Pattern, MCP helpers), exact imports, setup/teardown patterns from existing tests, and what assertions verify the boundary contract. Vague instructions like "add integration tests" produce meaningless type-construction tests. (Lesson: Sprint 2026-04-04c — 3 PRs produced useless tests until concrete MCP boundary test spec was provided.)
+- **Test result reports must be paste, not summary.** When delegating with test requirements, instruct the agent that completion reports must paste the last 100 lines of test output plus the **actual test exit code** — not summarize counts. The naive `bun run test 2>&1 | tail -100; echo "TEST_EXIT: $?"` is wrong because `$?` returns `tail`'s exit code (always 0), not the test process's. Use one of:
+  ```bash
+  # Option A
+  output=$(bun run test 2>&1); exitcode=$?; echo "$output" | tail -100; echo "TEST_EXIT: $exitcode"
+  # Option B (bash)
+  bun run test 2>&1 | tail -100; echo "TEST_EXIT: ${PIPESTATUS[0]}"
+  ```
+  Summary-only or wrong-exit-code reports have led to false-positive "verified" claims that CI later contradicted. See also `workflow.md` Verification Checklist Step 1. (Lesson: Sprint 2026-04-25 — PR #688 agent reported "server: 2338 pass" but CI showed 61 failures.)
 - **Timer cleanup on owner-wait**: When all agents have completed or are blocked waiting for owner action (e.g., asking state > 15 min), delete the timer. Update the memo with the current status so the owner can see the situation at a glance. Do not keep firing timers that only report "no change" — 3 consecutive "no change" reports means the timer should be deleted.
 - **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
 
@@ -109,6 +117,19 @@
      c. Write annotation `reason` fields in the user's preferred language (not English). Technical terms and code identifiers can remain in English.
      d. Update memo via `write_memo` to notify the owner
 - **CodeRabbit review**: CodeRabbit auto-reviews PRs on push. No manual re-review requests needed — if rate-limited, it resolves naturally.
+- **CodeRabbit "CHANGES_REQUESTED" resolution flow**: When CodeRabbit issues `CHANGES_REQUESTED`, even after the agent's fix push leaves status checks SUCCESS and `mergeStateStatus: CLEAN`, the `reviewDecision` remains `CHANGES_REQUESTED` until explicitly cleared. Resolve as follows:
+
+  1. **Push the fix commit(s)** that address each CodeRabbit finding.
+  2. **Reply to each review comment** to mark the thread as resolved by the bot:
+     ```bash
+     gh api repos/<owner>/<repo>/pulls/<PR>/comments/<comment-id>/replies \
+       -f body="Resolved in <commit-hash>: <one-line fix summary>"
+     ```
+     Get each `comment-id` via `gh api repos/<owner>/<repo>/pulls/<PR>/comments`.
+  3. **Wait for the CodeRabbit acknowledge response** — the bot replies on each thread within seconds (e.g., `thanks for the update! ...`), marking the comment as effectively resolved.
+  4. **Owner dismisses the review and approves** in the GitHub UI. The Orchestrator does not have permission to dismiss third-party reviews; this step is owner-only. For production-code PRs that already require owner approval, this step coincides naturally.
+
+  CodeRabbit recognizes the thread reply as resolution at the comment level but does not automatically clear `reviewDecision`. The owner UI action is the closing step. (Sprint 2026-04-25 PR #694 — flow established and verified.)
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 - **MANDATORY: Every PR must go through both checks.**
   - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation and rule/skill duplication invariant check. CI runs this automatically.
