@@ -4,7 +4,7 @@
  * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
  * Full acceptance check requiring human judgment. Guides the Orchestrator
- * through Q1-Q8 in an interactive session via run_process.
+ * through Q1-Q9 in an interactive session via run_process.
  *
  * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
@@ -35,7 +35,7 @@ function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q8).');
+  console.error('This script runs a full interactive acceptance check (Q1-Q9).');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
 }
@@ -387,6 +387,21 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false } 
       ].join('\n  '),
       insufficient: '"Invariants look fine" (without walking the catalog)',
       sufficient: '"I-1: PR adds getCurrentOffset fallback branch. Verified via grep that both readWorkerOutput and getCurrentOffset route through computeSessionDataBaseDir — same identity yields same path. I-2: computeSessionDataBaseDir is the single helper, no inline path construction. I-3: sessionId is the stable identity and is unchanged. I-4: PR does not introduce new persistent state. I-5: N/A (server-only). I-6: job payloads validated via ZJobPayload schema at line 42."',
+    },
+    {
+      key: 'q9',
+      text: 'Q9: Glossary Integrity — If the PR introduces a new domain concept (new type, DB schema field, design doc, MCP tool param, API endpoint name, or rule/skill referencing a project-wide concept), is `docs/glossary.md` updated to reflect it?',
+      focus: [
+        'See `.claude/rules/glossary-maintenance.md` for the trigger list and drift-handling decision tree.',
+        'Mechanical procedure:',
+        '  1. List the new domain-named identifiers introduced by the PR (types, fields, parameters, design-doc concepts).',
+        '  2. For each identifier, grep `docs/glossary.md` for the term.',
+        '  3. Missing entries → request the agent add them in this PR before merge (drift-handling tree, step 1 / 2).',
+        '  4. Renamed/drifted variants → update `Aliases` field of the existing entry.',
+        'If the PR does not introduce any new domain concept (e.g., bug fix, refactor with no naming change, test-only PR), it is acceptable to answer "N/A — PR scope does not introduce new domain concepts" with a one-line justification.',
+      ].join('\n  '),
+      insufficient: '"Glossary looks fine" (without listing introduced identifiers and grepping each)',
+      sufficient: '"PR adds `assignee` parameter to delegate_to_worktree (MCP tool param) and `assigned_at` timestamp field to sessions table (DB schema field). Grepped docs/glossary.md: `assignee` entry exists at line 81 (added in PR #682). `assigned_at` is missing — instructed agent to add a Multi-User Identity entry. No other new domain identifiers in this PR."',
     },
   ];
 }

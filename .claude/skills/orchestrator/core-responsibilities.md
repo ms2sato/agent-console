@@ -83,7 +83,7 @@
 - If satisfactory, summarize the result for the owner
 
 ## 6. Acceptance Check
-- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q7). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
+- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q9). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
 - **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
   ```
@@ -104,7 +104,7 @@
   - **Browser check for UI changes**: When the PR modifies client-side components (`packages/client/src/components/`) or acceptance criteria include `manual verification`, the Orchestrator must verify via Chrome DevTools MCP. Start the dev server (`bun run dev`), check the startup log for the actual port (Vite may auto-increment if the default port is in use), navigate to the affected UI, and take screenshots. Use `/browser-qa` skill if available. Do NOT skip this — automated tests alone cannot catch visual/interaction regressions. (Lesson: Sprint 2026-04-05b — port 5173 was in use, Vite silently switched to 5174.)
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
   0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
-  1. Start the acceptance check via `run_process` (see above). Answer Q1-Q7 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
+  1. Start the acceptance check via `run_process` (see above). Answer Q1-Q9 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> resolve before proceeding:
      a. Self-investigate (read more code, grep for context)
@@ -133,7 +133,7 @@
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 - **MANDATORY: Every PR must go through both checks.**
   - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation and rule/skill duplication invariant check. CI runs this automatically.
-  - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q7 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
+  - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q9 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
 
 ## 7. Post-Merge Flow
 

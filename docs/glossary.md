@@ -133,4 +133,6 @@ This glossary is canonical. When the following changes are introduced, the gloss
 
 If a term in the codebase or documentation does not appear here, either it is a drift to fix or a missing entry to add — both belong in the same PR that surfaced the gap.
 
-**Responsibility**: PR author owns the glossary update for their PR. Orchestrator confirms during acceptance check. Automated detection is tracked separately (see Issue [#671](https://github.com/ms2sato/agent-console/issues/671) and Issue [#689](https://github.com/ms2sato/agent-console/issues/689) for `glossary-maintenance` rule integration).
+**Responsibility**: PR author owns the glossary update for their PR. Orchestrator confirms during acceptance check via `acceptance-check.js` Q9 (Glossary Integrity).
+
+**Operational rule**: see [`.claude/rules/glossary-maintenance.md`](../.claude/rules/glossary-maintenance.md) for the full trigger list, role assignments, and drift-handling decision tree. Automated linter detection is tracked separately (Issue [#671](https://github.com/ms2sato/agent-console/issues/671)).

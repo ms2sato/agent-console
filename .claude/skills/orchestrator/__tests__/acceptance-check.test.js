@@ -305,15 +305,23 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 8 questions', () => {
+  it('returns 9 questions', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(8);
+    expect(questions).toHaveLength(9);
   });
 
-  it('returns questions with keys q1-q8', () => {
+  it('returns questions with keys q1-q9', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9']);
+  });
+
+  it('Q9 references the glossary-maintenance rule', () => {
+    const questions = getQuestions(false);
+    const q9 = questions.find(q => q.key === 'q9');
+    expect(q9.text).toContain('Glossary Integrity');
+    expect(q9.focus).toContain('glossary-maintenance.md');
+    expect(q9.focus).toContain('docs/glossary.md');
   });
 
   it('Q8 references the architectural-invariants skill catalog', () => {

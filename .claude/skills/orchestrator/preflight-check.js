@@ -8,7 +8,7 @@
  * - Integration test gap detection
  *
  * This is the CI-facing script. For full acceptance checks requiring
- * human judgment (Q1-Q7), use acceptance-check.js via run_process.
+ * human judgment (Q1-Q9), use acceptance-check.js via run_process.
  *
  * Local and CI modes produce the same verdict for the same branch state.
  * Both modes use equivalent commands to ensure consistent file lists.
