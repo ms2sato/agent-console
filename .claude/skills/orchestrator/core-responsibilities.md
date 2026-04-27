@@ -60,6 +60,11 @@
   ```
   Summary-only or wrong-exit-code reports have led to false-positive "verified" claims that CI later contradicted. See also `workflow.md` Verification Checklist Step 1. (Lesson: Sprint 2026-04-25 — PR #688 agent reported "server: 2338 pass" but CI showed 61 failures.)
 - **Timer cleanup on owner-wait**: When all agents have completed or are blocked waiting for owner action (e.g., asking state > 15 min), delete the timer. Update the memo with the current status so the owner can see the situation at a glance. Do not keep firing timers that only report "no change" — 3 consecutive "no change" reports means the timer should be deleted.
+- **Conditional wakeup for state changes**: Use `create_conditional_wakeup` instead of `create_timer` when waiting for external state to change. This preserves context window by staying silent until the condition is met. Common patterns:
+  - **Wait for PR ready**: `create_conditional_wakeup({ conditionScript: 'gh pr view 698 --json mergeStateStatus --jq .mergeStateStatus | grep -q CLEAN', onTrueMessage: 'PR #698 is ready for merge (status: CLEAN)', intervalSeconds: 30, timeoutSeconds: 3600 })`
+  - **Wait for CI completion**: `create_conditional_wakeup({ conditionScript: 'gh pr checks 698 --json | jq -e "map(select(.conclusion != \"success\")) | length == 0"', onTrueMessage: 'All CI checks passed for PR #698', intervalSeconds: 60, timeoutSeconds: 1800 })`
+  - **Wait for deployment**: `create_conditional_wakeup({ conditionScript: 'curl -s https://api.service.com/health | jq -r .version | grep -q v1.2.3', onTrueMessage: 'Deployment v1.2.3 is live', intervalSeconds: 30, timeoutSeconds: 900 })`
+  Use traditional `create_timer` only for genuinely periodic tasks without a "done" condition (e.g., recurring status updates, periodic cleanup). The conditional wakeup auto-stops after sending exactly one notification.
 - **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
 
 ## 4. First Responder for Dev Agent Questions

@@ -149,6 +149,7 @@ export class SessionManager {
   private sessionPauseResumeService: SessionPauseResumeService;
   private sessionConverterService: SessionConverterService;
   private timerCleanupCallback?: (sessionId: string) => void;
+  private conditionalWakeupCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
   private branchWatcherCallbacks?: {
     startWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
@@ -276,6 +277,7 @@ export class SessionManager {
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       getWebSocketCallbacks: () => this.webSocketCallbacks,
       getTimerCleanupCallback: () => this.timerCleanupCallback,
+      getConditionalWakeupCleanupCallback: () => this.conditionalWakeupCleanupCallback,
       getProcessCleanupCallback: () => this.processCleanupCallback,
       stopWatching,
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
@@ -433,6 +435,15 @@ export class SessionManager {
    */
   setTimerCleanupCallback(callback: (sessionId: string) => void): void {
     this.timerCleanupCallback = callback;
+  }
+
+  /**
+   * Set a callback to clean up conditional wakeups when a session is deleted.
+   * Wired in app-context to connect SessionManager with ConditionalWakeupManager
+   * without creating a direct dependency.
+   */
+  setConditionalWakeupCleanupCallback(callback: (sessionId: string) => void): void {
+    this.conditionalWakeupCleanupCallback = callback;
   }
 
   /**

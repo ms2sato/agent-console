@@ -53,6 +53,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
     getTimerCleanupCallback: () => undefined,
+    getConditionalWakeupCleanupCallback: () => undefined,
     getProcessCleanupCallback: () => undefined,
     stopWatching: mockStopWatching,
     stopBranchWatching: () => {},
@@ -206,6 +207,21 @@ describe('SessionDeletionService', () => {
       await service.deleteSession('session-1');
 
       expect(timerCleanup).toHaveBeenCalledWith('session-1');
+    });
+
+    it('should call conditional wakeup cleanup callback if set', async () => {
+      const session = buildInternalWorktreeSession();
+      const conditionalWakeupCleanup = mock(() => {});
+
+      const deps = createMockDeps({
+        getSession: () => session,
+        getConditionalWakeupCleanupCallback: () => conditionalWakeupCleanup,
+      });
+      const service = new SessionDeletionService(deps);
+
+      await service.deleteSession('session-1');
+
+      expect(conditionalWakeupCleanup).toHaveBeenCalledWith('session-1');
     });
 
     it('should stop watching git-diff workers during deletion', async () => {
