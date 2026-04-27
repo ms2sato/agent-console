@@ -201,6 +201,46 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     expect(data.workerId).toBe(workerId);
     expect(typeof data.command).toBe('string');
     expect(data.command).toBe('sleep 30');
+    // outputMode defaults to 'pty' when omitted (Issue #664)
+    expect(data.outputMode).toBe('pty');
+  });
+
+  it('run_process accepts outputMode "message" and surfaces it in the response', async () => {
+    const session = await sessionManager.createSession({
+      type: 'quick',
+      locationPath: '/test/path',
+      agentId: 'claude-code',
+    });
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'sleep 30',
+      sessionId: session.id,
+      workerId: session.workers[0].id,
+      outputMode: 'message',
+    }, nextId++);
+
+    expect(response.result?.isError).toBeUndefined();
+
+    const data = parseToolResult(response) as Record<string, unknown>;
+    expect(data.outputMode).toBe('message');
+  });
+
+  it('run_process rejects an invalid outputMode value', async () => {
+    const session = await sessionManager.createSession({
+      type: 'quick',
+      locationPath: '/test/path',
+      agentId: 'claude-code',
+    });
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'sleep 30',
+      sessionId: session.id,
+      workerId: session.workers[0].id,
+      outputMode: 'invalid-mode',
+    }, nextId++);
+
+    // zod enum rejection surfaces as an MCP-level error, not as isError on a successful tool call
+    expect(response.error ?? response.result?.isError).toBeTruthy();
   });
 
   it('list_processes returns items matching InteractiveProcessInfo shape', async () => {
