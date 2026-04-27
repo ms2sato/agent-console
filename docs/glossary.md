@@ -112,10 +112,21 @@ A dedicated OS account distinct from service user and individual users, used for
 
 ## Events & Communication
 
+### ConditionalWakeup
+A registered shell-condition + interval that the server polls silently and notifies the session only when the condition exits 0 or a timeout is reached. Designed to preserve LLM context windows during "wait for X to be true" patterns.
+- **Aliases:** wakeup, conditional poll
+- **See:** Issue [#700](https://github.com/ms2sato/agent-console/issues/700), MCP tools `create_conditional_wakeup` / `delete_conditional_wakeup`
+- **Contrast:** [Timer](#timer) (fires on interval regardless of state)
+
 ### SystemEvent
 The top-level event format representing meaningful occurrences in the system.
 - **Aliases:** System-wide event
 - **See:** [Event format in system-events.md](design/system-events.md#event-format)
+
+### Timer
+A periodic, fixed-interval notification mechanism for sessions. Fires on every interval regardless of state.
+- **See:** MCP tools `create_timer` / `delete_timer`
+- **Contrast:** [ConditionalWakeup](#conditionalwakeup) (silent until condition true)
 
 ### WebSocket Connection
 Real-time bidirectional communication channel between client and server.

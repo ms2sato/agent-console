@@ -548,5 +548,70 @@ describe('ConditionalWakeupManager', () => {
 
       Bun.spawn = originalSpawn;
     });
+
+    it('should prevent race condition by skipping concurrent checks', async () => {
+      // Create a wakeup with minimum allowed interval
+      const wakeup = manager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'slow command',
+        onTrueMessage: 'Condition met!',
+      });
+
+      const spawnCalls: any[] = [];
+      const originalSpawn = Bun.spawn;
+
+      let resolveProcess: ((value: number) => void) | undefined;
+
+      // Mock Bun.spawn to track calls and control when process completes
+      Bun.spawn = mock(() => {
+        const mockSubprocess = {
+          exited: new Promise<number>((resolve) => {
+            resolveProcess = resolve; // Allow test to control when process completes
+          }),
+          kill: mock(),
+          stdin: null,
+          stdout: null,
+          stderr: null,
+          terminal: null,
+          pid: 123 + spawnCalls.length,
+          killed: false,
+          ref: mock(),
+          unref: mock(),
+          flush: mock(),
+          disconnect: mock(),
+        };
+        spawnCalls.push(mockSubprocess);
+        return mockSubprocess;
+      }) as any;
+
+      // Trigger first interval tick - should start first process
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+
+      // Verify first process was spawned
+      expect(spawnCalls).toHaveLength(1);
+
+      // Trigger second interval tick while first process is still running
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+
+      // Should NOT spawn second process due to checking flag
+      expect(spawnCalls).toHaveLength(1);
+      expect(Bun.spawn).toHaveBeenCalledTimes(1);
+
+      // Verify checkCount is still 1 (second check was skipped)
+      const updated = manager.getWakeup(wakeup.id);
+      expect(updated?.checkCount).toBe(1);
+
+      // Complete the first process to clean up
+      if (resolveProcess) {
+        resolveProcess(1);
+      }
+      await Promise.resolve();
+
+      Bun.spawn = originalSpawn;
+    });
   });
 });
