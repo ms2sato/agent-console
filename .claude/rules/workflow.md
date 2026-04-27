@@ -34,7 +34,14 @@ Before completing any code changes, always verify:
 
    "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
-5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser
+5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser.
+
+   **Skip threshold.** Browser QA may be omitted when **all** of the following conditions hold:
+   - The change is a pure behavior subtraction — removing a conditional branch, a field, or a side-effect with no user-visible rendering.
+   - The corresponding server-side contract is covered by existing server or integration tests.
+   - The client-side behavior change is fully covered by unit tests.
+
+   When skipping, document the three justifications in the PR body and request owner dogfood verification post-merge. The Orchestrator's acceptance check still performs Browser QA as final gate. (Lesson: Sprint 2026-04-17b PR #655 — frontend-specialist correctly skipped for a pure cache-restore subtraction; absent threshold caused unnecessary anxiety. See `frontend-standards.md` "Browser Verification for UI Changes" for the worked example.)
 6. **Duplication check:** When adding or modifying logic, grep the repository for the core processing part (method chains, regex patterns, transformation expressions) with variable names removed. For example, search for `.replace(/\r?\n/g, '\r')` rather than `content.replace(...)`. If hits are found, review whether they represent the same concern and should be consolidated into a shared function.
 7. **Shell script execution test:** When adding or modifying shell scripts (`scripts/*.sh`), execute them locally on macOS before committing. CI does not cover shell scripts. Watch for BSD/GNU incompatibilities (e.g., `sed -E` with non-greedy `+?` is not portable). (Lesson: Sprint 2026-04-05c — `upload-qa-screenshots.sh` had 2 bugs only caught at runtime.)
 

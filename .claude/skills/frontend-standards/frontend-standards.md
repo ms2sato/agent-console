@@ -149,3 +149,11 @@ Reason: without `minLength(1)`, the `regex` check on an empty string produces th
 - New UI elements or dialogs
 - Responsive behavior
 - Form interactions (tab through fields, submit button reachable)
+
+### When skip is justified
+
+The skip threshold is defined in `.claude/rules/workflow.md` Verification Checklist Step 5. Reproduced here for skill-level reference: skip is permitted only when **all three** of pure behavior subtraction, server-side contract test coverage, and client-side unit test coverage hold simultaneously. If any condition does not hold, run Browser QA.
+
+**Worked example — Sprint 2026-04-17b PR #655 (Issue #648).** The fix removed a stale-cache-on-restart code path. The change introduced no new UI state and produced no new visual element; the post-fix behavior was indistinguishable from the pre-fix one except for not wiping cache. The new server-side truncation-detection contract was already covered by server tests, and the corresponding client-side cache decision was covered by unit tests. The delegated worktree had no running backend and no seeded session data — spinning up a seeded environment purely to observe a sub-second cache restore vs a 20-second full render would have been high setup cost for a low blast radius. The frontend-specialist agent skipped Browser QA, documented the three justifications in the PR body, and retrospectively reported feeling some anxiety about making the skip judgment unilaterally without a written threshold to point to. The skip turned out correct. This threshold codifies that judgment so future agents skip with explicit grounding rather than guesswork.
+
+When skipping, write a short "Browser QA skip justification" subsection in the PR body that names the three conditions and how each is satisfied for this change. Owner dogfood verification post-merge serves as the safety net; the Orchestrator's acceptance check remains the formal final gate.
