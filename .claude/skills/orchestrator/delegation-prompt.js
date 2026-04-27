@@ -106,6 +106,9 @@ Quick reference (full details in the skill file):
 - **I-5 Server as Source of Truth** — user-meaningful state is not kept only in client \`localStorage\`.
 - **I-6 Boundary Validation** — external values validated with a schema before use.
 
+## Test Placement (mandatory)
+For every production file you change or add, the corresponding test file **must** be placed in a sibling \`__tests__/\` directory at the same level — \`path/to/foo.ts\` → \`path/to/__tests__/foo.test.ts\`. Parent-directory placement (e.g., a test for \`services/inbound/foo.ts\` placed at \`services/__tests__/foo.test.ts\`) does **not** satisfy the \`coverage-check\` rule and will fail CI on first push. See \`testing.md\` "Test File Naming Convention".
+
 ## Key Implementation Notes
 <!-- Orchestrator: Add only supplementary context NOT already in the Issue.
      Keep concise — the Issue is the source of truth.
