@@ -79,7 +79,7 @@ describe('ci-completion-checker', () => {
   });
 
   async function getModule() {
-    return import(`../inbound/ci-completion-checker.js?v=${++importCounter}`);
+    return import(`../ci-completion-checker.js?v=${++importCounter}`);
   }
 
   it('returns allCompleted true when all workflows completed successfully', async () => {

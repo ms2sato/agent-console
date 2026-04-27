@@ -1,9 +1,9 @@
 import { describe, expect, it, mock, beforeEach } from 'bun:test';
-import type { ServiceParser } from '../inbound/service-parser.js';
-import type { InboundEventHandler } from '../inbound/handlers.js';
-import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
-import { createInboundEventJobHandler } from '../inbound/job-handler.js';
-import type { CICompletionChecker } from '../inbound/ci-completion-checker.js';
+import type { ServiceParser } from '../service-parser.js';
+import type { InboundEventHandler } from '../handlers.js';
+import type { InboundEventNotification, NewInboundEventNotification } from '../../../database/schema.js';
+import { createInboundEventJobHandler } from '../job-handler.js';
+import type { CICompletionChecker } from '../ci-completion-checker.js';
 
 // Mock functions with proper return types
 const mockFindInboundEventNotification = mock<() => Promise<InboundEventNotification | null>>(
