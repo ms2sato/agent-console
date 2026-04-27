@@ -389,7 +389,23 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolvedWorkerId = agentWorkers[0].id;
         }
 
-        // 3. Resolve the path via SessionManager so we use the canonical
+        // 3. Validate sender session (defense-in-depth against agents that pass
+        //    a stale or hallucinated fromSessionId — see Issue #690).
+        //    The agent is expected to source this from AGENT_CONSOLE_SESSION_ID,
+        //    but LLM-driven tool calls have been observed substituting an unrelated
+        //    session id intermittently. Rejecting unknown senders fails fast so
+        //    the agent can self-correct, and prevents Reply Instructions from
+        //    being generated with an unreplyable target.
+        const senderSession = sessionManager.getSession(fromSessionId);
+        if (!senderSession) {
+          return errorResult(
+            `Sender session ${fromSessionId} not found. ` +
+              `fromSessionId must reference an existing session — ` +
+              `agents should source it from the AGENT_CONSOLE_SESSION_ID environment variable.`,
+          );
+        }
+
+        // 4. Resolve the path via SessionManager so we use the canonical
         //    persisted slug — the in-memory `repositoryName` is a display
         //    name that may differ from the on-disk slug.
         const resolver = sessionManager.getPathResolverForSessionId(toSessionId);
@@ -404,10 +420,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolver,
         });
 
-        // 4. PTY notification (best-effort -- message file is already written)
+        // 5. PTY notification (best-effort -- message file is already written)
         try {
-          const senderTitle =
-            sessionManager.getSession(fromSessionId)?.title ?? fromSessionId;
+          const senderTitle = senderSession.title ?? fromSessionId;
 
           const writeInput = (data: string) =>
             sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
