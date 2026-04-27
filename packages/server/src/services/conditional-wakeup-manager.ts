@@ -10,6 +10,7 @@ export const MAX_WAKEUPS_PER_SESSION = 20;
 interface StoredWakeup {
   info: ConditionalWakeupInfo;
   handle: ReturnType<typeof setInterval>;
+  timeoutHandle?: ReturnType<typeof setTimeout>;
   currentProcess?: {
     exited: Promise<number | null>;
     kill: () => void;
@@ -83,14 +84,17 @@ export class ConditionalWakeupManager {
       this.checkCondition(id);
     }, intervalSeconds * 1000);
 
-    this.wakeups.set(id, { info, handle });
+    const stored: StoredWakeup = { info, handle };
 
     // Set up timeout if specified
     if (timeoutSeconds) {
-      setTimeout(() => {
+      const timeoutHandle = setTimeout(() => {
         this.handleTimeout(id);
       }, timeoutSeconds * 1000);
+      stored.timeoutHandle = timeoutHandle;
     }
+
+    this.wakeups.set(id, stored);
 
     logger.info(
       { wakeupId: id, sessionId, workerId, intervalSeconds, timeoutSeconds },
@@ -125,22 +129,23 @@ export class ConditionalWakeupManager {
   }
 
   deleteWakeupsBySession(sessionId: string): number {
-    let count = 0;
-    for (const [id, stored] of this.wakeups) {
-      if (stored.info.sessionId === sessionId) {
-        this.cleanupWakeup(id, 'cancelled');
-        count += 1;
-      }
+    const idsToDelete = Array.from(this.wakeups.entries())
+      .filter(([, stored]) => stored.info.sessionId === sessionId)
+      .map(([id]) => id);
+
+    for (const id of idsToDelete) {
+      this.cleanupWakeup(id, 'cancelled');
     }
-    if (count > 0) {
-      logger.info({ sessionId, count }, 'Deleted wakeups for session');
+    if (idsToDelete.length > 0) {
+      logger.info({ sessionId, count: idsToDelete.length }, 'Deleted wakeups for session');
     }
-    return count;
+    return idsToDelete.length;
   }
 
   disposeAll(): void {
     const count = this.wakeups.size;
-    for (const [id] of this.wakeups) {
+    const idsToDelete = Array.from(this.wakeups.keys());
+    for (const id of idsToDelete) {
       this.cleanupWakeup(id, 'cancelled');
     }
     logger.info({ count }, 'All wakeups disposed');
@@ -229,8 +234,9 @@ export class ConditionalWakeupManager {
     // Send the notification
     this.onWakeup(notificationInfo);
 
-    // Clean up resources but keep the record for status tracking
+    // Clean up resources and remove the record
     this.cleanupWakeupResources(wakeupId);
+    this.wakeups.delete(wakeupId);
   }
 
   private cleanupWakeup(
@@ -253,6 +259,12 @@ export class ConditionalWakeupManager {
 
     // Clear the interval
     clearInterval(stored.handle);
+
+    // Clear the timeout if exists
+    if (stored.timeoutHandle) {
+      clearTimeout(stored.timeoutHandle);
+      stored.timeoutHandle = undefined;
+    }
 
     // Kill any running process
     if (stored.currentProcess) {

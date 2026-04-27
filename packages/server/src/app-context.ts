@@ -317,10 +317,9 @@ export async function createAppContext(
   });
 
   // 6.6.3. Wire conditional wakeup cleanup into session lifecycle
-  // TODO: Add setConditionalWakeupCleanupCallback to SessionManager
-  // sessionManager.setConditionalWakeupCleanupCallback((sessionId) => {
-  //   conditionalWakeupManager.deleteWakeupsBySession(sessionId);
-  // });
+  sessionManager.setConditionalWakeupCleanupCallback((sessionId) => {
+    conditionalWakeupManager.deleteWakeupsBySession(sessionId);
+  });
 
   // 6.7. Create interactive process manager (in-memory, volatile)
   const interactiveProcessManager = new InteractiveProcessManagerClass(
