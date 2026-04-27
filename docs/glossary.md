@@ -118,6 +118,13 @@ A registered shell-condition + interval that the server polls silently and notif
 - **See:** Issue [#700](https://github.com/ms2sato/agent-console/issues/700), MCP tools `create_conditional_wakeup` / `delete_conditional_wakeup`
 - **Contrast:** [Timer](#timer) (fires on interval regardless of state)
 
+### outputMode
+Parameter on the `run_process` MCP tool that selects how the script's stdout and `write_process_response` content are delivered to the calling agent. Two modes:
+- `"pty"` (default): the script's stdout is delivered as a `[internal:process]` PTY notification carrying the full content; `write_process_response` echoes content directly to the worker PTY. Existing behavior, backward-compatible with all prior `run_process` callers.
+- `"message"`: the script's stdout is captured and routed through `InterSessionMessageService` (file-based, see `packages/server/src/services/inter-session-message-service.ts`) to the calling session/worker; `write_process_response` content is delivered through the same channel after stdin write succeeds. PTY receives only a brief `[stdout via message] path=… bytes=…` / `[response via message] …` notification per chunk so the owner retains progress visibility without the conversation being flooded by long-form Q&A. Designed for long interactive scripts (e.g., `.claude/skills/orchestrator/acceptance-check.js`, `sprint-retro.js`).
+- **Aliases:** output mode, run_process outputMode
+- **See:** Issue [#664](https://github.com/ms2sato/agent-console/issues/664), router (`packages/server/src/services/process-output-router.ts`)
+
 ### SystemEvent
 The top-level event format representing meaningful occurrences in the system.
 - **Aliases:** System-wide event
