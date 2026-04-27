@@ -42,12 +42,12 @@ function isRealFsActive(): boolean {
     `branch-watcher-fs-probe-${crypto.randomUUID().slice(0, 8)}`,
   );
   try {
-    Bun.spawnSync(['sh', '-c', `printf x > ${probePath}`]);
+    fs.writeFileSync(probePath, 'x');
     fs.statSync(probePath);
-    Bun.spawnSync(['rm', '-f', probePath]);
+    fs.unlinkSync(probePath);
     return true;
   } catch {
-    Bun.spawnSync(['rm', '-f', probePath]);
+    try { fs.unlinkSync(probePath); } catch { /* probe may not have been created */ }
     return false;
   }
 }
@@ -79,6 +79,25 @@ async function atomicGitHeadUpdate(headFilePath: string, content: string): Promi
   await Bun.spawn(['mv', lockPath, headFilePath]).exited;
 }
 
+/**
+ * Poll a predicate until it becomes true or the timeout elapses.
+ * Used to reduce flake risk on slow CI: a fixed setTimeout can race with
+ * fs.watch + debounce + handler scheduling, while polling a known
+ * post-condition (e.g., `observed.includes('feature-a')`) waits exactly
+ * as long as needed.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2000,
+  stepMs = 25,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) return;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+}
+
 describe('BranchWatcherService — fs.watch rename robustness (Issue #708)', () => {
   if (!REAL_FS) {
     it.skip('SKIPPED: node:fs is mocked by memfs in this process (run this file directly to exercise real fs.watch)', () => {});
@@ -102,18 +121,20 @@ describe('BranchWatcherService — fs.watch rename robustness (Issue #708)', () 
       const service = new BranchWatcherService(onBranchChanged);
       await service.startWatching('session-1', tmpDir, 'main');
 
-      // First atomic rename — branch change to feature-a
+      // First atomic rename — branch change to feature-a.
+      // Poll until observed contains the expected branch, with a generous
+      // timeout to absorb fs.watch + debounce + handler scheduling jitter
+      // on slow CI without race-prone fixed-duration sleeps.
       await atomicGitHeadUpdate(headPath, 'ref: refs/heads/feature-a\n');
-      // Wait for fs.watch event + debounce + handler
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await waitFor(() => observed.includes('feature-a'));
 
       // Second atomic rename — branch change to feature-b
       await atomicGitHeadUpdate(headPath, 'ref: refs/heads/feature-b\n');
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await waitFor(() => observed.includes('feature-b'));
 
       // Third atomic rename — branch change to feature-c
       await atomicGitHeadUpdate(headPath, 'ref: refs/heads/feature-c\n');
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await waitFor(() => observed.includes('feature-c'));
 
       service.stopAll();
 
@@ -146,7 +167,7 @@ describe('BranchWatcherService — fs.watch rename robustness (Issue #708)', () 
 
       // Single atomic rename
       await atomicGitHeadUpdate(headPath, 'ref: refs/heads/feature-x\n');
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await waitFor(() => observed.includes('feature-x'));
 
       service.stopAll();
       expect(observed).toContain('feature-x');
