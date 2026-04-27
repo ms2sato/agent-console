@@ -15,6 +15,7 @@ interface StoredWakeup {
     exited: Promise<number | null>;
     kill: () => void;
   };
+  checking: boolean;
 }
 
 export class ConditionalWakeupManager {
@@ -84,7 +85,7 @@ export class ConditionalWakeupManager {
       this.checkCondition(id);
     }, intervalSeconds * 1000);
 
-    const stored: StoredWakeup = { info, handle };
+    const stored: StoredWakeup = { info, handle, checking: false };
 
     // Set up timeout if specified
     if (timeoutSeconds) {
@@ -157,6 +158,13 @@ export class ConditionalWakeupManager {
       return;
     }
 
+    // Prevent race condition: skip if already checking
+    if (stored.checking) {
+      return;
+    }
+
+    stored.checking = true;
+
     try {
       // Cancel any existing process
       if (stored.currentProcess) {
@@ -193,6 +201,12 @@ export class ConditionalWakeupManager {
         { wakeupId, error: error instanceof Error ? error.message : 'Unknown error' },
         'Error checking condition'
       );
+    } finally {
+      // Reset checking flag regardless of success or failure
+      const stored = this.wakeups.get(wakeupId);
+      if (stored) {
+        stored.checking = false;
+      }
     }
   }
 
