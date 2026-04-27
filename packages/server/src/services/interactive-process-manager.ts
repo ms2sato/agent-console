@@ -1,4 +1,4 @@
-import type { InteractiveProcessInfo } from '@agent-console/shared';
+import type { InteractiveProcessInfo, InteractiveProcessOutputMode } from '@agent-console/shared';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
 
@@ -22,6 +22,15 @@ export interface ProcessExitCallback {
   (process: InteractiveProcessInfo): void;
 }
 
+/**
+ * Invoked after `writeResponse` successfully forwards content to the
+ * subprocess stdin. Consumers route the content based on
+ * `process.outputMode` (e.g., echo to PTY, or write a message file).
+ */
+export interface ProcessResponseCallback {
+  (process: InteractiveProcessInfo, content: string): void;
+}
+
 /** Service that can inject content into a worker's PTY as submitted input. */
 export interface PtyMessageInjector {
   injectPtyMessage(sessionId: string, workerId: string, content: string): boolean;
@@ -43,11 +52,18 @@ export class InteractiveProcessManager {
   private onOutput: ProcessOutputCallback;
   private onExit: ProcessExitCallback;
   private ptyMessageInjector?: PtyMessageInjector;
+  private onResponse?: ProcessResponseCallback;
 
-  constructor(onOutput: ProcessOutputCallback, onExit: ProcessExitCallback, ptyMessageInjector?: PtyMessageInjector) {
+  constructor(
+    onOutput: ProcessOutputCallback,
+    onExit: ProcessExitCallback,
+    ptyMessageInjector?: PtyMessageInjector,
+    onResponse?: ProcessResponseCallback,
+  ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
     this.ptyMessageInjector = ptyMessageInjector;
+    this.onResponse = onResponse;
   }
 
   async runProcess(params: {
@@ -55,8 +71,10 @@ export class InteractiveProcessManager {
     workerId: string;
     command: string;
     cwd?: string;
+    outputMode?: InteractiveProcessOutputMode;
   }): Promise<InteractiveProcessInfo> {
     const { sessionId, workerId, command, cwd } = params;
+    const outputMode: InteractiveProcessOutputMode = params.outputMode ?? 'pty';
 
     const sessionProcessCount = this.listProcesses(sessionId).filter(
       (p) => p.status === 'running',
@@ -75,6 +93,7 @@ export class InteractiveProcessManager {
       command,
       status: 'running',
       startedAt: new Date().toISOString(),
+      outputMode,
     };
 
     const subprocess = Bun.spawn(['sh', '-c', command], {
@@ -159,12 +178,14 @@ export class InteractiveProcessManager {
     }
 
     try {
-      // Echo response content to worker PTY (newlines normalized to LF so
-      // they remain soft newlines, no Enter yet). The Enter (\r) will be sent
-      // by writePtyNotification when process output settles and onOutput is
-      // called. See Issue #660 — converting \n to \r here previously caused
-      // multi-line responses to be submitted as multiple messages.
-      if (this.ptyMessageInjector) {
+      // In `pty` mode, echo response content to the worker PTY (newlines
+      // normalized to LF so they remain soft newlines, no Enter yet). The
+      // Enter (\r) will be sent by writePtyNotification when process output
+      // settles and onOutput is called. See Issue #660 — converting \n to
+      // \r here previously caused multi-line responses to be submitted as
+      // multiple messages. In `message` mode the brief PTY notification is
+      // emitted by the onResponse consumer, so PTY echo is skipped here.
+      if (this.ptyMessageInjector && stored.info.outputMode === 'pty') {
         this.ptyMessageInjector.writePtyData(
           stored.info.sessionId,
           stored.info.workerId,
@@ -179,11 +200,24 @@ export class InteractiveProcessManager {
       stored.stdin.flush();
 
       logger.debug({ processId, contentLength: content.length }, 'Wrote response to process');
-      return true;
     } catch (err) {
       logger.warn({ processId, err }, 'Failed to write to process stdin');
       return false;
     }
+
+    // Notify the consumer that a response was forwarded. Routing per
+    // outputMode (PTY echo vs message file) is the consumer's concern.
+    // Isolated from the stdin try/catch so a failing callback does not flip
+    // the writeResponse result reported to the caller.
+    if (this.onResponse) {
+      try {
+        this.onResponse({ ...stored.info }, content);
+      } catch (err) {
+        logger.warn({ processId, err }, 'onResponse callback threw');
+      }
+    }
+
+    return true;
   }
 
   killProcess(processId: string): boolean {

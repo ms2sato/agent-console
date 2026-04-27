@@ -56,6 +56,7 @@ import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
+import { routeProcessContent } from './services/process-output-router.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
@@ -321,31 +322,38 @@ export async function createAppContext(
     conditionalWakeupManager.deleteWakeupsBySession(sessionId);
   });
 
-  // 6.7. Create interactive process manager (in-memory, volatile)
+  // 6.7. Create interactive process manager (in-memory, volatile).
+  // Stdout and response routing both go through the shared
+  // `routeProcessContent` helper so `outputMode` ('pty' vs 'message') is
+  // handled uniformly.
+  const processRouterDeps = {
+    getResolver: (sessionId: string) =>
+      sessionManager.getPathResolverForSessionId(sessionId),
+    writeInput: (sessionId: string, workerId: string, data: string) => {
+      sessionManager.writeWorkerInput(sessionId, workerId, data);
+    },
+    sendMessage: interSessionMessageService.sendMessage.bind(interSessionMessageService),
+  };
+
   const interactiveProcessManager = new InteractiveProcessManagerClass(
     (process, output) => {
-      try {
-        const writeInput = (data: string) =>
-          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
-        writePtyNotification({
-          kind: 'internal-process',
-          tag: 'internal:process',
-          fields: {
-            processId: process.id,
-            command: process.command,
-            message: output,
-          },
-          intent: 'triage',
-          writeInput,
-        });
-      } catch (err) {
+      // onOutput is a synchronous callback; route asynchronously and log
+      // failures via the router itself (it never rejects). The .catch is a
+      // safety net in case the router is changed later.
+      void routeProcessContent(processRouterDeps, {
+        process,
+        content: output,
+        direction: 'stdout',
+      }).catch((err) => {
         logger.warn(
           { processId: process.id, sessionId: process.sessionId, err },
-          'Failed to deliver process output notification',
+          'Unexpected error from process output router (stdout)',
         );
-      }
+      });
     },
     (process) => {
+      // Exit notifications stay on the PTY in both modes — they are short
+      // and message routing is unnecessary.
       try {
         const writeInput = (data: string) =>
           sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
@@ -367,8 +375,28 @@ export async function createAppContext(
         );
       }
     },
-    // PTY message injector: echo process response to the worker's PTY (same path as MessagePanel)
+    // PTY message injector: echo process response to the worker's PTY (same
+    // path as MessagePanel) when outputMode === 'pty'. The manager itself
+    // skips the echo for outputMode === 'message'.
     sessionManager,
+    // onResponse: route the response via the same helper. In `pty` mode the
+    // brief notification is no-op (writeResponse already echoed content +
+    // the subsequent stdout flush carries the [internal:process] notif).
+    (process, content) => {
+      if (process.outputMode === 'pty') {
+        return;
+      }
+      void routeProcessContent(processRouterDeps, {
+        process,
+        content,
+        direction: 'response',
+      }).catch((err) => {
+        logger.warn(
+          { processId: process.id, sessionId: process.sessionId, err },
+          'Unexpected error from process output router (response)',
+        );
+      });
+    },
   );
 
   // 6.8. Wire process cleanup into session lifecycle

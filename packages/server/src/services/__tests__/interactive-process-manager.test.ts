@@ -8,18 +8,25 @@ describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: ReturnType<typeof mock>;
   let onExit: ReturnType<typeof mock>;
+  let onResponse: ReturnType<typeof mock>;
   let mockInjectPtyMessage: ReturnType<typeof mock>;
   let mockWritePtyData: ReturnType<typeof mock>;
 
   beforeEach(() => {
     onOutput = mock(() => {});
     onExit = mock(() => {});
+    onResponse = mock(() => {});
     mockInjectPtyMessage = mock(() => true);
     mockWritePtyData = mock(() => true);
-    manager = new InteractiveProcessManager(onOutput, onExit, {
-      injectPtyMessage: mockInjectPtyMessage,
-      writePtyData: mockWritePtyData,
-    });
+    manager = new InteractiveProcessManager(
+      onOutput,
+      onExit,
+      {
+        injectPtyMessage: mockInjectPtyMessage,
+        writePtyData: mockWritePtyData,
+      },
+      onResponse,
+    );
   });
 
   afterEach(() => {
@@ -41,6 +48,51 @@ describe('InteractiveProcessManager', () => {
       expect(process.command).toBe('echo hello');
       expect(process.status).toBe('running');
       expect(process.startedAt).toBeString();
+    });
+
+    it('should default outputMode to "pty" when omitted', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hello',
+      });
+
+      expect(process.outputMode).toBe('pty');
+    });
+
+    it('should propagate explicit outputMode "pty"', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hello',
+        outputMode: 'pty',
+      });
+
+      expect(process.outputMode).toBe('pty');
+    });
+
+    it('should propagate explicit outputMode "message"', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hello',
+        outputMode: 'message',
+      });
+
+      expect(process.outputMode).toBe('message');
+    });
+
+    it('should expose outputMode on subsequent getProcess and listProcesses queries', async () => {
+      const created = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 60',
+        outputMode: 'message',
+      });
+
+      expect(manager.getProcess(created.id)?.outputMode).toBe('message');
+      const listed = manager.listProcesses('session-1');
+      expect(listed[0]?.outputMode).toBe('message');
     });
 
     it('should throw when session reaches the per-session process limit', async () => {
@@ -460,6 +512,144 @@ describe('InteractiveProcessManager', () => {
       expect(result).toBe(true);
       expect(mockWritePtyData).not.toHaveBeenCalled();
       managerNoPty.disposeAll();
+    });
+
+    it('should skip PTY echo via writePtyData when outputMode is "message"', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+        outputMode: 'message',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = manager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await manager.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      // PTY echo must be skipped in message mode — the brief notification is
+      // the consumer's responsibility via onResponse.
+      expect(mockWritePtyData).not.toHaveBeenCalled();
+    });
+
+    it('should call onResponse with content after stdin write succeeds (pty mode)', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = manager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await manager.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      expect(onResponse).toHaveBeenCalledTimes(1);
+      const [respInfo, respContent] = onResponse.mock.calls[0] as [
+        { id: string; outputMode: string },
+        string,
+      ];
+      expect(respInfo.id).toBe(process.id);
+      expect(respInfo.outputMode).toBe('pty');
+      expect(respContent).toBe('hello');
+    });
+
+    it('should call onResponse with content after stdin write succeeds (message mode)', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+        outputMode: 'message',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = manager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await manager.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(result).toBe(true);
+      expect(onResponse).toHaveBeenCalledTimes(1);
+      const [respInfo, respContent] = onResponse.mock.calls[0] as [
+        { outputMode: string },
+        string,
+      ];
+      expect(respInfo.outputMode).toBe('message');
+      expect(respContent).toBe('hello');
+    });
+
+    it('should not call onResponse when writeResponse returns false (process missing)', async () => {
+      const result = await manager.writeResponse('non-existent', 'hello');
+      expect(result).toBe(false);
+      expect(onResponse).not.toHaveBeenCalled();
+    });
+
+    it('should not call onResponse when writeResponse returns false (process killed)', async () => {
+      const process = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 60',
+      });
+      manager.killProcess(process.id);
+
+      const result = await manager.writeResponse(process.id, 'hello');
+      expect(result).toBe(false);
+      expect(onResponse).not.toHaveBeenCalled();
+    });
+
+    it('should still return true when onResponse callback throws (stdin write succeeded)', async () => {
+      const throwingOnResponse = mock(() => {
+        throw new Error('onResponse callback error');
+      });
+      const isolatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        throwingOnResponse,
+      );
+
+      const process = await isolatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+      });
+
+      const deadline = Date.now() + 5000;
+      let result = false;
+      while (Date.now() < deadline) {
+        const info = isolatedManager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await isolatedManager.writeResponse(process.id, 'hello');
+          if (result) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // The stdin write succeeded; the callback's exception must not flip
+      // the writeResponse result.
+      expect(result).toBe(true);
+      expect(throwingOnResponse).toHaveBeenCalled();
+
+      isolatedManager.disposeAll();
     });
   });
 
