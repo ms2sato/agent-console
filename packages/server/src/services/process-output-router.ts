@@ -52,14 +52,23 @@ export interface RouteProcessContentParams {
 
 /**
  * Split a string into chunks no larger than `targetBytes` UTF-8 bytes,
- * preferring to break on a line boundary (`\n`) within the chunk. The last
- * chunk may be shorter than the target. Empty input yields an empty array.
+ * preferring to break on a line boundary (`\n`) within the chunk and never
+ * splitting a UTF-16 surrogate pair. The last chunk may be shorter than the
+ * target. Empty input yields an empty array.
+ *
+ * Throws `RangeError` when `targetBytes` is not a positive integer — this
+ * is a defensive check to avoid the chunking loop failing to make progress.
  *
  * Exported for unit testing.
  *
  * @internal Exported for testing
  */
 export function splitContentIntoChunks(content: string, targetBytes: number): string[] {
+  if (!Number.isInteger(targetBytes) || targetBytes <= 0) {
+    throw new RangeError(
+      `targetBytes must be a positive integer, got ${targetBytes}`,
+    );
+  }
   if (content.length === 0) {
     return [];
   }
@@ -102,6 +111,20 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
       cut = cutChar;
     }
 
+    // Don't split a UTF-16 surrogate pair across chunks. Slicing between a
+    // high (0xD800-0xDBFF) and low (0xDC00-0xDFFF) surrogate would corrupt
+    // the represented code point (emoji, non-BMP CJK, etc.).
+    if (
+      cut > 0 &&
+      cut < remaining.length &&
+      remaining.charCodeAt(cut - 1) >= 0xd800 &&
+      remaining.charCodeAt(cut - 1) <= 0xdbff &&
+      remaining.charCodeAt(cut) >= 0xdc00 &&
+      remaining.charCodeAt(cut) <= 0xdfff
+    ) {
+      cut -= 1;
+    }
+
     chunks.push(remaining.slice(0, cut));
     remaining = remaining.slice(cut);
   }
@@ -112,14 +135,18 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
  * Route process content according to the process's outputMode.
  *
  * - `'pty'` — emit a single `[internal:process]` notification carrying the
- *   full content (existing behavior).
- * - `'message'` — split content into <= MESSAGE_CHUNK_TARGET_BYTES chunks,
- *   write each chunk via `sendMessage`, and emit a brief PTY notification
- *   carrying the file path and byte count for each chunk.
- *
- * The function is async because message writes are async; callers may
- * await the returned promise or fire-and-track via `.catch` (the function
- * never rejects — it logs failures and returns).
+ *   full content (existing behavior). Notification write errors are logged
+ *   as warnings and swallowed because they are cosmetic (the calling code
+ *   has nowhere to report a failed PTY notification to).
+ * - `'message'` — split content into <= `MESSAGE_CHUNK_TARGET_BYTES`
+ *   chunks, write each chunk via `sendMessage`, and emit a brief PTY
+ *   notification carrying the file path and byte count for each chunk.
+ *   **Routing failures (resolver miss or any chunk's `sendMessage` error)
+ *   throw**, so callers awaiting the returned promise can detect that
+ *   message-mode delivery did not happen and report a `false` success
+ *   to their own caller. Brief PTY notification write errors after a
+ *   successful chunk write are still cosmetic — they are logged as warnings
+ *   and do not throw.
  */
 export async function routeProcessContent(
   deps: ProcessOutputRouterDeps,
@@ -158,31 +185,20 @@ export async function routeProcessContent(
   // outputMode === 'message'
   const resolver = deps.getResolver(process.sessionId);
   if (!resolver) {
-    logger.warn(
-      { processId: process.id, sessionId: process.sessionId, direction },
-      'Cannot resolve data path for message-mode process; skipping message routing',
+    throw new Error(
+      `Cannot resolve data path for message-mode process ${process.id} (session ${process.sessionId})`,
     );
-    return;
   }
 
   const chunks = splitContentIntoChunks(content, MESSAGE_CHUNK_TARGET_BYTES);
   for (const chunk of chunks) {
-    let result: { path: string };
-    try {
-      result = await deps.sendMessage({
-        toSessionId: process.sessionId,
-        toWorkerId: process.workerId,
-        fromSessionId: process.sessionId,
-        content: chunk,
-        resolver,
-      });
-    } catch (err) {
-      logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, err },
-        'Failed to write process content to message file',
-      );
-      continue;
-    }
+    const result = await deps.sendMessage({
+      toSessionId: process.sessionId,
+      toWorkerId: process.workerId,
+      fromSessionId: process.sessionId,
+      content: chunk,
+      resolver,
+    });
 
     const bytes = Buffer.byteLength(chunk, 'utf-8');
     const summary =

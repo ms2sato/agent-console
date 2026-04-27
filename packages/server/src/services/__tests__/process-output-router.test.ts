@@ -31,18 +31,23 @@ function makeDeps(
   sendMessage: ReturnType<typeof mock>;
   getResolver: ReturnType<typeof mock>;
 } {
-  const writeInput = mock(() => {});
+  const writeInput = mock((_sessionId: string, _workerId: string, _data: string) => {});
   const sendMessage = mock(async (params: { content: string }) => ({
     messageId: `msg-${Math.random().toString(16).slice(2, 10)}.json`,
     path: `/tmp/messages/${params.content.slice(0, 4)}.json`,
   }));
   const resolver = new SessionDataPathResolver('/tmp/test-base');
-  const getResolver = mock(() => resolver);
+  const getResolver = mock((_sessionId: string) => resolver as SessionDataPathResolver | null);
 
   const deps: ProcessOutputRouterDeps = {
-    getResolver: overrides.getResolver ?? (getResolver as unknown as ProcessOutputRouterDeps['getResolver']),
-    writeInput: overrides.writeInput ?? (writeInput as unknown as ProcessOutputRouterDeps['writeInput']),
-    sendMessage: overrides.sendMessage ?? (sendMessage as unknown as ProcessOutputRouterDeps['sendMessage']),
+    getResolver:
+      overrides.getResolver ?? ((sessionId) => getResolver(sessionId)),
+    writeInput:
+      overrides.writeInput ??
+      ((sessionId, workerId, data) => {
+        writeInput(sessionId, workerId, data);
+      }),
+    sendMessage: overrides.sendMessage ?? ((params) => sendMessage(params)),
   };
   return { deps, writeInput, sendMessage, getResolver };
 }
@@ -87,6 +92,51 @@ describe('splitContentIntoChunks', () => {
     const chunks = splitContentIntoChunks(content, 1000);
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.join('')).toBe(content);
+  });
+
+  it('throws RangeError when targetBytes is zero or negative', () => {
+    expect(() => splitContentIntoChunks('hello', 0)).toThrow(RangeError);
+    expect(() => splitContentIntoChunks('hello', -1)).toThrow(RangeError);
+  });
+
+  it('throws RangeError when targetBytes is not an integer', () => {
+    expect(() => splitContentIntoChunks('hello', 1.5)).toThrow(RangeError);
+    expect(() => splitContentIntoChunks('hello', NaN)).toThrow(RangeError);
+    expect(() => splitContentIntoChunks('hello', Number.POSITIVE_INFINITY)).toThrow(
+      RangeError,
+    );
+  });
+
+  it('does not split a UTF-16 surrogate pair across chunks (emoji boundary)', () => {
+    // Build content where a hard byte cut would land between the high and
+    // low surrogate of an emoji. Each emoji 😀 is 4 bytes UTF-8 / 2 chars
+    // UTF-16. Target 5 bytes forces a cut after the first emoji's first byte
+    // would be illegal — the splitter must move the cut to a code-point
+    // boundary instead.
+    const content = '😀😀😀'; // 12 bytes UTF-8, 6 chars UTF-16
+    const chunks = splitContentIntoChunks(content, 5);
+    // Reassembly is lossless and each chunk is decodable as valid UTF-8.
+    expect(chunks.join('')).toBe(content);
+    for (const chunk of chunks) {
+      // A surrogate pair never spans the chunk boundary if every emoji
+      // appears whole in the chunk that contains its code point. Verify
+      // that decoding chunk to UTF-8 round-trips back to the same string.
+      expect(Buffer.from(chunk, 'utf-8').toString('utf-8')).toBe(chunk);
+      // No lone high surrogate at the end of any chunk.
+      const lastChar = chunk.charCodeAt(chunk.length - 1);
+      expect(lastChar >= 0xd800 && lastChar <= 0xdbff).toBe(false);
+    }
+  });
+
+  it('preserves emoji integrity in mixed text crossing chunk boundaries', () => {
+    // Mixed ASCII + emoji content larger than the target byte budget.
+    const text = 'aaaaa😀bbbbb😀ccccc😀ddddd😀eeeee';
+    const chunks = splitContentIntoChunks(text, 8);
+    expect(chunks.join('')).toBe(text);
+    // Every emoji should appear exactly 4 times across the chunks
+    // (no halves dropped or duplicated).
+    expect(text.match(/😀/g)?.length).toBe(4);
+    expect(chunks.join('').match(/😀/g)?.length).toBe(4);
   });
 });
 
@@ -195,53 +245,42 @@ describe('routeProcessContent (message mode)', () => {
     expect(writeInput.mock.calls.length).toBeGreaterThanOrEqual(sendMessage.mock.calls.length);
   });
 
-  it('skips routing when getResolver returns null and emits no PTY notification', async () => {
-    const { deps, sendMessage, writeInput, getResolver } = makeDeps({
+  it('rejects when getResolver returns null so callers can detect the failure', async () => {
+    const { deps, sendMessage, writeInput } = makeDeps({
       getResolver: () => null,
     });
-    void getResolver;
     const process = makeProcess({ outputMode: 'message' });
 
-    await routeProcessContent(deps, {
-      process,
-      content: 'unreachable',
-      direction: 'stdout',
-    });
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'unreachable',
+        direction: 'stdout',
+      }),
+    ).rejects.toThrow(/Cannot resolve data path/);
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(writeInput).not.toHaveBeenCalled();
   });
 
-  it('continues with subsequent chunks when sendMessage fails for one chunk', async () => {
-    let callCount = 0;
-    const failingSend = mock(async (_params: { content: string }) => {
-      callCount += 1;
-      if (callCount === 1) {
-        throw new Error('disk full');
-      }
-      return {
-        messageId: 'msg.json',
-        path: `/tmp/messages/ok-${callCount}.json`,
-      };
+  it('rejects when sendMessage fails so callers can report write failure', async () => {
+    const failingSend = mock(async (_params: unknown): Promise<{ messageId: string; path: string }> => {
+      throw new Error('disk full');
     });
     const { deps, writeInput } = makeDeps({
-      sendMessage: failingSend as unknown as ProcessOutputRouterDeps['sendMessage'],
+      sendMessage: (params) => failingSend(params),
     });
     const process = makeProcess({ outputMode: 'message' });
 
-    const blockBytes = MESSAGE_CHUNK_TARGET_BYTES + 256;
-    const content = 'x'.repeat(blockBytes) + '\n' + 'y'.repeat(blockBytes);
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'a single chunk',
+        direction: 'response',
+      }),
+    ).rejects.toThrow(/disk full/);
 
-    await routeProcessContent(deps, { process, content, direction: 'stdout' });
-
-    // Multiple chunks were attempted (>= 2) — failure on the first did not
-    // abort the loop.
-    expect(failingSend.mock.calls.length).toBeGreaterThanOrEqual(2);
-    // PTY notification suppressed for the failed chunk; emitted for each
-    // successful chunk (>= 1).
-    expect(writeInput.mock.calls.length).toBeGreaterThanOrEqual(1);
-    // The number of PTY notifications equals successful sendMessage calls
-    // (total - failed = total - 1).
-    expect(writeInput.mock.calls.length).toBe(failingSend.mock.calls.length - 1);
+    // PTY notification was not emitted for the failed chunk.
+    expect(writeInput).not.toHaveBeenCalled();
   });
 });

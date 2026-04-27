@@ -337,9 +337,11 @@ export async function createAppContext(
 
   const interactiveProcessManager = new InteractiveProcessManagerClass(
     (process, output) => {
-      // onOutput is a synchronous callback; route asynchronously and log
-      // failures via the router itself (it never rejects). The .catch is a
-      // safety net in case the router is changed later.
+      // onOutput is fired from a synchronous debounce flush; the manager has
+      // no caller awaiting its result, so failures are logged structurally
+      // and discarded rather than propagated. (`writeResponse` is the
+      // direction where caller-visible failure matters — see onResponse
+      // below.)
       void routeProcessContent(processRouterDeps, {
         process,
         content: output,
@@ -347,7 +349,7 @@ export async function createAppContext(
       }).catch((err) => {
         logger.warn(
           { processId: process.id, sessionId: process.sessionId, err },
-          'Unexpected error from process output router (stdout)',
+          'Process output routing failed (stdout)',
         );
       });
     },
@@ -379,22 +381,19 @@ export async function createAppContext(
     // path as MessagePanel) when outputMode === 'pty'. The manager itself
     // skips the echo for outputMode === 'message'.
     sessionManager,
-    // onResponse: route the response via the same helper. In `pty` mode the
-    // brief notification is no-op (writeResponse already echoed content +
-    // the subsequent stdout flush carries the [internal:process] notif).
+    // onResponse: in `pty` mode there is nothing to do (writeResponse
+    // already echoed content; the subsequent stdout flush carries the
+    // [internal:process] notif). In `message` mode, return the router's
+    // promise so writeResponse awaits message-file delivery and can report
+    // failure via a `false` result instead of silently lying about success.
     (process, content) => {
       if (process.outputMode === 'pty') {
         return;
       }
-      void routeProcessContent(processRouterDeps, {
+      return routeProcessContent(processRouterDeps, {
         process,
         content,
         direction: 'response',
-      }).catch((err) => {
-        logger.warn(
-          { processId: process.id, sessionId: process.sessionId, err },
-          'Unexpected error from process output router (response)',
-        );
       });
     },
   );

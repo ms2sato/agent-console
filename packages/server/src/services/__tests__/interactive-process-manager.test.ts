@@ -616,7 +616,9 @@ describe('InteractiveProcessManager', () => {
       expect(onResponse).not.toHaveBeenCalled();
     });
 
-    it('should still return true when onResponse callback throws (stdin write succeeded)', async () => {
+    it('should return false when onResponse callback throws synchronously', async () => {
+      // Synchronously-thrown callback failures surface as a `false` result
+      // so the MCP caller cannot mistake a routing failure for success.
       const throwingOnResponse = mock(() => {
         throw new Error('onResponse callback error');
       });
@@ -634,20 +636,101 @@ describe('InteractiveProcessManager', () => {
       });
 
       const deadline = Date.now() + 5000;
+      let attempted = false;
+      let result = true;
+      while (Date.now() < deadline) {
+        const info = isolatedManager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await isolatedManager.writeResponse(process.id, 'hello');
+          attempted = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(attempted).toBe(true);
+      expect(result).toBe(false);
+      expect(throwingOnResponse).toHaveBeenCalled();
+
+      isolatedManager.disposeAll();
+    });
+
+    it('should return false when onResponse callback rejects asynchronously', async () => {
+      // Async routing failures (e.g., disk write, resolver miss) must
+      // propagate to the caller as a `false` result.
+      const rejectingOnResponse = mock(async () => {
+        throw new Error('async routing failure');
+      });
+      const isolatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        rejectingOnResponse,
+      );
+
+      const process = await isolatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+        outputMode: 'message',
+      });
+
+      const deadline = Date.now() + 5000;
+      let attempted = false;
+      let result = true;
+      while (Date.now() < deadline) {
+        const info = isolatedManager.getProcess(process.id);
+        if (info?.status === 'running') {
+          result = await isolatedManager.writeResponse(process.id, 'hello');
+          attempted = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(attempted).toBe(true);
+      expect(result).toBe(false);
+      expect(rejectingOnResponse).toHaveBeenCalled();
+
+      isolatedManager.disposeAll();
+    });
+
+    it('should await async onResponse before returning success', async () => {
+      // Verifies the contract: writeResponse only resolves true after the
+      // onResponse callback (which may write a message file) completes.
+      const order: string[] = [];
+      const slowOnResponse = mock(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        order.push('onResponse-completed');
+      });
+      const isolatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        slowOnResponse,
+      );
+
+      const process = await isolatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat > /dev/null',
+        outputMode: 'message',
+      });
+
+      const deadline = Date.now() + 5000;
       let result = false;
       while (Date.now() < deadline) {
         const info = isolatedManager.getProcess(process.id);
         if (info?.status === 'running') {
           result = await isolatedManager.writeResponse(process.id, 'hello');
+          if (result) order.push('writeResponse-resolved');
           if (result) break;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
-      // The stdin write succeeded; the callback's exception must not flip
-      // the writeResponse result.
       expect(result).toBe(true);
-      expect(throwingOnResponse).toHaveBeenCalled();
+      expect(order).toEqual(['onResponse-completed', 'writeResponse-resolved']);
 
       isolatedManager.disposeAll();
     });

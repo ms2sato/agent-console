@@ -26,9 +26,13 @@ export interface ProcessExitCallback {
  * Invoked after `writeResponse` successfully forwards content to the
  * subprocess stdin. Consumers route the content based on
  * `process.outputMode` (e.g., echo to PTY, or write a message file).
+ *
+ * May return a Promise — `writeResponse` awaits it before reporting
+ * success so failures in `"message"` mode routing surface to the caller
+ * instead of being silently swallowed.
  */
 export interface ProcessResponseCallback {
-  (process: InteractiveProcessInfo, content: string): void;
+  (process: InteractiveProcessInfo, content: string): void | Promise<void>;
 }
 
 /** Service that can inject content into a worker's PTY as submitted input. */
@@ -207,13 +211,15 @@ export class InteractiveProcessManager {
 
     // Notify the consumer that a response was forwarded. Routing per
     // outputMode (PTY echo vs message file) is the consumer's concern.
-    // Isolated from the stdin try/catch so a failing callback does not flip
-    // the writeResponse result reported to the caller.
+    // The callback is awaited so message-mode routing failures (e.g., disk
+    // write error, resolver miss) surface as a `false` return to the
+    // caller instead of being silently swallowed.
     if (this.onResponse) {
       try {
-        this.onResponse({ ...stored.info }, content);
+        await this.onResponse({ ...stored.info }, content);
       } catch (err) {
-        logger.warn({ processId, err }, 'onResponse callback threw');
+        logger.warn({ processId, err }, 'onResponse callback failed');
+        return false;
       }
     }
 
