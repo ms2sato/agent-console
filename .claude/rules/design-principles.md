@@ -19,3 +19,5 @@ These principles apply to all code changes in this project.
 **Ask when uncertain.** When uncertain about a design decision, ask the user for confirmation.
 
 **Validate task assumptions before implementing.** Understand WHY the task is needed. If a task assumes existing behavior that seems questionable, verify whether that assumption is correct before implementing.
+
+**Specify boundary values in design briefs.** When writing acceptance criteria for a contract (predicate, validator, classifier, aggregator), explicitly state the expected behavior at boundary values: empty input (`length === 0`), single element, all-success, all-failure, mixed terminal / non-terminal. Vacuous truth (`[].every() => true`, `[].some() => false`) is a recurring agent blind-spot — initial test sets typically cover the "happy path with 2-3 elements" and miss the empty case, then CodeRabbit catches it after a round trip. Pre-specifying boundary expectations in the AC closes the gap before delegation. (Lesson: Sprint 2026-04-27 PR #703 race condition + PR #704 empty rollup, both flagged by CodeRabbit not by the agent's initial test set.)
