@@ -145,8 +145,21 @@ export class BranchWatcherService {
       pendingRecheck: false,
     };
 
+    // Watch the parent directory rather than the HEAD file directly.
+    // Git updates HEAD via atomic rename (HEAD.lock -> HEAD), which detaches
+    // the original inode. fs.watch on a file is bound to the inode, so it
+    // would miss updates after the first rename. Directory watchers persist
+    // across file replacements. (Issue #708)
+    const headDir = path.dirname(headFilePath);
+    const headBasename = path.basename(headFilePath);
+
     try {
-      const fsWatcher = this.watchFn(headFilePath, (_eventType) => {
+      const fsWatcher = this.watchFn(headDir, (_eventType, filename) => {
+        // Filter: only react to events for the HEAD file itself.
+        // Directory watcher also fires for HEAD.lock, index, ORIG_HEAD, etc.
+        // Some platforms pass null filename — ignore those (cannot disambiguate).
+        if (filename !== headBasename) return;
+
         // Debounce: git may write HEAD multiple times during a single operation
         if (entry.debounceTimer) {
           clearTimeout(entry.debounceTimer);
@@ -158,15 +171,15 @@ export class BranchWatcherService {
       });
 
       fsWatcher.on('error', (error) => {
-        logger.error({ sessionId, headFilePath, err: error }, 'HEAD file watcher error');
+        logger.error({ sessionId, headDir, err: error }, 'HEAD file watcher error');
       });
 
       entry.watcher = fsWatcher;
       this.watchers.set(sessionId, entry);
 
-      logger.info({ sessionId, headFilePath, currentBranch: actualBranch }, 'Started watching HEAD file');
+      logger.info({ sessionId, headFilePath, headDir, currentBranch: actualBranch }, 'Started watching HEAD file');
     } catch (error) {
-      logger.error({ sessionId, headFilePath, err: error }, 'Failed to start HEAD file watcher');
+      logger.error({ sessionId, headDir, err: error }, 'Failed to start HEAD file watcher');
     }
   }
 

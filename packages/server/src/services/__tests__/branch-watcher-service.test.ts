@@ -152,9 +152,11 @@ describe('BranchWatcherService', () => {
       const service = new BranchWatcherService(onBranchChanged, mockWatch);
       await service.startWatching('session-1', tmpDir, 'main');
 
-      // Simulate file change: write new content then trigger watcher
+      // Simulate file change: write new content then trigger watcher.
+      // The watcher is registered on the parent directory (gitDir), and the
+      // filename argument identifies the changed file within that directory.
       await Bun.write(headPath, 'ref: refs/heads/feature-branch\n');
-      const callback = mockWatchCallbacks.get(headPath);
+      const callback = mockWatchCallbacks.get(gitDir);
       callback?.('change', 'HEAD');
 
       // Wait for debounce
@@ -182,7 +184,7 @@ describe('BranchWatcherService', () => {
       await service.startWatching('session-1', tmpDir, 'main');
 
       // Trigger watcher without changing content
-      const callback = mockWatchCallbacks.get(headPath);
+      const callback = mockWatchCallbacks.get(gitDir);
       callback?.('change', 'HEAD');
 
       await new Promise(resolve => setTimeout(resolve, 300));
@@ -210,7 +212,7 @@ describe('BranchWatcherService', () => {
 
       // Simulate detached HEAD
       await Bun.write(headPath, '4b825dc642cb6eb9a060e54bf899d69f82563773\n');
-      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      mockWatchCallbacks.get(gitDir)?.('change', 'HEAD');
 
       await new Promise(resolve => setTimeout(resolve, 300));
 
@@ -235,7 +237,7 @@ describe('BranchWatcherService', () => {
       const service = new BranchWatcherService(onBranchChanged, mockWatch);
       await service.startWatching('session-1', tmpDir, 'main');
 
-      const callback = mockWatchCallbacks.get(headPath)!;
+      const callback = mockWatchCallbacks.get(gitDir)!;
 
       // Rapid triggers — only the last write should be read
       await Bun.write(headPath, 'ref: refs/heads/branch-a\n');
@@ -382,20 +384,107 @@ describe('BranchWatcherService', () => {
 
       // First change: succeeds
       await Bun.write(headPath, 'ref: refs/heads/branch-a\n');
-      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      mockWatchCallbacks.get(gitDir)?.('change', 'HEAD');
       await new Promise(resolve => setTimeout(resolve, 300));
       expect(onBranchChanged).toHaveBeenCalledWith('session-1', 'branch-a');
 
       // Second change: fails — currentBranch should NOT advance
       await Bun.write(headPath, 'ref: refs/heads/branch-b\n');
-      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      mockWatchCallbacks.get(gitDir)?.('change', 'HEAD');
       await new Promise(resolve => setTimeout(resolve, 300));
 
       // Third change: should still detect from branch-a (not branch-b)
       await Bun.write(headPath, 'ref: refs/heads/branch-c\n');
-      mockWatchCallbacks.get(headPath)?.('change', 'HEAD');
+      mockWatchCallbacks.get(gitDir)?.('change', 'HEAD');
       await new Promise(resolve => setTimeout(resolve, 300));
       expect(onBranchChanged).toHaveBeenCalledWith('session-1', 'branch-c');
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
+
+  it('should ignore directory events for HEAD.lock', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      const headPath = path.join(gitDir, 'HEAD');
+      await Bun.write(headPath, 'ref: refs/heads/main\n');
+
+      const onBranchChanged = mock(async () => {});
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+      await service.startWatching('session-1', tmpDir, 'main');
+
+      // Even if we change HEAD's content, a HEAD.lock-only event must not
+      // trigger the callback. (Git writes HEAD.lock first, then renames it
+      // to HEAD; the rename event will be filename === 'HEAD'.)
+      await Bun.write(headPath, 'ref: refs/heads/feature-branch\n');
+      mockWatchCallbacks.get(gitDir)?.('rename', 'HEAD.lock');
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(onBranchChanged).not.toHaveBeenCalled();
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
+
+  it('should ignore directory events for unrelated files (e.g., index)', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      const headPath = path.join(gitDir, 'HEAD');
+      await Bun.write(headPath, 'ref: refs/heads/main\n');
+
+      const onBranchChanged = mock(async () => {});
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+      await service.startWatching('session-1', tmpDir, 'main');
+
+      // Stage changes / git commands write to other files in .git/.
+      // Those events must not trigger the branch callback.
+      await Bun.write(headPath, 'ref: refs/heads/feature-branch\n');
+      mockWatchCallbacks.get(gitDir)?.('change', 'index');
+      mockWatchCallbacks.get(gitDir)?.('change', 'ORIG_HEAD');
+      mockWatchCallbacks.get(gitDir)?.('change', 'config');
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(onBranchChanged).not.toHaveBeenCalled();
+
+      service.stopAll();
+    } finally {
+      await removeTempDir(tmpDir);
+    }
+  });
+
+  it('should ignore directory events with null filename', async () => {
+    const tmpDir = await createTempDir('branch-watcher-svc-');
+    try {
+      const gitDir = path.join(tmpDir, '.git');
+      await createDir(gitDir);
+      const headPath = path.join(gitDir, 'HEAD');
+      await Bun.write(headPath, 'ref: refs/heads/main\n');
+
+      const onBranchChanged = mock(async () => {});
+      const mockWatch = createMockWatch();
+      const service = new BranchWatcherService(onBranchChanged, mockWatch);
+      await service.startWatching('session-1', tmpDir, 'main');
+
+      // Some platforms / encodings can pass null as filename. Without a
+      // filename we cannot disambiguate, so we must safely ignore.
+      await Bun.write(headPath, 'ref: refs/heads/feature-branch\n');
+      mockWatchCallbacks.get(gitDir)?.('change', null);
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(onBranchChanged).not.toHaveBeenCalled();
 
       service.stopAll();
     } finally {
