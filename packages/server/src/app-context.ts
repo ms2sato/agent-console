@@ -63,6 +63,7 @@ import { AnnotationService as AnnotationServiceClass } from './services/annotati
 import { InterSessionMessageService as InterSessionMessageServiceClass } from './services/inter-session-message-service.js';
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
+import { DelegationTemplateService } from './services/delegation-template-service.js';
 import { BranchWatcherService } from './services/branch-watcher-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
@@ -205,6 +206,7 @@ export async function createAppContext(
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
   const memoService = new MemoService();
+  const delegationTemplateService = new DelegationTemplateService();
 
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -241,6 +243,7 @@ export async function createAppContext(
     workerOutputFileManager,
     interSessionMessageService,
     memoService,
+    delegationTemplateService,
     repositoryLookup: {
       getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
     },
@@ -489,6 +492,7 @@ export async function createTestContext(
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
   const memoService = new MemoService();
+  const delegationTemplateService = new DelegationTemplateService();
 
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
@@ -527,6 +531,7 @@ export async function createTestContext(
     workerOutputFileManager,
     interSessionMessageService,
     memoService,
+    delegationTemplateService,
     repositoryLookup: {
       getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
     },

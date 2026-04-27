@@ -45,6 +45,7 @@
   4. Update the Issue if criteria need to be added or corrected
   5. You must be able to explain each criterion in your own words before delegating
 - **Generate delegation messages**: Run `node .claude/skills/orchestrator/delegation-prompt.js <Issue number>` to generate a delegation prompt template. The Issue is the source of truth — the prompt references the Issue URL and provides a placeholder for supplementary notes only. Customize the "Key Implementation Notes" section with constraints or context not already in the Issue before sending.
+- **Reusable delegation templates**: Hand-written delegation boilerplate (retrospective callback, Definition of Done reminders, test placement, CI rollup verification) can be registered once per Orchestrator session via `register_delegation_template({ sessionId, name, content })` and applied per-call via `delegate_to_worktree({ ..., useTemplates: ["retrospective-callback", "test-placement"] })`. Templates are appended to the prompt in the order listed before callback instructions. Use `list_delegation_templates({ sessionId })` to inspect, `delete_delegation_template({ sessionId, name })` to remove. Templates are scoped to the registering session and cleaned up when that session is deleted.
 - **Available specialist agents for delegation**:
   - `frontend-specialist` — for changes in `packages/client`
   - `backend-specialist` — for changes in `packages/server`

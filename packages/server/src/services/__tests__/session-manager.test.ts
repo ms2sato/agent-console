@@ -3848,4 +3848,80 @@ describe('SessionManager', () => {
       expect(secondCallback).toHaveBeenCalledWith(session.id);
     });
   });
+
+  describe('delegation templates', () => {
+    it('should register, list, lookup, and delete a template via SessionManager wrappers', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // register
+      const register = await manager.registerDelegationTemplate(session.id, 'callback', 'BODY');
+      expect(register.name).toBe('callback');
+      expect(register.filePath).toContain('delegation-templates');
+
+      // list
+      const list = await manager.listDelegationTemplates(session.id);
+      expect(list).toEqual([{ name: 'callback', content: 'BODY' }]);
+
+      // lookup found + missing
+      const lookup = await manager.lookupDelegationTemplates(session.id, ['callback', 'nope']);
+      expect(lookup.found).toEqual([{ name: 'callback', content: 'BODY' }]);
+      expect(lookup.missing).toEqual(['nope']);
+
+      // delete
+      const del = await manager.deleteDelegationTemplate(session.id, 'callback');
+      expect(del).toEqual({ success: true, deleted: true });
+      const listAfter = await manager.listDelegationTemplates(session.id);
+      expect(listAfter).toEqual([]);
+    });
+
+    it('should throw when the session does not exist', async () => {
+      const manager = await getSessionManager();
+      await expect(
+        manager.registerDelegationTemplate('non-existent', 'callback', 'BODY'),
+      ).rejects.toThrow(/Session not found/);
+      await expect(manager.listDelegationTemplates('non-existent')).rejects.toThrow(/Session not found/);
+      await expect(
+        manager.deleteDelegationTemplate('non-existent', 'callback'),
+      ).rejects.toThrow(/Session not found/);
+      await expect(
+        manager.lookupDelegationTemplates('non-existent', ['callback']),
+      ).rejects.toThrow(/Session not found/);
+    });
+
+    it('should treat empty lookup names as a no-op (no registry read needed)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = await manager.lookupDelegationTemplates(session.id, []);
+      expect(result).toEqual({ found: [], missing: [] });
+    });
+
+    it('should clean up template registry when the session is deleted', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const register = await manager.registerDelegationTemplate(session.id, 'callback', 'BODY');
+      // Sanity: the file exists
+      expect(fs.existsSync(register.filePath)).toBe(true);
+
+      await manager.deleteSession(session.id);
+
+      // The registry file is removed during session deletion
+      expect(fs.existsSync(register.filePath)).toBe(false);
+    });
+  });
 });

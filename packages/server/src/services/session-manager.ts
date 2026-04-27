@@ -46,6 +46,7 @@ import { MessageService } from './message-service.js';
 import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
 import { MemoService } from './memo-service.js';
+import { DelegationTemplateService, type DelegationTemplate, type DelegationTemplateLookupResult } from './delegation-template-service.js';
 import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
@@ -111,6 +112,8 @@ interface SessionManagerOptions {
   interSessionMessageService?: InterSessionMessageService;
   /** Memo file management. Defaults to a fresh instance if not provided. */
   memoService?: MemoService;
+  /** Delegation template registry. Defaults to a fresh instance if not provided. */
+  delegationTemplateService?: DelegationTemplateService;
   /** PTY message injection service. Defaults to a new instance wired to this manager. */
   ptyMessageInjectionService?: PtyMessageInjectionService;
   /**
@@ -142,6 +145,7 @@ export class SessionManager {
   private workerOutputFileManager: WorkerOutputFileManager;
   private interSessionMessageService: InterSessionMessageService;
   private memoService: MemoService;
+  private delegationTemplateService: DelegationTemplateService;
   private ptyMessageInjectionService: PtyMessageInjectionService;
   private sessionMetadataService: SessionMetadataService;
   private sessionInitializationService: SessionInitializationService;
@@ -182,6 +186,7 @@ export class SessionManager {
     this.workerOutputFileManager = workerOutputFileManager;
     this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
     this.memoService = options.memoService ?? new MemoService();
+    this.delegationTemplateService = options.delegationTemplateService ?? new DelegationTemplateService();
     this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
@@ -270,6 +275,7 @@ export class SessionManager {
       messageService: this.messageService,
       interSessionMessageService: this.interSessionMessageService,
       memoService: this.memoService,
+      delegationTemplateService: this.delegationTemplateService,
       getPathResolverForSession: (session) => this.getPathResolverForSession(session),
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
       getSessionScope: (session) => this.getSessionScopeForCleanup(session),
@@ -833,6 +839,75 @@ export class SessionManager {
     }
     const resolver = this.getPathResolverForSession(session);
     return this.memoService.readMemo(sessionId, resolver);
+  }
+
+  /**
+   * Register (or overwrite) a delegation template for a session.
+   * Returns the file path of the persisted registry and the template name.
+   */
+  async registerDelegationTemplate(
+    sessionId: string,
+    name: string,
+    content: string,
+  ): Promise<{ filePath: string; name: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    const filePath = await this.delegationTemplateService.registerTemplate(
+      sessionId,
+      name,
+      content,
+      resolver,
+    );
+    return { filePath, name };
+  }
+
+  /**
+   * List all delegation templates registered for a session.
+   */
+  async listDelegationTemplates(sessionId: string): Promise<DelegationTemplate[]> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    return this.delegationTemplateService.listTemplates(sessionId, resolver);
+  }
+
+  /**
+   * Delete a delegation template by name. Idempotent: `deleted=false` if the
+   * name was not present.
+   */
+  async deleteDelegationTemplate(
+    sessionId: string,
+    name: string,
+  ): Promise<{ success: boolean; deleted: boolean }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    const result = await this.delegationTemplateService.deleteTemplate(sessionId, name, resolver);
+    return { success: true, deleted: result.deleted };
+  }
+
+  /**
+   * Look up a list of template names registered to a session. Used by
+   * `delegate_to_worktree` to resolve `useTemplates`. Preserves the input order
+   * in `found`. Empty `names` returns `{ found: [], missing: [] }`.
+   */
+  async lookupDelegationTemplates(
+    sessionId: string,
+    names: string[],
+  ): Promise<DelegationTemplateLookupResult> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    return this.delegationTemplateService.lookupTemplates(sessionId, names, resolver);
   }
 
   /**

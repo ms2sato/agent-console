@@ -6,6 +6,7 @@ import type { NotificationManager } from './notifications/notification-manager.j
 import type { MessageService } from './message-service.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { MemoService } from './memo-service.js';
+import type { DelegationTemplateService } from './delegation-template-service.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import type { JobQueue } from '../jobs/index.js';
@@ -25,6 +26,7 @@ export interface SessionDeletionDeps {
   messageService: MessageService;
   interSessionMessageService: InterSessionMessageService;
   memoService: MemoService;
+  delegationTemplateService: DelegationTemplateService;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
   getPathResolverForPersistedSession: (persisted: PersistedSession) => SessionDataPathResolver;
   /** Return the (scope, slug) pair for an in-memory session, or null if orphaned. */
@@ -164,6 +166,17 @@ export class SessionDeletionService {
         logger.warn({ sessionId: id }, 'No resolver; skipping memo cleanup');
       }
 
+      // 2e. Clean up delegation templates registry
+      if (resolver) {
+        try {
+          await this.deps.delegationTemplateService.deleteAllForSession(id, resolver);
+        } catch (err) {
+          logger.warn({ sessionId: id, err }, 'Failed to clean delegation templates file');
+        }
+      } else {
+        logger.warn({ sessionId: id }, 'No resolver; skipping delegation templates cleanup');
+      }
+
       // 3. Remove from in-memory map
       this.deps.deleteSessionFromMemory(id);
 
@@ -237,6 +250,16 @@ export class SessionDeletionService {
         }
       } else {
         logger.warn({ sessionId: id, method: 'forceDeleteSession' }, 'No resolver; skipping memo cleanup');
+      }
+      // Clean up delegation templates registry
+      if (resolver) {
+        try {
+          await this.deps.delegationTemplateService.deleteAllForSession(id, resolver);
+        } catch (err) {
+          logger.warn({ sessionId: id, err }, 'Failed to clean delegation templates file');
+        }
+      } else {
+        logger.warn({ sessionId: id, method: 'forceDeleteSession' }, 'No resolver; skipping delegation templates cleanup');
       }
       // Broadcast deletion to connected clients
       this.deps.getSessionLifecycleCallbacks()?.onSessionDeleted?.(id);
