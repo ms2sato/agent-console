@@ -34,6 +34,7 @@ export interface SessionDeletionDeps {
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
   getWebSocketCallbacks: () => { notifySessionDeleted: (sessionId: string) => void } | null;
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
+  getConditionalWakeupCleanupCallback: () => ((sessionId: string) => void) | undefined;
   getProcessCleanupCallback: () => ((sessionId: string) => void) | undefined;
   stopWatching: (locationPath: string) => void;
   stopBranchWatching: (sessionId: string) => void;
@@ -131,6 +132,9 @@ export class SessionDeletionService {
 
       // 2a. Clean up periodic timers associated with this session
       this.deps.getTimerCleanupCallback()?.(id);
+
+      // 2a1. Clean up conditional wakeups associated with this session
+      this.deps.getConditionalWakeupCleanupCallback()?.(id);
 
       // 2a2. Clean up interactive processes associated with this session
       this.deps.getProcessCleanupCallback()?.(id);

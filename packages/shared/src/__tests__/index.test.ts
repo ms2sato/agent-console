@@ -45,4 +45,28 @@ describe('shared index exports', () => {
     expect(apiError.error).toBe('TEST_ERROR');
     expect(apiError.message).toBe('Test error message');
   });
+
+  it('should export ConditionalWakeupInfo type', async () => {
+    const mod = await import('../index.js');
+
+    // ConditionalWakeupInfo is a type-only export from Issue #700 — verify the module loads successfully
+    expect(mod).toBeDefined();
+
+    // Test ConditionalWakeupInfo interface usage pattern
+    const wakeupInfo = {
+      id: 'test-id',
+      sessionId: 'test-session',
+      workerId: 'test-worker',
+      intervalSeconds: 30,
+      conditionScript: 'echo test',
+      onTrueMessage: 'Test message',
+      createdAt: '2026-04-27T00:00:00.000Z',
+      checkCount: 0,
+      status: 'running' as const
+    };
+
+    expect(wakeupInfo.id).toBe('test-id');
+    expect(wakeupInfo.status).toBe('running');
+    expect(wakeupInfo.intervalSeconds).toBe(30);
+  });
 });

@@ -3785,4 +3785,67 @@ describe('SessionManager', () => {
       );
     });
   });
+
+  describe('setConditionalWakeupCleanupCallback', () => {
+    it('should set and invoke conditional wakeup cleanup callback', async () => {
+      const manager = await getSessionManager();
+
+      // Mock cleanup callback
+      const cleanupCallback = mock(() => {});
+      manager.setConditionalWakeupCleanupCallback(cleanupCallback);
+
+      // Create and delete a session to trigger cleanup
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      await manager.deleteSession(session.id);
+
+      // Verify callback was invoked with correct sessionId
+      expect(cleanupCallback).toHaveBeenCalledTimes(1);
+      expect(cleanupCallback).toHaveBeenCalledWith(session.id);
+    });
+
+    it('should handle missing conditional wakeup cleanup callback gracefully', async () => {
+      const manager = await getSessionManager();
+
+      // Do not set a cleanup callback
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Should not throw when no callback is set
+      await expect(manager.deleteSession(session.id)).resolves.toBe(true);
+    });
+
+    it('should replace previously set conditional wakeup cleanup callback', async () => {
+      const manager = await getSessionManager();
+
+      const firstCallback = mock(() => {});
+      const secondCallback = mock(() => {});
+
+      // Set first callback
+      manager.setConditionalWakeupCleanupCallback(firstCallback);
+
+      // Replace with second callback
+      manager.setConditionalWakeupCleanupCallback(secondCallback);
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      await manager.deleteSession(session.id);
+
+      // Only second callback should be invoked
+      expect(firstCallback).not.toHaveBeenCalled();
+      expect(secondCallback).toHaveBeenCalledTimes(1);
+      expect(secondCallback).toHaveBeenCalledWith(session.id);
+    });
+  });
 });
