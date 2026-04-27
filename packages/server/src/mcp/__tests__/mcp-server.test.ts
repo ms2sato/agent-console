@@ -2804,6 +2804,72 @@ describe('MCP Server Tools', () => {
         expect(response.result?.isError).toBe(true);
         expect(data.error).toContain('Worker non-existent-worker not found');
       });
+
+      it('should default outputMode to "pty" when omitted', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        const data = parseToolResult(response) as { outputMode: string };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.outputMode).toBe('pty');
+      });
+
+      it('should accept and propagate outputMode "pty"', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+          outputMode: 'pty',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { outputMode: string };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.outputMode).toBe('pty');
+      });
+
+      it('should accept and propagate outputMode "message"', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+          outputMode: 'message',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { outputMode: string };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.outputMode).toBe('message');
+      });
+
+      it('should reject invalid outputMode values via zod enum validation', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+          outputMode: 'invalid-mode',
+        }, nextId++);
+
+        // MCP returns either a JSON-RPC error or an isError result with a
+        // schema violation message. Either path signals failure.
+        if (response.error) {
+          expect(response.error).toBeDefined();
+        } else {
+          expect(response.result?.isError).toBe(true);
+        }
+      });
     });
 
     describe('list_processes', () => {

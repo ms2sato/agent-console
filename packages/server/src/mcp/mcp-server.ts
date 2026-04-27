@@ -1065,8 +1065,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
   mcpServer.tool(
     'run_process',
     'Start an interactive script connected to a session. ' +
-      'The script drives workflow via STDOUT (sent as [internal:process] PTY notifications), ' +
-      'and blocks on STDIN waiting for responses via write_process_response. ' +
+      'The script drives workflow via STDOUT and blocks on STDIN waiting for responses via write_process_response. ' +
+      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s PTY conversation. ' +
       'Processes are volatile and will not survive server restarts.',
     {
       command: z
@@ -1087,8 +1087,19 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .describe(
           'Working directory for the command. Defaults to server CWD if omitted.',
         ),
+      outputMode: z
+        .enum(['pty', 'message'])
+        .optional()
+        .describe(
+          'Routing mode for script I/O. ' +
+            '"pty" (default): script stdout is delivered as [internal:process] PTY notifications with full content. ' +
+            '"message": script stdout and write_process_response content are routed via inter-session message files ' +
+            '(toSessionId/toWorkerId match this run_process call); the PTY receives only a brief notification with ' +
+            'the message file path and byte count. ' +
+            'Use "message" for long-paragraph interactive scripts (e.g., acceptance-check.js, sprint-retro.js) to keep the conversation clean.',
+        ),
     },
-    async ({ command, sessionId, workerId, cwd }) => {
+    async ({ command, sessionId, workerId, cwd, outputMode }) => {
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
@@ -1109,6 +1120,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           workerId,
           command,
           cwd,
+          outputMode,
         });
 
         return textResult({
@@ -1116,6 +1128,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           sessionId: process.sessionId,
           workerId: process.workerId,
           command: process.command,
+          outputMode: process.outputMode,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

@@ -8,6 +8,22 @@
 
 export type InteractiveProcessStatus = 'running' | 'exited';
 
+/**
+ * Routing mode for interactive process I/O.
+ *
+ * - `'pty'` (default): script stdout is delivered as `[internal:process]` PTY
+ *   notifications containing the full output, and `write_process_response`
+ *   echoes the response content into the worker PTY.
+ * - `'message'`: script stdout and `write_process_response` content are
+ *   routed via inter-session message files to the calling agent
+ *   (toSessionId/toWorkerId match the run_process invocation). The PTY
+ *   receives only a brief notification with the message file path.
+ *
+ * Use `'message'` for long-paragraph interactive scripts to keep the
+ * calling agent's conversation clean.
+ */
+export type InteractiveProcessOutputMode = 'pty' | 'message';
+
 export interface InteractiveProcessInfo {
   id: string;
   sessionId: string;
@@ -16,4 +32,5 @@ export interface InteractiveProcessInfo {
   status: InteractiveProcessStatus;
   startedAt: string;
   exitCode?: number;
+  outputMode: InteractiveProcessOutputMode;
 }

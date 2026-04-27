@@ -56,6 +56,7 @@ import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
+import { routeProcessContent } from './services/process-output-router.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
@@ -321,31 +322,40 @@ export async function createAppContext(
     conditionalWakeupManager.deleteWakeupsBySession(sessionId);
   });
 
-  // 6.7. Create interactive process manager (in-memory, volatile)
+  // 6.7. Create interactive process manager (in-memory, volatile).
+  // Stdout and response routing both go through the shared
+  // `routeProcessContent` helper so `outputMode` ('pty' vs 'message') is
+  // handled uniformly.
+  const processRouterDeps = {
+    getResolver: (sessionId: string) =>
+      sessionManager.getPathResolverForSessionId(sessionId),
+    writeInput: (sessionId: string, workerId: string, data: string) => {
+      sessionManager.writeWorkerInput(sessionId, workerId, data);
+    },
+    sendMessage: interSessionMessageService.sendMessage.bind(interSessionMessageService),
+  };
+
   const interactiveProcessManager = new InteractiveProcessManagerClass(
     (process, output) => {
-      try {
-        const writeInput = (data: string) =>
-          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
-        writePtyNotification({
-          kind: 'internal-process',
-          tag: 'internal:process',
-          fields: {
-            processId: process.id,
-            command: process.command,
-            message: output,
-          },
-          intent: 'triage',
-          writeInput,
-        });
-      } catch (err) {
+      // onOutput is fired from a synchronous debounce flush; the manager has
+      // no caller awaiting its result, so failures are logged structurally
+      // and discarded rather than propagated. (`writeResponse` is the
+      // direction where caller-visible failure matters — see onResponse
+      // below.)
+      void routeProcessContent(processRouterDeps, {
+        process,
+        content: output,
+        direction: 'stdout',
+      }).catch((err) => {
         logger.warn(
           { processId: process.id, sessionId: process.sessionId, err },
-          'Failed to deliver process output notification',
+          'Process output routing failed (stdout)',
         );
-      }
+      });
     },
     (process) => {
+      // Exit notifications stay on the PTY in both modes — they are short
+      // and message routing is unnecessary.
       try {
         const writeInput = (data: string) =>
           sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
@@ -367,8 +377,25 @@ export async function createAppContext(
         );
       }
     },
-    // PTY message injector: echo process response to the worker's PTY (same path as MessagePanel)
+    // PTY message injector: echo process response to the worker's PTY (same
+    // path as MessagePanel) when outputMode === 'pty'. The manager itself
+    // skips the echo for outputMode === 'message'.
     sessionManager,
+    // onResponse: in `pty` mode there is nothing to do (writeResponse
+    // already echoed content; the subsequent stdout flush carries the
+    // [internal:process] notif). In `message` mode, return the router's
+    // promise so writeResponse awaits message-file delivery and can report
+    // failure via a `false` result instead of silently lying about success.
+    (process, content) => {
+      if (process.outputMode === 'pty') {
+        return;
+      }
+      return routeProcessContent(processRouterDeps, {
+        process,
+        content,
+        direction: 'response',
+      });
+    },
   );
 
   // 6.8. Wire process cleanup into session lifecycle
