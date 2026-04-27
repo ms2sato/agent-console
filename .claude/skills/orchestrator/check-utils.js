@@ -6,7 +6,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 // --- Utility functions ---
 
@@ -96,10 +96,68 @@ export function isTestFile(filePath) {
   return filePath.includes('.test.') || filePath.includes('.spec.') || filePath.includes('__tests__/');
 }
 
+/**
+ * Check whether a file's content consists only of re-export statements.
+ * Pure function — operates on the content string, no filesystem access.
+ *
+ * Re-export-only files (e.g., `packages/shared/src/index.ts` that only
+ * `export * from './foo'`) have no runtime logic to test. Their sibling
+ * test would be tautological (PR #694 added one only to silence the
+ * coverage rule). This helper detects that pattern so the rule can skip.
+ *
+ * Recognises:
+ *   export * from '...';
+ *   export * as Name from '...';
+ *   export { A, B } from '...';
+ *   export type { A } from '...';
+ *   export type * from '...';
+ *
+ * Block comments and line comments are stripped before matching. Empty
+ * files return false (not re-export-only — they need real coverage).
+ */
+export function isReExportOnlyContent(content) {
+  // Strip block comments (/* ... */, including JSDoc), then line comments (// ...).
+  const noBlockComments = content.replace(/\/\*[\s\S]*?\*\//g, '');
+  const noLineComments = noBlockComments.replace(/\/\/[^\n]*/g, '');
+
+  const trimmed = noLineComments.trim();
+  if (trimmed.length === 0) return false;
+
+  // Split into statements on `;`, normalising whitespace so multi-line exports collapse.
+  const statements = trimmed
+    .split(';')
+    .map(s => s.replace(/\s+/g, ' ').trim())
+    .filter(s => s.length > 0);
+
+  // Each statement must be `export [type] (* [as Name] | { ... }) from '...'`.
+  const reExportPattern = /^export\s+(type\s+)?(\*(\s+as\s+\w+)?|\{[^{}]*\})\s+from\s+['"][^'"]+['"]$/;
+
+  return statements.every(stmt => reExportPattern.test(stmt));
+}
+
+/**
+ * Filesystem wrapper around `isReExportOnlyContent`.
+ * Returns false on read errors so an unreadable file falls through to the
+ * normal coverage rule (safer default — surface the gap rather than hide it).
+ */
+export function isReExportOnlyFile(filePath) {
+  if (!existsSync(filePath)) return false;
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    return isReExportOnlyContent(content);
+  } catch {
+    return false;
+  }
+}
+
 export function requiresTestCoverage(filePath) {
   if (isTestFile(filePath)) return false;
   if (COVERAGE_EXCLUSIONS.some(pattern => pattern.test(filePath))) return false;
-  return COVERAGE_PATTERNS.some(pattern => pattern.test(filePath));
+  if (!COVERAGE_PATTERNS.some(pattern => pattern.test(filePath))) return false;
+  // Skip re-export-only files: their sibling test would be tautological
+  // (the type system already enforces re-export shape at consume sites).
+  if (isReExportOnlyFile(filePath)) return false;
+  return true;
 }
 
 export function findTestFiles(changedFiles) {
