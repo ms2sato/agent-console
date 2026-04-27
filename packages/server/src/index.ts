@@ -135,6 +135,7 @@ const mcpApp = createMcpApp({
   repositoryManager: appContext.repositoryManager,
   agentManager: appContext.agentManager,
   timerManager: appContext.timerManager,
+  conditionalWakeupManager: appContext.conditionalWakeupManager,
   interactiveProcessManager: appContext.interactiveProcessManager,
   worktreeService: appContext.worktreeService,
   annotationService: appContext.annotationService,

@@ -108,13 +108,26 @@ export interface InternalProcessPtyNotification extends BasePtyNotificationParam
   intent: PtyNotificationIntent;
 }
 
+export interface InternalConditionalWakeupPtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-conditional-wakeup';
+  tag: 'internal:conditional-wakeup';
+  fields: {
+    wakeupId: string;
+    status: string;
+    checkCount: string;
+    message: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
   | InternalTimerPtyNotification
   | InternalReviewCommentPtyNotification
   | InternalReviewedPtyNotification
-  | InternalProcessPtyNotification;
+  | InternalProcessPtyNotification
+  | InternalConditionalWakeupPtyNotification;
 
 /**
  * Build and send a structured notification to a PTY process.

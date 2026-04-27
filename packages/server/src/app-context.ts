@@ -19,6 +19,7 @@ import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
 import type { TimerManager } from './services/timer-manager.js';
+import type { ConditionalWakeupManager } from './services/conditional-wakeup-manager.js';
 import type { InteractiveProcessManager } from './services/interactive-process-manager.js';
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { WorktreeService } from './services/worktree-service.js';
@@ -53,6 +54,7 @@ import { bunPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
+import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
 import { writePtyNotification } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
@@ -111,6 +113,9 @@ export interface AppContext {
 
   /** Periodic timer management (persisted when repository is available) */
   timerManager: TimerManager;
+
+  /** Conditional wakeup management (in-memory, volatile) */
+  conditionalWakeupManager: ConditionalWakeupManager;
 
   /** Interactive process management (in-memory, volatile) */
   interactiveProcessManager: InteractiveProcessManager;
@@ -281,6 +286,42 @@ export async function createAppContext(
   // 6.6.1. Restore persisted timers
   await timerManager.restoreTimers();
 
+  // 6.6.2. Create conditional wakeup manager (in-memory, volatile)
+  const conditionalWakeupManager = new ConditionalWakeupManagerClass((wakeup) => {
+    try {
+      const writeInput = (data: string) =>
+        sessionManager.writeWorkerInput(wakeup.sessionId, wakeup.workerId, data);
+
+      const message = (wakeup as any).notificationMessage ||
+        (wakeup.status === 'completed_true' ? wakeup.onTrueMessage :
+         wakeup.onTimeoutMessage || `Conditional wakeup timed out after ${wakeup.timeoutSeconds}s`);
+
+      writePtyNotification({
+        kind: 'internal-conditional-wakeup',
+        tag: 'internal:conditional-wakeup',
+        fields: {
+          wakeupId: wakeup.id,
+          status: wakeup.status,
+          checkCount: String(wakeup.checkCount),
+          message,
+        },
+        intent: 'inform',
+        writeInput,
+      });
+    } catch (err) {
+      logger.warn(
+        { wakeupId: wakeup.id, sessionId: wakeup.sessionId, err },
+        'Failed to deliver conditional wakeup notification',
+      );
+    }
+  });
+
+  // 6.6.3. Wire conditional wakeup cleanup into session lifecycle
+  // TODO: Add setConditionalWakeupCleanupCallback to SessionManager
+  // sessionManager.setConditionalWakeupCleanupCallback((sessionId) => {
+  //   conditionalWakeupManager.deleteWakeupsBySession(sessionId);
+  // });
+
   // 6.7. Create interactive process manager (in-memory, volatile)
   const interactiveProcessManager = new InteractiveProcessManagerClass(
     (process, output) => {
@@ -388,6 +429,7 @@ export async function createAppContext(
     suggestSessionMetadata,
     userMode,
     timerManager,
+    conditionalWakeupManager,
     interactiveProcessManager,
     inboundIntegration,
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
@@ -517,6 +559,9 @@ export async function createTestContext(
     timerManager.deleteTimersBySession(sessionId);
   });
 
+  // Create conditional wakeup manager (no-op callback for tests)
+  const conditionalWakeupManager = new ConditionalWakeupManagerClass(() => {});
+
   // Create interactive process manager (no-op callbacks for tests, sessionManager for PTY message injection)
   const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {}, sessionManager);
 
@@ -559,6 +604,7 @@ export async function createTestContext(
     suggestSessionMetadata,
     userMode,
     timerManager,
+    conditionalWakeupManager,
     interactiveProcessManager,
     inboundIntegration,
     broadcastToApp: () => {},
@@ -580,8 +626,9 @@ export async function createTestContext(
 export async function shutdownAppContext(
   context: AppContext,
 ): Promise<void> {
-  // Dispose timer manager, interactive process manager, and branch watcher
+  // Dispose timer manager, conditional wakeup manager, interactive process manager, and branch watcher
   context.timerManager.disposeAll();
+  context.conditionalWakeupManager.disposeAll();
   context.interactiveProcessManager.disposeAll();
   context.branchWatcherService.stopAll();
 

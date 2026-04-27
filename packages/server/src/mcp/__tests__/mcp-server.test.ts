@@ -23,6 +23,7 @@ import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-rep
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
+import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
@@ -143,6 +144,7 @@ describe('MCP Server Tools', () => {
   let agentManager: AgentManager;
   let repositoryManager: RepositoryManager;
   let timerManager: TimerManager;
+  let conditionalWakeupManager: ConditionalWakeupManager;
   let interactiveProcessManager: InteractiveProcessManager;
   let worktreeService: WorktreeService;
   let annotationService: AnnotationService;
@@ -157,7 +159,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -241,6 +243,9 @@ describe('MCP Server Tools', () => {
     // Create TimerManager (no-op callback for tests)
     timerManager = new TimerManager(() => {});
 
+    // Create ConditionalWakeupManager (no-op callback for tests)
+    conditionalWakeupManager = new ConditionalWakeupManager(() => {});
+
     // Create InteractiveProcessManager (no-op callbacks for tests)
     interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
 
@@ -284,6 +289,7 @@ describe('MCP Server Tools', () => {
 
   afterEach(async () => {
     timerManager.disposeAll();
+    conditionalWakeupManager.disposeAll();
     interactiveProcessManager.disposeAll();
     await testJobQueue.stop();
     await closeDatabase();
@@ -2648,6 +2654,7 @@ describe('MCP Server Tools', () => {
     }
 
     afterEach(() => {
+      conditionalWakeupManager.disposeAll();
       interactiveProcessManager.disposeAll();
     });
 

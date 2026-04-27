@@ -16,6 +16,7 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
+import type { ConditionalWakeupManager } from '../services/conditional-wakeup-manager.js';
 import type { InteractiveProcessManager } from '../services/interactive-process-manager.js';
 import type { WorktreeService } from '../services/worktree-service.js';
 import type { AnnotationService } from '../services/annotation-service.js';
@@ -157,6 +158,7 @@ export interface McpDependencies {
   repositoryManager: RepositoryManager;
   agentManager: AgentManager;
   timerManager: TimerManager;
+  conditionalWakeupManager: ConditionalWakeupManager;
   interactiveProcessManager: InteractiveProcessManager;
   worktreeService: WorktreeService;
   annotationService: AnnotationService;
@@ -177,7 +179,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp, findOpenPullRequest } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -916,6 +918,93 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, timerId }, 'delete_timer failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: create_conditional_wakeup ----------
+
+  mcpServer.tool(
+    'create_conditional_wakeup',
+    'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
+      'Silent polling preserves LLM context windows by avoiding unnecessary notifications. ' +
+      'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
+    {
+      sessionId: z.string().describe(
+        'The session to receive wakeup notifications. ' +
+          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+      ),
+      workerId: z.string().describe(
+        'The worker to receive the wakeup. ' +
+          'Usually the current agent worker. Use AGENT_CONSOLE_WORKER_ID if available.',
+      ),
+      intervalSeconds: z.number().int().min(30).max(86400).describe(
+        'How often to check the condition (30-86400 seconds). ' +
+          'E.g., 30 for every 30 seconds, 300 for every 5 minutes.',
+      ),
+      conditionScript: z.string().describe(
+        'Shell command to check condition. Exit 0 = condition true, non-zero = condition false. ' +
+          'Example: "gh pr view 698 --json mergeStateStatus --jq .mergeStateStatus | grep -q CLEAN"',
+      ),
+      onTrueMessage: z.string().describe(
+        'Message to send when condition becomes true. ' +
+          'Example: "PR #698 is ready for merge (status: CLEAN)"',
+      ),
+      timeoutSeconds: z.number().int().min(60).max(86400).optional().describe(
+        'Optional timeout in seconds. If provided, sends timeout message and stops after this duration.',
+      ),
+      onTimeoutMessage: z.string().optional().describe(
+        'Optional message to send on timeout. If omitted, uses a default timeout message.',
+      ),
+    },
+    async ({ sessionId, workerId, intervalSeconds, conditionScript, onTrueMessage, timeoutSeconds, onTimeoutMessage }) => {
+      try {
+        const wakeup = conditionalWakeupManager.createWakeup({
+          sessionId,
+          workerId,
+          intervalSeconds,
+          conditionScript,
+          onTrueMessage,
+          timeoutSeconds,
+          onTimeoutMessage,
+        });
+
+        return textResult({
+          wakeupId: wakeup.id,
+          sessionId: wakeup.sessionId,
+          workerId: wakeup.workerId,
+          intervalSeconds: wakeup.intervalSeconds,
+          conditionScript: wakeup.conditionScript,
+          timeoutSeconds: wakeup.timeoutSeconds,
+          status: wakeup.status,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'create_conditional_wakeup failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: delete_conditional_wakeup ----------
+
+  mcpServer.tool(
+    'delete_conditional_wakeup',
+    'Delete a conditional wakeup. The condition checking stops immediately.',
+    {
+      wakeupId: z.string().describe('The wakeup ID returned by create_conditional_wakeup'),
+    },
+    async ({ wakeupId }) => {
+      try {
+        const deleted = conditionalWakeupManager.deleteWakeup(wakeupId);
+        if (!deleted) {
+          return errorResult(`Conditional wakeup not found: ${wakeupId}`);
+        }
+        return textResult({ deleted: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, wakeupId }, 'delete_conditional_wakeup failed');
         return errorResult(message);
       }
     },
