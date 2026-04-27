@@ -462,6 +462,64 @@ describe('createInboundEventJobHandler', () => {
     expect(handlerMock).toHaveBeenCalledTimes(1);
   });
 
+  it('ci:completed forwards event.metadata.branch to ciCompletionChecker', async () => {
+    // Verifies that the job-handler passes `branch` as the third argument to
+    // the checker, enabling the PR-rollup-based check that resolves #699.
+    const checkerCalls: Array<[string, string, string | undefined]> = [];
+    const mockChecker: CICompletionChecker = async (repo, sha, branch) => {
+      checkerCalls.push([repo, sha, branch]);
+      return {
+        allCompleted: true,
+        totalWorkflows: 1,
+        successCount: 1,
+        workflowNames: ['test'],
+      };
+    };
+
+    const handlerMock = mock<InboundEventHandler['handle']>(async () => true);
+    const handler: InboundEventHandler = {
+      handlerId: 'test-handler',
+      supportedEvents: ['ci:completed'],
+      handle: handlerMock,
+    };
+
+    const parser: ServiceParser = {
+      serviceId: 'github',
+      authenticate: async () => true,
+      parse: async () => ({
+        type: 'ci:completed',
+        source: 'github',
+        timestamp: '2024-01-01T00:00:00Z',
+        metadata: {
+          repositoryName: 'owner/repo',
+          commitSha: 'abc123',
+          branch: 'feature-x',
+        },
+        payload: { ok: true },
+        summary: 'CI success',
+      }),
+    };
+
+    const jobHandler = createInboundEventJobHandler({
+      getServiceParser: () => parser,
+      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      handlers: [handler],
+      notificationRepository,
+      ciCompletionChecker: mockChecker,
+    });
+
+    await jobHandler({
+      jobId: 'job-1',
+      service: 'github',
+      rawPayload: '{}',
+      headers: {},
+      receivedAt: '2024-01-01T00:00:00Z',
+    });
+
+    expect(checkerCalls).toEqual([['owner/repo', 'abc123', 'feature-x']]);
+    expect(handlerMock).toHaveBeenCalledTimes(1);
+  });
+
   it('ci:completed without commitSha skips the check', async () => {
     const mockChecker = mock<CICompletionChecker>(async () => ({
       allCompleted: false,

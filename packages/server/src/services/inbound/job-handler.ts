@@ -101,9 +101,9 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
 
     // --- CI completion aggregation gate ---
     if (event.type === 'ci:completed' && deps.ciCompletionChecker) {
-      const { repositoryName, commitSha } = event.metadata;
+      const { repositoryName, commitSha, branch } = event.metadata;
       if (repositoryName && commitSha) {
-        const result = await deps.ciCompletionChecker(repositoryName, commitSha);
+        const result = await deps.ciCompletionChecker(repositoryName, commitSha, branch);
         if (result !== null) {
           if (!result.allCompleted) {
             logger.info(
@@ -111,6 +111,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
                 eventType: event.type,
                 repositoryName,
                 commitSha,
+                branch,
                 successCount: result.successCount,
                 totalWorkflows: result.totalWorkflows,
               },
