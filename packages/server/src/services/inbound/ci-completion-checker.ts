@@ -268,6 +268,7 @@ async function checkByPullRequestRollup(
     '--repo', repositoryName,
     '--head', branch,
     '--state', 'open',
+    '--limit', '1',
     '--json', 'number,headRefOid,statusCheckRollup',
   ];
   const responseText = await runGhCommand(args, { repositoryName, branch, webhookCommitSha });
@@ -325,6 +326,18 @@ async function checkByPullRequestRollup(
   }
 
   const rollup = pr.statusCheckRollup;
+  if (rollup.length === 0) {
+    // PR exists with matching head, but no checks have been registered yet.
+    // Treat as "cannot determine" and fail-open — the empty.every() vacuous
+    // truth would otherwise emit "all passed" with zero workflows, which is
+    // worse than the original per-run event.
+    logger.warn(
+      { repositoryName, branch, prNumber: pr.number, webhookCommitSha },
+      'PR statusCheckRollup is empty; falling open'
+    );
+    return { matched: true, result: null };
+  }
+
   const classifications = rollup.map(classifyRollupEntry);
   const workflowNames = rollup.map(rollupEntryName);
   const successCount = classifications.filter((status) => status === 'success').length;

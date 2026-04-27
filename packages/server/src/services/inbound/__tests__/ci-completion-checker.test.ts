@@ -424,6 +424,24 @@ describe('ci-completion-checker', () => {
       expect(result!.workflowNames).toEqual(['lint', 'optional', 'advisory']);
     });
 
+    it('returns null (fail-open) when PR exists but statusCheckRollup is empty', async () => {
+      // CodeRabbit catch (PR #704 review): empty rollup must NOT vacuously
+      // report "all passed". Fail-open so the original event proceeds.
+      enqueueSpawnResponse(makePRListResponse([
+        {
+          number: 100,
+          headRefOid: 'sha-head',
+          statusCheckRollup: [],
+        },
+      ]));
+
+      const { createCICompletionChecker } = await getModule();
+      const checker = createCICompletionChecker();
+      const result = await checker('owner/repo', 'sha-head', 'feature-x');
+
+      expect(result).toBeNull();
+    });
+
     it('falls back to workflow-runs path when no PR is found for the branch', async () => {
       // First call: gh pr list returns []
       enqueueSpawnResponse(makePRListResponse([]));
