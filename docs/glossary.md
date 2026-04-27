@@ -79,12 +79,12 @@ The logical status of a session: 'active' or 'inactive'.
 ## Multi-User Identity
 
 ### assignee
-PR #682 で導入された delegate target user identifier (`delegate_to_worktree.assignee`).
-- **Aliases:** target user, caller (PR #682 草案で一時使用)
+Delegate target user identifier introduced in PR #682 (`delegate_to_worktree.assignee`).
+- **Aliases:** target user, caller (used temporarily in the PR #682 draft)
 - **See:** [Orchestrator-facing interface in shared-orchestrator-session.md](design/shared-orchestrator-session.md#orchestrator-facing-interface)
 
 ### authenticated user
-Agent-console UI に認証してアクセスする end-user.
+End-user who authenticates to the Agent Console UI.
 - **Aliases:** end user, User (capitalised in setup guide)
 - **See:** [Multi-user terminology in multi-user-shared-setup.md](design/multi-user-shared-setup.md#terminology)
 - **Contrast:** [created_by](#created_by) (PTY OS identity), [initiated_by](#initiated_by) (audit trail)

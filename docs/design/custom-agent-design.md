@@ -582,20 +582,20 @@ Note: OpenHands example has no `continueTemplate` or `headlessTemplate`, so:
 │                                                               │
 │ Command Template:                                             │
 │ [aider --yes -m {{prompt}}                                 ]  │
-│ ℹ️ Use {{prompt}} where the initial prompt should be inserted │
+│ ⓘ  Use {{prompt}} where the initial prompt should be inserted │
 │                                                               │
 │ Continue Template (optional):                                 │
 │ [aider --yes --restore-chat-history                        ]  │
-│ ℹ️ Command to resume a conversation. Leave empty to disable.  │
+│ ⓘ  Command to resume a conversation. Leave empty to disable.  │
 │                                                               │
 │ ▶ Advanced Settings                                           │
 │   Headless Template:                                          │
 │   [aider --yes -m {{prompt}} --exit                        ]  │
-│   ℹ️ For headless execution (branch name generation)          │
+│   ⓘ  For headless execution (branch name generation)          │
 │                                                               │
 │   Asking Patterns (comma-separated):                          │
 │   [> , multi>                                              ]  │
-│   ℹ️ Patterns that indicate agent is waiting for input        │
+│   ⓘ  Patterns that indicate agent is waiting for input        │
 │                                                               │
 │ [Cancel]                                        [Add Agent]   │
 └───────────────────────────────────────────────────────────────┘

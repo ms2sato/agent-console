@@ -25,8 +25,28 @@ import {
   findTestFiles,
   isTestFile,
   detectIntegrationTestNeeds,
+  runLanguageCheck,
 } from './check-utils.js';
 import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
+
+// --- Language check display ---
+
+function printLanguageCheck(result) {
+  console.log('## Language Check (public artifacts)\n');
+  if (result.exitCode === 0) {
+    console.log('✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
+    return 0;
+  }
+  const violationLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+  console.log(`❌ Found ${violationLines.length} violation(s) in public artifacts:\n`);
+  console.log('```');
+  for (const line of violationLines) {
+    console.log(line);
+  }
+  console.log('```');
+  console.log('\nRun `bun run check:lang` locally to reproduce. Public artifacts must be in English (see `.claude/rules/workflow.md` Language Policy).');
+  return 1;
+}
 
 // --- Display ---
 
@@ -101,7 +121,11 @@ function run(changedFiles) {
   console.log('\n---\n');
   const duplicationExit = runDuplicationCheck();
 
-  if (hasUnitGaps || duplicationExit !== 0) {
+  console.log('\n---\n');
+  const languageResult = runLanguageCheck();
+  const languageExit = printLanguageCheck(languageResult);
+
+  if (hasUnitGaps || duplicationExit !== 0 || languageExit !== 0) {
     process.exit(1);
   }
   process.exit(0);

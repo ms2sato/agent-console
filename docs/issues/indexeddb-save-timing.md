@@ -194,7 +194,7 @@ Output received → markDirty() → Reset 1-min timer
 - IndexedDB has no synchronous API
 - `beforeunload` cannot wait for async operations
 - Some data loss possible if reload happens within 1 minute of last output
-- Acceptable per requirement: "ゆるい保存で十分"
+- Acceptable per requirement: "loose/best-effort persistence is sufficient"
 
 ## Files to Modify
 
@@ -266,7 +266,7 @@ All tests pass:
 
 - `beforeunload` cannot await async operations - IndexedDB writes are best-effort
 - Some data loss possible if page reloads within 1 minute of last output
-- Acceptable per requirement: "ゆるい保存で十分"
+- Acceptable per requirement: "loose/best-effort persistence is sufficient"
 
 ## References
 

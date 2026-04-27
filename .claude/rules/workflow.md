@@ -37,6 +37,7 @@ Before completing any code changes, always verify:
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser
 6. **Duplication check:** When adding or modifying logic, grep the repository for the core processing part (method chains, regex patterns, transformation expressions) with variable names removed. For example, search for `.replace(/\r?\n/g, '\r')` rather than `content.replace(...)`. If hits are found, review whether they represent the same concern and should be consolidated into a shared function.
 7. **Shell script execution test:** When adding or modifying shell scripts (`scripts/*.sh`), execute them locally on macOS before committing. CI does not cover shell scripts. Watch for BSD/GNU incompatibilities (e.g., `sed -E` with non-greedy `+?` is not portable). (Lesson: Sprint 2026-04-05c — `upload-qa-screenshots.sh` had 2 bugs only caught at runtime.)
+8. **Public-artifact language check:** When adding or modifying any file under `docs/`, `.claude/`, or `CLAUDE.md`, run `bun run check:lang` and ensure exit 0. The check rejects any non-Latin/Greek/Cyrillic Letter character — see Language Policy below. The same check also runs as part of `node .claude/skills/orchestrator/preflight-check.js` and the `language-lint` CI workflow.
 
 **CRITICAL: Verify BEFORE pushing.** Do NOT push code to the remote until `bun run typecheck` and `bun run test` both pass locally. Pushing unverified code wastes CI cycles and blocks other developers. If pre-existing errors exist that are unrelated to your changes, note them explicitly in your commit message or report.
 
@@ -208,11 +209,24 @@ This rule does not apply to design docs under `docs/design/` where architectural
 
 ## Language Policy
 
-**Public artifacts:** Write all code comments, commit messages, issues, pull requests, and documentation in English.
+**Public artifacts:** Write all code comments, commit messages, issues, pull requests, and documentation in English. Quoted owner remarks are also translated to English in public artifacts (the original wording can be paraphrased; the surrounding lesson does not need to preserve the exact phrase).
 
 **User-facing artifacts:** Review annotations, memos, and other content visible only to the user should follow the user's preferred language.
 
 **Communication:** Respond in the same language the user uses. Technical terms and code identifiers can remain in English.
+
+### Mechanical enforcement
+
+`scripts/check-public-artifacts-language.mjs` is the canonical check. It scans `CLAUDE.md`, `docs/**/*.md`, `.claude/rules/**/*.md`, `.claude/skills/**/*.md`, and `.claude/agents/**/*.md` for any Letter character (`\p{L}`) that is not in the Latin / Greek / Cyrillic scripts. The detection is language-agnostic: it does not hard-code Japanese or any other writing system, so adding a new public artifact in any other script (Han, Hangul, Arabic, Hebrew, Devanagari, Thai, ...) fails the same way.
+
+The check runs at four points:
+
+1. **Local (any time):** `bun run check:lang` — quick ad-hoc verification.
+2. **Pre-PR preflight:** `node .claude/skills/orchestrator/preflight-check.js` — runs the language check alongside the test-coverage and rule-skill-duplication invariants. Non-zero exit blocks PR readiness.
+3. **CI:** `.github/workflows/language-lint.yml` — fires on changes under `docs/`, `.claude/`, and any `*.md`. Failure blocks merge.
+4. **Acceptance Q11:** `.claude/skills/orchestrator/acceptance-check.js` — auto-detects the verdict and asks the Orchestrator to confirm before merge.
+
+Output format is consistent across all four entry points: `file:LINE:COL CHAR U+CODEPOINT`, one line per violation.
 
 ## Claude Code on the Web (Remote Environment)
 

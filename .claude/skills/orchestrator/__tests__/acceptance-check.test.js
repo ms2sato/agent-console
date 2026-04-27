@@ -305,15 +305,15 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 9 questions', () => {
+  it('returns 10 questions (Q1-Q9 + Q11)', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(9);
+    expect(questions).toHaveLength(10);
   });
 
-  it('returns questions with keys q1-q9', () => {
+  it('returns questions with keys q1-q9 plus q11 (q10 reserved for future)', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q11']);
   });
 
   it('Q9 references the glossary-maintenance rule', () => {
@@ -361,6 +361,27 @@ describe('getQuestions', () => {
     const questions = getQuestions(false, { integrationTestMissing: false });
     const q2 = questions.find(q => q.key === 'q2');
     expect(q2.text).not.toContain('Integration test が未追加です');
+  });
+
+  it('Q11 references the public-artifact language check', () => {
+    const questions = getQuestions(false);
+    const q11 = questions.find(q => q.key === 'q11');
+    expect(q11).toBeTruthy();
+    expect(q11.text).toContain('Public Artifacts Language');
+    expect(q11.focus).toContain('workflow.md');
+  });
+
+  it('Q11 uses the FAILED variant when languageCheckFailed is true', () => {
+    const questions = getQuestions(false, { languageCheckFailed: true });
+    const q11 = questions.find(q => q.key === 'q11');
+    expect(q11.text).toContain('FAILED');
+  });
+
+  it('Q11 uses the PASSED variant when languageCheckFailed is false', () => {
+    const questions = getQuestions(false, { languageCheckFailed: false });
+    const q11 = questions.find(q => q.key === 'q11');
+    expect(q11.text).toContain('passed');
+    expect(q11.text).not.toContain('FAILED');
   });
 });
 
