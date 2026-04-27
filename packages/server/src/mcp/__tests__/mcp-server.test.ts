@@ -2227,6 +2227,447 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // delegation template tools
+  // ===========================================================================
+
+  describe('delegation template tools', () => {
+    /**
+     * Create a quick session that owns the template registry.
+     * Returns the session id so tests can address it.
+     */
+    async function makeOwnerSession(): Promise<string> {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      return session.id;
+    }
+
+    describe('register_delegation_template', () => {
+      it('should register a template and return the file path', async () => {
+        const sessionId = await makeOwnerSession();
+
+        const response = await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: 'callback',
+          content: 'CALLBACK BODY',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as {
+          success: boolean;
+          sessionId: string;
+          name: string;
+          filePath: string;
+        };
+        expect(data.success).toBe(true);
+        expect(data.sessionId).toBe(sessionId);
+        expect(data.name).toBe('callback');
+        expect(data.filePath).toContain('delegation-templates');
+        expect(data.filePath.endsWith(`${sessionId}.json`)).toBe(true);
+      });
+
+      it('should reject names that violate the regex', async () => {
+        const sessionId = await makeOwnerSession();
+
+        const response = await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: 'has space',
+          content: 'body',
+        }, nextId++);
+
+        // Zod schema rejection may arrive as JSON-RPC error or tool isError
+        if (response.error) {
+          expect(response.error).toBeDefined();
+        } else {
+          expect(response.result?.isError).toBe(true);
+        }
+      });
+
+      it('should reject names longer than 64 characters', async () => {
+        const sessionId = await makeOwnerSession();
+        const longName = 'a'.repeat(65);
+
+        const response = await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: longName,
+          content: 'body',
+        }, nextId++);
+
+        if (response.error) {
+          expect(response.error).toBeDefined();
+        } else {
+          expect(response.result?.isError).toBe(true);
+        }
+      });
+
+      it('should reject content over 256KB', async () => {
+        const sessionId = await makeOwnerSession();
+        const oversized = 'x'.repeat(256 * 1024 + 1);
+
+        const response = await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: 'big',
+          content: oversized,
+        }, nextId++);
+
+        if (response.error) {
+          expect(response.error).toBeDefined();
+        } else {
+          expect(response.result?.isError).toBe(true);
+        }
+      });
+
+      it('should return error when session is not found', async () => {
+        const response = await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId: 'non-existent',
+          name: 'callback',
+          content: 'body',
+        }, nextId++);
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('Session not found');
+      });
+    });
+
+    describe('list_delegation_templates', () => {
+      it('should return the registered templates', async () => {
+        const sessionId = await makeOwnerSession();
+
+        await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: 'foo',
+          content: 'F',
+        }, nextId++);
+
+        const response = await callTool(app, mcpSessionId, 'list_delegation_templates', {
+          sessionId,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as {
+          sessionId: string;
+          templates: Array<{ name: string; content: string }>;
+        };
+        expect(data.sessionId).toBe(sessionId);
+        expect(data.templates).toEqual([{ name: 'foo', content: 'F' }]);
+      });
+
+      it('should return an empty array for a session with no templates', async () => {
+        const sessionId = await makeOwnerSession();
+
+        const response = await callTool(app, mcpSessionId, 'list_delegation_templates', {
+          sessionId,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as {
+          templates: Array<{ name: string; content: string }>;
+        };
+        expect(data.templates).toEqual([]);
+      });
+    });
+
+    describe('delete_delegation_template', () => {
+      it('should remove the template; subsequent list returns empty', async () => {
+        const sessionId = await makeOwnerSession();
+
+        await callTool(app, mcpSessionId, 'register_delegation_template', {
+          sessionId,
+          name: 'foo',
+          content: 'F',
+        }, nextId++);
+
+        const deleteResponse = await callTool(app, mcpSessionId, 'delete_delegation_template', {
+          sessionId,
+          name: 'foo',
+        }, nextId++);
+
+        expect(deleteResponse.result?.isError).toBeUndefined();
+        const deleteData = parseToolResult(deleteResponse) as {
+          success: boolean;
+          deleted: boolean;
+        };
+        expect(deleteData.success).toBe(true);
+        expect(deleteData.deleted).toBe(true);
+
+        const listResponse = await callTool(app, mcpSessionId, 'list_delegation_templates', {
+          sessionId,
+        }, nextId++);
+        const listData = parseToolResult(listResponse) as {
+          templates: Array<{ name: string; content: string }>;
+        };
+        expect(listData.templates).toEqual([]);
+      });
+
+      it('should be idempotent for missing names (deleted=false)', async () => {
+        const sessionId = await makeOwnerSession();
+
+        const response = await callTool(app, mcpSessionId, 'delete_delegation_template', {
+          sessionId,
+          name: 'never-registered',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { success: boolean; deleted: boolean };
+        expect(data.success).toBe(true);
+        expect(data.deleted).toBe(false);
+      });
+    });
+  });
+
+  // ===========================================================================
+  // delegate_to_worktree useTemplates integration
+  // ===========================================================================
+
+  describe('delegate_to_worktree useTemplates', () => {
+    // Reuses the helper functions defined inside the delegate_to_worktree
+    // describe block above. We cannot reach those nested helpers from here,
+    // so we duplicate the minimal setup needed for these tests.
+
+    async function setupDelegateRepo(): Promise<void> {
+      const db = getDatabase();
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      await sqliteRepoRepo.save({
+        id: 'test-repo',
+        name: 'test',
+        path: TEST_REPO_PATH,
+        createdAt: new Date().toISOString(),
+      });
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
+        repository: sqliteRepoRepo,
+      });
+      await remountMcpApp();
+    }
+
+    async function setupDelegateEnvironmentForUseTemplates(branchName: string): Promise<void> {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      });
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+      mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
+      mockGit.getDefaultBranch.mockImplementation(async () => 'main');
+      let capturedWorktreePath = '';
+      mockGit.createWorktree.mockImplementation(async (...args: unknown[]) => {
+        capturedWorktreePath = args[0] as string;
+      });
+      mockGit.listWorktrees.mockImplementation(async () => {
+        if (capturedWorktreePath) {
+          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${capturedWorktreePath}\nHEAD def456\nbranch refs/heads/${branchName}\n`;
+        }
+        return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
+      });
+
+      await setupDelegateRepo();
+    }
+
+    function getAgentPromptForSession(sessionId: string): string {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const matchingCall = calls.find((call) =>
+        call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
+      );
+      expect(matchingCall).toBeDefined();
+      const agentPrompt = matchingCall![2].env!.__AGENT_PROMPT__;
+      expect(agentPrompt).toBeDefined();
+      return agentPrompt!;
+    }
+
+    async function makeParentSession(): Promise<string> {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      return session.id;
+    }
+
+    it('should leave the prompt unchanged when useTemplates is omitted', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/no-templates');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Plain prompt with no templates',
+        branch: 'feat/no-templates',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+      expect(agentPrompt).toBe('Plain prompt with no templates');
+    });
+
+    it('should leave the prompt unchanged when useTemplates is an empty array', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/empty-templates');
+      const parentSessionId = await makeParentSession();
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Plain prompt',
+        branch: 'feat/empty-templates',
+        parentSessionId,
+        parentWorkerId: 'parent-worker-id',
+        useTemplates: [],
+        skipMessageCallbackPrompt: true,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+      expect(agentPrompt).toBe('Plain prompt');
+    });
+
+    it('should append a single template body before callback instructions', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/single-template');
+      const parentSessionId = await makeParentSession();
+
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: parentSessionId,
+        name: 'retro',
+        content: 'RETRO_BODY',
+      }, nextId++);
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'USER_PROMPT',
+        branch: 'feat/single-template',
+        parentSessionId,
+        parentWorkerId: 'parent-worker-id',
+        useTemplates: ['retro'],
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+
+      // user prompt, template body, then callback (separated by --- block)
+      expect(agentPrompt).toContain('USER_PROMPT\n\nRETRO_BODY');
+      const userIdx = agentPrompt.indexOf('USER_PROMPT');
+      const retroIdx = agentPrompt.indexOf('RETRO_BODY');
+      const callbackIdx = agentPrompt.indexOf('[Message Callback Instructions]');
+      expect(userIdx).toBeLessThan(retroIdx);
+      expect(retroIdx).toBeLessThan(callbackIdx);
+    });
+
+    it('should append multiple template bodies in the order requested', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/multi-template');
+      const parentSessionId = await makeParentSession();
+
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: parentSessionId,
+        name: 'AAA',
+        content: 'AAA_BODY',
+      }, nextId++);
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: parentSessionId,
+        name: 'BBB',
+        content: 'BBB_BODY',
+      }, nextId++);
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: parentSessionId,
+        name: 'CCC',
+        content: 'CCC_BODY',
+      }, nextId++);
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'USER_PROMPT',
+        branch: 'feat/multi-template',
+        parentSessionId,
+        parentWorkerId: 'parent-worker-id',
+        useTemplates: ['CCC', 'AAA', 'BBB'],
+        skipMessageCallbackPrompt: true,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      const agentPrompt = getAgentPromptForSession(data.sessionId);
+
+      expect(agentPrompt).toBe('USER_PROMPT\n\nCCC_BODY\n\nAAA_BODY\n\nBBB_BODY');
+    });
+
+    it('should return error and not create a worktree when a template name is missing', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/missing-template');
+      const parentSessionId = await makeParentSession();
+
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: parentSessionId,
+        name: 'present',
+        content: 'P',
+      }, nextId++);
+
+      mockGit.createWorktree.mockClear();
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'USER_PROMPT',
+        branch: 'feat/missing-template',
+        parentSessionId,
+        parentWorkerId: 'parent-worker-id',
+        useTemplates: ['present', 'absent-1', 'absent-2'],
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('Delegation templates not found');
+      expect(data.error).toContain('absent-1');
+      expect(data.error).toContain('absent-2');
+      // No worktree was created
+      expect(mockGit.createWorktree).not.toHaveBeenCalled();
+    });
+
+    it('should return error when useTemplates is non-empty without parentSessionId', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/no-parent');
+
+      mockGit.createWorktree.mockClear();
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'USER_PROMPT',
+        branch: 'feat/no-parent',
+        useTemplates: ['retro'],
+        // parentSessionId intentionally omitted
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('useTemplates requires parentSessionId');
+      expect(mockGit.createWorktree).not.toHaveBeenCalled();
+    });
+
+    it('should be cross-session isolated (templates from session A not visible to session B)', async () => {
+      await setupDelegateEnvironmentForUseTemplates('feat/cross-session');
+      const sessionA = await makeParentSession();
+      const sessionB = await makeParentSession();
+
+      await callTool(app, mcpSessionId, 'register_delegation_template', {
+        sessionId: sessionA,
+        name: 'shared-name',
+        content: 'A_BODY',
+      }, nextId++);
+
+      // Use sessionB as the parent — its registry is empty
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'USER_PROMPT',
+        branch: 'feat/cross-session',
+        parentSessionId: sessionB,
+        parentWorkerId: 'parent-worker-id',
+        useTemplates: ['shared-name'],
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('Delegation templates not found');
+      expect(data.error).toContain('shared-name');
+    });
+  });
+
+  // ===========================================================================
   // remove_worktree
   // ===========================================================================
 

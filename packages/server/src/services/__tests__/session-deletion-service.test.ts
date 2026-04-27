@@ -46,6 +46,9 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     memoService: {
       deleteMemo: mock(async () => {}),
     } as unknown as SessionDeletionDeps['memoService'],
+    delegationTemplateService: {
+      deleteAllForSession: mock(async () => {}),
+    } as unknown as SessionDeletionDeps['delegationTemplateService'],
     getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
     getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
     getSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
@@ -147,6 +150,8 @@ describe('SessionDeletionService', () => {
       expect(deps.interSessionMessageService.deleteSessionMessages).toHaveBeenCalledTimes(1);
       // Memo cleanup
       expect(deps.memoService.deleteMemo).toHaveBeenCalledTimes(1);
+      // Delegation templates cleanup
+      expect(deps.delegationTemplateService.deleteAllForSession).toHaveBeenCalledTimes(1);
       // Persistence deletion
       expect(deps.sessionRepository.delete).toHaveBeenCalledWith('session-1');
       // Lifecycle callback
@@ -270,6 +275,21 @@ describe('SessionDeletionService', () => {
       expect(result).toBe(true);
     });
 
+    it('should not fail if delegation templates cleanup throws', async () => {
+      const session = buildInternalWorktreeSession();
+
+      const deps = createMockDeps({
+        getSession: () => session,
+        delegationTemplateService: {
+          deleteAllForSession: mock(async () => { throw new Error('templates error'); }),
+        } as unknown as SessionDeletionDeps['delegationTemplateService'],
+      });
+      const service = new SessionDeletionService(deps);
+
+      const result = await service.deleteSession('session-1');
+      expect(result).toBe(true);
+    });
+
     it('should skip enqueueing cleanup job when getSessionScope returns null (orphaned)', async () => {
       // Simulate an orphaned session whose (scope, slug) cannot be resolved.
       // The service must still delete the DB row and complete successfully,
@@ -334,6 +354,7 @@ describe('SessionDeletionService', () => {
       expect(deps.sessionRepository.delete).toHaveBeenCalledWith('orphan-1');
       expect(deps.jobQueue!.enqueue).toHaveBeenCalledTimes(1);
       expect(deps.memoService.deleteMemo).toHaveBeenCalledTimes(1);
+      expect(deps.delegationTemplateService.deleteAllForSession).toHaveBeenCalledTimes(1);
       expect(onSessionDeleted).toHaveBeenCalledWith('orphan-1');
     });
 

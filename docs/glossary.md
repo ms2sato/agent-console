@@ -118,6 +118,11 @@ A registered shell-condition + interval that the server polls silently and notif
 - **See:** Issue [#700](https://github.com/ms2sato/agent-console/issues/700), MCP tools `create_conditional_wakeup` / `delete_conditional_wakeup`
 - **Contrast:** [Timer](#timer) (fires on interval regardless of state)
 
+### Delegation Template
+A named text fragment registered to a session via `register_delegation_template` and applied by `delegate_to_worktree`'s [useTemplates](#usetemplates) parameter to append reusable boilerplate (retrospective callback, Definition of Done, test placement, CI rollup verification, etc.) to delegated agent prompts. Scoped to the registering session and removed when that session is deleted.
+- **Aliases:** delegation message template, named template
+- **See:** Issue [#707](https://github.com/ms2sato/agent-console/issues/707), MCP tools `register_delegation_template` / `list_delegation_templates` / `delete_delegation_template`
+
 ### SystemEvent
 The top-level event format representing meaningful occurrences in the system.
 - **Aliases:** System-wide event
@@ -132,6 +137,10 @@ A periodic, fixed-interval notification mechanism for sessions. Fires on every i
 Real-time bidirectional communication channel between client and server.
 - **Types:** App Connection (`/ws/app`), Worker Connection (`/ws/session/:id/worker/:id`)
 - **See:** [WebSocket protocol in websocket-protocol.md](design/websocket-protocol.md)
+
+### useTemplates
+The `delegate_to_worktree` MCP-tool parameter that lists [Delegation Template](#delegation-template) names whose bodies are appended to the delegated agent's prompt (in the order listed) before any callback instructions. Requires `parentSessionId` (the registry to look up belongs to the parent session). Missing names cause an atomic error — no partial appending.
+- **See:** [Delegation Template](#delegation-template), Issue [#707](https://github.com/ms2sato/agent-console/issues/707)
 
 ## Maintenance
 

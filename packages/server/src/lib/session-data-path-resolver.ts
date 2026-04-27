@@ -28,4 +28,12 @@ export class SessionDataPathResolver {
   getOutputFilePath(sessionId: string, workerId: string): string {
     return path.join(this.getOutputsDir(), sessionId, `${workerId}.log`);
   }
+
+  getDelegationTemplatesDir(): string {
+    return path.join(this.baseDir, 'delegation-templates');
+  }
+
+  getDelegationTemplatesPath(sessionId: string): string {
+    return path.join(this.getDelegationTemplatesDir(), `${sessionId}.json`);
+  }
 }

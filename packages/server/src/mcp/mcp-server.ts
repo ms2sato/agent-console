@@ -110,6 +110,16 @@ function errorResult(message: string) {
 }
 
 /**
+ * Build the body that includes the user prompt followed by template bodies
+ * (in the order requested). The result is suitable for further composition
+ * with optional callback instructions.
+ */
+function buildPromptWithTemplates(prompt: string, templateBodies: string[]): string {
+  if (templateBodies.length === 0) return prompt;
+  return [prompt, ...templateBodies].join('\n\n');
+}
+
+/**
  * Build a prompt that includes callback instructions telling the delegated agent
  * to report results back to the parent session via send_session_message.
  */
@@ -471,7 +481,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Optionally pass parentSessionId and parentWorkerId to have the delegated agent report results back via send_session_message.',
+      'Optionally pass parentSessionId and parentWorkerId to have the delegated agent report results back via send_session_message. ' +
+      'Optionally pass useTemplates to append registered template bodies (see register_delegation_template).',
     {
       repositoryId: z.string().describe(
         'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable. ' +
@@ -549,6 +560,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'Custom template variable overrides. Keys are variable names (e.g., "model"), values are the replacement strings. ' +
             'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}).',
         ),
+      useTemplates: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          'List of named templates registered with register_delegation_template (in the parent session) ' +
+            'whose bodies will be appended to the prompt in the order listed, before any callback instructions. ' +
+            'Requires parentSessionId. Missing names cause an error (no partial appending).',
+        ),
     },
     async ({
       repositoryId,
@@ -563,6 +582,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       parentWorkerId,
       skipMessageCallbackPrompt,
       templateVars,
+      useTemplates,
     }) => {
       try {
         // Validate parent IDs: both must be provided together
@@ -570,11 +590,43 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult('parentSessionId and parentWorkerId must be provided together');
         }
 
-        // Build effective prompt with optional callback instructions
+        // Resolve useTemplates: requires parentSessionId; missing names abort.
+        const requestedTemplateNames = useTemplates ?? [];
+        let templateBodies: string[] = [];
+        if (requestedTemplateNames.length > 0) {
+          if (!parentSessionId) {
+            return errorResult(
+              'useTemplates requires parentSessionId to identify the registry to look up',
+            );
+          }
+          const parentSession = sessionManager.getSession(parentSessionId);
+          if (!parentSession) {
+            return errorResult(`Parent session not found: ${parentSessionId}`);
+          }
+          let lookup;
+          try {
+            lookup = await sessionManager.lookupDelegationTemplates(
+              parentSessionId,
+              requestedTemplateNames,
+            );
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            return errorResult(`Failed to look up delegation templates: ${message}`);
+          }
+          if (lookup.missing.length > 0) {
+            return errorResult(
+              `Delegation templates not found in parent session ${parentSessionId}: ${lookup.missing.join(', ')}`,
+            );
+          }
+          templateBodies = lookup.found.map((t) => t.content);
+        }
+
+        // Compose the final prompt: user prompt + template bodies, then optional callback.
+        const promptWithTemplates = buildPromptWithTemplates(prompt, templateBodies);
         const effectivePrompt =
           parentSessionId && parentWorkerId && !skipMessageCallbackPrompt
-            ? buildMessageCallbackPrompt(prompt, parentSessionId, parentWorkerId)
-            : prompt;
+            ? buildMessageCallbackPrompt(promptWithTemplates, parentSessionId, parentWorkerId)
+            : promptWithTemplates;
 
         // Validate repository
         const repo = repositoryManager.getRepository(repositoryId);
@@ -773,6 +825,107 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'write_memo failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: register_delegation_template ----------
+
+  mcpServer.tool(
+    'register_delegation_template',
+    'Register (or overwrite) a named template body for the current session. ' +
+      'Templates are reusable boilerplate fragments (retrospective callback, Definition of Done reminders, ' +
+      'test placement, CI rollup verification) that can be appended to delegate_to_worktree prompts ' +
+      'via the useTemplates parameter. Re-registering the same name overwrites the previous body. ' +
+      'Templates are scoped to the registering session and cleaned up when that session is deleted.',
+    {
+      sessionId: z
+        .string()
+        .describe(
+          'The session that owns the template registry. Get from AGENT_CONSOLE_SESSION_ID.',
+        ),
+      name: z
+        .string()
+        .min(1, 'name is required')
+        .max(64, 'name must be 64 characters or less')
+        .regex(/^[a-zA-Z0-9_-]+$/, 'name must be alphanumeric, hyphen, or underscore')
+        .describe('Template name. Use kebab-case. Re-registering the same name overwrites.'),
+      content: z
+        .string()
+        .refine(
+          (s) => Buffer.byteLength(s, 'utf-8') <= 256 * 1024,
+          { message: 'Template content must not exceed 256KB' },
+        )
+        .describe('Template body — plain text appended verbatim to delegate_to_worktree prompts.'),
+    },
+    async ({ sessionId, name, content }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const result = await sessionManager.registerDelegationTemplate(sessionId, name, content);
+        logger.info({ sessionId, name }, 'Delegation template registered via MCP');
+        return textResult({ success: true, sessionId, name: result.name, filePath: result.filePath });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, name }, 'register_delegation_template failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: list_delegation_templates ----------
+
+  mcpServer.tool(
+    'list_delegation_templates',
+    'List all delegation templates registered for the current session. Returns templates sorted by name. ' +
+      'Use this to inspect templates before applying them via delegate_to_worktree useTemplates.',
+    {
+      sessionId: z.string().describe('The session whose templates to list.'),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const templates = await sessionManager.listDelegationTemplates(sessionId);
+        return textResult({ sessionId, templates });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'list_delegation_templates failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: delete_delegation_template ----------
+
+  mcpServer.tool(
+    'delete_delegation_template',
+    'Delete a delegation template by name. Idempotent: returns deleted=false if the name was not registered. ' +
+      'Use this to remove templates that are no longer needed.',
+    {
+      sessionId: z.string().describe('The session that owns the template.'),
+      name: z
+        .string()
+        .min(1)
+        .describe('Template name to delete. Idempotent — no error if not found.'),
+    },
+    async ({ sessionId, name }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const result = await sessionManager.deleteDelegationTemplate(sessionId, name);
+        logger.info({ sessionId, name, deleted: result.deleted }, 'delete_delegation_template completed');
+        return textResult({ success: result.success, sessionId, name, deleted: result.deleted });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, name }, 'delete_delegation_template failed');
         return errorResult(message);
       }
     },
