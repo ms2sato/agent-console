@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a defect or unexpected behavior.
+title: "fix: <one-line description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. Please give the implementing agent everything it needs to investigate without re-asking. The "Hypotheses" field below is especially valuable — even uncertain guesses save investigation time.
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What did you observe? Include exact error messages, screenshots, or log excerpts.
+      placeholder: |
+        After running `bun run dev` and switching git branches, the AgentConsole UI continues to display the previous branch name. Backend logs show no branch change event after the first checkout.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal sequence to trigger the symptom on a fresh checkout.
+      placeholder: |
+        1. `bun run dev`
+        2. Open `http://localhost:5173`
+        3. In another terminal, `git checkout -b feature/test`
+        4. Observe: UI still shows the previous branch
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen instead.
+      placeholder: |
+        UI should reflect the current git branch within ~1 second of checkout.
+    validations:
+      required: true
+
+  - type: textarea
+    id: hypotheses
+    attributes:
+      label: Hypotheses (rank-ordered if known)
+      description: |
+        Your best guess at where the bug lives, even if uncertain. Listing 2-4 ranked hypotheses lets the implementing agent test each in TDD order rather than rediscovering from scratch. **An agent can confirm or rule out a hypothesis quickly; finding the right place to look from a blank slate is much slower.** It is fine to leave this empty if you have no guesses, but a partial guess is better than none.
+      placeholder: |
+        1. (most likely) `branch-watcher-service.ts` uses `fs.watch` on the HEAD file path; macOS kqueue binds to inode and may not survive `git`'s atomic `HEAD.lock → HEAD` rename.
+        2. WebSocket reconnect handler (`/ws/app`) may not re-subscribe to branch updates after a brief disconnect.
+        3. Client-side `useBranch` hook may cache the initial value and ignore subsequent updates.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Bun version, branch, anything special about your setup.
+      placeholder: |
+        - macOS 14.5 (Darwin 24.6.0)
+        - Bun 1.1.x
+        - Branch: `chore/standby-awaiting-instructions`
+        - AGENT_CONSOLE_HOME: default (`~/.agent-console-dev`)
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Known workaround (if any)
+      description: Anything that temporarily avoids the bug.
+      placeholder: |
+        Restarting the dev server resets the branch tracking until the next checkout.
+    validations:
+      required: false

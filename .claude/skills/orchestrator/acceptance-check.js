@@ -434,6 +434,23 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       sufficient: '"PR adds `assignee` parameter to delegate_to_worktree (MCP tool param) and `assigned_at` timestamp field to sessions table (DB schema field). Grepped docs/glossary.md: `assignee` entry exists at line 81 (added in PR #682). `assigned_at` is missing — instructed agent to add a Multi-User Identity entry. No other new domain identifiers in this PR."',
     },
     {
+      key: 'q10',
+      text: 'Q10: Concerns Surfacing & Owner Communication Gate — Walk this 5-step procedure: (1) List entry points the PR introduces (new MCP tools / params, API endpoints, CLI flags, config keys, file types). (2) For each entry point, identify the bootstrap procedure that activates it (who registers it, when, where documented). (3) Enumerate ALL concerns surfaced during review (bootstrap gaps, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility, etc.) — including ones you tentatively rationalized as "minor". (4) For the concerns from Step 3, did you surface them to the owner with a structured report/consultation BEFORE this verdict? (5) If Step 4 is "no" or "partial", verdict MUST be HOLD; PASS is not allowed.',
+      focus: [
+        'See `.claude/skills/orchestrator/core-responsibilities.md` "Concerns Surfacing Discipline".',
+        'This question exists because passing Q1-Q9 + Q11 does not equal "feature is shippable". Bootstrap gaps, missing runtime prerequisites, dead-code risk, and contract ambiguity are PR-shape concerns the orchestrator must surface BEFORE the PASS verdict, not after.',
+        'Mechanical procedure:',
+        '  1. Re-scan the diff for new entry points (MCP tool / API / CLI / config / new file type).',
+        '  2. For each, ask: "what activates it after merge?" If unclear → concern.',
+        '  3. List concerns from the Q1-Q9 + Q11 walk that you classified as "minor" or "out of scope" — write them out anyway.',
+        '  4. Confirm: "Did I send a structured report to the owner naming each concern?" An explicit memo update or message counts; an in-passing mention does not.',
+        '  5. If any concern is not surfaced → verdict is HOLD until the report is sent and owner has acknowledged.',
+        'PASS-with-notes is not a substitute for HOLD. The discipline is mechanical because LLM self-review is structurally weak at "what else should I be worried about that I rationalized away". (Lesson: Sprint 2026-04-28 PR #710 — Bootstrap gap was rationalized away; owner caught it. PR #715 — preflight integration was rationalized away; owner caught it. Both are structurally identical.)',
+      ].join('\n  '),
+      insufficient: '"Concerns are minor, proceeding with PASS" (silent skip — exactly the failure mode this question prevents)',
+      sufficient: '"Entry points: register_delegation_template MCP tool. Bootstrap: undefined who/when/where. Concerns: (a) dead-code on merge, (b) boilerplate likely duplicated with MemoService, (c) cross-session isolation untested. All three surfaced to owner via memo + dedicated message before this verdict; owner replied to defer to next sprint. Verdict: HOLD pending Bootstrap design."',
+    },
+    {
       key: 'q11',
       text: languageCheckFailed
         ? 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check FAILED. Confirm the listed violations are addressed (translated to English or replaced with a Latin/Greek/Cyrillic-script equivalent) before merge, or instruct the agent to fix.'

@@ -305,15 +305,25 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 10 questions (Q1-Q9 + Q11)', () => {
+  it('returns 11 questions (Q1-Q11)', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(10);
+    expect(questions).toHaveLength(11);
   });
 
-  it('returns questions with keys q1-q9 plus q11 (q10 reserved for future)', () => {
+  it('returns questions with keys q1-q11 in order', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q11']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10', 'q11']);
+  });
+
+  it('Q10 references the Concerns Surfacing Discipline', () => {
+    const questions = getQuestions(false);
+    const q10 = questions.find(q => q.key === 'q10');
+    expect(q10).toBeTruthy();
+    expect(q10.text).toContain('Concerns Surfacing');
+    expect(q10.text).toContain('HOLD');
+    expect(q10.focus).toContain('core-responsibilities.md');
+    expect(q10.focus).toContain('Concerns Surfacing Discipline');
   });
 
   it('Q9 references the glossary-maintenance rule', () => {

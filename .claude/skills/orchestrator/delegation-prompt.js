@@ -109,6 +109,28 @@ Quick reference (full details in the skill file):
 ## Test Placement (mandatory)
 For every production file you change or add, the corresponding test file **must** be placed in a sibling \`__tests__/\` directory at the same level — \`path/to/foo.ts\` → \`path/to/__tests__/foo.test.ts\`. Parent-directory placement (e.g., a test for \`services/inbound/foo.ts\` placed at \`services/__tests__/foo.test.ts\`) does **not** satisfy the \`coverage-check\` rule and will fail CI on first push. See \`testing.md\` "Test File Naming Convention".
 
+## Boundary Values (mandatory in tests)
+Per \`design-principles.md\` "Specify boundary values in design briefs", initial test sets must cover boundary inputs, not just the happy path. For each contract you implement (predicate, validator, classifier, aggregator, splitter, transformer), write tests for: empty input (\`length === 0\`), single element, all-success, all-failure, mixed terminal / non-terminal. **Vacuous truth** (\`[].every() === true\`, \`[].some() === false\`) is a recurring blind-spot.
+
+For string and chunking work specifically, also include:
+- **UTF-16 surrogate pair boundary** — non-BMP code points (e.g., emoji, CJK extended) occupy two UTF-16 code units; chunkers must not split between high (\`0xD800\`-\`0xDBFF\`) and low (\`0xDC00\`-\`0xDFFF\`) surrogates.
+- **Combining characters** — a base character followed by a combining mark (accent, diacritic) is one user-visible grapheme but multiple code points; preserve order.
+- **Empty / single-character strings** — many off-by-one bugs surface here.
+
+(Lesson: Sprint 2026-04-28 PR #711 — \`splitContentIntoChunks\` initial implementation passed unit tests but split surrogate pairs, broken by CodeRabbit's GitHub bot; the boundary list in this section would have caught it pre-PR.)
+
+## 30% Checkpoint Reporting (recommended)
+For non-trivial PRs (multi-file, > ~150 LOC, or ambiguous design space), pause at roughly 30% of estimated implementation and send a structured checkpoint report to the Orchestrator. Include four elements:
+
+1. **Progress** — what is done, what remains, by file or component.
+2. **Drift from expectations** — anything you encountered that differs from the Issue or your initial mental model (constraints discovered, dependencies surfaced, test fixtures missing, etc.).
+3. **Recent decisions seeking confirmation** — design choices you made that the Orchestrator should sanity-check before you build further on them.
+4. **Plan for the next 30%** — concrete next steps, what you expect to deliver before the next checkpoint.
+
+The 80% checkpoint (substantially complete, awaiting verification) follows the same structure plus a Verification block: typecheck / test results in paste form, language check exit code, preflight exit code.
+
+(Origin: cross-orchestrator knowledge sharing from conteditor CTO Sprint 17 retrospective; agent-console adopted in Sprint 2026-04-28 PR #715 — agent dogfooded both checkpoints, surfacing the existing-workflow path-ignore constraint at 30% and the language-translation scope question at 80%.)
+
 ## Key Implementation Notes
 <!-- Orchestrator: Add only supplementary context NOT already in the Issue.
      Keep concise — the Issue is the source of truth.
