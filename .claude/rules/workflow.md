@@ -27,9 +27,11 @@ Before completing any code changes, always verify:
    ```
    Before merge, confirm the GitHub bot review is APPROVED. If `CHANGES_REQUESTED`, follow the resolution flow in `core-responsibilities.md` §6 (CodeRabbit "CHANGES_REQUESTED" resolution). (Sprint 2026-04-25 — verified in PRs #687 / #688 / #691 / #694.)
 
+   **CLI and GitHub bot have independent review depth.** The local CodeRabbit CLI and the GitHub-side CodeRabbit bot run on separate tokens and likely separate prompts; their findings do not always overlap. A clean local CLI pass does not guarantee a clean bot review, and vice versa. Treat the bot as an additional layer of detection rather than a fallback. **Do not merge while waiting for the bot review** — the rate-limit fallback note above defers merging only until the bot's APPROVED state is observable. (Sprint 2026-04-28 PR #711 — local CLI flagged 1 minor finding; the GitHub bot subsequently caught two Major findings the CLI had missed: an `await` propagation gap and a UTF-16 surrogate pair split. Both required follow-up commits before merge.)
+
    **Pre-merge checks vs Review state — both required for "clean".** GitHub surfaces CodeRabbit info in two distinct layers that are easy to confuse:
    - **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) — metadata validation, displayed as "5/5 passed" in the GitHub UI. **Not** code review.
-   - **Review state** (`gh pr view <N> --json reviewDecision`) — actual code-review verdict. Only `APPROVED` (or empty when no review submitted yet) counts as passing.
+   - **Review state** (`gh pr view <N> --json reviewDecision`) — actual code-review verdict. Only `APPROVED` counts as a passing verdict. An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception: under the rate-limit fallback above, an empty state may persist; in that exception path, follow the fallback's verification steps before merge.)
    - **Inline comments** (`gh api repos/<owner>/<repo>/pulls/<N>/comments`) — must be addressed if actionable.
 
    "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
@@ -89,6 +91,24 @@ Common categories that look like "infra" but are actually code:
 - Test fixture state divergence between local and CI (look for tests that pass locally but fail CI — usually local fixture leakage from a previous run)
 
 (Lesson: Sprint 2026-04-27 PR #703 — agent diagnosed a `TS2353 'getConditionalWakeupCleanupCallback' does not exist in type 'SessionDeletionDeps'` error as an "infra problem" and asked the Orchestrator how to investigate, when the type-definition file was in their own diff three lines away from the error site.)
+
+**Reverse case — common categories that look like a code bug but are actually environment differences:**
+
+The reverse failure mode is also real: CI output that locally would mean "broken helper logic" can in CI mean "the runtime that your script spawns is not on PATH". Suspect environment differences before logic when:
+
+- A script that worked locally produces nonsensical output in CI (e.g., contradictions in the output template — "Found 0 violations" alongside a non-zero exit code).
+- The output is empty or template-only, with no meaningful content where data should be.
+- Failure is on the first CI run for a freshly-added cross-runtime invocation (e.g., a `node` workflow now spawning `bun`, or vice versa).
+- The same script invoked from a different workflow on the same branch passes — only the new caller fails.
+
+**Diagnostic procedure for environment-difference suspects:**
+
+1. **Identify the spawn target** — what binary does the script try to invoke? (`spawn('bun', ...)` / `spawn('node', ...)` / `spawn('npx', ...)`)
+2. **Check the workflow yml** for the failing job — does it install or set up the target runtime? Look for `setup-bun`, `setup-node`, `actions/cache`, etc.
+3. **Trace transitive callers** — the script may be invoked indirectly. A workflow you did not touch may now depend on a runtime you added a spawn for. Cross-runtime spawn is a transitive dependency and `paths-ignore` filters do not help.
+4. **Compare with a known-passing workflow** — if a sibling workflow (`language-lint`, `test`, etc.) passes for the same script invocation, the difference is in the failing workflow's setup, not the script.
+
+(Lesson: Sprint 2026-04-28 PR #716 — `coverage-check` failed with "Found 0 violation(s) ... exit 1". The Orchestrator hypothesized a logic bug in the language-check helper. Real cause: `test-coverage-check.yml` had no `setup-bun` step, so `spawnSync('bun', ...)` returned `result.status === null`, and `null ?? 1` produced exit code 1 with empty stdout. The agent — not the Orchestrator — found the true cause by tracing the spawn ENOENT chain.)
 
 ## Commands
 

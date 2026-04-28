@@ -89,7 +89,7 @@
 - If satisfactory, summarize the result for the owner
 
 ## 6. Acceptance Check
-- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q9). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
+- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q11). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
 - **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
   ```
@@ -110,7 +110,7 @@
   - **Browser check for UI changes**: When the PR modifies client-side components (`packages/client/src/components/`) or acceptance criteria include `manual verification`, the Orchestrator must verify via Chrome DevTools MCP. Start the dev server (`bun run dev`), check the startup log for the actual port (Vite may auto-increment if the default port is in use), navigate to the affected UI, and take screenshots. Use `/browser-qa` skill if available. Do NOT skip this — automated tests alone cannot catch visual/interaction regressions. (Lesson: Sprint 2026-04-05b — port 5173 was in use, Vite silently switched to 5174.)
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
   0. **Prerequisite: CodeRabbit review must be complete** (status "pass" in `gh pr checks`). If CodeRabbit is pending or rate-limited, wait for it before starting the acceptance check. Do NOT merge a PR without a completed CodeRabbit review.
-  1. Start the acceptance check via `run_process` (see above). Answer Q1-Q9 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
+  1. Start the acceptance check via `run_process` (see above). Answer Q1-Q11 via `write_process_response`. If the script reports `[No linked Issue]`, instruct the agent to add `Closes #NNN` to the PR body before proceeding. Do not ignore this warning.
   2. If issues found -> send specific feedback to the agent with concrete fix instructions
   3. If uncertain -> resolve before proceeding:
      a. Self-investigate (read more code, grep for context)
@@ -138,8 +138,27 @@
   CodeRabbit recognizes the thread reply as resolution at the comment level but does not automatically clear `reviewDecision`. The owner UI action is the closing step. (Sprint 2026-04-25 PR #694 — flow established and verified.)
 - **Important**: Run acceptance checks in parallel when multiple PRs are ready
 - **MANDATORY: Every PR must go through both checks.**
-  - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation and rule/skill duplication invariant check. CI runs this automatically.
-  - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q9 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
+  - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation, rule/skill duplication invariant check, and public-artifact language check. CI runs this automatically.
+  - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q11 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
+
+### Concerns Surfacing Discipline
+
+Passing Q1-Q9 + Q11 does not equal "this PR is shippable". The Q-series covers code-level correctness; **PR-shape concerns** — bootstrap procedures, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility — are evaluated separately at Q10. The discipline below is what makes Q10 mechanical instead of "did I remember to think about this".
+
+**Mandatory walk before any PASS verdict:**
+
+1. **Enumerate every entry point introduced by the PR** — new MCP tools / parameters, API endpoints, CLI flags, config keys, file types, directories. If you cannot enumerate, you have not read enough of the diff yet.
+2. **For each entry point, ask "what activates it after merge?"** Bootstrap procedure (who registers it, when, where documented). Runtime prerequisites (env vars, infra dependencies, transitive workflow modifications). Cross-session / cross-runtime coupling (does another worktree / runtime / process need to know about this?). If any answer is "unclear" or "TBD", that is a concern.
+3. **Enumerate ALL concerns you noticed during the Q1-Q9 + Q11 walk** — including the ones you tentatively rationalized as "minor", "out of scope for this PR", or "we can address later". Write them out anyway. The act of writing them is the point.
+4. **Surface the concerns to the owner before the PASS verdict.** A structured report (memo update with explicit list, or a dedicated message) counts; an in-passing mention does not. The owner cannot defend you against concerns you privately rationalized away.
+5. **If any concern from Step 3 is not yet surfaced, the verdict is HOLD.** PASS is not an option. PASS-with-notes is also not an option — the discipline is mechanical because LLM self-review is structurally weak at "what else should I be worried about that I rationalized away".
+
+**Why this rule exists.** Sprint 2026-04-28 surfaced two structurally identical incidents — PR #710 (Bootstrap procedure undefined; merge would have shipped dead code) and PR #715 (preflight-check integration omitted from delegation; merge would have left the gate at 3 of 4 layers). In both cases the Orchestrator (this same skill) had read the relevant code, recognized the gap, and proceeded to PASS without surfacing it. Both were caught only because the owner happened to ask. The rule converts "owner happened to ask" into "Orchestrator surfaces unconditionally, owner decides".
+
+**Cross-references:**
+- Acceptance check Q10 — the mechanical question that enforces this walk
+- `feedback_silent_skip_findings.md` (memory) — the predecessor rule, narrowed once this section lands
+- Sprint 2026-04-28 retrospective — origin
 
 ## 7. Post-Merge Flow
 
