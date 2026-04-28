@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   isReExportOnlyContent,
   requiresTestCoverage,
+  runLanguageCheck,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -154,5 +157,74 @@ describe('preflight-check parity fix verification', () => {
     // 4. Added documentation about parity guarantee
 
     expect(true).toBe(true); // Always pass - this is documentation
+  });
+});
+
+describe('runLanguageCheck', () => {
+  function makeFixtureRoot({ withScript = true, withFixture } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'lang-helper-'));
+    if (withScript) {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      // Copy the real script so the helper exercises the actual detection.
+      const scriptSource = readFileSync('scripts/check-public-artifacts-language.mjs', 'utf-8');
+      writeFileSync(join(root, 'scripts/check-public-artifacts-language.mjs'), scriptSource);
+    }
+    if (withFixture) {
+      withFixture(root);
+    }
+    return root;
+  }
+
+  it('returns exitCode 0 with empty stdout when public artifacts are clean', () => {
+    const root = makeFixtureRoot({
+      withFixture: (r) => {
+        mkdirSync(join(r, 'docs'), { recursive: true });
+        writeFileSync(join(r, 'CLAUDE.md'), '# Pure ASCII English file.\n');
+        writeFileSync(join(r, 'docs/a.md'), 'Café résumé works.\n');
+      },
+    });
+    try {
+      const result = runLanguageCheck({ repoRoot: root });
+      expect(result.spawnFailed).toBe(false);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim().endsWith('language check clean (2 files scanned).')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns exitCode 1 with a violation list when violations exist', () => {
+    const root = makeFixtureRoot({
+      withFixture: (r) => {
+        mkdirSync(join(r, 'docs'), { recursive: true });
+        writeFileSync(join(r, 'docs/a.md'), 'Hello\n日本\n');
+      },
+    });
+    try {
+      const result = runLanguageCheck({ repoRoot: root });
+      expect(result.spawnFailed).toBe(false);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toContain('docs/a.md:2:1');
+      expect(result.stdout).toContain('U+65E5');
+      expect(result.stdout).toContain('U+672C');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags spawnFailed when the runtime binary cannot be spawned', () => {
+    const root = makeFixtureRoot();
+    try {
+      const result = runLanguageCheck({
+        repoRoot: root,
+        binary: 'definitely-not-a-real-binary-xyz',
+      });
+      expect(result.spawnFailed).toBe(true);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/Failed to spawn 'definitely-not-a-real-binary-xyz'/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

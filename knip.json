@@ -21,6 +21,11 @@
   ],
   "workspaces": {
     ".": {
+      "entry": [
+        "scripts/check-public-artifacts-language.mjs",
+        "scripts/__tests__/**/*.test.mjs"
+      ],
+      "project": ["scripts/**/*.mjs"],
       "ignoreDependencies": [
         "bumpp",
         "concurrently"

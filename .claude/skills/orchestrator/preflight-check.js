@@ -33,6 +33,11 @@ import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
 
 function printLanguageCheck(result) {
   console.log('## Language Check (public artifacts)\n');
+  if (result.spawnFailed) {
+    console.log(`❌ Could not run language check: ${result.stderr}`);
+    console.log('\nThis check requires Bun on PATH. The CI workflow must include the `oven-sh/setup-bun` step before invoking preflight-check.js.');
+    return 1;
+  }
   if (result.exitCode === 0) {
     console.log('✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
     return 0;

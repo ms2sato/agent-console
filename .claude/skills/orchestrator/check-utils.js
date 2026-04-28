@@ -414,17 +414,29 @@ export function checkProposedBehaviorCoverage(proposedItems, prDiff) {
  * @param {string} [options.repoRoot] absolute path to repo root
  * @returns {{exitCode: number, stdout: string, stderr: string}}
  */
-export function runLanguageCheck({ repoRoot } = {}) {
+export function runLanguageCheck({ repoRoot, binary = 'bun' } = {}) {
   const root = repoRoot || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
   const scriptPath = resolve(root, 'scripts/check-public-artifacts-language.mjs');
-  const result = spawnSync('bun', [scriptPath], {
+  const result = spawnSync(binary, [scriptPath], {
     cwd: root,
     encoding: 'utf-8',
   });
+  // result.error is set when the binary itself cannot be spawned (e.g. bun
+  // missing from PATH). We surface this as a distinct condition rather than
+  // letting the consumer mistake an empty stdout for "0 violations".
+  if (result.error) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Failed to spawn '${binary}': ${result.error.message}`,
+      spawnFailed: true,
+    };
+  }
   return {
     exitCode: result.status ?? 1,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
+    spawnFailed: false,
   };
 }
 
