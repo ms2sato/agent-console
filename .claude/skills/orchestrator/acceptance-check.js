@@ -4,7 +4,7 @@
  * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
  * Full acceptance check requiring human judgment. Guides the Orchestrator
- * through Q1-Q9 in an interactive session via run_process.
+ * through Q1-Q11 in an interactive session via run_process.
  *
  * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
@@ -36,7 +36,7 @@ function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q9).');
+  console.error('This script runs a full interactive acceptance check (Q1-Q11).');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
 }

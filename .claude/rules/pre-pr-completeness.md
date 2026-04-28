@@ -1,8 +1,8 @@
 # Pre-PR Completeness Gap-Scan
 
-Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this 5-question mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
+Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this 6-question mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
 
-## The five questions
+## The six questions
 
 1. **Does a similar existing mechanism already exist?**
    - `ls` the relevant directories (`.claude/rules/`, `.claude/skills/`, `.claude/skills/orchestrator/`, `scripts/`, `packages/*/src/`)
