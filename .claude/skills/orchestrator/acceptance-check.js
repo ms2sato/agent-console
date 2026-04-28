@@ -27,6 +27,7 @@ import {
   getProposedBehavior,
   getPrDiff,
   checkProposedBehaviorCoverage,
+  runLanguageCheck,
 } from './check-utils.js';
 
 // --- Utility ---
@@ -91,6 +92,7 @@ function runAutoDetection(prNumber) {
   }
 
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
+  const languageCheck = runLanguageCheck();
 
   return {
     changedFiles,
@@ -104,6 +106,7 @@ function runAutoDetection(prNumber) {
     proposedBehaviorCoverage,
     ciStatus,
     integrationTestNeeds,
+    languageCheck,
   };
 }
 
@@ -178,8 +181,32 @@ function printProposedBehaviorCoverage(proposedBehaviorCoverage, linkedIssue) {
   }
 }
 
+function printLanguageCheck(languageCheck) {
+  console.log('[Public Artifacts Language Check]');
+  if (!languageCheck) {
+    console.log('  ⚠ Could not run language check');
+    console.log();
+    return;
+  }
+  if (languageCheck.exitCode === 0) {
+    console.log('  ✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
+  } else {
+    const violationLines = languageCheck.stdout.split('\n').filter((l) => l.trim().length > 0);
+    console.log(`  ❌ FAIL — ${violationLines.length} violation(s) found.`);
+    console.log('  First entries:');
+    for (const line of violationLines.slice(0, 5)) {
+      console.log(`    ${line}`);
+    }
+    if (violationLines.length > 5) {
+      console.log(`    ... (${violationLines.length - 5} more)`);
+    }
+    console.log('  Run `bun run check:lang` to see full details.');
+  }
+  console.log();
+}
+
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, proposedBehaviorCoverage, ciStatus, integrationTestNeeds } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, proposedBehaviorCoverage, ciStatus, integrationTestNeeds, languageCheck } = autoDetection;
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
@@ -248,6 +275,9 @@ function printAutoDetection(autoDetection) {
   // Integration test coverage
   printIntegrationTestCoverage(integrationTestNeeds);
 
+  // Public-artifact language check
+  printLanguageCheck(languageCheck);
+
   // Package boundary analysis
   if (boundaries.length > 0) {
     console.log('[Package Boundary Alerts]');
@@ -315,7 +345,7 @@ function printIntegrationTestAdequacy(linkedIssue) {
   console.log();
 }
 
-function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false } = {}) {
+function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, languageCheckFailed = false } = {}) {
   const q2Extra = integrationTestMissing
     ? '\n  ⚠ Integration test が未追加です。この変更で integration test が不要な理由を説明してください。不要な場合はその根拠を、必要な場合はエージェントに追加指示してください。'
     : '';
@@ -403,6 +433,24 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false } 
       insufficient: '"Glossary looks fine" (without listing introduced identifiers and grepping each)',
       sufficient: '"PR adds `assignee` parameter to delegate_to_worktree (MCP tool param) and `assigned_at` timestamp field to sessions table (DB schema field). Grepped docs/glossary.md: `assignee` entry exists at line 81 (added in PR #682). `assigned_at` is missing — instructed agent to add a Multi-User Identity entry. No other new domain identifiers in this PR."',
     },
+    {
+      key: 'q11',
+      text: languageCheckFailed
+        ? 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check FAILED. Confirm the listed violations are addressed (translated to English or replaced with a Latin/Greek/Cyrillic-script equivalent) before merge, or instruct the agent to fix.'
+        : 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check passed. Confirm there are no remaining non-Latin-script Letter characters in public artifacts (docs/, .claude/, CLAUDE.md). If the PR diff adds new public-artifact text, did you spot-check it?',
+      focus: [
+        'See `.claude/rules/workflow.md` Language Policy.',
+        'Mechanical procedure:',
+        '  1. Inspect the [Public Artifacts Language Check] section above.',
+        '  2. If FAILED, instruct the agent to translate or replace each violation.',
+        '  3. If PASSED, you may answer "PASS — auto-detection clean" or spot-check a sample of public-artifact files in the diff.',
+        'If the PR does not modify any file under docs/, .claude/, or CLAUDE.md, it is acceptable to answer "N/A — PR scope does not modify public artifacts" with a one-line justification.',
+      ].join('\n  '),
+      insufficient: '"Looks fine" (without inspecting the Public Artifacts Language Check section)',
+      sufficient: languageCheckFailed
+        ? '"Auto-detection reported 3 violations in docs/glossary.md L82-87 (Japanese phrases). Instructed agent to translate to English; verified the follow-up commit before re-running acceptance."'
+        : '"Auto-detection reported PASS. PR adds 2 new sections in docs/design/foo.md; spot-checked both — pure ASCII English."',
+    },
   ];
 }
 
@@ -454,7 +502,8 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
   const integrationTestMissing = autoDetection.integrationTestNeeds
     && (autoDetection.integrationTestNeeds.isCrossPackage || autoDetection.integrationTestNeeds.hasSharedChanges)
     && !autoDetection.integrationTestNeeds.hasIntegrationTestInPr;
-  const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing });
+  const languageCheckFailed = !!autoDetection.languageCheck && autoDetection.languageCheck.exitCode !== 0;
+  const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing, languageCheckFailed });
   const answers = {};
   const readResponse = createStdinReader(stdin);
 

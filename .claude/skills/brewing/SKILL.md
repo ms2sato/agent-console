@@ -5,7 +5,7 @@ description: Evaluate a merged PR against the architectural-invariants catalog a
 
 # Brewing: Architectural Invariant Proposal Rubric
 
-This skill is the rubric for **醸造 (brewing)** — the process of surfacing new cross-cutting architectural invariants from the evolving codebase.
+This skill is the rubric for **brewing** — the process of surfacing new cross-cutting architectural invariants from the evolving codebase.
 
 A brewing session takes a single merged PR, asks *"did this PR reveal a class of bug or constraint that should be captured as a new I-N entry?"*, and either writes a draft proposal or records a skip.
 

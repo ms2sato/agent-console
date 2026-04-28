@@ -5,8 +5,10 @@
  * analysis, and package boundary analysis.
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 // --- Utility functions ---
 
@@ -396,6 +398,46 @@ export function checkProposedBehaviorCoverage(proposedItems, prDiff) {
       matchedKeywords,
     };
   });
+}
+
+// --- Public-artifact language check ---
+
+/**
+ * Run scripts/check-public-artifacts-language.mjs and return its result.
+ *
+ * The Bun script is the source of truth for the detection regex and the
+ * file:line:col output format; this helper just spawns it so that
+ * preflight-check.js and acceptance-check.js can share the same verdict
+ * without duplicating the regex or the glob walk.
+ *
+ * @param {object} [options]
+ * @param {string} [options.repoRoot] absolute path to repo root
+ * @returns {{exitCode: number, stdout: string, stderr: string}}
+ */
+export function runLanguageCheck({ repoRoot, binary = 'bun' } = {}) {
+  const root = repoRoot || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const scriptPath = resolve(root, 'scripts/check-public-artifacts-language.mjs');
+  const result = spawnSync(binary, [scriptPath], {
+    cwd: root,
+    encoding: 'utf-8',
+  });
+  // result.error is set when the binary itself cannot be spawned (e.g. bun
+  // missing from PATH). We surface this as a distinct condition rather than
+  // letting the consumer mistake an empty stdout for "0 violations".
+  if (result.error) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Failed to spawn '${binary}': ${result.error.message}`,
+      spawnFailed: true,
+    };
+  }
+  return {
+    exitCode: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    spawnFailed: false,
+  };
 }
 
 // --- CI status check ---
