@@ -5,10 +5,31 @@ Each hook is a single executable invoked by the Claude Code runtime at a
 specific lifecycle event; the runtime pipes the event JSON to stdin and acts
 on the script's stdout / exit code.
 
+## Prerequisites
+
+`enforce-permissions.sh` (the `PreToolUse` hook) parses its event JSON with
+`jq`. If `jq` is not on `PATH`, the hook fail-closes on every
+`Bash|Read|Write|Edit` invocation and the agent deadlocks (see Issue #730).
+Install `jq` once per environment:
+
+```bash
+brew install jq        # macOS (Homebrew)
+apt-get install jq     # Debian/Ubuntu
+dnf install jq         # Fedora / RHEL 8+
+yum install jq         # RHEL 7 / older
+pacman -S jq           # Arch Linux
+```
+
+`check-prerequisites.sh` runs at `SessionStart` and verifies this — if `jq`
+is missing it prints the install one-liners above and exits non-zero, so the
+deadlock surfaces as an actionable error before the first tool call rather
+than as a silent string of denied operations.
+
 ## Hooks in this repository
 
 | Script                     | Event         | Matcher              | Purpose                                                           |
 | -------------------------- | ------------- | -------------------- | ----------------------------------------------------------------- |
+| `check-prerequisites.sh`   | `SessionStart`| (any)                | Verify external prerequisites (`jq`) are on PATH; fail fast otherwise |
 | `gh-setup.sh`              | `SessionStart`| (any)                | Install `gh` CLI on Claude Code on the Web                         |
 | `enforce-permissions.sh`   | `PreToolUse`  | `Bash\|Read\|Write\|Edit` | Reject catastrophic / credential-touching operations              |
 

@@ -9,6 +9,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "./.claude/hooks/check-prerequisites.sh"
+          },
+          {
+            "type": "command",
             "command": "./.claude/hooks/gh-setup.sh"
           }
         ]
