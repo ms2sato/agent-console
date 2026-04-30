@@ -121,4 +121,68 @@ describe('scripts/install-hooks.mjs', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('source missing');
   });
+
+  it('binds the symlink target to the main worktree, not cwd, when run from a linked worktree (Issue #728)', () => {
+    // Reproduces the original bug: install was run from a linked worktree, so
+    // `path.resolve(source)` (cwd-bound) embedded the worktree path into the
+    // symlink target. Removing the worktree silently disabled the hook.
+    const add = spawnSync('git', ['add', '.'], { cwd: sandbox, encoding: 'utf8' });
+    expect(add.status).toBe(0);
+    const commit = spawnSync(
+      'git',
+      [
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'user.name=test',
+        'commit',
+        '-q',
+        '-m',
+        'init',
+      ],
+      { cwd: sandbox, encoding: 'utf8' },
+    );
+    expect(commit.status).toBe(0);
+
+    // git worktree add wants the destination to not exist yet.
+    const linkedWorktree = join(
+      tmpdir(),
+      `install-hooks-linked-${process.pid}-${Date.now()}`,
+    );
+    const addResult = spawnSync(
+      'git',
+      ['worktree', 'add', '-q', '-b', 'wt-test-728', linkedWorktree],
+      { cwd: sandbox, encoding: 'utf8' },
+    );
+    expect(addResult.status).toBe(0);
+
+    try {
+      // No GIT_DIR override — let git auto-detect via the linked worktree's
+      // .git pointer file, exactly as in the real bug scenario.
+      const result = spawnSync('bun', [INSTALL_SCRIPT], {
+        encoding: 'utf8',
+        cwd: linkedWorktree,
+      });
+      expect(result.status).toBe(0);
+
+      // Hooks dir is the shared common dir at <sandbox>/.git/hooks.
+      const target = join(hooksDir, 'commit-msg');
+      expect(lstatSync(target).isSymbolicLink()).toBe(true);
+      const link = readlinkSync(target);
+
+      // The symlink target must NOT mention the linked worktree path —
+      // that was the bug and the regression we are guarding against.
+      expect(link).not.toContain(linkedWorktree);
+
+      // Resolved, the symlink points to the main worktree's source.
+      expect(realpathSync(resolve(hooksDir, link))).toBe(
+        realpathSync(resolve(sandbox, 'scripts/git-hooks/commit-msg')),
+      );
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', linkedWorktree], {
+        cwd: sandbox,
+      });
+      rmSync(linkedWorktree, { recursive: true, force: true });
+    }
+  });
 });
