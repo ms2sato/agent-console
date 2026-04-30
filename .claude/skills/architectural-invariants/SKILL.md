@@ -12,6 +12,7 @@ This skill is a catalog of **meta-invariants** — cross-cutting architectural r
 1. **During design/implementation**: for each invariant, ask "does this change interact with this invariant?" If yes, verify the invariant holds.
 2. **During review**: mechanically walk the catalog against the change. Any "maybe" is a question to raise with the author.
 3. **In acceptance check**: the Orchestrator explicitly checks each applicable invariant before approving a PR.
+4. **When evaluating Issue alternatives**: if the Issue offers multiple "acceptable" implementation choices, walk the catalog against EACH alternative — not just the chosen one. The walk may surface a structural reason to reject one alternative the Issue author considered acceptable. Stating "both acceptable" in an Issue is a hint to verify, not a license to skip the walk. (Sprint 2026-04-30 PR #738 — Issue #735 listed `|| echo` and `test -d .git &&` as both acceptable; an upfront I-7 Enumeration Exhaustiveness walk against alternative #2 found that `.git` is a *file* in linked worktrees, making `test -d` a silent skip — the alternative was rejected before implementation.)
 
 The catalog is deliberately short. Each entry is a high-leverage pattern whose violation is easy for humans to miss and hard to catch with per-file review.
 
