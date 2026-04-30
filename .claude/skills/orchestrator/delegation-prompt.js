@@ -107,7 +107,7 @@ Quick reference (full details in the skill file):
 - **I-6 Boundary Validation** — external values validated with a schema before use.
 
 ## Test Placement (mandatory)
-For every production file you change or add, the corresponding test file **must** be placed in a sibling \`__tests__/\` directory at the same level — \`path/to/foo.ts\` → \`path/to/__tests__/foo.test.ts\`. Parent-directory placement (e.g., a test for \`services/inbound/foo.ts\` placed at \`services/__tests__/foo.test.ts\`) does **not** satisfy the \`coverage-check\` rule and will fail CI on first push. See \`testing.md\` "Test File Naming Convention".
+For every production file you change or add, the corresponding test file **must** be placed in a sibling \`__tests__/\` directory at the same level — \`path/to/foo.ts\` → \`path/to/__tests__/foo.test.ts\`. Parent-directory placement (e.g., a test for \`services/inbound/foo.ts\` placed at \`services/__tests__/foo.test.ts\`) does **not** satisfy the \`preflight\` rule and will fail CI on first push. See \`testing.md\` "Test File Naming Convention".
 
 ## Boundary Values (mandatory in tests)
 Per \`design-principles.md\` "Specify boundary values in design briefs", initial test sets must cover boundary inputs, not just the happy path. For each contract you implement (predicate, validator, classifier, aggregator, splitter, transformer), write tests for: empty input (\`length === 0\`), single element, all-success, all-failure, mixed terminal / non-terminal. **Vacuous truth** (\`[].every() === true\`, \`[].some() === false\`) is a recurring blind-spot.
