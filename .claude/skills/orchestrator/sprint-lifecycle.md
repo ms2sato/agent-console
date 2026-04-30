@@ -93,10 +93,11 @@ Answer `Y` (default) at the `Continue to retro questions?` prompt to proceed to 
 - Use `EnterWorktree` when the first improvement is agreed upon; commit all subsequent improvements to the same worktree
 - Merge before the retrospective completes — the next Orchestrator needs the updated skills
 
-**Sprint closure spans the retro PR merge** (Step 7 of `sprint-retro.js`):
+**Sprint closure spans the retro PR merge** (Steps 7 & 8 of `sprint-retro.js`):
 - Steps 1–6 finish before the retrospective PR exists, so the retro PR's own merge state cannot be captured during script execution.
 - After the retro PR is merged, the Orchestrator MUST update `project_sprint_status.md`, `MEMORY.md`, and `project_pending_triage_list.md` to reflect the final merged state. Without this final pass, the sprint pointer drifts (status memo stays "merge-pending", MEMORY.md lags one sprint, triage misses the retro PR).
-- Step 7 of `sprint-retro.js` instructs the Orchestrator to create a TaskCreate task pinned to the retro PR number so the deferred sync is not lost between conversation compactions.
+- **Step 7 (write)** instructs the Orchestrator to create a TaskCreate task pinned to the retro PR number so the deferred sync is not lost between conversation compactions.
+- **Step 8 (verify, mechanical)** runs a `gh pr list --search "merged:>=<sprint-start>"` scan and grep against the three memory files to flag any PR that was not captured by Step 7. This catches post-retro follow-up improvement PRs, brewing-log batch PRs, and hot-fix PRs that landed after Step 5 — none of which are in Step 7's narrow retro-PR scope. Step 8 converts "did I remember everything?" (LLM-weak) into "scan + grep diff" (mechanical).
 
 ## Sprint End Proposal Conditions
 
