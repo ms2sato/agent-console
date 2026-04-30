@@ -59,7 +59,7 @@ Before completing any code changes, always verify:
 A task or PR is "done" only when ALL of the following hold. Reporting "ready for merge" or "implementation complete" without all eight causes Orchestrator hand-hold cycles and erodes trust in completion reports.
 
 1. **Production code is implemented** — the feature / fix exists in the source tree.
-2. **Corresponding tests are added** — placed in the sibling `__tests__/` directory per `testing.md` "Test File Naming Convention" (production `path/to/foo.ts` → test `path/to/__tests__/foo.test.ts`). Parent-directory `__tests__/` placement does not satisfy `coverage-check`.
+2. **Corresponding tests are added** — placed in the sibling `__tests__/` directory per `testing.md` "Test File Naming Convention" (production `path/to/foo.ts` → test `path/to/__tests__/foo.test.ts`). Parent-directory `__tests__/` placement does not satisfy `preflight`.
 3. **Local verification passes** — `bun run typecheck && bun run test` exit 0, full suite paste per the Verification Checklist (Step 1 / Step 2 above).
 4. **Changes are committed** with conventional commit format (`type: description`) — see Commit Standards below.
 5. **Branch is pushed to origin**.
@@ -79,7 +79,7 @@ gh run view <run_id> --log-failed | tail -80
 
 Diagnostic steps:
 
-1. **Read the failure step** — typecheck, test, build, coverage-check, lint each have distinct failure shapes.
+1. **Read the failure step** — typecheck, test, build, preflight, lint each have distinct failure shapes.
 2. **Correlate with your changes** — does the failing file appear in your diff? Is the error message tied to a symbol you renamed / added / removed?
 3. **Compare to previous CI run on the same branch** — if the previous run passed, only your last commits could have caused the failure.
 4. **If the cause is genuinely opaque after the above**, ask the Orchestrator before pushing speculative fixes. Speculative pushes that only adjust adjacent code without identifying the root cause cycle CI for nothing.
@@ -87,7 +87,7 @@ Diagnostic steps:
 Common categories that look like "infra" but are actually code:
 
 - TypeScript error in a file the agent didn't realize they touched (e.g., a shared type rename propagated unexpectedly)
-- Missing test for a newly-added production file (preflight `coverage-check` failure with explicit "expected: …" path)
+- Missing test for a newly-added production file (`preflight` failure with explicit "expected: …" path)
 - Test fixture state divergence between local and CI (look for tests that pass locally but fail CI — usually local fixture leakage from a previous run)
 
 (Lesson: Sprint 2026-04-27 PR #703 — agent diagnosed a `TS2353 'getConditionalWakeupCleanupCallback' does not exist in type 'SessionDeletionDeps'` error as an "infra problem" and asked the Orchestrator how to investigate, when the type-definition file was in their own diff three lines away from the error site.)

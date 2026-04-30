@@ -1,11 +1,11 @@
-name: Test Coverage Check
+name: Preflight Check
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
-  coverage-check:
+  preflight:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -17,6 +17,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      # preflight-check.js spawns `bun` internally for the language-check helper.
+      # Required even though the script itself is invoked via `node`.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -27,16 +29,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node .claude/skills/orchestrator/preflight-check.js ${{ github.event.pull_request.number }} > coverage-result.txt 2>&1 || true
-          cat coverage-result.txt
+          node .claude/skills/orchestrator/preflight-check.js ${{ github.event.pull_request.number }} > preflight-result.txt 2>&1 || true
+          cat preflight-result.txt
 
       - name: Post PR comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: test-coverage-check
-          path: coverage-result.txt
+          header: preflight-check
+          path: preflight-result.txt
 
-      - name: Fail if gaps detected
+      - name: Run preflight invariants
         env:
           GH_TOKEN: ${{ github.token }}
         run: node .claude/skills/orchestrator/preflight-check.js ${{ github.event.pull_request.number }}
