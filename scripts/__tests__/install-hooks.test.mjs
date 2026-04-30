@@ -186,3 +186,104 @@ describe('scripts/install-hooks.mjs', () => {
     }
   });
 });
+
+describe('scripts/install-hooks.mjs in a non-git environment (Issue #735)', () => {
+  let nonGitSandbox;
+
+  beforeEach(() => {
+    nonGitSandbox = mkdtempSync(join(tmpdir(), 'install-hooks-nogit-'));
+    // Mirror the repo's scripts/ tree so the postinstall command's
+    // cwd-relative path `bun scripts/install-hooks.mjs` resolves inside
+    // the sandbox the same way `bun install` would resolve it at the
+    // repo root.
+    mkdirSync(join(nonGitSandbox, 'scripts/git-hooks'), { recursive: true });
+    copyFileSync(
+      INSTALL_SCRIPT,
+      join(nonGitSandbox, 'scripts/install-hooks.mjs'),
+    );
+    copyFileSync(
+      SOURCE_HOOK,
+      join(nonGitSandbox, 'scripts/git-hooks/commit-msg'),
+    );
+    chmodSync(join(nonGitSandbox, 'scripts/git-hooks/commit-msg'), 0o755);
+  });
+
+  afterEach(() => {
+    rmSync(nonGitSandbox, { recursive: true, force: true });
+  });
+
+  // GIT_CEILING_DIRECTORIES stops git from walking up past the sandbox to
+  // discover the real repo's .git that contains this test file. Without
+  // it, `git rev-parse` succeeds on dev machines and the no-git scenario
+  // is unreachable.
+  function envWithCeiling() {
+    return { ...process.env, GIT_CEILING_DIRECTORIES: nonGitSandbox };
+  }
+
+  it('install-hooks.mjs exits non-zero when no .git is reachable', () => {
+    const result = spawnSync(
+      'bun',
+      [join(nonGitSandbox, 'scripts/install-hooks.mjs')],
+      { encoding: 'utf8', cwd: nonGitSandbox, env: envWithCeiling() },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('git rev-parse');
+  });
+
+  it('package.json#scripts.postinstall fails soft (exit 0) when no .git is reachable', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'),
+    );
+    const postinstallCmd = pkg.scripts.postinstall;
+    expect(postinstallCmd).toContain('bun scripts/install-hooks.mjs');
+    expect(postinstallCmd).toContain('||');
+
+    const result = spawnSync('sh', ['-c', postinstallCmd], {
+      encoding: 'utf8',
+      cwd: nonGitSandbox,
+      env: envWithCeiling(),
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('skipped');
+  });
+});
+
+describe('scripts/install-hooks.mjs invoked via package.json#postinstall in a git repo (Issue #735)', () => {
+  let sandbox;
+  let hooksDir;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'install-hooks-postinstall-'));
+    mkdirSync(join(sandbox, 'scripts/git-hooks'), { recursive: true });
+    copyFileSync(INSTALL_SCRIPT, join(sandbox, 'scripts/install-hooks.mjs'));
+    copyFileSync(SOURCE_HOOK, join(sandbox, 'scripts/git-hooks/commit-msg'));
+    chmodSync(join(sandbox, 'scripts/git-hooks/commit-msg'), 0o755);
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: sandbox });
+    hooksDir = join(sandbox, '.git', 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('running the postinstall command string installs the symlink (mirrors `bun install` behavior)', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'),
+    );
+    const postinstallCmd = pkg.scripts.postinstall;
+
+    const result = spawnSync('sh', ['-c', postinstallCmd], {
+      encoding: 'utf8',
+      cwd: sandbox,
+      env: { ...process.env, GIT_DIR: join(sandbox, '.git') },
+    });
+    expect(result.status).toBe(0);
+    const target = join(hooksDir, 'commit-msg');
+    const stat = lstatSync(target);
+    expect(stat.isSymbolicLink()).toBe(true);
+    expect(realpathSync(resolve(hooksDir, readlinkSync(target)))).toBe(
+      realpathSync(resolve(sandbox, 'scripts/git-hooks/commit-msg')),
+    );
+  });
+});
