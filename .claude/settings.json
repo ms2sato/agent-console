@@ -13,6 +13,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/enforce-permissions.sh"
+          }
+        ]
+      }
     ]
   }
 }
