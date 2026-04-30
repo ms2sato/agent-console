@@ -17,6 +17,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      # preflight-check.js spawns `bun` internally for the language-check helper.
+      # Required even though the script itself is invoked via `node`.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
