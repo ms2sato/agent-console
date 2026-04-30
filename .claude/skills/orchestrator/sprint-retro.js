@@ -175,6 +175,33 @@ function getSteps() {
         'Report what was shared (or "no other sessions" / "skipped").',
       ],
     },
+    {
+      key: 'final_memory_sync',
+      title: 'Step 7: Final Memory Sync (post-merge)',
+      instructions: [
+        'This step closes the sprint memory state AFTER the retrospective PR is merged.',
+        'Step 5 (Memory Write-Out) ran before the retro PR existed, so the retro PR\'s',
+        'own merge cannot be captured at that point. Without this final pass, the sprint',
+        'pointer drifts: status memo says "owner-merge-pending" forever, MEMORY.md index',
+        'lags one sprint behind, the triage list misses the retro PR.',
+        '',
+        'After the retrospective PR is merged, update all three files:',
+        '  1. memory/project_sprint_status.md — flip retro PR row from "open" to merged,',
+        '     update front-matter description to reflect final state',
+        '  2. memory/MEMORY.md — update the Sprint status pointer line to the final',
+        '     sentence (e.g., "Sprint YYYY-MM-DD 完了 (PRs #A/#B/#R all merged: ...)")',
+        '  3. memory/project_pending_triage_list.md — add the retro PR to the sprint\'s',
+        '     Merged section (it was opened during retro, so it was not yet there in Step 1)',
+        '',
+        'Reliable execution pattern: create a TaskCreate task "final memory sync (post-merge)"',
+        'tagged with the retro PR number. Mark in_progress when the merge is observed,',
+        'completed after the 3 files are updated. Do not rely on memory of "I should sync",',
+        'rely on the task list.',
+        '',
+        'Report acknowledgement of the deferred action (e.g., "task created, will sync',
+        'after merge of PR #NNN").',
+      ],
+    },
   ];
 }
 
