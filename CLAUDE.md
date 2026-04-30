@@ -11,6 +11,28 @@ Monorepo with Bun workspaces:
 - `packages/server` - Bun backend with Hono framework and native WebSocket
 - `packages/shared` - Shared types and utilities
 
+## Initial setup
+
+```bash
+bun install
+```
+
+`bun install` runs a `postinstall` step that installs the repository's git hooks (currently the `commit-msg` language check) into `.git/hooks/`. The step fails soft when `.git` is not present (e.g., Docker images, non-git checkouts) so it never breaks `bun install` itself.
+
+If the postinstall was skipped or you want to re-run it manually:
+
+```bash
+bun run hooks:install
+```
+
+Verify the hook is in place:
+
+```bash
+ls -la "$(git rev-parse --git-path hooks)/commit-msg"
+```
+
+Hook policy details and the rationale for the symlink-first / copy-fallback strategy are documented in [`.claude/hooks/README.md`](.claude/hooks/README.md).
+
 ## Core Concepts
 
 - **Session**: A working context tied to a worktree or arbitrary directory. Each session can have multiple workers.
