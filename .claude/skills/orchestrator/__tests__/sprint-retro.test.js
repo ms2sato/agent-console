@@ -48,9 +48,9 @@ function createMockStdin(answers) {
 // --- Tests ---
 
 describe('getSteps', () => {
-  it('returns 7 steps', () => {
+  it('returns 8 steps', () => {
     const steps = getSteps();
-    expect(steps).toHaveLength(7);
+    expect(steps).toHaveLength(8);
   });
 
   it('returns steps with expected keys in order', () => {
@@ -64,7 +64,18 @@ describe('getSteps', () => {
       'apply_improvements',
       'memory_writeout',
       'cross_project',
+      'final_memory_sync',
     ]);
+  });
+
+  it('final_memory_sync step instructs post-merge update of 3 memory files', () => {
+    const steps = getSteps();
+    const finalSync = steps.find(s => s.key === 'final_memory_sync');
+    const text = finalSync.instructions.join('\n');
+    expect(text).toContain('project_sprint_status.md');
+    expect(text).toContain('MEMORY.md');
+    expect(text).toContain('project_pending_triage_list.md');
+    expect(text).toContain('After the retrospective PR is merged');
   });
 
   it('each step has title and instructions', () => {
@@ -199,7 +210,7 @@ describe('runRetro', () => {
     logSpy.mockRestore();
   });
 
-  it('runs through all 7 steps and prints summary', async () => {
+  it('runs through all 8 steps and prints summary', async () => {
     const answers = [
       'Removed old item from triage',
       'Cleaned wt-001',
@@ -208,6 +219,7 @@ describe('runRetro', () => {
       'Updated CLAUDE.md rule',
       'Deleted stale memory',
       'No other sessions',
+      'Task created, will sync after merge of PR #NNN',
     ];
     const stdin = createMockStdin(answers);
     await runRetro({ stdin, metricsRunner: async () => ({ proceed: true }) });
@@ -236,7 +248,7 @@ describe('runRetro', () => {
   });
 
   it('presents steps in correct order', async () => {
-    const answers = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'];
+    const answers = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8'];
     const stdin = createMockStdin(answers);
     await runRetro({ stdin, metricsRunner: async () => ({ proceed: true }) });
     const output = logs.join('\n');
@@ -251,18 +263,18 @@ describe('runRetro', () => {
   });
 
   it('collects responses and maps them to step keys', async () => {
-    const answers = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+    const answers = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8'];
     const stdin = createMockStdin(answers);
     await runRetro({ stdin, metricsRunner: async () => ({ proceed: true }) });
     const output = logs.join('\n');
 
     // Summary should contain all responses
     expect(output).toContain('r1');
-    expect(output).toContain('r7');
+    expect(output).toContain('r8');
   });
 
   it('handles empty responses gracefully', async () => {
-    const answers = ['', '', '', '', '', '', ''];
+    const answers = ['', '', '', '', '', '', '', ''];
     const stdin = createMockStdin(answers);
     await runRetro({ stdin, metricsRunner: async () => ({ proceed: true }) });
     const output = logs.join('\n');
@@ -276,7 +288,7 @@ describe('runRetro', () => {
   });
 
   it('aborts without running steps if metrics block returns proceed:false', async () => {
-    const answers = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'];
+    const answers = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8'];
     const stdin = createMockStdin(answers);
     await runRetro({ stdin, metricsRunner: async () => ({ proceed: false }) });
     const output = logs.join('\n');
