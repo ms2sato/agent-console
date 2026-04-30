@@ -69,6 +69,11 @@ function installOne({ name, source }, hooksDir) {
       const sourceContent = readFileSync(sourceAbs, 'utf8');
       const targetContent = readFileSync(target, 'utf8');
       if (sourceContent === targetContent) {
+        // Normalize the executable bit. Git ignores hooks that are not
+        // executable (e.g., the file was edited and re-saved with mode
+        // 0644), and the same-content shortcut would otherwise leave that
+        // broken state in place.
+        chmodSync(target, 0o755);
         console.log(`hooks:install — already installed (copy): ${target}`);
         return;
       }
