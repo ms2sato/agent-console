@@ -246,14 +246,15 @@ This rule does not apply to design docs under `docs/design/` where architectural
 
 `scripts/check-public-artifacts-language.mjs` is the canonical check. It scans `CLAUDE.md`, `docs/**/*.md`, `.claude/rules/**/*.md`, `.claude/skills/**/*.md`, and `.claude/agents/**/*.md` for any Letter character (`\p{L}`) that is not in the Latin / Greek / Cyrillic scripts. The detection is language-agnostic: it does not hard-code Japanese or any other writing system, so adding a new public artifact in any other script (Han, Hangul, Arabic, Hebrew, Devanagari, Thai, ...) fails the same way.
 
-The check runs at four points:
+The check runs at five points:
 
 1. **Local (any time):** `bun run check:lang` — quick ad-hoc verification.
-2. **Pre-PR preflight:** `node .claude/skills/orchestrator/preflight-check.js` — runs the language check alongside the test-coverage and rule-skill-duplication invariants. Non-zero exit blocks PR readiness.
-3. **CI:** `.github/workflows/language-lint.yml` — fires on changes under `docs/`, `.claude/`, and any `*.md`. Failure blocks merge.
-4. **Acceptance Q11:** `.claude/skills/orchestrator/acceptance-check.js` — auto-detects the verdict and asks the Orchestrator to confirm before merge.
+2. **Commit-msg git hook (recommended setup):** `bun run hooks:install` installs `scripts/git-hooks/commit-msg` into the repository's hooks directory (idempotent, symlink with copy fallback). The hook pipes the prepared commit message through the language check in stdin mode and rejects the commit on any violation. This is opt-in but strongly recommended — it surfaces commit-message violations at commit time, before push, while the CI / preflight gates only scan files. The hook resolves the script path via `git rev-parse --show-toplevel`, so it works correctly across linked worktrees once installed once at the common hooks dir.
+3. **Pre-PR preflight:** `node .claude/skills/orchestrator/preflight-check.js` — runs the language check alongside the test-coverage and rule-skill-duplication invariants. Non-zero exit blocks PR readiness.
+4. **CI:** `.github/workflows/language-lint.yml` — fires on changes under `docs/`, `.claude/`, and any `*.md`. Failure blocks merge.
+5. **Acceptance Q11:** `.claude/skills/orchestrator/acceptance-check.js` — auto-detects the verdict and asks the Orchestrator to confirm before merge.
 
-Output format is consistent across all four entry points: `file:LINE:COL CHAR U+CODEPOINT`, one line per violation.
+Output format is consistent across all entry points: `file:LINE:COL CHAR U+CODEPOINT`, one line per violation. The commit-msg hook reports violations under the virtual filename `<stdin>`.
 
 ## Claude Code on the Web (Remote Environment)
 

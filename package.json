@@ -17,6 +17,7 @@
     "test:scripts": "bun test scripts/",
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
+    "hooks:install": "bun scripts/install-hooks.mjs",
     "lint": "bun run lint:structure",
     "lint:structure": "bun run lint:deps && bun run lint:cycles && bun run lint:unused",
     "lint:deps": "depcruise --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json packages",

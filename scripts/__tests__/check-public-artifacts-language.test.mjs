@@ -1,14 +1,22 @@
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
+  checkStdinText,
   findViolationsInText,
   findDefaultFiles,
   findViolationsInFile,
   formatFileViolations,
   runCheck,
 } from '../check-public-artifacts-language.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const SCRIPT_PATH = resolve(REPO_ROOT, 'scripts/check-public-artifacts-language.mjs');
+const HOOK_PATH = resolve(REPO_ROOT, 'scripts/git-hooks/commit-msg');
 
 describe('findViolationsInText — allowed cases', () => {
   it('returns no violations for empty string', () => {
@@ -280,5 +288,149 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('checkStdinText (pure function — stdin-mode core)', () => {
+  it('returns no violations for empty input (vacuous truth boundary)', () => {
+    const result = checkStdinText('');
+    expect(result.violations).toEqual([]);
+    expect(result.lines).toEqual([]);
+  });
+
+  it('returns no violations for pure ASCII single-line commit-msg', () => {
+    const result = checkStdinText('feat: add commit-msg hook for language check\n');
+    expect(result.violations).toEqual([]);
+    expect(result.lines).toEqual([]);
+  });
+
+  it('flags a single non-Latin character with the <stdin> label', () => {
+    const result = checkStdinText('日');
+    expect(result.lines).toEqual(['<stdin>:1:1 日 U+65E5']);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0].file).toBe('<stdin>');
+  });
+
+  it('flags multiple non-Latin characters across lines', () => {
+    const result = checkStdinText('feat: 機能 add\nfix bug 修正\n');
+    expect(result.lines).toEqual([
+      '<stdin>:1:7 機 U+6A5F',
+      '<stdin>:1:8 能 U+80FD',
+      '<stdin>:2:9 修 U+4FEE',
+      '<stdin>:2:10 正 U+6B63',
+    ]);
+  });
+
+  it('honors a custom label override', () => {
+    const result = checkStdinText('日', { label: '<commit-msg>' });
+    expect(result.lines).toEqual(['<commit-msg>:1:1 日 U+65E5']);
+  });
+});
+
+function runScriptStdin(input) {
+  return spawnSync('bun', [SCRIPT_PATH, '--stdin'], {
+    input,
+    encoding: 'utf8',
+    cwd: REPO_ROOT,
+  });
+}
+
+describe('check-public-artifacts-language.mjs --stdin (subprocess)', () => {
+  it('exit 0 with no output for empty stdin', () => {
+    const result = runScriptStdin('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('exit 0 for pure ASCII single-line commit-msg', () => {
+    const result = runScriptStdin('feat: add commit-msg hook for language check\n');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('exit 1 with one violation line for a single non-Latin character', () => {
+    const result = runScriptStdin('日');
+    expect(result.status).toBe(1);
+    expect(result.stdout.trim()).toBe('<stdin>:1:1 日 U+65E5');
+    expect(result.stderr).toContain('FAIL');
+  });
+
+  it('exit 1 listing all violations across multiple lines', () => {
+    const result = runScriptStdin('feat: 機能 add\nfix bug 修正\n');
+    expect(result.status).toBe(1);
+    const lines = result.stdout.trim().split('\n');
+    expect(lines).toEqual([
+      '<stdin>:1:7 機 U+6A5F',
+      '<stdin>:1:8 能 U+80FD',
+      '<stdin>:2:9 修 U+4FEE',
+      '<stdin>:2:10 正 U+6B63',
+    ]);
+  });
+
+  it('regression — file-mode behavior is unchanged when --stdin is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lang-check-stdin-regression-'));
+    try {
+      writeFileSync(join(root, 'docs.md'), 'feat: 日本\n');
+      const result = spawnSync('bun', [SCRIPT_PATH, 'docs.md'], {
+        encoding: 'utf8',
+        cwd: root,
+      });
+      expect(result.status).toBe(1);
+      const lines = result.stdout.trim().split('\n');
+      expect(lines).toEqual([
+        'docs.md:1:7 日 U+65E5',
+        'docs.md:1:8 本 U+672C',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function runHookWithFile(input) {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'commit-msg-hook-'));
+  const msgPath = join(tmpDir, 'COMMIT_EDITMSG');
+  writeFileSync(msgPath, input);
+  try {
+    return spawnSync(HOOK_PATH, [msgPath], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+describe('scripts/git-hooks/commit-msg (shell hook)', () => {
+  it('exit 0 for empty commit-msg file', () => {
+    const result = runHookWithFile('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('exit 0 for pure ASCII commit-msg', () => {
+    const result = runHookWithFile('feat: add commit-msg hook for language check\n');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('exit 1 with violation line for non-Latin commit-msg', () => {
+    const result = runHookWithFile('feat: 日本語のメッセージ\n');
+    expect(result.status).toBe(1);
+    const stdoutLines = result.stdout.trim().split('\n');
+    expect(stdoutLines[0]).toMatch(/^<stdin>:1:7 . U\+[0-9A-F]+$/);
+    expect(stdoutLines.length).toBeGreaterThan(1);
+  });
+
+  it('exit 1 listing all violations across multiple lines', () => {
+    const result = runHookWithFile('feat: 機能 add\nfix bug 修正\n');
+    expect(result.status).toBe(1);
+    const lines = result.stdout.trim().split('\n');
+    expect(lines).toEqual([
+      '<stdin>:1:7 機 U+6A5F',
+      '<stdin>:1:8 能 U+80FD',
+      '<stdin>:2:9 修 U+4FEE',
+      '<stdin>:2:10 正 U+6B63',
+    ]);
   });
 });

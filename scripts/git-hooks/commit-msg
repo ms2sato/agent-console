@@ -1,0 +1,13 @@
+#!/bin/sh
+# commit-msg hook — language check for commit messages.
+#
+# Installed by `bun run hooks:install`. Pipes the prepared commit message
+# (path passed as $1) into scripts/check-public-artifacts-language.mjs in
+# stdin mode and rejects the commit on any violation.
+#
+# See .claude/rules/workflow.md "Language Policy" and Issue #719.
+
+set -e
+
+TOPLEVEL=$(git rev-parse --show-toplevel)
+exec bun "$TOPLEVEL/scripts/check-public-artifacts-language.mjs" --stdin <"$1"

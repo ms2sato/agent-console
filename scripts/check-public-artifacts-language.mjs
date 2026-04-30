@@ -22,6 +22,11 @@
  * Usage:
  *   bun scripts/check-public-artifacts-language.mjs
  *   bun scripts/check-public-artifacts-language.mjs path/to/file.md ...
+ *   bun scripts/check-public-artifacts-language.mjs --stdin < file.txt
+ *
+ * In --stdin mode, the input is treated as a single virtual file named
+ * `<stdin>` and reported using the same `<filename>:LINE:COL CHAR U+CODEPOINT`
+ * format. This mode powers the commit-msg git hook (see scripts/git-hooks/).
  */
 
 import { Glob } from 'bun';
@@ -146,8 +151,61 @@ export async function runCheck({ cwd = process.cwd(), files } = {}) {
   };
 }
 
+/**
+ * Read all of process.stdin as a UTF-8 string.
+ *
+ * @param {NodeJS.ReadableStream} [stream]
+ * @returns {Promise<string>}
+ */
+export async function readStreamAsText(stream = process.stdin) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * Scan a single text blob (typically a commit-msg file piped via stdin) and
+ * return per-line formatted violation lines plus a summary.
+ *
+ * Pure function — no I/O — so tests can exercise it directly without spawning
+ * a subprocess to feed stdin. The CLI wrapper layers I/O on top.
+ *
+ * @param {string} text
+ * @param {object} [options]
+ * @param {string} [options.label] virtual filename used in the output prefix (default: `<stdin>`)
+ * @returns {{ violations: Array<{file: string, line: number, col: number, char: string, codepoint: string}>, lines: string[] }}
+ */
+export function checkStdinText(text, { label = '<stdin>' } = {}) {
+  const found = findViolationsInText(text);
+  const violations = found.map((v) => ({ file: label, ...v }));
+  const lines = formatFileViolations(label, found);
+  return { violations, lines };
+}
+
+async function runStdinMode() {
+  const text = await readStreamAsText();
+  const { violations, lines } = checkStdinText(text);
+  if (violations.length === 0) return 0;
+  for (const line of lines) console.log(line);
+  console.error('');
+  console.error(
+    `FAIL — ${violations.length} violation${violations.length === 1 ? '' : 's'} in commit message / stdin input.`,
+  );
+  console.error(
+    'Commit messages and other public artifacts must be written in English. ' +
+      'See .claude/rules/workflow.md "Language Policy".',
+  );
+  return 1;
+}
+
 async function main(argv) {
-  const explicit = argv.slice(2).filter((a) => !a.startsWith('-'));
+  const args = argv.slice(2);
+  const useStdin = args.includes('--stdin');
+  if (useStdin) return runStdinMode();
+
+  const explicit = args.filter((a) => !a.startsWith('-'));
   const result = await runCheck({
     files: explicit.length > 0 ? explicit : undefined,
   });
