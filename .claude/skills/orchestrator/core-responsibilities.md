@@ -153,12 +153,21 @@ Passing Q1-Q9 + Q11 does not equal "this PR is shippable". The Q-series covers c
 4. **Surface the concerns to the owner before the PASS verdict.** A structured report (memo update with explicit list, or a dedicated message) counts; an in-passing mention does not. The owner cannot defend you against concerns you privately rationalized away.
 5. **If any concern from Step 3 is not yet surfaced, the verdict is HOLD.** PASS is not an option. PASS-with-notes is also not an option — the discipline is mechanical because LLM self-review is structurally weak at "what else should I be worried about that I rationalized away".
 
+**Reporting format — the 3-piece pattern.** Each concern surfaced to the owner must include three pieces, in order:
+
+1. **The concern itself** — the specific gap, ambiguity, or risk, named in one phrase the owner can pattern-match against the code.
+2. **The Orchestrator's tentative conclusion** — your read on whether to ship as-is, defer, block, or escalate. State it explicitly; do not leave the verdict to the owner to compute.
+3. **The reasoning behind the conclusion** — the one-line justification (severity heuristic, blast radius, recovery cost, owner-attention budget). The owner overrides on this layer; the conclusion + reasoning is what makes overriding cheap.
+
+A concern with only piece 1 forces the owner to do the analysis the Orchestrator should have done. A concern with only pieces 1 and 2 forces the owner to guess at the trade-off. The 3-piece form keeps the round-trip count to one. (Lesson: Sprint 2026-04-29 PR #729 — surfacing "existing broken installs (upgrade path)" as a single sentence cost an extra round trip; with the 3-piece form, the same concern would have been "concern: existing worktrees still hold the broken symlink / conclusion: defer to manual `bun run hooks:install` for affected users / reasoning: only 1-2 affected installs, no automated migration warranted at this scale".)
+
 **Why this rule exists.** Sprint 2026-04-28 surfaced two structurally identical incidents — PR #710 (Bootstrap procedure undefined; merge would have shipped dead code) and PR #715 (preflight-check integration omitted from delegation; merge would have left the gate at 3 of 4 layers). In both cases the Orchestrator (this same skill) had read the relevant code, recognized the gap, and proceeded to PASS without surfacing it. Both were caught only because the owner happened to ask. The rule converts "owner happened to ask" into "Orchestrator surfaces unconditionally, owner decides".
 
 **Cross-references:**
 - Acceptance check Q10 — the mechanical question that enforces this walk
 - `feedback_silent_skip_findings.md` (memory) — the predecessor rule, narrowed once this section lands
 - Sprint 2026-04-28 retrospective — origin
+- Sprint 2026-04-29 retrospective — 3-piece pattern promoted from memory `feedback_concerns_three_piece.md`
 
 ## 7. Post-Merge Flow
 

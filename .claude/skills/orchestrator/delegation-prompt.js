@@ -142,7 +142,12 @@ The 80% checkpoint (substantially complete, awaiting verification) follows the s
 3. Do NOT push until both step 1 and step 2 pass.
 4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
 5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
-6. Wait for CI green, fix any issues.
+6. Wait for CI green, fix any issues. For CodeRabbit GitHub bot inline findings, push the fix commit, then acknowledge **per-comment** via the \`/replies\` endpoint — a top-level PR comment does NOT mark CodeRabbit threads resolved:
+   \`\`\`bash
+   gh api repos/<owner>/<repo>/pulls/<PR>/comments/<comment-id>/replies \\
+     -f body="Resolved in <commit-hash>: <one-line fix summary>"
+   \`\`\`
+   Get each \`comment-id\` from \`gh api repos/<owner>/<repo>/pulls/<PR>/comments\`. If a LOW / NITPICK finding is intentionally deferred (non-trivial or out-of-scope), per \`workflow.md\` Verification Checklist Step 3, add a one-line defer note in the PR body naming the finding and reason — silent skip is not acceptable.
 7. Report completion with PR URL and retrospective to Orchestrator. Your retrospective MUST include a one-line answer per applicable architectural invariant.
 `;
 
@@ -151,6 +156,10 @@ console.log(`--- Orchestrator Checklist ---
 1. Customize "Key Implementation Notes" with supplementary context
 2. Verify Issue #${issueNumber} has complete acceptance criteria (${criteria.length} found)
 3. Keep total prompt under 5000 characters (Issue holds the details)
+4. If task type matches a specialized template, paste the template's
+   "Key Implementation Notes" block:
+   - Hot-fix: .claude/skills/orchestrator/delegation-template-hot-fix.md
+   - Workflow rename: .claude/skills/orchestrator/delegation-template-workflow-rename.md
 `);
 
 } // end if (import.meta.main)
