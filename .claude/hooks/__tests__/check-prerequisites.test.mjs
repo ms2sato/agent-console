@@ -22,7 +22,7 @@ describe('check-prerequisites: jq prerequisite (Issue #730)', () => {
 
   it('exits non-zero with actionable diagnostic when jq is NOT on PATH', () => {
     const r = runHook({ env: { PATH: '/nonexistent', HOME: process.env.HOME ?? '' } });
-    expect(r.status).not.toBe(0);
+    expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/jq/);
     expect(r.stderr).toMatch(/enforce-permissions\.sh/);
     expect(r.stderr).toMatch(/brew install jq/);
@@ -31,7 +31,7 @@ describe('check-prerequisites: jq prerequisite (Issue #730)', () => {
 
   it('exits non-zero with diagnostic when PATH is empty', () => {
     const r = runHook({ env: { PATH: '', HOME: process.env.HOME ?? '' } });
-    expect(r.status).not.toBe(0);
+    expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/jq/);
   });
 });
