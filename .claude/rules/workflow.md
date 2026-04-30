@@ -20,6 +20,11 @@ Before completing any code changes, always verify:
    - **Stale `routeTree.gen.ts` caveat:** The presence-only check accepts a stale `routeTree.gen.ts` when route files have been added / renamed / removed but the generated file was not regenerated. After modifying anything under `packages/client/src/routes/`, delete `packages/client/src/routeTree.gen.ts` (or run `bun run build`) before relying on `bun run typecheck`.
 3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
 
+   **LOW / NITPICK findings policy.** Read every finding regardless of severity. For LOW / NITPICK / "minor" findings:
+   - **Address inline if the fix is cheap** (1-2 lines, no behaviour change, reduces future ambiguity).
+   - **Defer with a one-line note in the PR body** when the fix is non-trivial or out of scope — name the finding and the reason for deferral so the owner can override. Silent skip is not acceptable.
+   - **Never mark "addressed" without a code change or an explicit defer note.** "I read it and decided it's fine" is not closure; the absence of either a fix commit or a defer note hides the trade-off.
+
    **Rate limit fallback (closes Issue #653):** When the local CLI is rate-limited (typically 48-min wait window), proceed to PR creation, rely on the GitHub-side CodeRabbit bot review (separate token, runs on PR open), and add a note to the PR body:
    ```markdown
    ## Note on CodeRabbit
@@ -170,7 +175,7 @@ This rule does not apply to the initial push of a brand-new feature branch (no f
 ## Testing Requirements
 
 - **Testing with code changes:** Always update or add tests. Code without tests is incomplete.
-- **TDD for bug fixes:** Write a failing test first, then implement the fix.
+- **TDD for bug fixes:** Write a failing test first, then implement the fix. Verify the test's polarity by `git stash`-ing your candidate fix, running the new test against the unmodified production code, and confirming it fails — then `git stash pop` and confirm it now passes. Tests that pass in both directions (with and without the fix) are not actually testing the bug; they will continue to pass after a future regression. (Lesson: Sprint 2026-04-29 — recurring agent pattern of writing tests that exercise adjacent code instead of the changed line.)
 - **Real-device verification for bug fixes:** When fixing bugs reported from real usage (dogfooding, production), verify on the actual environment before considering complete. Verification has **two parts**:
   1. **Fix works** — the original bug symptom does not reproduce after the fix
   2. **No regression** — existing functionality (especially adjacent or upstream of the fix point) still works as before
