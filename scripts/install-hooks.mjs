@@ -26,9 +26,27 @@ import {
   readlinkSync,
   symlinkSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const HOOKS = [{ name: 'commit-msg', source: 'scripts/git-hooks/commit-msg' }];
+
+function resolveRepoRoot() {
+  const result = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    console.error(
+      'hooks:install — `git rev-parse --git-common-dir` failed:',
+    );
+    console.error(result.stderr || '(no stderr)');
+    process.exit(1);
+  }
+  // `.git` (relative) when run from the main worktree, absolute path to the
+  // shared `.git` when run from a linked worktree. Either way the parent
+  // directory is the main worktree root, which is the stable location that
+  // owns scripts/git-hooks/.
+  return dirname(resolve(result.stdout.trim()));
+}
 
 function resolveHooksDir() {
   const result = spawnSync('git', ['rev-parse', '--git-path', 'hooks'], {
@@ -42,8 +60,12 @@ function resolveHooksDir() {
   return resolve(result.stdout.trim());
 }
 
-function installOne({ name, source }, hooksDir) {
-  const sourceAbs = resolve(source);
+function installOne({ name, source }, hooksDir, repoRoot) {
+  // Resolve the source against the main worktree root rather than cwd.
+  // Issue #728: `resolve(source)` was cwd-bound, so running from a linked
+  // worktree embedded that ephemeral worktree's path into the symlink
+  // target, silently disabling the hook once the worktree was removed.
+  const sourceAbs = join(repoRoot, source);
   if (!existsSync(sourceAbs)) {
     console.error(`hooks:install — source missing: ${sourceAbs}`);
     process.exit(1);
@@ -104,9 +126,10 @@ function installOne({ name, source }, hooksDir) {
 }
 
 function main() {
+  const repoRoot = resolveRepoRoot();
   const hooksDir = resolveHooksDir();
   mkdirSync(hooksDir, { recursive: true });
-  for (const hook of HOOKS) installOne(hook, hooksDir);
+  for (const hook of HOOKS) installOne(hook, hooksDir, repoRoot);
 }
 
 main();
