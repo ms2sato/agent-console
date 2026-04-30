@@ -147,7 +147,7 @@ The 80% checkpoint (substantially complete, awaiting verification) follows the s
    gh api repos/<owner>/<repo>/pulls/<PR>/comments/<comment-id>/replies \\
      -f body="Resolved in <commit-hash>: <one-line fix summary>"
    \`\`\`
-   Get each \`comment-id\` from \`gh api repos/<owner>/<repo>/pulls/<PR>/comments\`.
+   Get each \`comment-id\` from \`gh api repos/<owner>/<repo>/pulls/<PR>/comments\`. If a LOW / NITPICK finding is intentionally deferred (non-trivial or out-of-scope), per \`workflow.md\` Verification Checklist Step 3, add a one-line defer note in the PR body naming the finding and reason — silent skip is not acceptable.
 7. Report completion with PR URL and retrospective to Orchestrator. Your retrospective MUST include a one-line answer per applicable architectural invariant.
 `;
 

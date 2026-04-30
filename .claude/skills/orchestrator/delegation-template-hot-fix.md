@@ -39,10 +39,11 @@ Read these files before writing code:
 5. **Worktree-aware sanity check.** If the fix writes to or links into
    any shared resource — `.git/hooks`, `.agent-console/`, repo root, any
    path under `~/.claude/` — trace each `path.resolve(<relative>)` to
-   verify it anchors to the *main worktree*, not the current cwd. The
-   recurring failure is a write or symlink whose target binds to an
-   ephemeral worktree that is later removed, breaking the resource for
-   every other worktree.
+   verify it anchors to a *stable canonical location* (main worktree /
+   repo root / project root, depending on the resource — see the table
+   below), not the current cwd. The recurring failure is a write or
+   symlink whose target binds to an ephemeral worktree that is later
+   removed, breaking the resource for every other worktree.
 6. **Surgical scope.** Hot-fix PRs target one specific bug. Refactors,
    cleanups, and "while I'm here" changes belong in a separate PR.
 
