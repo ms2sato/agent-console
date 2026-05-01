@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { extractAcceptanceCriteria } from './delegation-prompt.js';
+import { extractAcceptanceCriteria } from '../delegation-prompt.js';
 
 describe('extractAcceptanceCriteria', () => {
   test('extracts checkbox items from issue body', () => {

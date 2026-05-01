@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { truncate, extractLinkedIssueNumber } from './brew-invariants.js';
+import { truncate, extractLinkedIssueNumber } from '../brew-invariants.js';
 
 describe('truncate', () => {
   test('returns input unchanged when under the line limit', () => {

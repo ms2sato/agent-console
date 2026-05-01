@@ -24,6 +24,10 @@ When modifying production files matching these patterns, corresponding test file
 | `packages/client/src/components/**/*.tsx` | `.../__tests__/*.test.tsx` or sibling `*.test.tsx` |
 | `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 
+## Exceptions
+
+- **`packages/integration/src/`** uses a flat sibling layout (no `__tests__/` directory). This is deliberate: the package contains no production code — its entire `src/` is test infrastructure (`setup.ts`, `test-utils.ts`) and boundary tests (`*-boundary.test.ts(x)`). Do not move these files into a `__tests__/` subdirectory.
+
 ## Before Creating a PR
 
 Run the coverage check to verify all production files have corresponding tests:
