@@ -168,6 +168,14 @@ and include:
   [policy table](#categories) you believe matched
 - Why the operation was legitimate
 
+When the denial covers force-push or branch-deletion patterns
+(`git push --force`, `git push origin :main`/`:master`), the policy
+rationale lives in
+[`../rules/workflow.md` § Force-Push and Rebase Gating](../rules/workflow.md#force-push-and-rebase-gating).
+Reference that section in the bug report so the discussion has shared
+context on the protected-branch and rebase-approval rules the hook
+enforces.
+
 Refining the patterns from real false-positive reports is how the
 denylist stays both strict and usable; silent workarounds (operators
 keeping the hook disabled) are the failure mode this section exists
