@@ -236,6 +236,190 @@ describe('enforce-permissions: Read/Write/Edit deny — this-system specifics', 
   });
 });
 
+describe('enforce-permissions: Bash deny — language interpreter bypass', () => {
+  // Each interpreter: malicious case (deny) + benign case (allow)
+  it.each([
+    [
+      'python -c (rm -rf in body) → deny',
+      `python -c "import os; os.system('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'python3 -c (rm -rf in body) → deny',
+      `python3 -c "import os; os.system('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'node -e (rm -rf in body) → deny',
+      `node -e "require('child_process').execSync('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'nodejs -e (rm -rf in body) → deny',
+      `nodejs -e "require('child_process').execSync('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'perl -e (rm -rf in body) → deny',
+      `perl -e "system('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'ruby -e (rm -rf in body) → deny',
+      `ruby -e "system('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+    [
+      'lua -e (rm -rf in body) → deny',
+      `lua -e "os.execute('rm -rf /tmp/x')"`,
+      /rm/,
+    ],
+  ])('%s', (_label, command, reasonRegex) => {
+    const r = runHook(bashEvent(command));
+    expect(r.exitCode).toBe(0);
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(reasonRegex);
+  });
+
+  it.each([
+    ['python -c (benign) → allow', `python -c "import os"`],
+    ['python3 -c (benign) → allow', `python3 -c "print('hello')"`],
+    ['node -e (benign) → allow', `node -e "console.log('hi')"`],
+    ['nodejs -e (benign) → allow', `nodejs -e "console.log('hi')"`],
+    ['perl -e (benign) → allow', `perl -e 'print 1+1'`],
+    ['ruby -e (benign) → allow', `ruby -e 'puts 1+1'`],
+    ['lua -e (benign) → allow', `lua -e "print('hi')"`],
+  ])('%s', (_label, command) => {
+    const r = runHook(bashEvent(command));
+    expect(r.exitCode).toBe(0);
+    expect(decision(r.stdout)).toBeNull();
+  });
+
+  // Catastrophic verbs other than rm
+  it('denies sudo in python body', () => {
+    const r = runHook(
+      bashEvent(`python -c "import os; os.system('sudo whoami')"`)
+    );
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/sudo/);
+  });
+
+  it('denies ssh in node body', () => {
+    const r = runHook(
+      bashEvent(`node -e "require('child_process').exec('ssh user@host')"`)
+    );
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/ssh/);
+  });
+
+  it('denies dd in ruby body', () => {
+    const r = runHook(
+      bashEvent(`ruby -e "system('dd if=/dev/zero of=/tmp/x bs=1M')"`)
+    );
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/dd/);
+  });
+
+  it('denies kill -9 in perl body', () => {
+    const r = runHook(bashEvent(`perl -e "system('kill -9 1234')"`));
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/kill/);
+  });
+
+  // Credential references
+  it('denies .env reference in python body', () => {
+    const r = runHook(bashEvent(`python -c "open('.env').read()"`));
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/credential/);
+  });
+
+  it('denies ~/.ssh reference in node body', () => {
+    const r = runHook(
+      bashEvent(`node -e "require('fs').readFileSync('/Users/foo/.ssh/config')"`)
+    );
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/credential/);
+  });
+
+  it('denies ~/.aws reference in ruby body', () => {
+    const r = runHook(bashEvent(`ruby -e "File.read('/Users/foo/.aws/credentials')"`));
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/credential/);
+  });
+
+  it('denies *.pem reference in lua body', () => {
+    const r = runHook(bashEvent(`lua -e "io.open('/etc/cert.pem')"`));
+    expect(decision(r.stdout)).toBe('deny');
+    expect(reason(r.stdout)).toMatch(/credential/);
+  });
+
+  // Boundary cases
+  it('allows empty interpreter body (python -c "")', () => {
+    const r = runHook(bashEvent(`python -c ""`));
+    expect(r.exitCode).toBe(0);
+    expect(decision(r.stdout)).toBeNull();
+  });
+
+  it('denies single-quoted interpreter body', () => {
+    const r = runHook(bashEvent(`python -c 'import os; os.system("rm -rf /tmp/x")'`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('denies double-quoted interpreter body', () => {
+    const r = runHook(bashEvent(`python -c "import os; os.system('rm -rf /tmp/x')"`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('denies leading whitespace before interpreter body', () => {
+    const r = runHook(bashEvent(`python -c    "rm -rf /tmp/x"`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('denies escaped quotes inside interpreter body (caught via original CMD haystack)', () => {
+    // Body extraction may truncate at the escape sequence, but the
+    // dangerous pattern still appears literally in the original CMD.
+    const r = runHook(bashEvent(`python -c "import os; os.system(\\"rm -rf /tmp/x\\")"`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('denies bash -c wrapping a python interpreter call', () => {
+    const r = runHook(bashEvent(`bash -c 'python -c "rm -rf /tmp/x"'`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('denies quote-split rm inside interpreter body', () => {
+    // Quote-splitting normalisation makes 'r''m' collapse to rm before scan.
+    const r = runHook(bashEvent(`python -c "import os; os.system('r''m -rf /tmp/x')"`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+
+  it('does not over-trigger on benign substring "rm" inside interpreter body', () => {
+    // "form" contains "rm" but is not a standalone rm verb; word-boundary
+    // matching in the existing regex prevents false positives.
+    const r = runHook(bashEvent(`python -c "form = 'submit'"`));
+    expect(r.exitCode).toBe(0);
+    expect(decision(r.stdout)).toBeNull();
+  });
+
+  it('does not over-trigger on a benign python call referencing innocuous strings', () => {
+    const r = runHook(bashEvent(`python -c "print('rm-rf is just a string here')"`));
+    // "rm-rf" lacks a space between "rm" and "-rf", so the regex which
+    // requires \brm[[:space:]]+- does not fire. This documents the
+    // deliberate non-match.
+    expect(r.exitCode).toBe(0);
+    expect(decision(r.stdout)).toBeNull();
+  });
+
+  it('denies POSIX $\'...\' ANSI-C-quoted body via original-CMD haystack', () => {
+    // extract_interpreter_body's regex looks for a leading '/", not $',
+    // so it does not capture the ANSI-C body. The dangerous pattern is
+    // still matched against the original command string, which contains
+    // `rm -rf` literally with a real space.
+    const r = runHook(bashEvent(`python -c $'import os\\nos.system("rm -rf /tmp")'`));
+    expect(decision(r.stdout)).toBe('deny');
+  });
+});
+
 describe('enforce-permissions: Bash empty input handling', () => {
   it('allows Bash with empty command (defensive — no command means nothing to run)', () => {
     const r = runHook({ tool_name: 'Bash', tool_input: { command: '' } });

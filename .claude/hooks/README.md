@@ -88,13 +88,44 @@ The hook normalises the command before pattern-matching:
    about to run is unchanged.
 2. **`bash -c "<body>"` / `sh -c '<body>'`** — extracts the inner body
    and includes it in the haystack so wrapped commands are also matched.
-3. **Pipe / xargs** — patterns are word-boundary-aware so
+3. **Language-interpreter `-c` / `-e` body** — extracts the body of
+   `python` / `python3` / `node` / `nodejs` / `perl` / `ruby` / `lua`
+   `-c` or `-e` invocations and includes it in the haystack. So
+   `python -c "import os; os.system('rm -rf /tmp')"` is matched by the
+   same `rm -rf` pattern that catches the literal shell form, and
+   `node -e "require('fs').readFileSync('/Users/foo/.ssh/id_rsa')"` is
+   matched by the credential pattern. Benign interpreter calls
+   (`python -c "import os"`, `node -e "console.log('hi')"`) are
+   unaffected — only bodies that contain the existing dangerous patterns
+   trigger a deny. Added in PR #732.
+4. **Pipe / xargs** — patterns are word-boundary-aware so
    `echo /tmp/x | xargs rm -rf` is matched.
 
-The hook does **not** attempt to detect language-level bypass (e.g.
-`python -c "os.system('rm -rf /')"`). That class of evasion is out of
-scope; trying to cover it with regex produces false positives without
-meaningfully improving safety.
+#### Residual gaps
+
+Body-extraction uses a simplified quoting model: the body must be
+wrapped in matching `'...'` or `"..."`, and the first nested quote (or
+escaped quote inside the body) terminates the capture. In practice the
+*original* command string is also in the haystack, so most evasions
+that defeat extraction are still caught by the unmodified-command scan.
+Cases that are out of scope and would require execution to detect:
+
+- Dynamic construction via runtime concatenation
+  (`python -c "import os; os.system(chr(114)+'m -rf /')"`).
+- Encoded payloads
+  (`python -c "exec(__import__('base64').b64decode('...'))"`).
+- Shell substitution inside the interpreter body
+  (`python -c "$(printf rm)" ...`).
+- ANSI-C-quoting obfuscation of the dangerous token via escape
+  sequences (`python -c $'rm\x20-rf /tmp'`). The body extractor does
+  not handle `$'...'`, and the original-CMD haystack does not collapse
+  ANSI-C escapes — `\x20` stays literal so the `\brm[[:space:]]+-` rule
+  does not match. The simple `$'rm -rf /tmp'` form (with a real space)
+  is still caught by the original-CMD haystack and is covered by a
+  test.
+
+These remain accepted residual risk: covering them with regex would
+produce false positives without meaningfully improving safety.
 
 ### Fail-closed behaviour
 
