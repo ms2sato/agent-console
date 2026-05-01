@@ -58,16 +58,29 @@ extract_bash_c_body() {
   printf '%s' "$1" | sed -nE "s/.*\\b(bash|sh)[[:space:]]+-c[[:space:]]+['\"]([^'\"]*)['\"].*/\\2/p"
 }
 
+# Extract the body of a language-interpreter `-c` / `-e` invocation
+# (python, python3, node, nodejs, perl, ruby, lua) so we can scan its
+# inner code. If none, prints empty. Quoting follows the same simplified
+# model as extract_bash_c_body — the body must be wrapped in matching
+# `'...'` or `"..."`; nested or escaped quotes truncate the capture, but
+# the original command string still appears in the haystack as a fallback.
+extract_interpreter_body() {
+  printf '%s' "$1" | sed -nE "s/.*\\b(python3?|nodejs|node|perl|ruby|lua)[[:space:]]+-[ce][[:space:]]+['\"]([^'\"]*)['\"].*/\\2/p"
+}
+
 # Produce the haystack we grep against: original + quote-stripped + bash -c
-# body. Doing all three lets a single pattern match cover quote-bypass and
-# bash -c wrapping.
+# body + interpreter -c/-e body. Concatenating all four into a newline-
+# separated buffer lets a single pattern match cover quote-bypass, bash -c
+# wrapping, and language-interpreter wrapping in one pass.
 build_haystack() {
   local cmd="$1"
   local stripped
   local inner
+  local interp
   stripped=$(normalize_quotes "$cmd")
   inner=$(extract_bash_c_body "$cmd")
-  printf '%s\n%s\n%s\n' "$cmd" "$stripped" "$inner"
+  interp=$(extract_interpreter_body "$cmd")
+  printf '%s\n%s\n%s\n%s\n' "$cmd" "$stripped" "$inner" "$interp"
 }
 
 # Last whitespace-separated token in a string (for `git push ... <ref>`).
