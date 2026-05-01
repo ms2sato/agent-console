@@ -119,6 +119,70 @@ of `bun run test` (via `test:scripts`). They pipe representative event
 JSON to the script and assert the verdict, including bypass-attempt
 cases and the fail-closed paths.
 
+### Emergency bypass for false positives
+
+If a legitimate operation is denied because it happens to match a deny
+pattern (a false positive), the only supported recovery is to disable
+the `PreToolUse` hook in `.claude/settings.json` and restart the
+session. There is intentionally no env-var or runtime flag to skip
+the hook — see "Out of scope" below.
+
+This is an in-the-moment recovery procedure for the operator running
+the session, not a permission-escalation tool. Disabling the hook
+removes the deny gate for **every** subsequent tool call until it is
+re-enabled, so use the smallest window possible and re-enable
+immediately after the blocked operation completes.
+
+#### Disable
+
+1. Open `.claude/settings.json`, copy the entire `PreToolUse` block
+   whose command is `./.claude/hooks/enforce-permissions.sh` to a
+   scratch buffer (you will paste it back during re-enable), then
+   delete it from the file. Standard JSON does not support comments,
+   so commenting out is not an option — temporary deletion plus a
+   scratch copy is the supported path.
+2. Restart the Claude Code session. Hook configuration is read at
+   session start; an in-flight session continues to enforce the old
+   configuration.
+3. Perform the previously-denied operation.
+
+#### Re-enable
+
+1. Paste the `PreToolUse` block from your scratch buffer back into
+   `.claude/settings.json` at its original location.
+2. Restart the Claude Code session.
+3. Verify the hook is active by attempting a known-denied operation
+   (e.g., `rm -rf /tmp/non-existent-test-path`) — the runtime should
+   block it.
+
+#### Follow-up: report the false positive
+
+After recovery, file a bug report so the deny patterns can be
+refined. Use the
+[Bug report template](../../.github/ISSUE_TEMPLATE/bug-report.yml)
+and include:
+
+- The exact tool call that was denied (full command for `Bash`, full
+  `file_path` for `Read|Write|Edit`)
+- The category in the
+  [policy table](#categories) you believe matched
+- Why the operation was legitimate
+
+Refining the patterns from real false-positive reports is how the
+denylist stays both strict and usable; silent workarounds (operators
+keeping the hook disabled) are the failure mode this section exists
+to prevent.
+
+#### Out of scope
+
+A runtime bypass that does not require editing `settings.json`
+(environment variable, magic comment, allowlist file under version
+control) is intentionally not provided. Any such mechanism would
+re-introduce the very escape hatch the
+[deny strong, ask minimal](#policy-deny-strong-ask-minimal) policy
+exists to close, and would be vulnerable to the same prompt-injection
+attacks the hook defends against.
+
 ## Adding a new hook
 
 1. Create the script under `.claude/hooks/<name>.sh`. Keep it
