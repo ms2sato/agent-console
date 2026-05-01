@@ -82,7 +82,24 @@ export const COVERAGE_PATTERNS = [
   /^packages\/client\/src\/hooks\/.+\.ts$/,
   /^packages\/client\/src\/components\/.+\.tsx$/,
   /^packages\/shared\/src\/.+\.ts$/,
+  /^\.claude\/hooks\/.+\.sh$/,
 ];
+
+// Source-file extensions considered for coverage analysis. `.sh` is included
+// because `.claude/hooks/**/*.sh` participates in COVERAGE_PATTERNS; the
+// matching test extension is `.mjs` (see expectedTestExt below).
+const SOURCE_EXT_RE = /\.(ts|tsx|js|jsx|sh)$/;
+
+// Test-file naming pattern. `.mjs` is recognised so hook tests
+// (e.g. `enforce-permissions.test.mjs`) are matched against their
+// `.sh` source.
+const TEST_NAME_RE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs)$/;
+
+function expectedTestExt(sourceExt) {
+  if (sourceExt === '.tsx') return '.tsx';
+  if (sourceExt === '.sh') return '.mjs';
+  return '.ts';
+}
 
 // Files excluded from coverage requirements (no runtime logic to test)
 const COVERAGE_EXCLUSIONS = [
@@ -169,30 +186,29 @@ export function findTestFiles(changedFiles) {
   for (const file of changedFiles) {
     if (isTestFile(file)) {
       testFiles.push(file);
-    } else if (file.match(/\.(ts|tsx|js|jsx)$/)) {
+    } else if (SOURCE_EXT_RE.test(file)) {
       productionFiles.push(file);
     }
   }
 
   const testCoverage = [];
   for (const prodFile of productionFiles) {
-    const ext = prodFile.match(/\.(ts|tsx|js|jsx)$/)[0];
-    const baseName = prodFile.replace(/\.(ts|tsx|js|jsx)$/, '');
+    const ext = prodFile.match(SOURCE_EXT_RE)[0];
+    const baseName = prodFile.replace(SOURCE_EXT_RE, '');
     const dir = baseName.substring(0, baseName.lastIndexOf('/'));
     const fileName = baseName.substring(baseName.lastIndexOf('/') + 1);
 
-    const testPattern = new RegExp(`\\.(test|spec)\\.(ts|tsx|js|jsx)$`);
     const hasTest = testFiles.some(tf => {
-      if (!testPattern.test(tf)) return false;
+      if (!TEST_NAME_RE.test(tf)) return false;
       const tfDir = tf.substring(0, tf.lastIndexOf('/'));
       const tfFileName = tf.substring(tf.lastIndexOf('/') + 1);
-      const tfBaseName = tfFileName.replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/, '');
+      const tfBaseName = tfFileName.replace(TEST_NAME_RE, '');
       if (tfBaseName !== fileName) return false;
       return tfDir === dir || tfDir === dir + '/__tests__';
     });
 
     const needsCoverage = requiresTestCoverage(prodFile);
-    const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + (ext === '.tsx' ? '.tsx' : '.ts');
+    const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
     testCoverage.push({ file: prodFile, hasTest, expectedTestPath, needsCoverage });
   }
 

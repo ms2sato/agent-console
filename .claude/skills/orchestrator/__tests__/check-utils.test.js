@@ -6,6 +6,7 @@ import {
   isReExportOnlyContent,
   requiresTestCoverage,
   runLanguageCheck,
+  findTestFiles,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -157,6 +158,105 @@ describe('preflight-check parity fix verification', () => {
     // 4. Added documentation about parity guarantee
 
     expect(true).toBe(true); // Always pass - this is documentation
+  });
+});
+
+describe('hook shell-script coverage (Issue #733)', () => {
+  describe('requiresTestCoverage', () => {
+    it('flags a hook shell script as requiring coverage', () => {
+      // Real fixture on disk: this file exists and is not re-export-only.
+      expect(requiresTestCoverage('.claude/hooks/enforce-permissions.sh')).toBe(true);
+    });
+
+    it('does not flag a hook test file as requiring coverage (test files are excluded)', () => {
+      expect(requiresTestCoverage('.claude/hooks/__tests__/enforce-permissions.test.mjs')).toBe(false);
+    });
+
+    it('does not flag shell scripts outside .claude/hooks/ (e.g., scripts/*.sh)', () => {
+      expect(requiresTestCoverage('scripts/upload-qa-screenshots.sh')).toBe(false);
+    });
+
+    it('does not flag the hooks README (non-shell file)', () => {
+      expect(requiresTestCoverage('.claude/hooks/README.md')).toBe(false);
+    });
+  });
+
+  describe('findTestFiles for hook shell-script + .mjs test pairings', () => {
+    it('reports a coverage gap when only a hook .sh changes (positive)', () => {
+      const { testCoverage } = findTestFiles(['.claude/hooks/enforce-permissions.sh']);
+      expect(testCoverage).toHaveLength(1);
+      const entry = testCoverage[0];
+      expect(entry.file).toBe('.claude/hooks/enforce-permissions.sh');
+      expect(entry.needsCoverage).toBe(true);
+      expect(entry.hasTest).toBe(false);
+      expect(entry.expectedTestPath).toBe('.claude/hooks/__tests__/enforce-permissions.test.mjs');
+    });
+
+    it('reports no gap when both .sh and matching __tests__ .test.mjs change (negative)', () => {
+      const { testCoverage } = findTestFiles([
+        '.claude/hooks/enforce-permissions.sh',
+        '.claude/hooks/__tests__/enforce-permissions.test.mjs',
+      ]);
+      expect(testCoverage).toHaveLength(1);
+      expect(testCoverage[0].hasTest).toBe(true);
+      expect(testCoverage[0].needsCoverage).toBe(true);
+    });
+
+    it('reports no gap when .sh changes alongside a sibling .test.mjs in the same dir', () => {
+      // Sibling-placement variant: `foo.sh` + `foo.test.mjs` in the same dir,
+      // mirroring the table's "or sibling `*.test.mjs`" allowance.
+      const { testCoverage } = findTestFiles([
+        '.claude/hooks/enforce-permissions.sh',
+        '.claude/hooks/enforce-permissions.test.mjs',
+      ]);
+      expect(testCoverage).toHaveLength(1);
+      expect(testCoverage[0].hasTest).toBe(true);
+    });
+
+    it('does not flag anything when only the test file changes (boundary: no false positive)', () => {
+      const { testCoverage } = findTestFiles([
+        '.claude/hooks/__tests__/enforce-permissions.test.mjs',
+      ]);
+      // The .test.mjs file is classified as a test file, not a production file,
+      // so testCoverage is empty — preflight must not invent a phantom gap.
+      expect(testCoverage).toHaveLength(0);
+    });
+
+    it('flags the missing one when multiple hook .sh files change but only some have tests', () => {
+      const { testCoverage } = findTestFiles([
+        '.claude/hooks/enforce-permissions.sh',
+        '.claude/hooks/__tests__/enforce-permissions.test.mjs',
+        '.claude/hooks/check-prerequisites.sh',
+        // intentionally no test for check-prerequisites in this diff
+      ]);
+      expect(testCoverage).toHaveLength(2);
+      const enforce = testCoverage.find(c => c.file.endsWith('enforce-permissions.sh'));
+      const check = testCoverage.find(c => c.file.endsWith('check-prerequisites.sh'));
+      expect(enforce.hasTest).toBe(true);
+      expect(check.hasTest).toBe(false);
+      expect(check.expectedTestPath).toBe('.claude/hooks/__tests__/check-prerequisites.test.mjs');
+    });
+
+    it('returns an empty testCoverage on an empty diff (boundary: vacuous truth)', () => {
+      const { testCoverage, productionFiles, testFiles } = findTestFiles([]);
+      expect(testCoverage).toEqual([]);
+      expect(productionFiles).toEqual([]);
+      expect(testFiles).toEqual([]);
+    });
+
+    it('returns an empty testCoverage when only doc files change (boundary)', () => {
+      const { testCoverage } = findTestFiles(['docs/glossary.md', 'CLAUDE.md']);
+      expect(testCoverage).toEqual([]);
+    });
+
+    it('does not flag a non-hooks .sh as needing coverage even though it is recognised as source', () => {
+      // `scripts/foo.sh` becomes a productionFiles entry but needsCoverage is
+      // false because it is not in COVERAGE_PATTERNS. The display logic in
+      // preflight-check.js filters by `needsCoverage`.
+      const { testCoverage } = findTestFiles(['scripts/upload-qa-screenshots.sh']);
+      expect(testCoverage).toHaveLength(1);
+      expect(testCoverage[0].needsCoverage).toBe(false);
+    });
   });
 });
 
