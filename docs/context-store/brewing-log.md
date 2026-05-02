@@ -185,7 +185,7 @@ Append one row per merged agent-console PR brewed during the Pilot window. Reaso
 | 2026-04-28 | [#716](https://github.com/ms2sato/agent-console/pull/716) | skip | `process-tooling`: adds language-agnostic ASCII / non-Latin-Letter check via `scripts/check-public-artifacts-language.mjs` + integration with `preflight-check.js` + new `language-lint.yml` workflow. The check is the *implementation* of the existing Language Policy rule in `workflow.md`; the rule itself is the invariant. No new code-level invariant class surfaced. The `setup-bun` cross-runtime spawn lesson was captured in `workflow.md` "CI Failure: Self-Diagnosis Before Assumption" reverse case (Sprint 2026-04-28 retro). |
 | 2026-04-28 | [#721](https://github.com/ms2sato/agent-console/pull/721) | skip | `docs-only`: Sprint 2026-04-28 retrospective improvements (acceptance-check.js Q10 / Concerns Surfacing Discipline mechanization + Boundary Values rule). Pure rule / skill / process documentation. |
 | 2026-04-30 | [#724](https://github.com/ms2sato/agent-console/pull/724) | skip | `docs-only`: adds Inter-Session Messaging entry to `docs/glossary.md` (canonical entry under Events & Communication for `send_session_message` + `outputMode: "message"` channel). Pure documentation; alongside CodeRabbit-driven path-format consistency fix that bundled an existing `outputMode` entry's `../`-prefix per `design-principles.md` "sibling call sites" rule. |
-| 2026-04-30 | [#725](https://github.com/ms2sato/agent-console/pull/725) | **propose** | **I-8 candidate**: Shared-Resource Artifact Lifetime — see [`_proposals/I-8-shared-resource-artifact-lifetime-pr725.md`](_proposals/I-8-shared-resource-artifact-lifetime-pr725.md). Installer wrote a symlink into the worktree-shared `<git-common-dir>/hooks/`; the embedded symlink target was cwd-anchored to the linked worktree, so removing that worktree silently broke the language gate. Hot-fix PR #729 (Issue #728) confirmed the failure mode. All four catalog criteria hold. |
+| 2026-04-30 | [#725](https://github.com/ms2sato/agent-console/pull/725) | **propose → accepted as I-8** | Shared-Resource Artifact Lifetime — accepted into [`architectural-invariants/SKILL.md`](../../.claude/skills/architectural-invariants/SKILL.md) §I-8 (Pilot end batch, 2026-05-02). Installer wrote a symlink into the worktree-shared `<git-common-dir>/hooks/`; the embedded symlink target was cwd-anchored to the linked worktree, so removing that worktree silently broke the language gate. Hot-fix PR #729 (Issue #728) confirmed the failure mode. All four catalog criteria hold; pre-PR Q7 paired in `pre-pr-completeness.md`. |
 | 2026-04-30 | [#726](https://github.com/ms2sato/agent-console/pull/726) | skip | `process-captured`: workflow file rename (`coverage-check.yml` → `preflight.yml`) + active rule references updated, with intentional preservation of historical narrative entries. Cross-PR coordination concern (branch protection `required_status_checks` + open PRs needing rebase) was surfaced by orchestrator. Lesson is captured at the right level by `#726` retrospective proposal A — a new "Workflow rename / deletion checklist" item for `pre-pr-completeness.md` (next sprint follow-up). Not an architectural code invariant. |
 | 2026-04-30 | [#727](https://github.com/ms2sato/agent-console/pull/727) | skip | `security-pattern-not-code-invariant`: PreToolUse denylist hook (jq-based, fail-closed, 186 lines + 61 tests + README). Defense-in-depth pattern protecting against agent ask-fatigue / `--dangerously-skip-permissions` bypass. Cross-cutting and high-leverage but the "use a mechanical gate to enforce policy that humans/agents may bypass under cognitive load" pattern is a security philosophy, not a code-correctness invariant in the I-1..I-7 catalog's shape (addressing / persistence / validation). The existing entries are about runtime correctness; this is about enforcement of out-of-band policy. Could become its own catalog category in a future sprint if more sibling instances appear. |
 | 2026-04-30 | [#729](https://github.com/ms2sato/agent-console/pull/729) | skip | `duplicates-I-8`: hot-fix for the `install-hooks.mjs` cwd-binding bug introduced in #725 (Issue #728). Same lesson as #725; the proposed I-8 from #725 already covers the invariant class. Recording the duplication here for trail-through-time. |
@@ -194,8 +194,12 @@ Append one row per merged agent-console PR brewed during the Pilot window. Reaso
 | 2026-04-30 | [#740](https://github.com/ms2sato/agent-console/pull/740) | skip | `docs-only`: Sprint 2026-04-30 retrospective improvements — `workflow.md` Rate-limit fallback abandon-and-proceed policy + `architectural-invariants/SKILL.md` "How to Use" item 4 (Issue alternatives walk) + `docs/narratives/2026-04-30-printf-empty-path-discovery.md` + Issue #739 escalation. Pure rule / skill / narrative documentation. |
 | 2026-04-30 | [#741](https://github.com/ms2sato/agent-console/pull/741) | skip | `docs-only`: adds Step 7 "Final Memory Sync (post-merge)" to `sprint-retro.js` + corresponding test updates + `sprint-lifecycle.md` paragraph noting sprint closure spans the retro PR merge. Pure skill / process documentation closing a known gap (sprint pointer drift after retro PR merge). |
 | 2026-04-30 | [#743](https://github.com/ms2sato/agent-console/pull/743) | skip | `docs-only`: adds Step 8 "Memory Sync Gap-Scan (verify)" to `sprint-retro.js`, complementing #741's Step 7 (write phase) with a mechanical verify phase using `gh pr list --search "merged:>=<sprint-start>"` + grep against the three memory files. Pure skill / process documentation. The "write phase + verify phase" separation is a reusable design pattern for any LLM-driven procedure that risks recall-based drift, but it is a process-design pattern rather than a code-correctness invariant in the I-1..I-7 catalog's shape. |
+| 2026-05-02 | [#747](https://github.com/ms2sato/agent-console/pull/747) | skip | `docs-only`: diff touches only `.claude/hooks/README.md` (emergency bypass procedure subsection for `enforce-permissions.sh` false positives, closes #734). Pure documentation. |
+| 2026-05-02 | [#748](https://github.com/ms2sato/agent-console/pull/748) | skip | `pure-refactor`: relocates two orchestrator-skill test files (`brew-invariants.test.js`, `delegation-prompt.test.js`) into the sibling `__tests__/` directory per the convention in `testing.md` (closes #746). Behavior-preserving file relocation + relative import path adjustments + `test-trigger.md` mirror update. No production runtime change. |
+| 2026-05-02 | [#749](https://github.com/ms2sato/agent-console/pull/749) | skip | `process-tooling`: extends `COVERAGE_PATTERNS` and `findTestFiles` in `.claude/skills/orchestrator/check-utils.js` so `.claude/hooks/**/*.sh` source files require sibling `*.test.mjs` (closes #733). Preflight / coverage-check tooling, not production runtime. The mirror drift between `COVERAGE_PATTERNS` (executable single-writer) and `test-trigger.md` (markdown documentation mirror) is filed for follow-up Issue (Sprint 2026-05-02 plan B). |
+| 2026-05-02 | [#750](https://github.com/ms2sato/agent-console/pull/750) | skip | `security-pattern-not-catalog-shape`: extends `enforce-permissions.sh` to detect language-interpreter bypass attempts (`python -c` / `node -e` / `perl -e` / `ruby -e` / `lua -e` whose body contains catastrophic-verb or credential-reference patterns, closes #732). Sibling of #727 — security defense-in-depth pattern, cross-cutting and high-leverage but outside the catalog's runtime-correctness domain. |
 
-For `propose` rows, link to the proposal file in `_proposals/` in the "Reason / Link" column. For `skip` rows, write the reason category and a short explanation.
+For `propose` rows, link to the proposal file in `_proposals/` (or, when accepted, the catalog entry) in the "Reason / Link" column. For `skip` rows, write the reason category and a short explanation.
 
 ### Running brewing (reminder)
 
@@ -209,15 +213,57 @@ node .claude/skills/orchestrator/brew-invariants.js <merged-PR>
 
 ## §3. Metrics & Learnings (populated at Pilot end, 2026-05-02)
 
-### Counts
-- Total PRs brewed: _TBD_
-- Proposals generated: _TBD_
-- Proposals accepted into catalog: _TBD_
-- Proposals rejected (moved to `_rejected/`): _TBD_
-- Skip distribution: _TBD_
+### Counts (Live Pilot Log §2, 2026-04-18 — 2026-05-02)
+
+| Metric | Value | Note |
+|---|---:|---|
+| Total PRs brewed | 33 | All merged agent-console PRs in the Pilot window |
+| Proposals generated | 1 | I-8 Shared-Resource Artifact Lifetime (PR [#725](https://github.com/ms2sato/agent-console/pull/725)) |
+| Proposals accepted into catalog | 1 | I-8 accepted into `architectural-invariants/SKILL.md` 2026-05-02 (Pilot end batch) |
+| Proposals rejected (moved to `_rejected/`) | 0 | `_rejected/` remains empty |
+| False positives | 0 | (subject to review post-acceptance) |
+| Suspected misses | 0 | No retroactive identification of patterns brewing should have proposed but did not |
+
+### Skip distribution (32 skips)
+
+| Category | Count | Status |
+|---|---:|---|
+| `docs-only` | 18 | rubric-standard |
+| `process-captured` | 3 | drift → adopted into rubric in this Pilot end batch |
+| `process-tooling` | 2 | drift → adopted into rubric |
+| `duplicates-design-principles` | 2 | drift → generalized to `duplicates-meta-rule` in rubric |
+| `duplicates-I-8` | 2 | rubric-standard (`duplicates-I-<M>` style) |
+| `single-feature` | 1 | drift → adopted into rubric |
+| `security-pattern-not-code-invariant` | 1 | drift → generalized to `security-pattern-not-catalog-shape` in rubric |
+| `security-pattern-not-catalog-shape` | 1 | drift → adopted into rubric |
+| `pure-refactor` | 1 | rubric-standard |
+| `other` | 1 | rubric-standard |
+
+The original brewing rubric (SKILL.md as of Pilot start) named six skip categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`, `duplicates-I-<M>`, `other`. During the Pilot, judges invented five additional categories to express skips that did not fit the originals. The Pilot end batch (PR following 2026-05-02) formalizes the inventions into the rubric — see `.claude/skills/brewing/SKILL.md` "Output: when skipping" for the full table.
 
 ### Qualitative learnings
-_TBD at Pilot end._
+
+1. **No-LLM-call architectural integrity preserved.** `brew-invariants.js` remained a pure context packager throughout the Pilot. Judgment ran in the invoking Claude (Orchestrator). No drift toward embedding LLM calls in the platform script. This is the founding-intent constraint from `docs/narratives/2026-04-18-brewing-pilot-founding.md`.
+2. **Existing-artifact preservation succeeded.** No proposal sought to create a new Context Store artifact type. The single proposal (I-8) extended the existing catalog. The `process-captured` / `duplicates-design-principles` skip categories evidence brewing's "rotting-prevention" function — lessons routed to the right surface (rule / skill / pre-PR / narrative) rather than into a new storage.
+3. **Recall validated with high fidelity.** §1 Case 1b counterfactual (#638 → I-7) reproduced the real I-7 with high fidelity (5/5 sections, 4/5 detection heuristics matched). The Pilot did not surface a recall failure — though the Pilot sample size of 1 propose limits the recall-confidence signal.
+4. **Precision dominant.** 32/33 skips, 0 false positives. Matches the founding hypothesis "new invariants are rare". Signal density of 1/33 ≈ 3.0% over the Pilot window.
+5. **Rubric-drift was useful, not harmful.** Judges invented 5 new skip categories during the Pilot. These were not noise — each reflected a real distinction the rubric's 6-category baseline could not express. Pilot end batch promotes them to the rubric. Going forward, judges should still be free to invent new categories; future Pilot-end reviews should re-evaluate the rubric.
+6. **§7f trigger reliability gap recovered.** Sprint 2026-05-01 closed without invoking §7f for its 4 PRs (#747-#750), deferring brewing to the Pilot end batch. The recovery is captured in §2's 2026-05-02 entries; absent the deferred recovery, the Pilot would have ended with a hidden gap. Sprint discipline for §7f-on-merge needs reinforcement (no rule change derived from this Pilot — same §7f wording; gap was operational, not specification).
+7. **Catalog growth rate over Pilot window**: 1 entry / 2 weeks. At this rate the catalog grows from 7 → ~13 over a year, which is sustainable. If the rate were 1 per PR, the catalog would dilute; the observed rate validates the rubric's high bar.
 
 ### Decision
-_TBD: continue / tighten / loosen / retire._
+
+**Continue (with tightening)** — The Pilot succeeded in its three founding-intent goals (no-LLM-call integrity / existing-artifact preservation / catalog growth signal). Phase 1 brewing continues post-Pilot, with the following tightenings landed in this Pilot end batch:
+
+- I-8 accepted into catalog (4 criteria fully satisfied; 4-PR concrete-incident density across one sprint).
+- Skip rubric extended with 5 new categories (formalizing useful judge drift).
+- `pre-pr-completeness.md` Q7 added as the I-8 peer pre-PR gate (mechanical syntactic check + multi-dimensional worktree-aware check).
+- `_proposals/README.md` Lifecycle case 5 documented (backtest counterfactuals like the I-7 file may persist with `status: proposed-backtest-counterfactual`).
+
+**Deferred (next sprint or later):**
+
+- **`docs-only` auto-skip in `brew-invariants.js`** — 18/33 entries are docs-only with mechanical-detectable diff path filters. Auto-skipping would reduce judge time ~50% on a same-judgment outcome. Filed as a follow-up Issue.
+- **Phase 2 Context Store expansion** (task-specific reference index / Decision Log / worker-profile records) — none of the three surfaced concrete pain points during the Pilot. Defer until a real demand emerges.
+- **Conteditor horizontal deployment** — initial-populate brewing from past PRs + ongoing brewing in conteditor. Out of agent-console scope; tracked under conteditor-side Pilot design.
+
+**Not retired** — there is no evidence brewing produces no value. The L4 (Knowledge architecture fit) signals (rotting-prevention, cross-pattern detection, pattern handoff) are present and load-bearing; retiring brewing would lose the routing function regardless of catalog growth rate.

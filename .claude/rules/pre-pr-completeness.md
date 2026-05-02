@@ -1,8 +1,8 @@
 # Pre-PR Completeness Gap-Scan
 
-Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this 6-question mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
+Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this 7-question mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
 
-## The six questions
+## The seven questions
 
 1. **Does a similar existing mechanism already exist?**
    - `ls` the relevant directories (`.claude/rules/`, `.claude/skills/`, `.claude/skills/orchestrator/`, `scripts/`, `packages/*/src/`)
@@ -39,6 +39,19 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
    (Lesson: Sprint 2026-04-28 PR #716 — language-check helper added `spawn('bun', ...)` to `preflight-check.js`. The author (this same role) updated the script and the new `language-lint.yml` workflow, but did not enumerate callers and missed `test-coverage-check.yml`'s call to `preflight-check.js`. CI failed on first push with a contradictory "Found 0 violations + exit 1" message because `spawnSync` returned `null` status, which the helper template did not handle. The agent traced the chain and added `setup-bun` to the missing workflow plus a `spawnFailed` flag in the helper.)
 
+7. **Shared-Resource Lifetime Checklist — for PRs that write artifacts to a shared / persistent location:**
+
+   When this PR introduces an installer, daemon registrar, hook installer, package metadata generator, or any code that **writes an artifact to a location whose readers outlive the writer's invocation context**, walk this 4-step checklist. This complements `architectural-invariants/SKILL.md` I-8 "Shared-Resource Artifact Lifetime" — I-8 is the runtime-correctness statement; Q7 is the mechanical pre-PR gate.
+
+   1. **State the artifact's lifetime** — what triggers its deletion? (e.g., "until the repo is uninstalled", "until the user removes the systemd unit", "until `npm uninstall`").
+   2. **Enumerate the artifact's reader contexts and each reader's lifetime** — who reads it, from where, until when?
+   3. **For each path / reference embedded in the artifact, classify it**: `cwd-anchored` (process lifetime) / `worktree-anchored` (until that worktree is removed) / `globally-stable` (until the repo / system is uninstalled).
+   4. **Confirm: artifact lifetime ≥ longest reader lifetime, AND every embedded reference's source lifetime ≥ artifact lifetime.** If not, redesign (route through a stable canonical anchor) or use copy-fallback to make the artifact self-contained.
+
+   **Multi-dimensional check.** When a PR claims to be "worktree-aware", enumerate every dimension where worktree-awareness must hold: (a) where to write, (b) where to read at runtime, (c) **what to embed inside the written artifact**. Identifying only one or two dimensions is a typical premature-closure pattern — see `memory/feedback_worktree_aware_premature_closure.md`.
+
+   (Lesson: Sprint 2026-04-29 PR #725 (#719) — `scripts/install-hooks.mjs` resolved the symlink target via `path.resolve(SOURCE_REL)`, cwd-anchored to the linked worktree at install time. After merge the worktree was removed; the symlink became dangling and git silently skipped the broken hook. Issue #728 surfaced the bug, PR #729 hot-fixed via `git rev-parse --git-common-dir`, PR #738 reinforced the invariant via `bun install` postinstall + worktree-aware setup. The author's self-retrospective named this "premature closure of Concerns Surfacing Discipline" — addressed 1 of 3 worktree-awareness dimensions before stopping.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -47,6 +60,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A new directory under `docs/` or `.context-store/` (or similar infrastructure)
   - A new canonical procedure step (e.g., new subsection in `core-responsibilities.md §N`)
   - A cross-runtime spawn (Question 6) — required regardless of whether other criteria match
+  - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
 - **Not required** for single-file bug fixes, typo corrections, or test-only additions
 

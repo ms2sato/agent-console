@@ -10,6 +10,7 @@ Proposals are written by a Claude session (typically the Orchestrator, or a sub-
 2. **Review** — Owner / CTO reads proposals and decides accept / reject.
 3. **Accept** — Owner edits `.claude/skills/architectural-invariants/SKILL.md` to add the new `I-N` entry (using the proposal as a draft). The proposal file is then deleted.
 4. **Reject** — Move the file to `../_rejected/` with an appended `## Reject Reason` section. Reject reasons themselves formalize tacit knowledge about "why this is not an invariant".
+5. **Backtest counterfactual (persistent)** — A proposal file may also represent a brewing recall test: "if we removed I-N from the catalog, would brewing reproduce it from the source PR's context?" These files are not pending review; they are validation evidence and **persist indefinitely** in this directory. They are identified by `status: proposed-backtest-counterfactual` in front-matter and a `backtest_note` field explaining the counterfactual setup. Steps 2-4 above do not apply to them. Tooling that walks `_proposals/` (e.g., the brewing rubric's "grep `_proposals/` and `_rejected/` for the candidate slug" anti-pattern check) should treat these files as informational, not as pending proposals. Example: [`I-7-value-shape-exhaustiveness-pr638.md`](I-7-value-shape-exhaustiveness-pr638.md) — generated 2026-04-18 as the Pilot's recall validation; `brewing-log.md` §1 Case 1b records the comparison against the real I-7.
 
 ## Naming
 

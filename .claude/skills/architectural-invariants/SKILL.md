@@ -239,6 +239,53 @@ During Sprint 2026-04-17, Issue #638 introduced `data_scope_slug` with grammar `
 
 ---
 
+## I-8. Shared-Resource Artifact Lifetime
+
+**Rule.** When code writes an artifact (symlink, config file, registered handler, hook, daemon registration, package metadata) whose readers outlive the writer's invocation context, every embedded reference inside the artifact must resolve via an anchor whose lifetime is at least as long as the longest reader's lifetime.
+
+If any embedded reference resolves to an ephemeral context (the install-time `cwd`, a temp directory, a worktree that may be removed, a per-session ID), the artifact silently breaks when that context disappears.
+
+**Why it matters.** The failure mode is **silent**. The artifact stays in place; the OS / git / package manager does not error on dangling references; the next reader simply sees nothing or skips the artifact. The only signal is the absence of expected behavior, often noticed long after the disappearance.
+
+This is distinct from I-3 (Identity Stability): I-3 asks whether an *identifier value* keeps pointing to the same resource across time; I-8 asks whether an *embedded reference* inside a written artifact remains *reachable* under context teardown.
+
+### Domains where this applies
+
+| Domain | Artifact (persistent) | Embedded reference (must outlive readers) |
+|---|---|---|
+| Git hooks | symlink/copy in `<common-dir>/hooks/` | source path the symlink targets |
+| Daemon registration | systemd / launchd unit file | absolute path to the binary, working dir, env files |
+| Package manager | `package.json` `bin` field, lock file | absolute paths to bundled scripts |
+| Log forwarder config | aggregator config | absolute paths to log files / sockets |
+| OS-level integration | URL handlers, cron entries | paths to executables they invoke |
+
+### Detection heuristics
+
+1. **Trace `path.resolve(<relative>)` and `process.cwd()` to a write site.** If the resolved path ever flows into a `writeFile` / `symlinkSync` / config-file write that targets a location whose readers outlive the writer, the resolved path becomes a *stored* reference. Stored references must not be cwd-bound.
+2. **`path.resolve(<relative>)` is cwd-anchored.** Any helper using `path.resolve(<relative>)` produces a value tied to the running process's cwd at call time. If that value is then written into a persistent artifact, the artifact captures the cwd at install time.
+3. **Lifetime ≤ comparison.** For each embedded reference, classify it: `cwd-anchored` (process lifetime), `worktree-anchored` (until that worktree is removed), `globally-stable` (until the repo / system is uninstalled). Confirm: `embedded-reference lifetime ≥ artifact lifetime ≥ longest-reader lifetime`.
+
+### Resolution patterns
+
+- **Resolve via canonical helper.** Replace `resolve(<relative>)` with a helper that resolves against a stable canonical anchor (e.g., `git rev-parse --git-common-dir` then `dirname` for git, `os.homedir()` for user-level installs, `__dirname` of a checked-in script for monorepo-relative anchoring).
+- **Self-contained copy fallback.** If the artifact must be self-contained, copy the source content into the artifact rather than embedding a path.
+- **Lazy resolution.** Write the artifact with a placeholder (e.g., `${REPO_ROOT}` token) that the reader expands at read time against its own context.
+- **Relative reference where the shared location is stable.** A relative reference inside the artifact is correct iff the location's containing path is itself stable across the embedded reference's resolution context.
+
+### Example: caught by this invariant
+
+PR [#725](https://github.com/ms2sato/agent-console/pull/725) introduced `scripts/install-hooks.mjs` which wrote a symlink into `<common-dir>/hooks/commit-msg`. The symlink target was computed via `path.resolve(SOURCE_REL)` — cwd-anchored. When agents ran `bun run hooks:install` from inside their per-task linked worktree, the symlink target embedded that worktree's path. After merge the worktree was removed; the symlink became dangling and **git silently skips broken hooks**. The language gate the hook enforced was disabled with no error signal.
+
+Issue [#728](https://github.com/ms2sato/agent-console/issues/728) surfaced the bug. PR [#729](https://github.com/ms2sato/agent-console/pull/729) fixed it via `git rev-parse --git-common-dir`. PR [#738](https://github.com/ms2sato/agent-console/pull/738) reinforced the invariant by wiring `bun install` postinstall + worktree-aware setup so the artifact installs from the main worktree consistently.
+
+**Review question that would have caught it mechanically:** *"For each path / handle / identifier embedded inside this artifact, what is its lifetime? Is it ≥ the artifact's longest-lived reader?"*
+
+### Suggested acceptance criterion template
+
+- [ ] For every artifact written to a location whose readers outlive this PR's invocation context, the embedded references resolve via globally-stable anchors (not cwd-bound or worktree-anchored); a teardown of the install-time context must not break the artifact → integration test exercising install → install-context-teardown → read-from-different-context
+
+---
+
 ## How to Add New Invariants
 
 A new entry to this catalog should satisfy all of:
