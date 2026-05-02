@@ -50,7 +50,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
    **Multi-dimensional check.** When a PR claims to be "worktree-aware", enumerate every dimension where worktree-awareness must hold: (a) where to write, (b) where to read at runtime, (c) **what to embed inside the written artifact**. Identifying only one or two dimensions is a typical premature-closure pattern — see `memory/feedback_worktree_aware_premature_closure.md`.
 
-   (Lesson: Sprint 2026-04-29 PR #725 (#719) — `scripts/install-hooks.mjs` resolved the symlink target via `path.resolve(SOURCE_REL)`, cwd-anchored to the linked worktree at install time. After merge the worktree was removed; the symlink became dangling and git silently skipped the broken hook. Issue #728 surfaced the bug, PR #729 hot-fixed via `git rev-parse --git-common-dir`, PR #738 reinforced the invariant via `bun install` postinstall + worktree-aware setup. The author's self-retrospective named this "premature closure of Concerns Surfacing Discipline" — addressed 1 of 3 worktree-awareness dimensions before stopping.)
+   (Lesson: Sprint 2026-04-30 PR #725 (#719) — `scripts/install-hooks.mjs` resolved the symlink target via `path.resolve(SOURCE_REL)`, cwd-anchored to the linked worktree at install time. After merge the worktree was removed; the symlink became dangling and git silently skipped the broken hook. Issue #728 surfaced the bug, PR #729 hot-fixed via `git rev-parse --git-common-dir`, PR #738 reinforced the invariant via `bun install` postinstall + worktree-aware setup. The author's self-retrospective named this "premature closure of Concerns Surfacing Discipline" — addressed 1 of 3 worktree-awareness dimensions before stopping.)
 
 ## When to apply
 
