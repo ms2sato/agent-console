@@ -27,16 +27,13 @@ Instead, when the local CodeRabbit CLI is clean (0 findings), add the rate-limit
 
 ## Q: Both the local CLI and the GitHub-side bot are rate-limited at the same time. CodeRabbit's verdict is unavailable. What do I do?
 
-**Disposition follows existing PR Merge Authority — the simultaneous-rate-limit case removes only the CodeRabbit safety net.** When both layers are simultaneously rate-limited at the same time (no CodeRabbit feedback obtainable from either source), CodeRabbit's "clean" verdict is unavailable for that PR. Do not block the PR indefinitely. Disposition follows the existing PR Merge Authority (see [`.claude/skills/orchestrator/core-responsibilities.md`](../orchestrator/core-responsibilities.md)):
-
-- docs-only / test-only / pure-refactor PRs → orchestrator may merge after CI is green and acceptance check passes
-- logic / process / config-change PRs → owner approval required, as always
+**Disposition follows existing PR Merge Authority — the simultaneous-rate-limit case removes only the CodeRabbit safety net.** When both layers are simultaneously rate-limited at the same time (no CodeRabbit feedback obtainable from either source), CodeRabbit's "clean" verdict is unavailable for that PR. Do not block the PR indefinitely. Disposition follows existing [PR Merge Authority](../orchestrator/SKILL.md#pr-merge-authority) — orchestrator-merge or owner-approval is decided there, not here.
 
 Add this rate-limit-fallback note to the PR body so the documented exception path is visible to anyone reviewing the merge:
 
 ```markdown
 ## Note on CodeRabbit
-Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's review window. No CodeRabbit feedback obtainable from either source. Merging under existing PR Merge Authority (docs-only / test-only / pure-refactor → orchestrator merge / logic / process / config → owner approval).
+Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's review window. No CodeRabbit feedback obtainable from either source. Merging under existing [PR Merge Authority](https://github.com/ms2sato/agent-console/blob/main/.claude/skills/orchestrator/SKILL.md#pr-merge-authority).
 ```
 
-The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the test-only PR (#748, an `__tests__/` directory migration with no production code change despite the `chore:` commit prefix) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)
+The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the test-only PR (#748) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)

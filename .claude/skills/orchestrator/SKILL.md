@@ -71,6 +71,8 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 - CI must be green
 - Orchestrator acceptance check must pass
 
+**Categories are content-based, not commit-prefix-based.** A `chore:` or `refactor:` prefix does not by itself qualify a PR for orchestrator merge — classify by what the diff actually changes. (Lesson: Sprint 2026-05-02 PR #748 had `chore:` prefix but qualified under *test-only* because the diff was an orphan-test `__tests__/` migration with zero production code change.)
+
 ---
 
 ## Core Responsibilities

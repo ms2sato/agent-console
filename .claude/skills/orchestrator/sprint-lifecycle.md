@@ -78,13 +78,19 @@ Before the first interactive step, the script prints an objective-metrics report
 
 Data sources are live `gh api` / `gh run list` / `gh pr list` calls; no persistent storage yet. If gh fails for a specific PR, that PR's affected fields show `n/a` and the error is listed at the end of the block; the rest of the report still renders.
 
-**Environment overrides** (optional):
+**Environment variables**:
 
-| Variable | Effect |
-|---|---|
-| `SPRINT_SINCE` / `SPRINT_UNTIL` | ISO dates (`YYYY-MM-DD`) for the `gh pr list --search "merged:>=..."` query |
-| `SPRINT_PR_NUMBERS` | Space- or comma-separated PR numbers, used verbatim in place of auto-discovery |
-| `SPRINT_LABEL` | Header label for the report (defaults to today's date) |
+| Variable | Required | Effect |
+|---|---|---|
+| `SPRINT_PR_NUMBERS` | **required** | Space- or comma-separated merged PR numbers for this sprint. The script aborts with a helpful error if unset. (Date-window discovery was removed — its 14-day default over-scoped post-Pilot sprints.) |
+| `SPRINT_LABEL` | optional | Header label for the report (defaults to today's date in ISO) |
+
+Canonical invocation form:
+
+```bash
+SPRINT_PR_NUMBERS="751 755 756 757" SPRINT_LABEL="Sprint 2026-05-02" \
+  node .claude/skills/orchestrator/sprint-retro.js
+```
 
 Answer `Y` (default) at the `Continue to retro questions?` prompt to proceed to the interactive steps. Answer `n` only if the metrics reveal something that warrants re-planning the retrospective itself.
 
