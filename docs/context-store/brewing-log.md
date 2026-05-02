@@ -215,7 +215,11 @@ node .claude/skills/orchestrator/brew-invariants.js <merged-PR>
 
 ## §3. Metrics & Learnings (populated at Pilot end, 2026-05-02)
 
-### Counts (Live Pilot Log §2, 2026-04-18 — 2026-05-02)
+**Snapshot scope.** Counts and ratios below are **frozen as of the Pilot end cutoff** (last PR included = [#750](https://github.com/ms2sato/agent-console/pull/750), snapshot taken in [PR #751](https://github.com/ms2sato/agent-console/pull/751) before its own merge — see "[brewing §7f self-reference boundary](https://github.com/ms2sato/agent-console/issues/671)" handling).
+
+Post-Pilot Phase 1 continuation entries (e.g., #755 / #756 onward, merged on 2026-05-02 after the [#751](https://github.com/ms2sato/agent-console/pull/751) Pilot end batch landed at 01:41:30Z) are appended to §2 for completeness but **do not retroactively update this snapshot**. Continuation metrics, if needed at a later decision point, will be reported as a separate snapshot section. The §2 vs §3 row-count gap (currently §2 ≥ §3 + post-Pilot entries) is intentional and bounded by the post-Pilot continuation set.
+
+### Counts (Live Pilot Log §2, frozen at #750 cutoff)
 
 | Metric | Value | Note |
 |---|---:|---|
