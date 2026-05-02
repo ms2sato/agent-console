@@ -1,0 +1,43 @@
+name: Mirror Drift Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude/skills/orchestrator/check-utils.js'
+      - '.claude/skills/orchestrator/check-mirror-drift.js'
+      - '.claude/skills/orchestrator/__tests__/check-mirror-drift.test.js'
+      - '.claude/rules/test-trigger.md'
+      - '.github/workflows/check-mirror-drift.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.claude/skills/orchestrator/check-utils.js'
+      - '.claude/skills/orchestrator/check-mirror-drift.js'
+      - '.claude/skills/orchestrator/__tests__/check-mirror-drift.test.js'
+      - '.claude/rules/test-trigger.md'
+      - '.github/workflows/check-mirror-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-mirror-drift:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bun is required to run the unit tests (`bun:test`). The drift check
+      # script itself runs under `node`, but keeping a single runtime here
+      # avoids the cross-runtime-spawn pitfall (Sprint 2026-04-28 lesson).
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.4"
+
+      - name: Run mirror drift check
+        run: node .claude/skills/orchestrator/check-mirror-drift.js
+
+      - name: Run mirror drift unit tests
+        run: bun test ./.claude/skills/orchestrator/__tests__/check-mirror-drift.test.js
