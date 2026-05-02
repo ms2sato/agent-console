@@ -76,6 +76,15 @@ export const serverConfig = {
     }
     return mode as 'none' | 'multi-user';
   })(),
+  /**
+   * OS username of the shared account for shared-session creation.
+   * When set in AUTH_MODE=multi-user, enables shared-session creation.
+   * Ignored in AUTH_MODE=none.
+   * See docs/design/shared-orchestrator-session.md.
+   *
+   * Empty string is treated as unset (operator-friendly).
+   */
+  AGENT_CONSOLE_SHARED_USERNAME: process.env.AGENT_CONSOLE_SHARED_USERNAME || undefined,
 } as const;
 
 /**

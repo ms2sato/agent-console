@@ -20,6 +20,7 @@ import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
+import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -294,7 +295,7 @@ export class MultiUserMode implements UserMode {
     }
 
     // Look up the user's home directory and OS UID
-    const userInfo = await this.lookupOsUser(username);
+    const userInfo = await lookupOsUser(username);
     if (!userInfo) {
       logger.warn({ username }, 'Login failed: could not look up OS user info');
       return null;
@@ -387,71 +388,6 @@ export class MultiUserMode implements UserMode {
       return exitCode === 0;
     } catch {
       return false;
-    }
-  }
-
-  // ========== Private: OS User Lookup ==========
-
-  private async lookupOsUser(username: string): Promise<{ uid: number; homeDir: string } | null> {
-    const platform = os.platform();
-
-    try {
-      if (platform === 'darwin') {
-        return await this.lookupMacOsUser(username);
-      } else if (platform === 'linux') {
-        return await this.lookupLinuxUser(username);
-      }
-      return null;
-    } catch (err) {
-      logger.error({ username, platform, err }, 'Failed to look up OS user');
-      return null;
-    }
-  }
-
-  private async lookupMacOsUser(username: string): Promise<{ uid: number; homeDir: string } | null> {
-    try {
-      const uidProc = Bun.spawn(['dscl', '.', '-read', `/Users/${username}`, 'UniqueID'], { stdout: 'pipe', stderr: 'ignore' });
-      const uidResult = await new Response(uidProc.stdout).text();
-      await uidProc.exited;
-
-      const homeProc = Bun.spawn(['dscl', '.', '-read', `/Users/${username}`, 'NFSHomeDirectory'], { stdout: 'pipe', stderr: 'ignore' });
-      const homeResult = await new Response(homeProc.stdout).text();
-      await homeProc.exited;
-
-      const uidMatch = uidResult.match(/UniqueID:\s*(\d+)/);
-      const homeMatch = homeResult.match(/NFSHomeDirectory:\s*(.+)/);
-
-      if (!uidMatch || !homeMatch) return null;
-
-      return {
-        uid: parseInt(uidMatch[1], 10),
-        homeDir: homeMatch[1].trim(),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private async lookupLinuxUser(username: string): Promise<{ uid: number; homeDir: string } | null> {
-    try {
-      const idProc = Bun.spawn(['id', '-u', username], { stdout: 'pipe', stderr: 'ignore' });
-      const result = await new Response(idProc.stdout).text();
-      await idProc.exited;
-
-      const uid = parseInt(result.trim(), 10);
-      if (isNaN(uid)) return null;
-
-      const getentProc = Bun.spawn(['getent', 'passwd', username], { stdout: 'pipe', stderr: 'ignore' });
-      const homeResult = await new Response(getentProc.stdout).text();
-      await getentProc.exited;
-
-      const fields = homeResult.trim().split(':');
-      // passwd format: username:x:uid:gid:gecos:home:shell
-      if (fields.length < 6) return null;
-
-      return { uid, homeDir: fields[5] };
-    } catch {
-      return null;
     }
   }
 

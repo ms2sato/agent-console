@@ -93,6 +93,7 @@ export class SessionConverterService {
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
+      initiatedBy: session.initiatedBy,
       templateVars: session.templateVars,
       dataScope: session.dataScope,
       dataScopeSlug: session.dataScopeSlug,
@@ -127,6 +128,7 @@ export class SessionConverterService {
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
+      initiatedBy: session.initiatedBy,
       recoveryState: session.recoveryState ?? 'healthy',
     };
 
@@ -198,6 +200,7 @@ export class SessionConverterService {
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
       createdBy: p.createdBy,
+      initiatedBy: p.initiatedBy,
       recoveryState: p.recoveryState ?? 'healthy',
     };
 

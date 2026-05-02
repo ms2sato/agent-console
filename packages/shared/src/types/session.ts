@@ -51,6 +51,13 @@ export interface SessionBase {
   parentWorkerId?: string;
   /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
   createdBy?: string;
+  /**
+   * User UUID of the authenticated user who actually created this session.
+   * For shared sessions, this differs from `createdBy` (which is the shared
+   * account). For personal sessions, this is left undefined.
+   * See docs/design/shared-orchestrator-session.md §"Schema Notes".
+   */
+  initiatedBy?: string;
   /** Session recovery state, surfaced from server. 'healthy' | 'orphaned'. */
   recoveryState: 'healthy' | 'orphaned';
 }

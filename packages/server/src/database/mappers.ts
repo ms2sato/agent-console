@@ -92,6 +92,7 @@ export function toSessionRow(session: PersistedSession): NewSession {
     parent_session_id: session.parentSessionId ?? null,
     parent_worker_id: session.parentWorkerId ?? null,
     created_by: session.createdBy ?? null,
+    initiated_by: session.initiatedBy ?? null,
     data_scope: session.dataScope ?? null,
     data_scope_slug: session.dataScopeSlug ?? null,
     // recovery_state has a DB-level DEFAULT 'healthy' but we write it
@@ -326,6 +327,7 @@ export function toPersistedSession(
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
       createdBy: session.created_by ?? undefined,
+      initiatedBy: session.initiated_by ?? undefined,
       dataScope,
       dataScopeSlug,
       recoveryState,
@@ -346,6 +348,7 @@ export function toPersistedSession(
       parentSessionId: session.parent_session_id ?? undefined,
       parentWorkerId: session.parent_worker_id ?? undefined,
       createdBy: session.created_by ?? undefined,
+      initiatedBy: session.initiated_by ?? undefined,
       dataScope,
       dataScopeSlug,
       recoveryState,

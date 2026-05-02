@@ -45,6 +45,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('parent_session_id', 'text')
       .addColumn('parent_worker_id', 'text')
       .addColumn('created_by', 'text')
+      .addColumn('initiated_by', 'text')
       .addColumn('data_scope', 'text')
       .addColumn('data_scope_slug', 'text')
       .addColumn('recovery_state', 'text', (col) => col.notNull().defaultTo('healthy'))

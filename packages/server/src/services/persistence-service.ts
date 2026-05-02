@@ -73,6 +73,13 @@ interface PersistedSessionBase {
   parentWorkerId?: string;
   /** User UUID (from users table) of the user who created this session */
   createdBy?: string;
+  /**
+   * User UUID (from users table) of the authenticated user who actually
+   * created this session. For shared sessions this differs from createdBy
+   * (which is the shared account). For personal sessions it is left
+   * undefined (it would equal createdBy).
+   */
+  initiatedBy?: string;
   /** Custom template variable overrides for agent command templates */
   templateVars?: Record<string, string>;
   /** Scope-based persistence for session data path. Undefined on legacy rows before backfill. */

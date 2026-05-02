@@ -6,7 +6,7 @@ import {
   UpdateSessionRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import type { AppBindings } from '../app-context.js';
@@ -64,9 +64,36 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError(validation.error || 'Invalid path');
     }
 
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, sharedAccountRegistry } = c.get('appContext');
     const authUser = c.get('authUser');
-    const session = await sessionManager.createSession(body, { createdBy: authUser.id });
+
+    // Determine session ownership. For shared sessions, createdBy is the
+    // shared account (PTY spawn identity) and initiatedBy is the
+    // authenticated user (audit trail). For personal sessions, createdBy is
+    // the authenticated user and initiatedBy is left undefined — they would
+    // be equal, and leaving the column null makes shared/personal sessions
+    // observable from the DB.
+    let createdBy: string;
+    let initiatedBy: string | undefined;
+    if (body.shared === true) {
+      if (!sharedAccountRegistry.isEnabled()) {
+        throw new ValidationError('Shared sessions are not enabled on this server.');
+      }
+      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
+      if (!sharedUserId) {
+        // isEnabled() returned true but no default — unreachable in
+        // practice; surface as 500 since it indicates server-side
+        // inconsistency, not a client input error.
+        throw new InternalError('Shared account registry is enabled but has no default user.');
+      }
+      createdBy = sharedUserId;
+      initiatedBy = authUser.id;
+    } else {
+      createdBy = authUser.id;
+      initiatedBy = undefined;
+    }
+
+    const session = await sessionManager.createSession(body, { createdBy, initiatedBy });
 
     return c.json({ session }, 201);
   })

@@ -51,6 +51,7 @@ const SessionBaseSchema = v.object({
   parentSessionId: v.optional(v.string()),
   parentWorkerId: v.optional(v.string()),
   createdBy: v.optional(v.string()),
+  initiatedBy: v.optional(v.string()),
   recoveryState: v.picklist(['healthy', 'orphaned']),
 });
 

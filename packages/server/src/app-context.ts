@@ -50,6 +50,7 @@ import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
+import { SharedAccountRegistry } from './services/shared-account-registry.js';
 import { bunPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
@@ -111,6 +112,9 @@ export interface AppContext {
 
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
+
+  /** Registry of configured shared OS accounts (for shared-session creation) */
+  sharedAccountRegistry: SharedAccountRegistry;
 
   /** Periodic timer management (persisted when repository is available) */
   timerManager: TimerManager;
@@ -222,6 +226,22 @@ export async function createAppContext(
     ? await MultiUserMode.create(bunPtyProvider, userRepository)
     : await SingleUserMode.create(bunPtyProvider, userRepository);
   logger.info({ authMode: serverConfig.AUTH_MODE }, 'User mode initialized');
+
+  // 5.6. Create shared account registry. Only honours
+  // AGENT_CONSOLE_SHARED_USERNAME when AUTH_MODE=multi-user; in AUTH_MODE=none
+  // shared sessions are not meaningful and the env var is ignored.
+  let sharedAccountRegistry: SharedAccountRegistry;
+  if (serverConfig.AUTH_MODE === 'multi-user') {
+    sharedAccountRegistry = await SharedAccountRegistry.create({
+      username: serverConfig.AGENT_CONSOLE_SHARED_USERNAME,
+      userRepository,
+    });
+  } else {
+    if (serverConfig.AGENT_CONSOLE_SHARED_USERNAME) {
+      logger.info({}, 'shared account: ignored in AUTH_MODE=none');
+    }
+    sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+  }
 
   // 6. Create managers. RepositoryManager is built FIRST so SessionManager can
   //    receive a ready-to-use RepositoryLookup at construction time (no late
@@ -454,6 +474,7 @@ export async function createAppContext(
     interSessionMessageService,
     suggestSessionMetadata,
     userMode,
+    sharedAccountRegistry,
     timerManager,
     conditionalWakeupManager,
     interactiveProcessManager,
@@ -479,6 +500,8 @@ export interface CreateTestContextOptions {
   systemCapabilities?: SystemCapabilitiesService;
   /** Custom user mode for mocking */
   userMode?: UserMode;
+  /** Custom shared account registry for mocking */
+  sharedAccountRegistry?: SharedAccountRegistry;
   /** Skip job queue start (useful for isolated unit tests) */
   skipJobQueueStart?: boolean;
 }
@@ -535,6 +558,11 @@ export async function createTestContext(
   } else {
     userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
   }
+
+  // Test contexts default to a disabled shared account registry. Tests that
+  // exercise shared-session paths inject their own registry via overrides.
+  const sharedAccountRegistry = overrides?.sharedAccountRegistry
+    ?? SharedAccountRegistry.createDisabled();
 
   // Create managers (with injected dependencies). RepositoryManager first so
   // SessionManager can receive a ready lookup at construction time.
@@ -629,6 +657,7 @@ export async function createTestContext(
     interSessionMessageService,
     suggestSessionMetadata,
     userMode,
+    sharedAccountRegistry,
     timerManager,
     conditionalWakeupManager,
     interactiveProcessManager,

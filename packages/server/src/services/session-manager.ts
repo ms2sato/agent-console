@@ -517,6 +517,7 @@ export class SessionManager {
       parentSessionId: request.parentSessionId,
       parentWorkerId: request.parentWorkerId,
       createdBy: context?.createdBy,
+      initiatedBy: context?.initiatedBy,
       templateVars: request.templateVars ?? context?.templateVars,
       dataScope,
       dataScopeSlug,

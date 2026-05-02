@@ -230,6 +230,45 @@ describe('SessionManager', () => {
       expect(session.createdBy).toBe('user-abc');
     });
 
+    it('should set both createdBy and initiatedBy when shared (cross-user) context is given', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      };
+
+      const session = await manager.createSession(request, {
+        createdBy: 'shared-account-user-id',
+        initiatedBy: 'caller-user-id',
+      });
+
+      expect(session.createdBy).toBe('shared-account-user-id');
+      expect(session.initiatedBy).toBe('caller-user-id');
+
+      // The persisted row carries both fields too.
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.createdBy).toBe('shared-account-user-id');
+      expect(persisted!.initiatedBy).toBe('caller-user-id');
+    });
+
+    it('should leave initiatedBy undefined for personal sessions (current behaviour preserved)', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'caller-user-id' },
+      );
+
+      expect(session.createdBy).toBe('caller-user-id');
+      expect(session.initiatedBy).toBeUndefined();
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted!.initiatedBy).toBeUndefined();
+    });
+
     it('should create a new quick session with correct properties', async () => {
       const manager = await getSessionManager();
 

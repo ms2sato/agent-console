@@ -14,8 +14,11 @@ import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SingleUserMode } from '../../services/user-mode.js';
+import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
+import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
+import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -515,5 +518,211 @@ describe('Sessions API - GET /api/sessions/:id (orphaned visibility)', () => {
     };
     expect(body.session.id).toBe('orphan-session-1');
     expect(body.session.recoveryState).toBe('orphaned');
+  });
+});
+
+// ===========================================================================
+// POST /api/sessions — `shared: true` flag handling
+// ===========================================================================
+//
+// Validates the route-level translation of `body.shared` into createdBy /
+// initiatedBy ownership per docs/design/shared-orchestrator-session.md
+// §"Session Creation Flow".
+//
+// Boundary cases (per .claude/rules/design-principles.md "Specify boundary
+// values"):
+//   - `shared` field absent → personal session (createdBy = authUser, initiatedBy undefined).
+//   - `shared: false`       → personal session (same as absent).
+//   - `shared: true` + disabled registry → 400 ValidationError.
+//   - `shared: true` + enabled registry  → shared session (createdBy = shared,
+//                                          initiatedBy = authUser).
+//   - `shared: 'string'`    → 400 from schema validation.
+describe('Sessions API - POST /api/sessions (shared sessions)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
+  let sharedAccountRegistry: SharedAccountRegistry;
+
+  async function setupCommon(opts: { sharedEnabled: boolean }): Promise<void> {
+    await closeDatabase();
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+      ['/test/path/.keep']: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    const userRepository = new SqliteUserRepository(db);
+
+    // Insert the test auth user so FK constraints (sessions.created_by → users.id) hold.
+    await db
+      .insertInto('users')
+      .values({
+        id: TEST_AUTH_USER.id,
+        os_uid: null,
+        username: TEST_AUTH_USER.username,
+        home_dir: TEST_AUTH_USER.homeDir,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+
+    if (opts.sharedEnabled) {
+      sharedAccountRegistry = await SharedAccountRegistry.create({
+        username: 'shared-user',
+        userRepository,
+        lookupOsUser: async () => ({ uid: 5050, homeDir: '/home/shared-user' }),
+      });
+    } else {
+      sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+    }
+
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, TEST_AUTH_USER),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager, sharedAccountRegistry }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  }
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  it('omitted shared field → personal session (createdBy = authUser, initiatedBy undefined)', async () => {
+    await setupCommon({ sharedEnabled: false });
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { session: { id: string; createdBy?: string; initiatedBy?: string } };
+    expect(body.session.createdBy).toBe(TEST_AUTH_USER.id);
+    expect(body.session.initiatedBy).toBeUndefined();
+
+    const persisted = await sessionManager.getSessionRepository().findById(body.session.id);
+    expect(persisted!.createdBy).toBe(TEST_AUTH_USER.id);
+    expect(persisted!.initiatedBy).toBeUndefined();
+  });
+
+  it('shared:false → personal session (same as omitted)', async () => {
+    await setupCommon({ sharedEnabled: true });
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        shared: false,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { session: { id: string; createdBy?: string; initiatedBy?: string } };
+    expect(body.session.createdBy).toBe(TEST_AUTH_USER.id);
+    expect(body.session.initiatedBy).toBeUndefined();
+  });
+
+  it('shared:true + feature disabled → 400 ValidationError', async () => {
+    await setupCommon({ sharedEnabled: false });
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        shared: true,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Shared sessions are not enabled');
+  });
+
+  it('shared:true + feature enabled → 201 (createdBy = shared, initiatedBy = authUser)', async () => {
+    await setupCommon({ sharedEnabled: true });
+
+    const sharedUserId = sharedAccountRegistry.getDefaultUserId();
+    expect(sharedUserId).not.toBeNull();
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        shared: true,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { session: { id: string; createdBy?: string; initiatedBy?: string } };
+    expect(body.session.createdBy).toBe(sharedUserId!);
+    expect(body.session.initiatedBy).toBe(TEST_AUTH_USER.id);
+
+    const persisted = await sessionManager.getSessionRepository().findById(body.session.id);
+    expect(persisted!.createdBy).toBe(sharedUserId!);
+    expect(persisted!.initiatedBy).toBe(TEST_AUTH_USER.id);
+  });
+
+  it('shared:"string" → 400 from schema validation (boolean expected)', async () => {
+    await setupCommon({ sharedEnabled: true });
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        shared: 'yes', // wrong type
+      }),
+    });
+
+    expect(res.status).toBe(400);
   });
 });

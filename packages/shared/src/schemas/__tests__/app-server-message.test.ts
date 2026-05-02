@@ -144,6 +144,34 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    it('should accept session with initiatedBy set', () => {
+      const output = expectValid({
+        type: 'session-created',
+        session: {
+          ...worktreeSession,
+          createdBy: 'shared-account-uuid',
+          initiatedBy: 'caller-uuid',
+        },
+      });
+      if (output.type === 'session-created' && 'initiatedBy' in output.session) {
+        expect(output.session.initiatedBy).toBe('caller-uuid');
+      }
+    });
+
+    it('should accept session without initiatedBy (optional)', () => {
+      expectValid({
+        type: 'session-created',
+        session: { ...worktreeSession },
+      });
+    });
+
+    it('should reject session with non-string initiatedBy', () => {
+      expectInvalid({
+        type: 'session-created',
+        session: { ...worktreeSession, initiatedBy: 123 },
+      });
+    });
+
     it('should reject missing session', () => {
       expectInvalid({ type: 'session-created' });
     });

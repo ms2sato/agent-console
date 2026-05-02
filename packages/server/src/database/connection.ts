@@ -304,6 +304,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 19) {
     await migrateToV19(database, dbPath);
   }
+
+  if (currentVersion < 20) {
+    await migrateToV20(database);
+  }
 }
 
 /**
@@ -1230,6 +1234,38 @@ export async function migrateToV19(
   }
 
   logger.info('Migration to v19 completed');
+}
+
+/**
+ * Migration v20: Add `initiated_by` column to sessions.
+ *
+ * For shared sessions, `created_by` is the shared account (whose OS identity
+ * spawns the PTY), and `initiated_by` records the authenticated user who
+ * actually clicked "Create shared session" — useful for audit. For personal
+ * sessions, `initiated_by` is left NULL (it equals `created_by`, so the
+ * distinction is observable in the DB).
+ *
+ * Nullable text, no FK (see docs/design/shared-orchestrator-session.md
+ * §"Schema Notes" item 1).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV20(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v20: Adding initiated_by column to sessions');
+
+  try {
+    await database.schema
+      .alterTable('sessions')
+      .addColumn('initiated_by', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column initiated_by already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 20`.execute(database);
+
+  logger.info('Migration to v20 completed');
 }
 
 /**

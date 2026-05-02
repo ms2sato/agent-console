@@ -31,6 +31,7 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
 import type { AppBindings, AppContext } from '../app-context.js';
 import { SingleUserMode } from '../services/user-mode.js';
+import { SharedAccountRegistry } from '../services/shared-account-registry.js';
 import { bunPtyProvider } from '../lib/pty-provider.js';
 
 // =============================================================================
@@ -188,6 +189,7 @@ export function getTestConfigDir(): string {
 export function asAppContext(partial: Partial<AppContext>): AppContext {
   return {
     userMode: new SingleUserMode(bunPtyProvider, TEST_AUTH_USER),
+    sharedAccountRegistry: SharedAccountRegistry.createDisabled(),
     broadcastToApp: () => {},
     ...partial,
   } as AppContext;

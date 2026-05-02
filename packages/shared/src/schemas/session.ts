@@ -26,6 +26,12 @@ export const CreateWorktreeSessionRequestSchema = v.object({
   title: v.optional(v.string()),
   parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+  /**
+   * When true, create a shared session (PTY runs as the configured shared
+   * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
+   * See docs/design/shared-orchestrator-session.md.
+   */
+  shared: v.optional(v.boolean()),
   templateVars: v.optional(
     v.record(
       v.pipe(
@@ -57,6 +63,12 @@ export const CreateQuickSessionRequestSchema = v.object({
   title: v.optional(v.string()),
   parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
   parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+  /**
+   * When true, create a shared session (PTY runs as the configured shared
+   * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
+   * See docs/design/shared-orchestrator-session.md.
+   */
+  shared: v.optional(v.boolean()),
   templateVars: v.optional(
     v.record(
       v.pipe(

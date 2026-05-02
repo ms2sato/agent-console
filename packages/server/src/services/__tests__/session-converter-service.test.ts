@@ -173,6 +173,28 @@ describe('SessionConverterService', () => {
       expect(result.workers[1].id).toBe('w-later');
     });
 
+    it('preserves initiatedBy when set on the internal session', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'shared-account-uuid',
+        initiatedBy: 'caller-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.initiatedBy).toBe('caller-uuid');
+      expect(result.createdBy).toBe('shared-account-uuid');
+    });
+
+    it('leaves initiatedBy undefined when the internal session omits it', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'user-42',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.initiatedBy).toBeUndefined();
+    });
+
     it('falls back to Unknown repository name when repository is not found', () => {
       mockLookup = {
         getRepositoryDisplayInfo: () => undefined,
@@ -291,6 +313,36 @@ describe('SessionConverterService', () => {
       expect(result.parentWorkerId).toBe('parent-w');
       expect(result.createdBy).toBe('user-42');
     });
+
+    it('preserves initiatedBy from persisted data', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-shared',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'shared-account-uuid',
+        initiatedBy: 'caller-uuid',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.initiatedBy).toBe('caller-uuid');
+      expect(result.createdBy).toBe('shared-account-uuid');
+    });
+
+    it('leaves initiatedBy undefined when persisted data omits it', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-personal',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'user-42',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.initiatedBy).toBeUndefined();
+    });
   });
 
   // --- toPersistedSession / toPersistedSessionWithServerPid ---
@@ -335,6 +387,18 @@ describe('SessionConverterService', () => {
 
       expect(result.type).toBe('quick');
       expect(result.serverPid).toBe(12345);
+    });
+
+    it('round-trips initiatedBy from internal to persisted', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'shared-account-uuid',
+        initiatedBy: 'caller-uuid',
+      });
+
+      const result = service.toPersistedSession(session);
+
+      expect(result.initiatedBy).toBe('caller-uuid');
+      expect(result.createdBy).toBe('shared-account-uuid');
     });
   });
 
