@@ -48,7 +48,7 @@ Before completing any code changes, always verify:
    Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's review window. No CodeRabbit feedback obtainable from either source. Merging under existing PR Merge Authority (chore / docs → orchestrator merge / logic / config → owner approval).
    ```
 
-   The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the chore / docs / process PRs (#747 / #748 / #749) under PR Merge Authority, owner approved the logic PR (#750). No regressions surfaced post-merge.)
+   The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the chore PR (#748) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)
 
    **Pre-merge checks vs Review state — both required for "clean".** GitHub surfaces CodeRabbit info in two distinct layers that are easy to confuse:
    - **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) — metadata validation, displayed as "5/5 passed" in the GitHub UI. **Not** code review.
