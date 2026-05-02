@@ -160,6 +160,54 @@ export const MATCHING_RULES = {
     relevance:
       'value crossing a trust boundary — must be schema-validated before use',
   },
+  'I-7': {
+    keywords: [
+      'shape',
+      'shapes',
+      'variant',
+      'variants',
+      'enumeration',
+      'exhaustive',
+      'exhaustiveness',
+      'discriminated union',
+      'default branch',
+      'default case',
+      'fallback',
+      'optional prefix',
+      'org/repo',
+      'protocol-relative',
+      'either',
+    ],
+    pathFragments: [],
+    relevance:
+      'value has multiple valid shapes — every code path and test must cover all shapes; no silent fallback to a single default',
+  },
+  'I-8': {
+    keywords: [
+      'install',
+      'installer',
+      'postinstall',
+      'symlink',
+      'git hook',
+      'commit-msg',
+      'pre-commit',
+      'daemon',
+      'systemd',
+      'launchd',
+      'package metadata',
+      'embedded reference',
+      'embedded path',
+      'dangling',
+      'cwd-anchored',
+      'worktree-anchored',
+      'artifact lifetime',
+      'shared resource',
+      'git-common-dir',
+    ],
+    pathFragments: ['scripts/install', 'hooks/', 'git-hooks/'],
+    relevance:
+      'artifact written to a shared / persistent location — embedded references must resolve via globally-stable anchors, not cwd or per-worktree paths',
+  },
 };
 
 function usage() {
