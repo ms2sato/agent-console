@@ -8,9 +8,7 @@ import {
   runRetro,
   runMetricsBlock,
   isAffirmative,
-  computeDefaultSince,
-  resolveDateWindow,
-  DEFAULT_WINDOW_DAYS,
+  MissingSprintPrNumbersError,
 } from '../sprint-retro.js';
 import {
   collectSprintMetrics,
@@ -756,15 +754,30 @@ describe('runMetricsBlock', () => {
     logSpy.mockRestore();
   });
 
-  it('skips with a friendly message when no PRs are found', async () => {
+  it('throws MissingSprintPrNumbersError when SPRINT_PR_NUMBERS is unset', async () => {
     const readResponse = async () => '';
-    const result = await runMetricsBlock({
-      readResponse,
-      discover: () => [],
-      env: {},
-    });
-    expect(result.proceed).toBe(true);
-    expect(logs.join('\n')).toContain('no merged PRs found');
+    await expect(runMetricsBlock({ readResponse, env: {} }))
+      .rejects.toBeInstanceOf(MissingSprintPrNumbersError);
+  });
+
+  it('throws MissingSprintPrNumbersError when SPRINT_PR_NUMBERS is empty / non-numeric', async () => {
+    const readResponse = async () => '';
+    await expect(runMetricsBlock({ readResponse, env: { SPRINT_PR_NUMBERS: '' } }))
+      .rejects.toBeInstanceOf(MissingSprintPrNumbersError);
+    await expect(runMetricsBlock({ readResponse, env: { SPRINT_PR_NUMBERS: '   ,  ' } }))
+      .rejects.toBeInstanceOf(MissingSprintPrNumbersError);
+  });
+
+  it('error message points the user to the canonical invocation form', async () => {
+    const readResponse = async () => '';
+    try {
+      await runMetricsBlock({ readResponse, env: {} });
+      throw new Error('expected MissingSprintPrNumbersError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingSprintPrNumbersError);
+      expect(err.message).toContain('SPRINT_PR_NUMBERS is required');
+      expect(err.message).toContain('node .claude/skills/orchestrator/sprint-retro.js');
+    }
   });
 
   it('uses SPRINT_PR_NUMBERS env override and prints the report', async () => {
@@ -803,60 +816,6 @@ describe('runMetricsBlock', () => {
     expect(result.proceed).toBe(true);
   });
 
-  it('applies default window and notifies when no env vars set', async () => {
-    const readResponse = async () => '';
-    const now = new Date('2026-04-18T12:00:00Z');
-    const capturedDiscoverArgs = [];
-    const discover = args => {
-      capturedDiscoverArgs.push(args);
-      return [];
-    };
-    await runMetricsBlock({
-      readResponse,
-      discover,
-      env: {},
-      now,
-    });
-    expect(capturedDiscoverArgs).toHaveLength(1);
-    expect(capturedDiscoverArgs[0].since).toBe('2026-04-04'); // 14 days before 2026-04-18
-    expect(capturedDiscoverArgs[0].until).toBeNull();
-    expect(logs.join('\n')).toContain('applying default window: merged:>=2026-04-04');
-  });
-
-  it('respects explicit SPRINT_SINCE without applying default', async () => {
-    const readResponse = async () => '';
-    const now = new Date('2026-04-18T12:00:00Z');
-    const capturedDiscoverArgs = [];
-    const discover = args => {
-      capturedDiscoverArgs.push(args);
-      return [];
-    };
-    await runMetricsBlock({
-      readResponse,
-      discover,
-      env: { SPRINT_SINCE: '2026-04-01' },
-      now,
-    });
-    expect(capturedDiscoverArgs[0].since).toBe('2026-04-01');
-    expect(logs.join('\n')).not.toContain('applying default window');
-  });
-
-  it('skips date-window discovery entirely when SPRINT_PR_NUMBERS is set', async () => {
-    const readResponse = async () => 'y';
-    const discover = () => {
-      throw new Error('discover should not be called');
-    };
-    const exec = buildFixtureExec([633, 635, 638, 639]);
-    const result = await runMetricsBlock({
-      readResponse,
-      exec,
-      discover,
-      env: { SPRINT_PR_NUMBERS: '633 635 638 639' },
-    });
-    expect(result.prNumbers).toEqual([633, 635, 638, 639]);
-    expect(logs.join('\n')).not.toContain('applying default window');
-  });
-
   it('forwards onProgress to collectSprintMetrics', async () => {
     const readResponse = async () => 'y';
     const progressEvents = [];
@@ -872,65 +831,5 @@ describe('runMetricsBlock', () => {
     expect(progressEvents).toHaveLength(4);
     expect(progressEvents[0]).toEqual({ index: 1, total: 4, prNumber: 633 });
     expect(progressEvents[3]).toEqual({ index: 4, total: 4, prNumber: 639 });
-  });
-});
-
-describe('computeDefaultSince', () => {
-  it('returns a date N days before now in YYYY-MM-DD format', () => {
-    const now = new Date('2026-04-18T12:00:00Z');
-    expect(computeDefaultSince(now, 14)).toBe('2026-04-04');
-  });
-
-  it('handles month boundary correctly', () => {
-    const now = new Date('2026-04-10T12:00:00Z');
-    expect(computeDefaultSince(now, 14)).toBe('2026-03-27');
-  });
-
-  it('uses DEFAULT_WINDOW_DAYS when windowDays is omitted', () => {
-    const now = new Date('2026-04-18T12:00:00Z');
-    const result = computeDefaultSince(now);
-    const expected = new Date('2026-04-18T12:00:00Z');
-    expected.setUTCDate(expected.getUTCDate() - DEFAULT_WINDOW_DAYS);
-    expect(result).toBe(expected.toISOString().slice(0, 10));
-  });
-});
-
-describe('resolveDateWindow', () => {
-  const now = new Date('2026-04-18T12:00:00Z');
-
-  it('returns default since (14 days ago) when no env vars set', () => {
-    const result = resolveDateWindow({ env: {}, now });
-    expect(result.since).toBe('2026-04-04');
-    expect(result.until).toBeNull();
-    expect(result.defaultApplied).toBe(true);
-  });
-
-  it('respects SPRINT_SINCE without applying default', () => {
-    const result = resolveDateWindow({
-      env: { SPRINT_SINCE: '2026-04-01' },
-      now,
-    });
-    expect(result.since).toBe('2026-04-01');
-    expect(result.defaultApplied).toBe(false);
-  });
-
-  it('respects SPRINT_UNTIL without applying default', () => {
-    const result = resolveDateWindow({
-      env: { SPRINT_UNTIL: '2026-04-15' },
-      now,
-    });
-    expect(result.since).toBeNull();
-    expect(result.until).toBe('2026-04-15');
-    expect(result.defaultApplied).toBe(false);
-  });
-
-  it('returns no defaults when SPRINT_PR_NUMBERS is set (date window unused)', () => {
-    const result = resolveDateWindow({
-      env: { SPRINT_PR_NUMBERS: '665,666,667' },
-      now,
-    });
-    expect(result.since).toBeNull();
-    expect(result.until).toBeNull();
-    expect(result.defaultApplied).toBe(false);
   });
 });

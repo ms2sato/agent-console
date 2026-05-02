@@ -9,24 +9,18 @@
  * Usage:
  *   Run as interactive process via run_process MCP tool.
  *
- * Environment variables (all optional):
- *   SPRINT_PR_NUMBERS  Explicit whitespace/comma-separated list of PR numbers
- *                      (e.g., "665,666,667"). Skips date-window discovery. Use
- *                      this when the sprint PRs are already known.
- *   SPRINT_SINCE       ISO date lower bound for PR discovery (e.g., "2026-04-18").
- *   SPRINT_UNTIL       ISO date upper bound for PR discovery.
+ * Environment variables:
+ *   SPRINT_PR_NUMBERS  REQUIRED. Explicit whitespace/comma-separated list of PR
+ *                      numbers (e.g., "665,666,667"). The script aborts with a
+ *                      helpful error if not set — date-window discovery was
+ *                      removed because its default returned the entire post-
+ *                      Pilot history, not the current sprint's PRs.
  *   SPRINT_LABEL       Label used in the metrics report header (default: today in
  *                      ISO). Does not affect which PRs are selected.
- *
- * Default behaviour when none of SPRINT_PR_NUMBERS / SPRINT_SINCE / SPRINT_UNTIL
- * is set: SPRINT_SINCE is computed as 14 days before today (YYYY-MM-DD). Without
- * this default, the query would return the most recent 100 merged PRs and spend
- * several minutes fetching per-PR metrics — enough to look like a hang.
  */
 
 import {
   collectSprintMetrics,
-  findMergedPrNumbers,
   formatMetricsReport,
   defaultExec,
   createCache,
@@ -277,38 +271,25 @@ function isAffirmative(answer) {
   return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
 }
 
-const DEFAULT_WINDOW_DAYS = 14;
-
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
 }
 
-/**
- * Compute the default `since` date (N days before today, ISO YYYY-MM-DD).
- * Exported for testing; callers in this file use it via `resolveDateWindow`.
- */
-export function computeDefaultSince(now = new Date(), windowDays = DEFAULT_WINDOW_DAYS) {
-  const d = new Date(now);
-  d.setUTCDate(d.getUTCDate() - windowDays);
-  return isoDate(d);
-}
-
-/**
- * Resolve the effective `since` and `until` based on env vars, applying the
- * default window only when no explicit bounds were given and PR numbers were
- * not supplied directly.
- */
-export function resolveDateWindow({ env, now = new Date(), windowDays = DEFAULT_WINDOW_DAYS } = {}) {
-  const since = env.SPRINT_SINCE || null;
-  const until = env.SPRINT_UNTIL || null;
-  const hasPrNumbers = Boolean(env.SPRINT_PR_NUMBERS);
-  if (hasPrNumbers) {
-    return { since, until, defaultApplied: false };
+export class MissingSprintPrNumbersError extends Error {
+  constructor() {
+    super(
+      [
+        'SPRINT_PR_NUMBERS is required.',
+        '',
+        'Set the env var to a whitespace/comma-separated list of merged PR numbers for this sprint, e.g.:',
+        '  SPRINT_PR_NUMBERS="751 755 756 757" SPRINT_LABEL="Sprint 2026-05-02" \\',
+        '    node .claude/skills/orchestrator/sprint-retro.js',
+        '',
+        'Date-window discovery was removed: the previous default scanned everything since the brewing Pilot start, which over-scoped post-Pilot sprints. Pass the sprint PRs explicitly.',
+      ].join('\n')
+    );
+    this.name = 'MissingSprintPrNumbersError';
   }
-  if (!since && !until) {
-    return { since: computeDefaultSince(now, windowDays), until: null, defaultApplied: true };
-  }
-  return { since, until, defaultApplied: false };
 }
 
 function defaultProgressReporter(write = process.stderr.write.bind(process.stderr)) {
@@ -323,36 +304,23 @@ async function runMetricsBlock({
   cache = createCache(),
   env = process.env,
   collect = collectSprintMetrics,
-  discover = findMergedPrNumbers,
   format = formatMetricsReport,
   now = new Date(),
   onProgress = () => {},
 } = {}) {
-  const sprintLabel = env.SPRINT_LABEL || isoDate(now);
-  const { since, until, defaultApplied } = resolveDateWindow({ env, now });
-
-  let prNumbers;
-  if (env.SPRINT_PR_NUMBERS) {
-    prNumbers = env.SPRINT_PR_NUMBERS
-      .split(/[\s,]+/)
-      .map(s => Number.parseInt(s, 10))
-      .filter(n => Number.isFinite(n));
-  } else {
-    if (defaultApplied) {
-      console.log(`(no SPRINT_SINCE / SPRINT_UNTIL / SPRINT_PR_NUMBERS set — applying default window: merged:>=${since})`);
-    }
-    try {
-      prNumbers = discover({ exec, since, until });
-    } catch {
-      prNumbers = [];
-    }
+  if (!env.SPRINT_PR_NUMBERS) {
+    throw new MissingSprintPrNumbersError();
   }
 
-  if (!Array.isArray(prNumbers) || prNumbers.length === 0) {
-    console.log('\n--- Sprint Objective Metrics ---');
-    console.log('(no merged PRs found for this sprint window — skipping metrics)');
-    console.log();
-    return { prNumbers: [], proceed: true };
+  const sprintLabel = env.SPRINT_LABEL || isoDate(now);
+
+  const prNumbers = env.SPRINT_PR_NUMBERS
+    .split(/[\s,]+/)
+    .map(s => Number.parseInt(s, 10))
+    .filter(n => Number.isFinite(n));
+
+  if (prNumbers.length === 0) {
+    throw new MissingSprintPrNumbersError();
   }
 
   console.log();
@@ -408,7 +376,6 @@ export {
   runMetricsBlock,
   isAffirmative,
 };
-export { DEFAULT_WINDOW_DAYS };
 
 // --- Main ---
 
@@ -416,6 +383,14 @@ const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.
 if (!isMainModule) {
   // Module is being imported for testing — do not execute main logic
 } else {
-  await runRetro();
-  process.exit(0);
+  try {
+    await runRetro();
+    process.exit(0);
+  } catch (err) {
+    if (err instanceof MissingSprintPrNumbersError) {
+      console.error(err.message);
+      process.exit(2);
+    }
+    throw err;
+  }
 }
