@@ -12,6 +12,14 @@ related_rules:
   - memory/feedback_no_unauthorized_rebase.md
   - memory/feedback_orchestrator_no_branch_edit.md
 related_issues: [#632, #638]
+summary: |
+  Orchestrator force-pushed `gh pr update-branch --rebase` on PRs while owner
+  was running local review; near-miss almost destroyed the agent's mid-review-
+  loop uncommitted work too. "Idle worktree" interpreted at face value missed
+  that owner's local checkout makes the branch active in a different sense.
+read_when:
+  - Considering rebase / force-push that affects another agent's branch or owner's local checkout
+  - `feedback_no_unauthorized_rebase.md` or `feedback_orchestrator_no_branch_edit.md` feels arbitrary
 ---
 
 # Rebase During Local Review

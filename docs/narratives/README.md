@@ -35,10 +35,19 @@ tags:
 related_rules:
   - memory/feedback_xxx.md
 related_issues: [#123]
+summary: |
+  1-2 sentences distilling what was learned. Picked at Sprint Start in
+  place of the full body, so the next instance can decide whether to
+  read further.
+read_when:
+  - <trigger condition 1 — when a future instance should come back to read this in full>
+  - <trigger condition 2>
 ---
 ```
 
 Body sections are flexible but first-person present tense is encouraged — it carries more of the raw texture than third-person past.
+
+**`summary` and `read_when` are picked at Sprint Start.** Sprint Start Step 6 reads only frontmatter (including `summary` + `read_when`) for `nature: founding`, `importance: high` entries — the full body is loaded on demand when a `read_when` trigger matches the current task. Keep `summary` terse (no more than 4 lines) and `read_when` to 1-2 mechanically-checkable conditions; if more triggers seem applicable, the strongest two are usually enough — extras dilute the signal.
 
 **Language.** Write narratives entirely in English, including quoted speech. When a quote was originally spoken or written in another language, translate it into English — preserve semantic content and, where possible, tone — and do not retain the original-language text verbatim. (A term of art with no English equivalent is the rare exception.) A monolingual narrative stays readable for any future reader regardless of their native language and keeps search / grep uniform across the collection.
 

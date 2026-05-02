@@ -32,7 +32,7 @@ Each sprint is labeled by the calendar date its retrospective runs (e.g., `2026-
    - **Propose a disposition** to the owner: resume (rebase + address feedback), close (obsoleted), or defer (keep open, revisit next sprint with a concrete trigger).
 
    **Why:** PRs silently rotting is a real failure mode. Sprint 2026-04-17 discovered PR #626 had sat 10 days with unaddressed CodeRabbit feedback; it turned out to still be valid and was merged after review. Without this step, it would have continued to rot. This step converts "discovered by accident" into "verified every sprint."
-6. **Read founding narratives.** Scan `docs/narratives/` for entries with `nature: founding` and `importance: high`. These are short essays on why key systems or habits exist. Reading them at Sprint Start primes judgment — you enter the sprint with the same "why" context as the orchestrator who built those systems. See [Narrative Memory System](#narrative-memory-system) below.
+6. **Pick founding-narrative frontmatter.** Scan `docs/narratives/` for entries with `nature: founding` and `importance: high`. **Read only the frontmatter** (date, nature, tags, `summary`, `read_when`) — not the body. The summary primes judgment with the lesson; the body is loaded on demand later when a `read_when` trigger matches the current task. (This is the ctx-saving design: founding narratives total ~600 lines / ~10K tokens; frontmatter-only pick saves ~95% of that at Sprint Start, with the full body still one Read away when needed.) See [Narrative Memory System](#narrative-memory-system) below.
 
 ## Sprint Execution
 - Task progression, acceptance checks, merges
@@ -130,10 +130,10 @@ When a rule feels arbitrary, walk the hierarchy: rule → feedback's "why" → n
 
 ### When to read narratives
 
-- **Sprint Start Step 6** — scan `nature: founding`, `importance: high` entries to prime judgment
+- **Sprint Start Step 6** — scan `nature: founding`, `importance: high` entries; pick **frontmatter only** (`summary` + `read_when`), not the body. Body is loaded later when a `read_when` trigger matches.
 - **When a rule feels arbitrary** — follow the `Read this if the rule feels arbitrary:` link from the rule
 - **After a near-miss or incident** — read the matching tag to see if the pattern recurred
-- **On demand** when exploring a topic — `grep tags:` in front matter
+- **On demand** when exploring a topic — `grep tags:` in front matter, then load the matching narrative's body if its `read_when` triggers apply
 
 ### When to write a narrative
 
