@@ -54,7 +54,8 @@ When the orchestrator session approaches context-window saturation **before the 
 1. **Write a comprehensive handoff document via `write_memo`.** Include: completed work table (PR / Issue / merge commit), in-flight tasks, owner-pending judgments, retro topic candidates, carried-over open PRs, active gotchas. The memo replaces the previous one but is durable on disk for the next session.
 2. **Mirror the same content into `memory/project_sprint_status.md`.** The memo and the memory file overlap deliberately — memo is at-a-glance during the session, memory persists across sessions.
 3. **Update the front-matter `description`** in the memory file to capture the *next-action signal* (e.g., "Wave 1 done. Remaining = brewing #X + retro. Owner pending = 1-A/B"). That description is what the next session's MEMORY.md index loads into ambient context — if it stays at the previous sprint's "complete" state, the next orchestrator misclassifies the situation as Sprint Start.
-4. **Owner closes the current session.** The next orchestrator session reads MEMORY.md → memory file → memo, then resumes.
+4. **Update `memory/MEMORY.md`** Sprint status pointer line to the same next-action signal text. `MEMORY.md` is a hand-maintained index — its pointer line is duplicated content from the memory file's `description`, not auto-derived. If only the memory file's `description` is updated and `MEMORY.md`'s line is left stale, the new session loads the stale line first (it is a top-200-lines auto-load) and may never read past it. Both must be flipped together. (This is the same root cause the rule itself documents.)
+5. **Owner closes the current session.** The next orchestrator session reads MEMORY.md → memory file → memo, then resumes.
 
 **Procedure (next orchestrator on pick-up):**
 
