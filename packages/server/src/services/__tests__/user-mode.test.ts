@@ -189,6 +189,43 @@ describe('MultiUserMode', () => {
     });
   });
 
+  describe('OS user lookup is delegated to standalone helper', () => {
+    it('does not expose lookupOsUser as a method on MultiUserMode', async () => {
+      const userRepository = new SqliteUserRepository(db);
+      const mode = await MultiUserMode.create(mockPtyProvider, userRepository);
+
+      // After the os-user-lookup extraction, MultiUserMode no longer carries
+      // its own lookupOsUser private method. The login() path now imports
+      // the standalone helper from os-user-lookup.ts.
+      expect(typeof (mode as unknown as { lookupOsUser?: unknown }).lookupOsUser).toBe('undefined');
+    });
+
+    it('returns null login when OS user lookup fails (unknown user)', async () => {
+      platformSpy = spyOn(os, 'platform').mockReturnValue('darwin');
+
+      const spawnSpy = spyOn(Bun, 'spawn').mockImplementation((...args: unknown[]) => {
+        const cmd = args[0] as string[];
+        if (cmd[0] === 'dscl' && cmd[2] === '-authonly') {
+          // Auth succeeds.
+          return createMockProc('', 0) as any;
+        }
+        // Lookup fails (no UniqueID / NFSHomeDirectory output).
+        return createMockProc('', 1) as any;
+      });
+
+      try {
+        const userRepository = new SqliteUserRepository(db);
+        const mode = await MultiUserMode.create(mockPtyProvider, userRepository);
+
+        const result = await mode.login('ghost-user', 'pw');
+
+        expect(result).toBeNull();
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    });
+  });
+
   describe('lookupLinuxUser uses Bun.spawn with array args', () => {
     it('should call Bun.spawn with array args for id and getent commands', async () => {
       platformSpy = spyOn(os, 'platform').mockReturnValue('linux');

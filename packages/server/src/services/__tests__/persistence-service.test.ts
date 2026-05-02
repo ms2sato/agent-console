@@ -233,6 +233,53 @@ describe('PersistenceService', () => {
     });
   });
 
+  describe('PersistedSession — initiatedBy field', () => {
+    it('round-trips initiatedBy when set', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-shared',
+          type: 'worktree',
+          locationPath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'main',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          createdBy: 'shared-account-uuid',
+          initiatedBy: 'caller-uuid',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded[0].initiatedBy).toBe('caller-uuid');
+      expect(loaded[0].createdBy).toBe('shared-account-uuid');
+    });
+
+    it('keeps initiatedBy undefined when omitted', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-personal',
+          type: 'quick',
+          locationPath: '/path/to/quick',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded[0].initiatedBy).toBeUndefined();
+    });
+  });
+
   describe('PersistedSession — scope-based persistence fields', () => {
     it('round-trips dataScope / dataScopeSlug / recoveryState for a worktree session', async () => {
       const service = await getPersistenceService();

@@ -214,6 +214,101 @@ describe('CreateSessionRequestSchema', () => {
   });
 });
 
+describe('shared field validation', () => {
+  it('accepts shared: true on worktree session', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      shared: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.shared).toBe(true);
+    }
+  });
+
+  it('accepts shared: false on worktree session', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      shared: false,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.shared).toBe(false);
+    }
+  });
+
+  it('accepts shared: true on quick session', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+      shared: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.shared).toBe(true);
+    }
+  });
+
+  it('accepts shared: false on quick session', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+      shared: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts when shared is omitted (optional) on worktree session', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.shared).toBeUndefined();
+    }
+  });
+
+  it('accepts when shared is omitted (optional) on quick session', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.shared).toBeUndefined();
+    }
+  });
+
+  it('rejects shared: "true" (string) on worktree session', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      shared: 'true',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects shared: "false" (string) on quick session', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/dir',
+      shared: 'false',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('templateVars key validation', () => {
   it('should accept valid alphanumeric keys', () => {
     const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
