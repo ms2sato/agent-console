@@ -14,7 +14,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run typecheck && bun run test:only",
     "test:only": "bun run --filter '*' test && bun run test:scripts",
-    "test:scripts": "bun test scripts/ ./.claude/hooks/__tests__/",
+    "test:scripts": "bun test scripts/ ./.claude/hooks/__tests__/ ./.claude/skills/*/__tests__/",
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
     "hooks:install": "bun scripts/install-hooks.mjs",
