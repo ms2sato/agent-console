@@ -130,7 +130,21 @@ Do not write a file. Print (or record elsewhere) a single line:
 skip: PR #<N> — <reason category>: <short explanation>
 ```
 
-Reason categories: `docs-only`, `test-only`, `pure-refactor`, `single-callsite`, `duplicates-I-<M>`, `other`.
+**Reason categories.** The first six are baseline; the remaining five formalize patterns that emerged during the Phase 1 Pilot (Sprint 2026-04-18 — 2026-05-02) and were originally invented by judges as ad-hoc drift before being adopted into the rubric (see `docs/context-store/brewing-log.md` §3 Pilot end review).
+
+| Category | Meaning |
+|---|---|
+| `docs-only` | Diff touches only `docs/**`, `.claude/**`, `README.md`, `CLAUDE.md`, or `*.md` at repo root |
+| `test-only` | Diff touches only `*.test.*` / `__tests__/**` / `packages/integration/**` |
+| `pure-refactor` | Behavior preserved — only renames, extractions, formatting, file relocations |
+| `single-callsite` | Bug was at one site, fix is local, pattern is not generalizable |
+| `duplicates-I-<M>` | The PR's lesson is already an entry in `architectural-invariants/SKILL.md` |
+| `other` | None of the above; explain in the short explanation |
+| `process-tooling` | The diff itself is dev-tooling / preflight / lint / CI infrastructure code, not production runtime |
+| `process-captured` | The runtime lesson in this PR is captured at the right level by another artifact (rule, skill, pre-PR check, narrative) — and that artifact actively governs new PRs |
+| `duplicates-meta-rule` | The PR's lesson IS a meta-rule already in `design-principles.md` / `pre-pr-completeness.md` / `workflow.md` — the meta-rule is the invariant, not a new I-N |
+| `single-feature` | Net feature addition; no new cross-cutting invariant class surfaced from the diff |
+| `security-pattern-not-catalog-shape` | Security or operational discipline (e.g., defense-in-depth hook, fail-fast prerequisite check) that is cross-cutting but outside the catalog's runtime-correctness shape (addressing / persistence / validation / exhaustiveness) |
 
 ## Anti-patterns the judge must avoid
 
