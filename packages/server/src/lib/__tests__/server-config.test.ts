@@ -87,6 +87,30 @@ describe('server-config', () => {
         "Invalid AUTH_MODE: 'invalid-mode'. Must be 'none' or 'multi-user'."
       );
     });
+
+    it('should default AGENT_CONSOLE_SHARED_USERNAME to undefined when not set', async () => {
+      delete process.env.AGENT_CONSOLE_SHARED_USERNAME;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_SHARED_USERNAME).toBeUndefined();
+    });
+
+    it('should treat empty AGENT_CONSOLE_SHARED_USERNAME as unset (operator-friendly)', async () => {
+      process.env.AGENT_CONSOLE_SHARED_USERNAME = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_SHARED_USERNAME).toBeUndefined();
+    });
+
+    it('should expose AGENT_CONSOLE_SHARED_USERNAME when set to a non-empty string', async () => {
+      process.env.AGENT_CONSOLE_SHARED_USERNAME = 'agent-console-shared';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_SHARED_USERNAME).toBe('agent-console-shared');
+    });
   });
 
   describe('SERVER_ONLY_ENV_VARS', () => {

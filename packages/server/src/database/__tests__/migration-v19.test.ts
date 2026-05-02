@@ -145,7 +145,11 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
     const db = await initializeDatabase(':memory:');
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(19);
+    // initializeDatabase runs all migrations through the latest version, so
+    // assert the current latest (v19 was the latest when this test was
+    // written; v20 added initiated_by). Either way, ≥ 19 is sufficient to
+    // confirm v19 was applied.
+    expect(versionRes.rows[0]?.user_version).toBeGreaterThanOrEqual(19);
 
     // Verify FK constraint exists by checking sqlite_master
     const fkInfo = await sql<{ sql: string }>`

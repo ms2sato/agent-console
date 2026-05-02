@@ -80,6 +80,7 @@ export class SqliteSessionRepository implements SessionRepository {
             paused_at: sessionRow.paused_at,
             parent_session_id: sessionRow.parent_session_id,
             parent_worker_id: sessionRow.parent_worker_id,
+            initiated_by: sessionRow.initiated_by,
             data_scope: sessionRow.data_scope,
             data_scope_slug: sessionRow.data_scope_slug,
             recovery_state: sessionRow.recovery_state,

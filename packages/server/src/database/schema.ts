@@ -52,6 +52,14 @@ export interface SessionsTable {
   parent_worker_id: string | null;
   /** User UUID (from users table) of the user who created this session (null for pre-multi-user sessions) */
   created_by: string | null;
+  /**
+   * User UUID (from users table) of the authenticated user who actually
+   * created this session. For shared sessions this differs from created_by
+   * (which is the shared account); for personal sessions it is left null
+   * since it would equal created_by.
+   * See docs/design/shared-orchestrator-session.md §"Schema Notes".
+   */
+  initiated_by: string | null;
   /** Data-location scope ('quick' | 'repository'); null for legacy rows and orphaned sessions. */
   data_scope: 'quick' | 'repository' | null;
   /** Slug for 'repository' scope; null for 'quick' scope and orphaned sessions. */
