@@ -141,7 +141,7 @@ The 80% checkpoint (substantially complete, awaiting verification) follows the s
 2. Run typecheck and confirm no errors. For client changes: \`cd packages/client && bunx tsc --noEmit\`. For server changes: \`cd packages/server && bunx tsc --noEmit\`. Skip this step for documentation-only changes.
 3. Do NOT push until both step 1 and step 2 pass.
 4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
-5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`
+5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`. **If Issue #${issueNumber} is a sub-issue of a parent** (its body declares \`Part N of #parent\` or the orchestrator's notes mention multi-slice delivery), the **3-layer cleaning rule** applies — PR title must use \`Part N of #parent ${issue.title.replace(/^\[AI\]\s*/, '')}\` form (NO close keyword for the parent), PR body uses \`Closes #${issueNumber}\` + \`Refs #parent\` only, and the original commit message uses \`Refs #parent\` only. GitHub's auto-close parser scans title / body / commit message; any parent close keyword in any of the three auto-closes the parent on squash merge. See \`core-responsibilities.md § Multi-PR Delivery (Sub-Issue Pattern)\` for the full rule.
 6. Wait for CI green, fix any issues. For CodeRabbit GitHub bot inline findings, push the fix commit, then acknowledge **per-comment** via the \`/replies\` endpoint — a top-level PR comment does NOT mark CodeRabbit threads resolved:
    \`\`\`bash
    gh api repos/<owner>/<repo>/pulls/<PR>/comments/<comment-id>/replies \\

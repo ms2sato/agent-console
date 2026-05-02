@@ -68,6 +68,28 @@
   Use traditional `create_timer` only for genuinely periodic tasks without a "done" condition (e.g., recurring status updates, periodic cleanup). The conditional wakeup auto-stops after sending exactly one notification.
 - **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
 
+### Multi-PR Delivery (Sub-Issue Pattern)
+
+When a single design or Issue is too large for one PR (e.g., a multi-slice feature with server / client / MCP / runbook layers), use **GitHub native sub-issues** to track per-PR scope without auto-closing the parent.
+
+**Setup:**
+- Parent Issue (e.g., [#678](https://github.com/ms2sato/agent-console/issues/678)) tracks the overall design and lists all slices in a "Multi-slice delivery plan" section in its body.
+- Each PR is delivered against a dedicated sub-issue (e.g., [#765](https://github.com/ms2sato/agent-console/issues/765) "Part 1 of #678"). Attach via:
+  ```bash
+  gh api repos/<owner>/<repo>/issues/<parent>/sub_issues \
+    -F sub_issue_id=$(gh api repos/<owner>/<repo>/issues/<sub> --jq '.id')
+  ```
+
+**3-layer cleaning rule (mandatory).** GitHub's auto-close parser scans **three locations** for `closes / fixes / resolves <issue>` keywords. To prevent the parent from auto-closing when a slice merges, all three must be clean:
+
+| Location | Parent (`#parent`) | Sub-issue (`#sub`) |
+|---|---|---|
+| PR body | `Refs #parent` (no close keyword) | `Closes #sub` |
+| PR title | `Part N of #parent` (no close keyword for parent) | (sub-issue mention optional) |
+| Original commit message (squash source) | `Refs #parent` only | `Closes #sub` (optional) |
+
+If any of the three carries a close keyword for the parent, the parent auto-closes when the squash merge lands. Recovery requires manual reopen + comment explaining the incident — far more expensive than getting the title right at delegation time. **The orchestrator's delegation prompt MUST set the PR title to `Part N of #parent` style before sending; do not let the agent produce a title that includes parent close keywords.** (Lesson: Sprint 2026-05-03 PR [#764](https://github.com/ms2sato/agent-console/pull/764) — orchestrator's delegation prompt allowed the agent to craft `(closes #678 part 1)`; parent [#678](https://github.com/ms2sato/agent-console/issues/678) auto-closed on merge despite body-level cleanup, requiring manual reopen.)
+
 ## 4. First Responder for Dev Agent Questions
 - Receive and triage questions from coding agents
 - Answer technical/architectural questions using your knowledge of the codebase and skills
