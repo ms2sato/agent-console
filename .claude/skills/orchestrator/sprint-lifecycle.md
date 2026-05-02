@@ -40,6 +40,31 @@ Each sprint is labeled by the calendar date its retrospective runs (e.g., `2026-
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
 - **Idle time utilization**: When waiting for agent completion or owner approval and **active worktrees are ≤1**, consider running `review-loop` on the full codebase or specific packages. This catches systemic issues and makes productive use of wait time. Do NOT run review-loop when many worktrees are active — it competes for compute resources.
 
+## Mid-sprint Handoff
+
+When the orchestrator session approaches context-window saturation **before the sprint completes**, perform a deliberate handoff so the next session can pick up without losing in-flight context. This is a normal mid-sprint operation, not a Sprint End.
+
+**Trigger conditions** (any one is sufficient):
+- Owner observes ctx pressure (e.g., "write a handoff document, we'll continue in a fresh session")
+- ctx remaining drops below ~30-40% with several pending acceptance checks ahead — auto-compaction during multi-step verification is high-cost
+- Sprint mid-flight pivot or discovery has accumulated unwritten state that compaction would lose
+
+**Procedure (current orchestrator):**
+
+1. **Write a comprehensive handoff document via `write_memo`.** Include: completed work table (PR / Issue / merge commit), in-flight tasks, owner-pending judgments, retro topic candidates, carried-over open PRs, active gotchas. The memo replaces the previous one but is durable on disk for the next session.
+2. **Mirror the same content into `memory/project_sprint_status.md`.** The memo and the memory file overlap deliberately — memo is at-a-glance during the session, memory persists across sessions.
+3. **Update the front-matter `description`** in the memory file to capture the *next-action signal* (e.g., "Wave 1 done. Remaining = brewing #X + retro. Owner pending = 1-A/B"). That description is what the next session's MEMORY.md index loads into ambient context — if it stays at the previous sprint's "complete" state, the next orchestrator misclassifies the situation as Sprint Start.
+4. **Update `memory/MEMORY.md`** Sprint status pointer line to the same next-action signal text. `MEMORY.md` is a hand-maintained index — its pointer line is duplicated content from the memory file's `description`, not auto-derived. If only the memory file's `description` is updated and `MEMORY.md`'s line is left stale, the new session loads the stale line first (it is a top-200-lines auto-load) and may never read past it. Both must be flipped together. (This is the same root cause the rule itself documents.)
+5. **Owner closes the current session.** The next orchestrator session reads MEMORY.md → memory file → memo, then resumes.
+
+**Procedure (next orchestrator on pick-up):**
+
+1. After `/orchestrator` invocation, read the memo + memory file to understand current state. **Do not re-enter Sprint Start procedure** — the sprint is in progress; jump directly to the named next-action signal.
+2. Confirm to the owner: "Handoff received. Of the remaining tasks A/B/C, which should I start with?" (translate to the project's working language as appropriate). Wait for owner direction before touching state.
+3. Read the existing TaskList; do not recreate completed tasks. Continue from in_progress / pending entries.
+
+(Lesson: Sprint 2026-05-03 — orchestrator session reached ~33% ctx during Wave 1 acceptance checks; owner directed handoff. The new-session pick-up initially entered Sprint Start procedure because MEMORY.md's Sprint status description still pointed at the previous sprint's "complete" state. Owner correction redirected to the handoff document. This rule's existence + the next-action signal in the description prevents the misclassification.)
+
 ## Memory as temporary bridge to rules/skills
 
 When a retrospective surfaces a learning worth codifying, the usual flow is: create a feedback memory for immediate retention AND file an Issue to land the learning in a rule or skill. The memory is a **temporary bridge** — once the Issue merges the learning into a rule/skill, remove the memory (or narrow it to a pointer like "covered in rules/X.md since commit ABC"). Otherwise the memory and rule drift, reintroducing the exact pattern `rule-skill-duplication-check.js` was built to prevent.
