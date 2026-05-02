@@ -16,6 +16,14 @@ related_rules:
 related_issues:
   - "#665"
   - "#654"
+summary: |
+  Brewing Pilot scope collapsed from "novel CTO device + Context Store" to
+  "rotting-prevention router reusing existing surfaces" after owner's single
+  question — `file-test-map.md` ≒ existing `test-trigger.md` — exposed the
+  proposal as un-grep-checked. No-LLM-call platform integrity preserved.
+read_when:
+  - Designing or modifying brewing or Context Store
+  - Tempted to propose a new infrastructure / artifact / directory before checking existing
 ---
 
 # How the brewing pilot ended up in this shape

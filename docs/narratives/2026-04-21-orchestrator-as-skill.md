@@ -12,6 +12,14 @@ tags:
 related_rules: []
 related_issues:
   - "#678"
+summary: |
+  Shared Orchestrator reframed from first-class concept (dedicated lifecycle,
+  API key, server flag) to "any session running the orchestrator skill, owned
+  by a shared OS account". Design simplification deleted most of the prior
+  doc's frame; #678 implementation shape changed accordingly.
+read_when:
+  - Working on `#678` shared-account session implementation (Slices 2-6)
+  - Tempted to introduce a new first-class system concept when an existing extension would do
 ---
 
 # Orchestrator as Skill, Not System Concept

@@ -14,6 +14,14 @@ related_rules:
 related_issues:
   - "#730"
   - "#737"
+summary: |
+  Empty-`PATH` boundary test caught `cat <<EOF` failing exactly where the
+  diagnostic was supposed to work (PATH-less environments). Boundary values
+  are not just inputs — they probe for invisible implementation-environment
+  dependencies. `printf` is a bash builtin; `cat` is not.
+read_when:
+  - Writing boundary-value tests for predicates / contracts / fail-fast diagnostics
+  - Implementing diagnostics that must run in minimal / degraded environments
 ---
 
 # The empty PATH boundary that found a structural defect

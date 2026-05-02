@@ -18,6 +18,14 @@ related_issues:
   - "#666"
   - "#625"
   - "#529"
+summary: |
+  agent-console articulated by owner as an LLM-agnostic PTY platform; provider
+  lock-in (Agent Team, hooks-as-product-surface, etc.) is "overreach" to be
+  avoided. Brewing's no-LLM-call shape is necessity, not coincidence. Issue
+  prioritization gains a strategic axis beyond "what's flagged next".
+read_when:
+  - Issue prioritization where business-impact / strategic-fit judgment matters
+  - Considering a feature that binds the platform to a specific LLM provider
 ---
 
 # The day agent-console's strategic position was articulated

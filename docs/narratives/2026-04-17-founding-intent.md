@@ -10,6 +10,13 @@ tags:
   - qualitative-knowledge
 related_rules: []
 related_issues: []
+summary: |
+  Owner's question "if you cannot pass on something qualitative, don't you
+  think you stop growing?" surfaced that rules preserve propositions but lose
+  the felt texture of incidents. Narratives directory created in response.
+read_when:
+  - Onboarding to the narrative system
+  - You wonder why narratives exist alongside rules
 ---
 
 # Why we start the narratives directory
