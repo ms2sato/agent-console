@@ -18,44 +18,9 @@ Before completing any code changes, always verify:
      Do NOT use `bun run test 2>&1 | tail -100; echo "TEST_EXIT: $?"` — `$?` returns `tail`'s exit code (always 0), masking real test failures. Summary-only or wrong-exit-code reports have caused false-positive "verified" claims that CI later contradicted. (Lesson: Sprint 2026-04-25 — agent reported "server: 2338 pass" but CI showed 61 failures due to local fixture state.)
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors. The script auto-generates `routeTree.gen.ts` (TanStack Router) via `vite build` if the file is missing, so it runs correctly on a fresh worktree.
    - **Stale `routeTree.gen.ts` caveat:** The presence-only check accepts a stale `routeTree.gen.ts` when route files have been added / renamed / removed but the generated file was not regenerated. After modifying anything under `packages/client/src/routes/`, delete `packages/client/src/routeTree.gen.ts` (or run `bun run build`) before relying on `bun run typecheck`.
-3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and fix any CRITICAL, HIGH, or MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
+3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and address any CRITICAL / HIGH / MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
 
-   **LOW / NITPICK findings policy.** Read every finding regardless of severity. For LOW / NITPICK / "minor" findings:
-   - **Address inline if the fix is cheap** (1-2 lines, no behaviour change, reduces future ambiguity).
-   - **Defer with a one-line note in the PR body** when the fix is non-trivial or out of scope — name the finding and the reason for deferral so the owner can override. Silent skip is not acceptable.
-   - **Never mark "addressed" without a code change or an explicit defer note.** "I read it and decided it's fine" is not closure; the absence of either a fix commit or a defer note hides the trade-off.
-
-   **Rate limit fallback (closes Issue #653):** When the local CLI is rate-limited (typically 48-min wait window), proceed to PR creation, rely on the GitHub-side CodeRabbit bot review (separate token, runs on PR open), and add a note to the PR body:
-   ```markdown
-   ## Note on CodeRabbit
-   Local CodeRabbit CLI rate-limited during this sprint. Relying on GitHub-side CodeRabbit bot review.
-   ```
-   Before merge, confirm the GitHub bot review is APPROVED. If `CHANGES_REQUESTED`, follow the resolution flow in `core-responsibilities.md` §6 (CodeRabbit "CHANGES_REQUESTED" resolution). (Sprint 2026-04-25 — verified in PRs #687 / #688 / #691 / #694.)
-
-   **CLI and GitHub bot have independent review depth.** The local CodeRabbit CLI and the GitHub-side CodeRabbit bot run on separate tokens and likely separate prompts; their findings do not always overlap. A clean local CLI pass does not guarantee a clean bot review, and vice versa. Treat the bot as an additional layer of detection rather than a fallback. **Do not merge while waiting for the bot review** — the rate-limit fallback note above defers merging only until the bot's APPROVED state is observable. (Sprint 2026-04-28 PR #711 — local CLI flagged 1 minor finding; the GitHub bot subsequently caught two Major findings the CLI had missed: an `await` propagation gap and a UTF-16 surrogate pair split. Both required follow-up commits before merge.)
-
-   **GitHub bot unresponsive — abandon the wait, do not over-engineer.** If the GitHub-side bot posts a rate-limit warning at PR open and a subsequent `@coderabbitai review` re-trigger does not produce a review submission within ~10-15 minutes, abandon the wait. CodeRabbit's "incremental review" policy can treat the rate-limit warning event as "already reviewed" and refuse to re-review the same commit. **Do not push trivial commits to force a re-trigger** — that bends the workflow around CodeRabbit's quirks at the cost of CI cycles and review log noise. Instead, when the local CodeRabbit CLI is clean (0 findings), add the rate-limit fallback note above to the PR body, treat that as the documented exception path, and proceed to merge after the rest of the "clean" 3-layer condition is satisfied. (Sprint 2026-04-30 PR #738 — bot unresponsive 60+ min after re-trigger while PR #737 in the same flow returned APPROVED in 3 min; owner guidance: do not bend the process for CodeRabbit, abandon the wait early.)
-
-   **Both review layers rate-limited simultaneously.** When the local CodeRabbit CLI and the GitHub-side bot are both rate-limited at the same time (no CodeRabbit feedback obtainable from either source), CodeRabbit's "clean" verdict is unavailable for that PR. Do not block the PR indefinitely. Disposition follows the existing PR Merge Authority (see Orchestrator's `core-responsibilities.md`):
-
-   - chore / docs / test-only / pure-refactor PRs → orchestrator may merge after CI is green and acceptance check passes
-   - logic / process / config-change PRs → owner approval required, as always
-
-   Add this rate-limit-fallback note to the PR body so the documented exception path is visible to anyone reviewing the merge:
-
-   ```markdown
-   ## Note on CodeRabbit
-   Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's review window. No CodeRabbit feedback obtainable from either source. Merging under existing PR Merge Authority (chore / docs → orchestrator merge / logic / config → owner approval).
-   ```
-
-   The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the chore PR (#748) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)
-
-   **Pre-merge checks vs Review state — both required for "clean".** GitHub surfaces CodeRabbit info in two distinct layers that are easy to confuse:
-   - **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) — metadata validation, displayed as "5/5 passed" in the GitHub UI. **Not** code review.
-   - **Review state** (`gh pr view <N> --json reviewDecision`) — actual code-review verdict. Only `APPROVED` counts as a passing verdict. An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception: under the rate-limit fallback above, an empty state may persist; in that exception path, follow the fallback's verification steps before merge.)
-   - **Inline comments** (`gh api repos/<owner>/<repo>/pulls/<N>/comments`) — must be addressed if actionable.
-
-   "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
+   For the LOW / NITPICK findings policy, the **3-layer clean verdict** (Pre-merge checks / `reviewDecision` / inline comments), and operational case-by-case dispositions (rate-limit fallback, GitHub-side bot unresponsive, both layers simultaneously rate-limited, `CHANGES_REQUESTED` resolution), invoke the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill.
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser.
 
@@ -86,7 +51,7 @@ A task or PR is "done" only when ALL of the following hold. Reporting "ready for
 5. **Branch is pushed to origin**.
 6. **PR is opened with linked Issue** — the body contains `Closes #NNN` (the title's `(closes #N)` does not auto-close the Issue; only the body's keyword does, and the script `acceptance-check.js` requires the body match).
 7. **CI is fully green** — verified via the rollup, not a single per-run event. Use `gh pr view <PR> --json statusCheckRollup` to confirm. (Issue #699 fixed the per-run vs rollup gap; before that fix the per-run event could falsely report "all passed" while the rollup had failures.)
-8. **CodeRabbit review state is clean across all three layers** — Pre-merge checks (5/5), `reviewDecision` (`APPROVED` or empty), inline comments (resolved or addressed). See Step 3 above for the resolution flow.
+8. **CodeRabbit review state is clean** — see [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill for the 3-layer verdict (Pre-merge checks / `reviewDecision` / inline comments) and any fallback exceptions.
 
 "Implementation complete" without all eight is **not** done. (Lesson: Sprint 2026-04-27 PR #703 — agent reported "Production ready" with no commit / no push / no PR, requiring three rounds of hand-holding before reaching actual mergeable state.)
 
