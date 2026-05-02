@@ -36,6 +36,20 @@ Before completing any code changes, always verify:
 
    **GitHub bot unresponsive — abandon the wait, do not over-engineer.** If the GitHub-side bot posts a rate-limit warning at PR open and a subsequent `@coderabbitai review` re-trigger does not produce a review submission within ~10-15 minutes, abandon the wait. CodeRabbit's "incremental review" policy can treat the rate-limit warning event as "already reviewed" and refuse to re-review the same commit. **Do not push trivial commits to force a re-trigger** — that bends the workflow around CodeRabbit's quirks at the cost of CI cycles and review log noise. Instead, when the local CodeRabbit CLI is clean (0 findings), add the rate-limit fallback note above to the PR body, treat that as the documented exception path, and proceed to merge after the rest of the "clean" 3-layer condition is satisfied. (Sprint 2026-04-30 PR #738 — bot unresponsive 60+ min after re-trigger while PR #737 in the same flow returned APPROVED in 3 min; owner guidance: do not bend the process for CodeRabbit, abandon the wait early.)
 
+   **Both review layers rate-limited simultaneously.** When the local CodeRabbit CLI and the GitHub-side bot are both rate-limited at the same time (no CodeRabbit feedback obtainable from either source), CodeRabbit's "clean" verdict is unavailable for that PR. Do not block the PR indefinitely. Disposition follows the existing PR Merge Authority (see Orchestrator's `core-responsibilities.md`):
+
+   - chore / docs / test-only / pure-refactor PRs → orchestrator may merge after CI is green and acceptance check passes
+   - logic / process / config-change PRs → owner approval required, as always
+
+   Add this rate-limit-fallback note to the PR body so the documented exception path is visible to anyone reviewing the merge:
+
+   ```markdown
+   ## Note on CodeRabbit
+   Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's review window. No CodeRabbit feedback obtainable from either source. Merging under existing PR Merge Authority (chore / docs → orchestrator merge / logic / config → owner approval).
+   ```
+
+   The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the chore PR (#748) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)
+
    **Pre-merge checks vs Review state — both required for "clean".** GitHub surfaces CodeRabbit info in two distinct layers that are easy to confuse:
    - **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) — metadata validation, displayed as "5/5 passed" in the GitHub UI. **Not** code review.
    - **Review state** (`gh pr view <N> --json reviewDecision`) — actual code-review verdict. Only `APPROVED` counts as a passing verdict. An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception: under the rate-limit fallback above, an empty state may persist; in that exception path, follow the fallback's verification steps before merge.)
