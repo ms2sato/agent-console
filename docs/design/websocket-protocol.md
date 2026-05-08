@@ -79,6 +79,7 @@ Per-worker WebSocket for terminal I/O.
 | `exit` | `{ exitCode: number, signal: string \| null }` | Process exit |
 | `history` | `{ data: string, offset: number, timedOut?: boolean }` | Terminal output history with current offset. `timedOut: true` if history load timed out (client can continue without full history). |
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
+| `output-truncated` | `{ message: string, newOffset: number }` | Output file was truncated (size cap exceeded). `newOffset` is the new file-absolute byte position the client should use for any subsequent `request-history`. Client must invalidate / rebase its cached terminal state to this offset. |
 | `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., worker not found) |
 
 ### Output Offset Semantics
