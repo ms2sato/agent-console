@@ -38,8 +38,8 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
       killWorker: mock(async () => {}),
       restoreWorkersFromPersistence: mock((_workers: unknown[]) => new Map()),
       activateAgentWorkerPty: mock(async () => {}),
-      activateTerminalWorkerPty: mock(() => {}),
-    } as unknown as SessionPauseResumeDeps['workerManager'],
+      activateTerminalWorkerPty: mock(async () => {}),
+    } satisfies SessionPauseResumeDeps['workerManager'],
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
     getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy')),
@@ -274,8 +274,8 @@ describe('SessionPauseResumeService', () => {
           killWorker: mock(async () => {}),
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: mock(async () => {}),
-          activateTerminalWorkerPty: mock(() => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
         toPublicSession: mock(() => mockPublicSession),
         getSessionLifecycleCallbacks: () => ({ onSessionResumed }),
       });
@@ -316,8 +316,8 @@ describe('SessionPauseResumeService', () => {
           killWorker: mock(async () => {}),
           restoreWorkersFromPersistence: mock(() => new Map()),
           activateAgentWorkerPty: mock(async () => {}),
-          activateTerminalWorkerPty: mock(() => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
@@ -352,8 +352,8 @@ describe('SessionPauseResumeService', () => {
           killWorker: mock(async () => {}),
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: mock(async () => { throw new Error('PTY activation failed'); }),
-          activateTerminalWorkerPty: mock(() => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
@@ -396,8 +396,8 @@ describe('SessionPauseResumeService', () => {
           killWorker: mock(async () => {}),
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: mock(async () => {}),
-          activateTerminalWorkerPty: mock(() => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
@@ -443,7 +443,7 @@ describe('SessionPauseResumeService', () => {
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: activateAgentMock,
           activateTerminalWorkerPty: mock(async () => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
@@ -477,7 +477,7 @@ describe('SessionPauseResumeService', () => {
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: mock(async () => {}),
           activateTerminalWorkerPty: activateTerminalMock,
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
@@ -507,8 +507,8 @@ describe('SessionPauseResumeService', () => {
           killWorker: mock(async () => {}),
           restoreWorkersFromPersistence: mock(() => restoredWorkers),
           activateAgentWorkerPty: mock(async () => {}),
-          activateTerminalWorkerPty: mock(() => {}),
-        } as unknown as SessionPauseResumeDeps['workerManager'],
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
       });
       const service = new SessionPauseResumeService(deps);
 
