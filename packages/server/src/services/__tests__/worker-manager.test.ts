@@ -142,10 +142,10 @@ describe('WorkerManager', () => {
   // ========== PTY Activation Idempotency ==========
 
   describe('activateAgentWorkerPty', () => {
-    it('should spawn a PTY process', () => {
+    it('should spawn a PTY process', async () => {
       const worker = createTestAgentWorker();
 
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       expect(worker.pty).not.toBeNull();
       expect(worker.activityDetector).not.toBeNull();
@@ -153,24 +153,24 @@ describe('WorkerManager', () => {
       expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
     });
 
-    it('should be idempotent - calling twice does not spawn a second PTY', () => {
+    it('should be idempotent - calling twice does not spawn a second PTY', async () => {
       const worker = createTestAgentWorker();
 
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
       const firstPty = worker.pty;
 
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       expect(worker.pty).toBe(firstPty);
       expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
     });
 
-    it('should set agentId to the actual agent id, not the requested one, when fallback occurs', () => {
+    it('should set agentId to the actual agent id, not the requested one, when fallback occurs', async () => {
       const worker = createTestAgentWorker();
       // Start with a different agentId to verify fallback actually updates it
       worker.agentId = 'originally-different-agent';
 
-      workerManager.activateAgentWorkerPty(worker, {
+      await workerManager.activateAgentWorkerPty(worker, {
         ...defaultAgentActivationParams,
         agentId: 'non-existent-agent',
       });
@@ -180,12 +180,12 @@ describe('WorkerManager', () => {
       expect(worker.pty).not.toBeNull();
     });
 
-    it('should set initial activity state to idle and fire global callback', () => {
+    it('should set initial activity state to idle and fire global callback', async () => {
       const globalCallback = mock(() => {});
       workerManager.setGlobalActivityCallback(globalCallback);
 
       const worker = createTestAgentWorker('agent-cb');
-      workerManager.activateAgentWorkerPty(worker, {
+      await workerManager.activateAgentWorkerPty(worker, {
         ...defaultAgentActivationParams,
         sessionId: 'sess-cb',
       });
@@ -196,22 +196,22 @@ describe('WorkerManager', () => {
   });
 
   describe('activateTerminalWorkerPty', () => {
-    it('should spawn a PTY process', () => {
+    it('should spawn a PTY process', async () => {
       const worker = createTestTerminalWorker();
 
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       expect(worker.pty).not.toBeNull();
       expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
     });
 
-    it('should be idempotent - calling twice does not spawn a second PTY', () => {
+    it('should be idempotent - calling twice does not spawn a second PTY', async () => {
       const worker = createTestTerminalWorker();
 
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
       const firstPty = worker.pty;
 
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       expect(worker.pty).toBe(firstPty);
       expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
@@ -221,9 +221,9 @@ describe('WorkerManager', () => {
   // ========== Worker I/O ==========
 
   describe('writeInput', () => {
-    it('should write data to the PTY', () => {
+    it('should write data to the PTY', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const result = workerManager.writeInput(worker, 'ls -la\r');
 
@@ -241,9 +241,9 @@ describe('WorkerManager', () => {
       expect(result).toBe(false);
     });
 
-    it('should handle activity detection for agent workers on Enter key', () => {
+    it('should handle activity detection for agent workers on Enter key', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       // Writing a string containing '\r' triggers clearUserTyping
       const result = workerManager.writeInput(worker, 'hello\r');
@@ -253,9 +253,9 @@ describe('WorkerManager', () => {
   });
 
   describe('output buffering via PTY onData', () => {
-    it('should append PTY output to outputBuffer and update outputOffset', () => {
+    it('should append PTY output to outputBuffer and update outputOffset', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       mockPty.simulateData('hello');
@@ -264,9 +264,9 @@ describe('WorkerManager', () => {
       expect(worker.outputOffset).toBe(Buffer.byteLength('hello', 'utf-8'));
     });
 
-    it('should deliver data to attached callbacks', () => {
+    it('should deliver data to attached callbacks', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const receivedData: string[] = [];
       const onData = mock((data: string, _offset: number) => { receivedData.push(data); });
@@ -280,9 +280,9 @@ describe('WorkerManager', () => {
       expect(receivedData[0]).toBe('output text');
     });
 
-    it('should deliver data to multiple attached callbacks', () => {
+    it('should deliver data to multiple attached callbacks', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const onData1 = mock(() => {});
       const onData2 = mock(() => {});
@@ -298,9 +298,9 @@ describe('WorkerManager', () => {
   });
 
   describe('getOutputBuffer', () => {
-    it('should return the accumulated output buffer', () => {
+    it('should return the accumulated output buffer', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       mockPty.simulateData('line 1\n');
@@ -309,18 +309,18 @@ describe('WorkerManager', () => {
       expect(workerManager.getOutputBuffer(worker)).toBe('line 1\nline 2\n');
     });
 
-    it('should return empty string when no output has been received', () => {
+    it('should return empty string when no output has been received', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       expect(workerManager.getOutputBuffer(worker)).toBe('');
     });
   });
 
   describe('resize', () => {
-    it('should resize the PTY', () => {
+    it('should resize the PTY', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const result = workerManager.resize(worker, 200, 50);
 
@@ -342,9 +342,9 @@ describe('WorkerManager', () => {
   // ========== Callback Attach/Detach ==========
 
   describe('attachCallbacks / detachCallbacks', () => {
-    it('should attach callbacks and return a connection ID', () => {
+    it('should attach callbacks and return a connection ID', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const connectionId = workerManager.attachCallbacks(worker, {
         onData: () => {},
@@ -355,9 +355,9 @@ describe('WorkerManager', () => {
       expect(worker.connectionCallbacks.size).toBe(1);
     });
 
-    it('should detach callbacks by connection ID', () => {
+    it('should detach callbacks by connection ID', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const connectionId = workerManager.attachCallbacks(worker, {
         onData: () => {},
@@ -370,18 +370,18 @@ describe('WorkerManager', () => {
       expect(worker.connectionCallbacks.size).toBe(0);
     });
 
-    it('should return false when detaching a non-existent connection', () => {
+    it('should return false when detaching a non-existent connection', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const result = workerManager.detachCallbacks(worker, 'nonexistent-id');
 
       expect(result).toBe(false);
     });
 
-    it('should not deliver data after detaching callbacks', () => {
+    it('should not deliver data after detaching callbacks', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const onData = mock(() => {});
       const connectionId = workerManager.attachCallbacks(worker, {
@@ -403,7 +403,7 @@ describe('WorkerManager', () => {
   describe('killWorker', () => {
     it('should kill the PTY process for an agent worker', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       expect(mockPty.killed).toBe(false);
@@ -415,7 +415,7 @@ describe('WorkerManager', () => {
 
     it('should kill the PTY process for a terminal worker', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       await workerManager.killWorker(worker, 'test-session');
@@ -425,7 +425,7 @@ describe('WorkerManager', () => {
 
     it('should await PTY exit before detaching', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       // PTY is set before kill
       expect(worker.pty).not.toBeNull();
@@ -438,7 +438,7 @@ describe('WorkerManager', () => {
 
     it('should clean up disposables to prevent memory leaks', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       // After activation, disposables should be set
       expect(worker.disposables).toBeDefined();
@@ -462,7 +462,7 @@ describe('WorkerManager', () => {
       jest.useFakeTimers();
       try {
         const worker = createTestAgentWorker();
-        workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
         const mockPty = ptyFactory.instances[0];
         // Override kill to NOT fire exit callback (simulates hung process)
@@ -495,9 +495,9 @@ describe('WorkerManager', () => {
   // ========== detachPty ==========
 
   describe('detachPty', () => {
-    it('should set worker.pty to null', () => {
+    it('should set worker.pty to null', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       expect(worker.pty).not.toBeNull();
 
@@ -525,9 +525,9 @@ describe('WorkerManager', () => {
       expect(workerManager.getActivityState(worker)).toBe('unknown');
     });
 
-    it('should return idle immediately after activation', () => {
+    it('should return idle immediately after activation', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       expect(workerManager.getActivityState(worker)).toBe('idle');
     });
@@ -536,9 +536,9 @@ describe('WorkerManager', () => {
   // ========== PTY Exit Handling ==========
 
   describe('PTY exit handling', () => {
-    it('should set pty to null on exit', () => {
+    it('should set pty to null on exit', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       const mockPty = ptyFactory.instances[0];
       mockPty.simulateExit(0);
@@ -546,9 +546,9 @@ describe('WorkerManager', () => {
       expect(worker.pty).toBeNull();
     });
 
-    it('should dispose activity detector on agent worker exit', () => {
+    it('should dispose activity detector on agent worker exit', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       expect(worker.activityDetector).not.toBeNull();
 
@@ -558,9 +558,9 @@ describe('WorkerManager', () => {
       expect(worker.activityDetector).toBeNull();
     });
 
-    it('should notify attached callbacks on exit', () => {
+    it('should notify attached callbacks on exit', async () => {
       const worker = createTestTerminalWorker();
-      workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const exitCodes: number[] = [];
       const onExit = mock((exitCode: number, _signal: string | null) => { exitCodes.push(exitCode); });
@@ -576,12 +576,12 @@ describe('WorkerManager', () => {
       expect(exitCodes[0]).toBe(42);
     });
 
-    it('should fire global PTY exit callback', () => {
+    it('should fire global PTY exit callback', async () => {
       const globalExitCallback = mock(() => {});
       workerManager.setGlobalPtyExitCallback(globalExitCallback);
 
       const worker = createTestTerminalWorker('term-exit');
-      workerManager.activateTerminalWorkerPty(worker, {
+      await workerManager.activateTerminalWorkerPty(worker, {
         ...defaultTerminalActivationParams,
         sessionId: 'sess-exit',
       });
@@ -592,12 +592,12 @@ describe('WorkerManager', () => {
       expect(globalExitCallback).toHaveBeenCalledWith('sess-exit', 'term-exit', 'unexpected');
     });
 
-    it('should fire global worker exit callback', () => {
+    it('should fire global worker exit callback', async () => {
       const globalWorkerExitCallback = mock(() => {});
       workerManager.setGlobalWorkerExitCallback(globalWorkerExitCallback);
 
       const worker = createTestTerminalWorker('term-wexit');
-      workerManager.activateTerminalWorkerPty(worker, {
+      await workerManager.activateTerminalWorkerPty(worker, {
         ...defaultTerminalActivationParams,
         sessionId: 'sess-wexit',
       });
@@ -624,9 +624,9 @@ describe('WorkerManager', () => {
       }
     });
 
-    it('should convert an active agent worker (pty active)', () => {
+    it('should convert an active agent worker (pty active)', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       const publicWorker = workerManager.toPublicWorker(worker);
 
@@ -662,9 +662,9 @@ describe('WorkerManager', () => {
   // ========== toPersistedWorker Conversion ==========
 
   describe('toPersistedWorker', () => {
-    it('should persist agent worker with pid when PTY is active', () => {
+    it('should persist agent worker with pid when PTY is active', async () => {
       const worker = createTestAgentWorker();
-      workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
 
       const persisted = workerManager.toPersistedWorker(worker);
 
@@ -791,12 +791,12 @@ describe('WorkerManager', () => {
   // ========== Global Callbacks ==========
 
   describe('setGlobalActivityCallback', () => {
-    it('should fire on activity state changes from PTY output', () => {
+    it('should fire on activity state changes from PTY output', async () => {
       const globalCallback = mock(() => {});
       workerManager.setGlobalActivityCallback(globalCallback);
 
       const worker = createTestAgentWorker('act-worker');
-      workerManager.activateAgentWorkerPty(worker, {
+      await workerManager.activateAgentWorkerPty(worker, {
         ...defaultAgentActivationParams,
         sessionId: 'act-session',
       });

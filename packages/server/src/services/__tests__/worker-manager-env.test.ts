@@ -326,10 +326,10 @@ describe('WorkerManager - AgentConsole env var injection', () => {
   });
 
   describe('terminal worker PTY processes', () => {
-    it('should NOT include any AGENT_CONSOLE env vars', () => {
+    it('should NOT include any AGENT_CONSOLE env vars', async () => {
       const worker = buildInternalTerminalWorker();
 
-      workerManager.activateTerminalWorkerPty(worker, {
+      await workerManager.activateTerminalWorkerPty(worker, {
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
