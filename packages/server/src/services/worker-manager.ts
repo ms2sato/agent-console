@@ -107,13 +107,28 @@ export interface AgentActivationParams extends WorkerContext {
   repositoryId?: string;
   /** Session creation context holding delegation and template information */
   context?: SessionCreationContext;
+  /**
+   * Whether this activation is reviving a worker whose PTY had previously died
+   * (server restart, hibernation, pause/resume) while the persisted output
+   * file remained on disk. When true, `outputOffset` is seeded from the
+   * current file size so subsequent `output` events keep the file-absolute
+   * semantic the client's IndexedDB cache expects (Issue #769).
+   * Set false for fresh worker creation and for `restartWorker` (which
+   * truncates the file to zero before activation).
+   */
+  revived: boolean;
 }
 
 /**
  * Parameters for activating a terminal worker's PTY.
  */
 export interface TerminalActivationParams extends WorkerContext {
-  // No additional parameters needed
+  /**
+   * Whether this activation is reviving a worker whose PTY had previously died
+   * (server restart, hibernation, pause/resume) while the persisted output
+   * file remained on disk. See `AgentActivationParams.revived` for details.
+   */
+  revived: boolean;
 }
 
 /**
@@ -275,10 +290,10 @@ export class WorkerManager {
    * Activate PTY for an agent worker.
    * Mutates the worker object to add pty and activityDetector.
    */
-  activateAgentWorkerPty(
+  async activateAgentWorkerPty(
     worker: InternalAgentWorker,
     params: AgentActivationParams
-  ): void {
+  ): Promise<void> {
     // Idempotent: If PTY already active, skip
     if (worker.pty !== null) {
       logger.debug(
@@ -289,6 +304,17 @@ export class WorkerManager {
     }
 
     const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, context } = params;
+
+    // Issue #769: align outputOffset with file-absolute semantic on revived
+    // activation. Must run BEFORE PTY spawn so the very first onData chunk
+    // advances from the seeded value, not from 0.
+    if (params.revived) {
+      worker.outputOffset = await this.workerOutputFileManager.getCurrentOffset(
+        sessionId,
+        worker.id,
+        params.resolver,
+      );
+    }
 
     const agentManager = this.agentManager;
     const requestedAgent = agentManager.getAgent(agentId);
@@ -370,10 +396,10 @@ export class WorkerManager {
    * Activate PTY for a terminal worker.
    * Mutates the worker object to add pty.
    */
-  activateTerminalWorkerPty(
+  async activateTerminalWorkerPty(
     worker: InternalTerminalWorker,
     params: TerminalActivationParams
-  ): void {
+  ): Promise<void> {
     // Idempotent: If PTY already active, skip
     if (worker.pty !== null) {
       logger.debug(
@@ -384,6 +410,16 @@ export class WorkerManager {
     }
 
     const { sessionId, locationPath, repositoryEnvVars } = params;
+
+    // Issue #769: align outputOffset with file-absolute semantic on revived
+    // activation. See activateAgentWorkerPty for the full rationale.
+    if (params.revived) {
+      worker.outputOffset = await this.workerOutputFileManager.getCurrentOffset(
+        sessionId,
+        worker.id,
+        params.resolver,
+      );
+    }
 
     // additionalEnvVars: repository env vars only
     // Base env (getCleanChildProcessEnv), shell detection, and unset prefix

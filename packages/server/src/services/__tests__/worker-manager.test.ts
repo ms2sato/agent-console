@@ -86,6 +86,7 @@ describe('WorkerManager', () => {
     resolver: defaultResolver,
     agentId: CLAUDE_CODE_AGENT_ID,
     continueConversation: false,
+    revived: false,
   };
 
   const defaultTerminalActivationParams = {
@@ -94,6 +95,7 @@ describe('WorkerManager', () => {
     repositoryEnvVars: {},
     username: 'testuser',
     resolver: defaultResolver,
+    revived: false,
   };
 
   // ========== Worker Initialization ==========
@@ -807,17 +809,17 @@ describe('WorkerManager', () => {
   // ========== setupWorkerEventHandlers validation ==========
 
   describe('setupWorkerEventHandlers validation', () => {
-    it('should throw if sessionId is empty string', () => {
+    it('should throw if sessionId is empty string', async () => {
       const worker = createTestTerminalWorker();
       // We need to bypass the PTY null check by setting pty first
       // Actually, activateTerminalWorkerPty calls setupWorkerEventHandlers internally
       // So we test by passing an empty sessionId
-      expect(() => {
+      await expect(
         workerManager.activateTerminalWorkerPty(worker, {
           ...defaultTerminalActivationParams,
           sessionId: '',
-        });
-      }).toThrow('sessionId is required');
+        })
+      ).rejects.toThrow('sessionId is required');
     });
   });
 });

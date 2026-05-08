@@ -81,6 +81,152 @@ Per-worker WebSocket for terminal I/O.
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
 | `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., worker not found) |
 
+### Output Offset Semantics
+
+All `offset` fields exchanged over the worker WebSocket — `output.offset`,
+`history.offset`, `output-truncated.newOffset`, and the client-cached
+`fromOffset` — represent **the absolute byte position from the start of the
+worker's persistent output file**. They are never cumulative since PTY
+activation, and never reset on hibernation / resume.
+
+The server keeps a single source of truth for this offset:
+`worker.outputOffset` is advanced per write by the byte length of the chunk
+being appended to the output file, and the file size on disk is the
+authoritative reference whenever the in-memory counter is reseeded.
+
+#### Lifecycle phase × offset table
+
+| Phase | `worker.outputOffset` (server) | `output.offset` (event) | `history.offset` (event) | `output-truncated.newOffset` |
+|---|---|---|---|---|
+| `createWorker` (fresh) | `0` (file size = 0) | file-absolute | file-absolute | — |
+| live output | advances by chunk byte length per write (= file size) | file-absolute | file-absolute | — |
+| PTY died (server restart / hibernation) | last value frozen, `pty = null` | — (no live output) | file-absolute (read from file) | — |
+| **Activation (revived)** | **seeded from `getCurrentOffset()` (file size) before PTY spawn** | file-absolute | file-absolute | — |
+| `restartWorker` | `0` (file truncated to 0 by `resetWorkerOutput`) | file-absolute | file-absolute | — |
+| Truncation (>10MB cap) | trimmed file size | file-absolute | file-absolute | trimmed file size |
+
+The "revived" row is the contract enforced by the
+`AgentActivationParams.revived` / `TerminalActivationParams.revived` flag
+(true for `restoreWorker`, `getAvailableWorker` activation, and pause/resume;
+false for `createWorker` and `restartWorker`). Without that seed, the
+counter restarts from `0` after every revival and silently drifts away from
+the file-absolute offset that the client's IndexedDB cache holds — see
+sequence (b) below.
+
+The client's `offsetRef` mirrors the same semantic: it stores whatever
+file-absolute value it most recently observed (from `history.offset` /
+`output.offset` / a cache hit) and only ever feeds that value back to the
+server via `request-history.fromOffset`.
+
+#### Sequence (a) — normal happy path (fresh worker, no race window)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant C as Client (Terminal.tsx)
+    participant Cache as IndexedDB
+    participant WS as WebSocket
+    participant S as Server (worker-manager)
+    participant F as Output file
+
+    Note over S,F: Fresh worker creation
+    S->>F: create file (size = 0)
+    S->>S: worker.outputOffset = 0
+
+    Note over U,C: Mount (1st visit)
+    U->>C: navigate
+    C->>Cache: loadTerminalState
+    Cache-->>C: null (cache miss)
+    C->>C: offsetRef = 0
+    C->>WS: request-history(fromOffset=0)
+    WS->>S: forward
+    S->>F: read from 0 (line-limit 5000)
+    F-->>S: data
+    S->>WS: history(data, offset=file_size)
+    WS->>C: forward
+    C->>C: offsetRef = file_size
+    C->>Cache: save(serialize, offset=file_size)
+
+    Note over S,F: Live output
+    S->>F: append chunk (file_size += chunk)
+    S->>S: outputOffset += chunk
+    Note right of S: outputOffset == file_size (fresh)
+    S->>WS: output(chunk, offset=outputOffset)
+    WS->>C: forward
+    C->>C: offsetRef = offset
+    C->>C: terminal.write(chunk)
+    C->>Cache: markDirty (idle save)
+
+    Note over U,C: Re-visit (cache hit)
+    U->>C: navigate back
+    C->>Cache: loadTerminalState
+    Cache-->>C: { data: serialize, offset: file_size }
+    C->>C: terminal.write(serialize) + offsetRef = file_size
+    C->>WS: request-history(fromOffset=file_size)
+    S->>F: read from file_size (incremental)
+    F-->>S: empty / small delta
+    S->>WS: history(delta, offset=new_size)
+    Note right of C: ideal incremental sync
+```
+
+#### Sequence (b) — restoration race window (Issue #762 root cause)
+
+This is the failure mode that exists when the activation path forgets to
+seed `worker.outputOffset` from the file size on revival. It is documented
+here as the rationale for the "revived" row in the table above.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant C as Client (Terminal.tsx)
+    participant Cache as IndexedDB
+    participant WS as WebSocket
+    participant S as Server (worker-manager)
+    participant F as Output file
+
+    Note over S,F: Server restart / hibernation
+    S->>S: PTY died, worker.pty = null
+    Note right of F: file persists (size = N)
+
+    Note over S: Activation (revived path)
+    Note over S: restoreWorker / getAvailableWorker / pause-resume
+    S->>S: spawn PTY
+    S->>S: outputOffset = 0  [BUG: should be N]
+
+    Note over U,C: Visit (cache hit from prev session)
+    U->>C: navigate
+    C->>Cache: loadTerminalState
+    Cache-->>C: { data, offset: N }
+    C->>C: offsetRef = N
+    C->>WS: request-history(fromOffset=N)
+    S->>F: read from N
+    F-->>S: empty
+    S->>WS: history(empty, offset=N)
+
+    Note over S,F: PTY live output (large burst at activation)
+    loop each chunk
+        S->>F: append (file_size = N + delta)
+        S->>S: outputOffset += chunk (small cumulative)
+        S->>WS: output(chunk, offset=outputOffset)
+        WS->>C: forward
+        C->>C: offsetRef = outputOffset  [overwrites N with small cumulative]
+    end
+    C->>Cache: idle save (offset = small cumulative)  [corrupted]
+
+    Note over U,C: Re-visit (cache hit, corrupted offset)
+    U->>C: navigate away & back
+    C->>Cache: loadTerminalState
+    Cache-->>C: { data, offset: small_cumulative }
+    C->>WS: request-history(fromOffset=small_cumulative)
+    Note right of S: fromOffset > 0, line-limit bypass
+    S->>F: read from small_cumulative (file_size = N + delta)
+    F-->>S: ~87% of file (huge tail)
+    S->>WS: history(1.55MB delta, ...)
+    Note right of C: disguised 100% reload
+```
+
 ### History Request Behavior
 
 When a Terminal component mounts, it requests terminal history to display previous output.

@@ -410,6 +410,83 @@ describe('SessionPauseResumeService', () => {
       expect(deps.deleteSession).toHaveBeenCalledWith('session-1');
     });
 
+    // Issue #769: paused-session resume is a "revived" PTY activation path,
+    // so the worker's outputOffset must be seeded from the persisted output
+    // file size. The contract is enforced by passing `revived: true` to the
+    // worker-manager activation methods, which then read the file size before
+    // spawning the PTY. See docs/design/websocket-protocol.md "Output offset
+    // semantics".
+    it('should pass revived: true when activating agent worker on resume', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const restoredWorkers = new Map([['w1', agentWorker]]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' })],
+      });
+
+      // Cast to two-arg signature so the mock's `calls[0][1]` is typed as the
+      // params record. Bun's `mock(async () => {})` infers `args: []`, which
+      // would otherwise make `[1]` a tuple-out-of-range type error (TS2493).
+      const activateAgentMock = mock(
+        async (_worker: unknown, _params: { revived: boolean }) => {},
+      );
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: activateAgentMock,
+          activateTerminalWorkerPty: mock(async () => {}),
+        } as unknown as SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(activateAgentMock).toHaveBeenCalledTimes(1);
+      expect(activateAgentMock.mock.calls[0][1].revived).toBe(true);
+    });
+
+    it('should pass revived: true when activating terminal worker on resume', async () => {
+      const terminalWorker = buildInternalTerminalWorker({ id: 'w1' });
+      const restoredWorkers = new Map([['w1', terminalWorker]]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedTerminalWorker({ id: 'w1' })],
+      });
+
+      const activateTerminalMock = mock(
+        async (_worker: unknown, _params: { revived: boolean }) => {},
+      );
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: activateTerminalMock,
+        } as unknown as SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(activateTerminalMock).toHaveBeenCalledTimes(1);
+      expect(activateTerminalMock.mock.calls[0][1].revived).toBe(true);
+    });
+
     it('should restore terminal workers during resume', async () => {
       const terminalWorker = buildInternalTerminalWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', terminalWorker]]);

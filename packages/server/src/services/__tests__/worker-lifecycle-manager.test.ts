@@ -1814,6 +1814,127 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  // ========== Output offset semantic alignment (Issue #769) ==========
+  //
+  // Activation paths must seed `worker.outputOffset` from the persisted output
+  // file size when the worker is being revived (PTY died, session re-entered,
+  // pause/resume). Otherwise the cumulative-from-zero counter on the server
+  // diverges from the file-absolute offset the client persists in IndexedDB,
+  // and the client's `request-history` reads against the stale (small)
+  // cumulative offset at the next visit — producing the disguised
+  // "100% reload" symptom in #762.
+  //
+  // Fresh creation (`createWorker`) and full reset (`restartAgentWorker`)
+  // paths must keep the seed at 0 because the file is empty by construction
+  // (or has just been truncated to empty by `resetWorkerOutput`).
+  describe('outputOffset alignment on PTY activation', () => {
+    const PRE_EXISTING_BYTES = 'restored-history-content-1234567890';
+    const PRE_EXISTING_LENGTH = Buffer.byteLength(PRE_EXISTING_BYTES, 'utf-8');
+
+    function seedOutputFile(sessionId: string, workerId: string, content: string): void {
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      // Re-seed the in-memory FS with the directory + file containing the
+      // pre-existing output bytes. Resolver path matches the one used by
+      // `createDeps` (always points at `${TEST_CONFIG_DIR}/_quick`).
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${dir}/${workerId}.log`]: content,
+      });
+    }
+
+    it('restoreWorker (agent) seeds outputOffset from existing output file size', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker: InternalAgentWorker = {
+        id: 'restored-agent-offset',
+        type: 'agent',
+        name: 'Restored Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      seedOutputFile(session.id, agentWorker.id, PRE_EXISTING_BYTES);
+
+      const result = await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+
+      expect(result.success).toBe(true);
+      expect(agentWorker.outputOffset).toBe(PRE_EXISTING_LENGTH);
+    });
+
+    it('restoreWorker (terminal) seeds outputOffset from existing output file size', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const terminalWorker: InternalTerminalWorker = {
+        id: 'restored-terminal-offset',
+        type: 'terminal',
+        name: 'Restored Terminal',
+        createdAt: new Date().toISOString(),
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(terminalWorker.id, terminalWorker);
+
+      seedOutputFile(session.id, terminalWorker.id, PRE_EXISTING_BYTES);
+
+      const result = await lifecycleManager.restoreWorker(session.id, terminalWorker.id);
+
+      expect(result.success).toBe(true);
+      expect(terminalWorker.outputOffset).toBe(PRE_EXISTING_LENGTH);
+    });
+
+    it('getAvailableWorker seeds outputOffset from existing output file size on first activation', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const terminalWorker: InternalTerminalWorker = {
+        id: 'available-terminal-offset',
+        type: 'terminal',
+        name: 'Terminal',
+        createdAt: new Date().toISOString(),
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(terminalWorker.id, terminalWorker);
+
+      seedOutputFile(session.id, terminalWorker.id, PRE_EXISTING_BYTES);
+
+      const available = await lifecycleManager.getAvailableWorker(session.id, terminalWorker.id);
+
+      expect(available).not.toBeNull();
+      expect(available!.outputOffset).toBe(PRE_EXISTING_LENGTH);
+    });
+
+    it('createWorker keeps outputOffset at 0 (fresh worker, no pre-existing file)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'terminal',
+      });
+
+      expect(worker).not.toBeNull();
+      const internalWorker = session.workers.get(worker!.id);
+      expect(internalWorker).toBeDefined();
+      expect(internalWorker!.type).toBe('terminal');
+      if (internalWorker!.type === 'terminal' || internalWorker!.type === 'agent') {
+        expect(internalWorker!.outputOffset).toBe(0);
+      }
+    });
+  });
+
   describe('getCurrentOutputOffset fallback branch (session not in memory)', () => {
     it('uses the DB-backed resolver when session is not in memory but persisted', async () => {
       // The in-memory `sessions` map is empty; the worker cannot be found

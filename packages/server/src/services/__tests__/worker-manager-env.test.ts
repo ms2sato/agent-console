@@ -65,6 +65,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
         continueConversation: false,
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -84,6 +85,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
         continueConversation: false,
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -101,6 +103,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
         continueConversation: false,
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -119,6 +122,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-456',
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -137,6 +141,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         // repositoryId is not provided (quick session)
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -155,6 +160,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-all-four',
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -175,6 +181,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
         continueConversation: false,
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -196,6 +203,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'org/repo-name',
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -218,6 +226,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         repositoryId: 'repo-1',
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -241,6 +250,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         context: { parentSessionId: 'parent-sess-abc' },
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -259,6 +269,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         context: { parentWorkerId: 'parent-wkr-xyz' },
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -277,6 +288,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         agentId: 'claude-code',
         continueConversation: false,
         // context is intentionally omitted
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -303,6 +315,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           parentSessionId: 'real-parent-session',
           parentWorkerId: 'real-parent-worker',
         },
+        revived: false,
       });
 
       const env = getLastSpawnEnv();
@@ -322,6 +335,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         repositoryEnvVars: {},
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
+        revived: false,
       });
 
       const env = getLastSpawnEnv();

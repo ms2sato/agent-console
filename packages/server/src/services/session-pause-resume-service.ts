@@ -252,15 +252,17 @@ export class SessionPauseResumeService {
               parentWorkerId: internalSession.parentWorkerId,
               templateVars: internalSession.templateVars,
             },
+            revived: true,
           });
           activatedWorkers.push(worker);
         } else if (worker.type === 'terminal') {
-          this.deps.workerManager.activateTerminalWorkerPty(worker, {
+          await this.deps.workerManager.activateTerminalWorkerPty(worker, {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
             username,
             resolver,
+            revived: true,
           });
           activatedWorkers.push(worker);
         }
