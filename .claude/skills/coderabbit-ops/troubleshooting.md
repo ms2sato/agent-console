@@ -37,3 +37,26 @@ Both local CodeRabbit CLI and GitHub-side bot were rate-limited at this PR's rev
 ```
 
 The simultaneous-rate-limit case does not relax PR Merge Authority — it removes only the CodeRabbit safety net. Owner approval thresholds for production code remain unchanged. (Sprint 2026-05-01 — observed across PRs #747 / #748 / #749 / #750: all four hit simultaneous rate-limit; orchestrator merged the docs PR (#747) and the test-only PR (#748) under PR Merge Authority, owner approved the process PR (#749) and the logic PR (#750). No regressions surfaced post-merge.)
+
+## Q: All my review comments are addressed but `reviewDecision` is still `CHANGES_REQUESTED`. Can I merge?
+
+**Yes — the stale `CHANGES_REQUESTED` is a GitHub UX gap, not a CodeRabbit refusal.** When CodeRabbit attaches a `<review_comment_addressed>` marker to a previously-flagged inline comment, the comment thread auto-closes (no further bot action expected on that line). However, GitHub's PR-level `reviewDecision` only updates when a new top-level review (`APPROVED` / `CHANGES_REQUESTED`) is submitted — addressing all individual comments does not flip the PR-level field on its own. CodeRabbit does not always submit a follow-up `APPROVED` review even after every comment is resolved, so the stale `CHANGES_REQUESTED` can persist indefinitely.
+
+**Disposition before merge:**
+
+1. **Verify each inline comment is resolved or marker-closed.** Run:
+   ```
+   gh api repos/<owner>/<repo>/pulls/<N>/comments --jq '[.[] | {body_first_120: .body[:120]}]'
+   ```
+   Confirm every CodeRabbit comment either is GitHub-resolved or contains the `<review_comment_addressed>` marker (or an equivalent "addressed" annotation from the bot).
+2. **Check whether a newer review supersedes the `CHANGES_REQUESTED`.** Run:
+   ```
+   gh pr view <N> --json reviews,latestReviews
+   ```
+   If the latest review is `APPROVED`, the rollup field is just laggy and a UI refresh / `gh pr view` re-query usually flips it.
+3. **If the latest review is still `CHANGES_REQUESTED` despite all comments resolved**, the bot has not submitted the follow-up positive review. Treat the 3-layer clean verdict as satisfied: pre-merge checks SUCCESS + 0 unresolved actionable inline comments + no outstanding CodeRabbit ask. The stale `reviewDecision` does not block merge under PR Merge Authority. Add a one-line note to the PR body / merge confirmation:
+   ```
+   CodeRabbit reviewDecision is `CHANGES_REQUESTED` (stale UX) — all comments are marker-closed; merging under existing PR Merge Authority.
+   ```
+
+(Lesson: Sprint 2026-05-10 PR #770 round 3 — CodeRabbit auto-closed all inline comments via `<review_comment_addressed>` markers but did not submit a top-level `APPROVED` review; PR-level `reviewDecision` remained `CHANGES_REQUESTED` despite every flagged item being resolved. Pushing a trivial commit to force a re-trigger would only burn CI cycles per the abandon-the-wait rule above.)
