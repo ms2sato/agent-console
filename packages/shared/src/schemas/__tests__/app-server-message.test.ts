@@ -197,8 +197,7 @@ describe('AppServerMessageSchema', () => {
     it('should reject session with non-boolean isShared', () => {
       expectInvalid({
         type: 'session-created',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        session: { ...worktreeSession, isShared: 'true' as any },
+        session: { ...worktreeSession, isShared: 'true' },
       });
     });
 

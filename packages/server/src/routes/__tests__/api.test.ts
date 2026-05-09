@@ -4,17 +4,23 @@ import type { AppBindings } from '../../app-context.js';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../../__tests__/test-utils.js';
 import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
-import type { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
+import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 
-/** Minimal SystemCapabilitiesService mock that returns no detected capabilities. */
+/**
+ * Minimal SystemCapabilitiesService mock that returns no detected capabilities.
+ *
+ * Constructs a real instance and seeds its private state via Reflect so we
+ * avoid running the underlying `which` shell-out. Mirrors the pattern used in
+ * `__tests__/system.test.ts`. Returning a real instance also lets the test
+ * stay structurally honest without `as unknown as` casts.
+ */
 function createMockSystemCapabilities(): SystemCapabilitiesService {
-  return {
-    detect: async () => {},
-    getCapabilities: () => ({ vscode: false }),
-    hasVSCode: () => false,
-    getVSCodeCommand: () => null,
-  } as unknown as SystemCapabilitiesService;
+  const service = new SystemCapabilitiesService();
+  Reflect.set(service, 'capabilities', { vscode: false });
+  Reflect.set(service, 'vscodeCommand', null);
+  return service;
 }
 
 describe('API route mounting', () => {
@@ -85,10 +91,11 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
         username: 'sharedusr',
         homeDir: '/home/sharedusr',
       }),
-    };
+      findById: async () => null,
+    } satisfies UserRepository;
     const enabledRegistry = await SharedAccountRegistry.create({
       username: 'sharedusr',
-      userRepository: fakeUserRepository as never,
+      userRepository: fakeUserRepository,
       lookupOsUser: async () => ({ uid: 9999, homeDir: '/home/sharedusr' }),
     });
 
