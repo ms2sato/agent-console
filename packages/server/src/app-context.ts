@@ -272,6 +272,7 @@ export async function createAppContext(
       },
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
+    sharedAccountLookup: sharedAccountRegistry,
   });
 
   // 6.5. Create timer manager with persistence
@@ -592,6 +593,7 @@ export async function createTestContext(
       },
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
+    sharedAccountLookup: sharedAccountRegistry,
   });
 
   // Wire cross-dependencies

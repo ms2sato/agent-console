@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import type { Worker } from '@agent-console/shared';
 import type { PersistedWorker } from '../persistence-service.js';
 import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
-import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup } from '../session-converter-service.js';
+import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup, type SharedAccountLookup } from '../session-converter-service.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -21,6 +21,7 @@ import {
 describe('SessionConverterService', () => {
   let service: SessionConverterService;
   let mockLookup: RepositoryDisplayLookup;
+  let mockSharedLookup: SharedAccountLookup;
   let toPublicWorkerResults: Map<string, Worker>;
   let toPersistedWorkerResults: Map<string, PersistedWorker>;
 
@@ -32,11 +33,18 @@ describe('SessionConverterService', () => {
       },
     };
 
+    // Default lookup treats only the specific UUID 'shared-account-uuid' as a
+    // shared account. Tests that need the inverse override the deps.
+    mockSharedLookup = {
+      isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
+    };
+
     toPublicWorkerResults = new Map();
     toPersistedWorkerResults = new Map();
 
     const deps: SessionConverterDeps = {
       repositoryDisplayLookup: mockLookup,
+      sharedAccountLookup: mockSharedLookup,
       toPublicWorker: (w: InternalWorker): Worker => {
         const existing = toPublicWorkerResults.get(w.id);
         if (existing) return existing;
@@ -195,6 +203,49 @@ describe('SessionConverterService', () => {
       expect(result.initiatedBy).toBeUndefined();
     });
 
+    it('sets isShared to true when createdBy resolves to a shared account', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'shared-account-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.isShared).toBe(true);
+    });
+
+    it('sets isShared to false when createdBy is a regular user', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'regular-user-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.isShared).toBe(false);
+    });
+
+    it('sets isShared to false (not undefined) when createdBy is undefined', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: undefined,
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.isShared).toBe(false);
+      // Boundary contract: the field is always a concrete boolean on the wire.
+      expect(typeof result.isShared).toBe('boolean');
+    });
+
+    it('does not error and produces isShared on a session with empty worker list', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'shared-account-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.workers).toEqual([]);
+      expect(result.isShared).toBe(true);
+    });
+
     it('falls back to Unknown repository name when repository is not found', () => {
       mockLookup = {
         getRepositoryDisplayInfo: () => undefined,
@@ -204,6 +255,7 @@ describe('SessionConverterService', () => {
       // because the session has zero workers.
       const deps: SessionConverterDeps = {
         repositoryDisplayLookup: mockLookup,
+        sharedAccountLookup: mockSharedLookup,
         toPublicWorker: ((): Worker => {
           throw new Error('unreachable: session has no workers');
         }) as (w: InternalWorker) => Worker,
@@ -342,6 +394,49 @@ describe('SessionConverterService', () => {
       const result = service.persistedToPublicSession(persisted);
 
       expect(result.initiatedBy).toBeUndefined();
+    });
+
+    it('sets isShared to true on a persisted session whose createdBy is shared', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-shared-derive',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'shared-account-uuid',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.isShared).toBe(true);
+    });
+
+    it('sets isShared to false on a persisted session whose createdBy is regular', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-regular-derive',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'user-42',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.isShared).toBe(false);
+    });
+
+    it('sets isShared to false (not undefined) on a persisted legacy session with no createdBy', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-legacy',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        // createdBy intentionally omitted (legacy row)
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.isShared).toBe(false);
+      expect(typeof result.isShared).toBe('boolean');
     });
   });
 

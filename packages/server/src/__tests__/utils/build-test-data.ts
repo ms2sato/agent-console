@@ -226,6 +226,7 @@ export function buildWorktreeSession(
     activationState: 'running',
     createdAt: '2026-01-01T00:00:00.000Z',
     workers: [],
+    isShared: false,
     recoveryState: 'healthy',
     ...overrides,
   };
@@ -242,6 +243,7 @@ export function buildQuickSession(
     activationState: 'running',
     createdAt: '2026-01-01T00:00:00.000Z',
     workers: [],
+    isShared: false,
     recoveryState: 'healthy',
     ...overrides,
   };

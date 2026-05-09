@@ -27,6 +27,7 @@ function createMockWorktreeSession(
     activationState: 'running' as const,
     createdAt: new Date().toISOString(),
     workers: [],
+    isShared: false,
     recoveryState: 'healthy',
     ...overrides,
   };
@@ -44,6 +45,7 @@ function createMockQuickSession(
     activationState: 'running' as const,
     createdAt: new Date().toISOString(),
     workers: [],
+    isShared: false,
     recoveryState: 'healthy',
     ...overrides,
   };

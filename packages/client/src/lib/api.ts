@@ -23,7 +23,7 @@ import type {
   UpdateRepositoryRequest,
   WorkerMessage,
   GenerateRepositoryDescriptionResponse,
-  AuthMode,
+  ConfigResponse,
   LoginRequest,
   LoginResponse,
   CurrentUserResponse,
@@ -32,6 +32,8 @@ import type {
   SkillDefinition,
   MessageTemplate,
 } from '@agent-console/shared';
+
+export type { ConfigResponse } from '@agent-console/shared';
 import { api } from './api-client';
 
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
@@ -65,15 +67,6 @@ async function handleApiError(res: Response, fallbackMessage: string): Promise<n
   const serverMessage = (body?.error?.trim() || body?.message?.trim() || undefined);
   const message = serverMessage ?? (res.statusText ? `${fallbackMessage}: ${res.statusText}` : fallbackMessage);
   throw new ApiError(message, res.status, body?.code);
-}
-
-export interface ConfigResponse {
-  homeDir: string;
-  capabilities: {
-    vscode: boolean;
-  };
-  serverPid: number;
-  authMode: AuthMode;
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
