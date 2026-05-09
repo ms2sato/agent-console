@@ -144,7 +144,7 @@ export class WorkerLifecycleManager {
         createdAt,
         agentId: request.agentId,
       });
-      this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
+      await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -159,6 +159,7 @@ export class WorkerLifecycleManager {
           parentWorkerId: session.parentWorkerId,
           templateVars,
         },
+        revived: false,
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
@@ -169,12 +170,13 @@ export class WorkerLifecycleManager {
         name: workerName,
         createdAt,
       });
-      this.deps.workerManager.activateTerminalWorkerPty(terminalWorker, {
+      await this.deps.workerManager.activateTerminalWorkerPty(terminalWorker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
         resolver,
+        revived: false,
       });
       worker = terminalWorker;
     } else {
@@ -245,7 +247,7 @@ export class WorkerLifecycleManager {
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
       const effectiveAgentId = this.resolveEffectiveAgentId(worker.agentId, { sessionId, workerId });
-      this.deps.workerManager.activateAgentWorkerPty(worker, {
+      await this.deps.workerManager.activateAgentWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -259,14 +261,16 @@ export class WorkerLifecycleManager {
           parentWorkerId: session.parentWorkerId,
           templateVars: session.templateVars,
         },
+        revived: true,
       });
     } else {
-      this.deps.workerManager.activateTerminalWorkerPty(worker, {
+      await this.deps.workerManager.activateTerminalWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
         username,
         resolver,
+        revived: true,
       });
     }
 
@@ -403,7 +407,7 @@ export class WorkerLifecycleManager {
       createdAt: workerCreatedAt,
       agentId: workerAgentId,
     });
-    this.deps.workerManager.activateAgentWorkerPty(newWorker, {
+    await this.deps.workerManager.activateAgentWorkerPty(newWorker, {
       sessionId,
       locationPath,
       repositoryEnvVars,
@@ -417,6 +421,9 @@ export class WorkerLifecycleManager {
         parentWorkerId: session.parentWorkerId,
         templateVars: session.templateVars,
       },
+      // File was just truncated by resetWorkerOutput above, so the
+      // file-absolute offset is 0 — equivalent to fresh creation.
+      revived: false,
     });
 
     // Re-check session still exists after async gap
@@ -543,7 +550,7 @@ export class WorkerLifecycleManager {
 
       if (existingWorker.type === 'agent') {
         const effectiveAgentId = this.resolveEffectiveAgentId(existingWorker.agentId, { sessionId, workerId });
-        this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
+        await this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
           sessionId,
           locationPath: session.locationPath,
           repositoryEnvVars,
@@ -557,14 +564,16 @@ export class WorkerLifecycleManager {
             parentWorkerId: session.parentWorkerId,
             templateVars: session.templateVars,
           },
+          revived: true,
         });
       } else {
-        this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {
+        await this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {
           sessionId,
           locationPath: session.locationPath,
           repositoryEnvVars,
           username,
           resolver,
+          revived: true,
         });
       }
     } catch (err) {

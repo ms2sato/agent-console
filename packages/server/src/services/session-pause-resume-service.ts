@@ -39,7 +39,18 @@ export interface SessionPauseResumeDeps {
   setSession: (id: string, session: InternalSession) => void;
   deleteSession: (id: string) => void;
   sessionRepository: SessionRepository;
-  workerManager: WorkerManager;
+  // Narrow the surface of WorkerManager to the four methods this service
+  // actually uses. This makes the dependency contract structural (a partial
+  // mock matches the type without `as unknown as` casts) and prevents the
+  // service from quietly growing additional dependencies on WorkerManager
+  // without the test fixture noticing.
+  workerManager: Pick<
+    WorkerManager,
+    | 'killWorker'
+    | 'restoreWorkersFromPersistence'
+    | 'activateAgentWorkerPty'
+    | 'activateTerminalWorkerPty'
+  >;
   pathExists: (path: string) => Promise<boolean>;
   getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
@@ -252,15 +263,17 @@ export class SessionPauseResumeService {
               parentWorkerId: internalSession.parentWorkerId,
               templateVars: internalSession.templateVars,
             },
+            revived: true,
           });
           activatedWorkers.push(worker);
         } else if (worker.type === 'terminal') {
-          this.deps.workerManager.activateTerminalWorkerPty(worker, {
+          await this.deps.workerManager.activateTerminalWorkerPty(worker, {
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
             username,
             resolver,
+            revived: true,
           });
           activatedWorkers.push(worker);
         }
