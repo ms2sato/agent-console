@@ -53,6 +53,18 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
    (Lesson: Sprint 2026-04-30 PR #725 (#719) — `scripts/install-hooks.mjs` resolved the symlink target via `path.resolve(SOURCE_REL)`, cwd-anchored to the linked worktree at install time. After merge the worktree was removed; the symlink became dangling and git silently skipped the broken hook. Issue #728 surfaced the bug, PR #729 hot-fixed via `git rev-parse --git-common-dir`, PR #738 reinforced the invariant via `bun install` postinstall + worktree-aware setup. The author's self-retrospective named this "premature closure of Concerns Surfacing Discipline" — addressed 1 of 3 worktree-awareness dimensions before stopping.)
 
+8. **Signature shape change pre-estimate — for PRs that change a function / method signature shape:**
+
+   When this PR changes a signature shape — `sync` → `async`, return-type widening, parameter addition / removal / reorder, generic-parameter changes — pre-estimate the integration cost before committing to the change:
+
+   1. **Count affected call sites.** Run `grep -c "<functionName>(" packages/` (or the equivalent across the repo) and note the result.
+   2. **Record the count in the PR description.** Example: "`activateAgentWorkerPty` async migration affects 47 call sites in 12 files (production + tests)." This sets the reviewer's expectation for diff volume and surface area before they open the diff.
+   3. **If using a bulk-replace script (sed / Python / `ts-morph`), validate on one file first** before applying repo-wide. Confirm indent / surrounding-context preservation. Indent-count mistakes (e.g., 14 spaces vs the file's 2-space convention) are easy to make and produce silently-wrong diffs.
+
+   **Do not use the count as an excuse to escape the change.** If the right design is `async`, accept the test-call-site churn rather than introducing overload / optional-param / wrapper alternatives — those warp the design to dodge integration cost. The pre-estimate exists to set expectations, not to gate the change.
+
+   (Lesson: Sprint 2026-05-10 PR #770 — `activate*Pty` async migration produced ~50 call-site changes in tests; the bulk-replace script was rerun twice (the first pass had a 14-space indent bug). Counting up-front would have set churn expectations and surfaced the indent assumption earlier.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -60,6 +72,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A new rule in `.claude/rules/**` or skill in `.claude/skills/**`
   - A new directory under `docs/` or `.context-store/` (or similar infrastructure)
   - A new canonical procedure step (e.g., new subsection in `core-responsibilities.md §N`)
+  - A signature shape change with a meaningful call-site count (Question 8) — required regardless of whether other criteria match
   - A cross-runtime spawn (Question 6) — required regardless of whether other criteria match
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns

@@ -167,3 +167,21 @@ describe('Client-Server Boundary', () => {
 ```
 
 This gives you a single test file that exercises the full round-trip: user event → form serialization → HTTP body → server handler → persisted state. If any step drops or mistransforms data, the test fails.
+
+## Bun mock typing for `calls[N][M]` access
+
+Bun's `mock(async () => {})` infers the mock's `args` type as `[]` when no parameters are declared, even when the call site passes arguments. Reading `mock.calls[0][1]` then fails type-checking with `TS2493: Tuple type '[]' of length '0' has no element at index '1'`.
+
+Declare the parameter signature explicitly so the mock's `calls[N][M]` projection is correctly typed:
+
+```typescript
+// args inferred as [] — mock.calls[0][1] fails type-check
+const fn = mock(async () => {});
+
+// args typed as [ArgT, ArgU] — mock.calls[0][1] is ArgU | undefined
+const fn = mock(async (_a: ArgT, _b: ArgU) => {});
+```
+
+This is a Bun typing quirk, not a behavioural bug — runtime captures arguments correctly either way. Use the explicit-signature form when assertions need indexed access into the captured arguments.
+
+(Source: PR #770 round 3 — `mock(async () => {})` failed type-check on `mock.calls[N][M]` reads; explicit signature added in commit `8e2f644`.)
