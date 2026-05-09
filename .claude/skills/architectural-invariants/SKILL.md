@@ -63,7 +63,7 @@ The invariant is not "address must be textually equal" — it is "**for the same
 - **Brand the type.** Use a type name that encodes the stability contract (e.g., `CanonicalOutputPath` vs generic `string`). Reviewers notice when that type is assembled by hand.
 - **Explicit asymmetry.** If write and read addresses legitimately differ (primary/replica, write-through cache), make the asymmetry explicit in types and document the invariant that governs their convergence (eventual, bounded, etc.).
 
-### Example: fragmentation bug caught by this invariant
+### Example: fragmentation bug caught by this invariant (static path)
 
 Issue [#631](https://github.com/ms2sato/agent-console/issues/631). Worker output files fragmented across three directories because `SessionDataPathResolver` re-looked up `repositoryName` on each construction, silently fell back to `_quick/` when the lookup returned undefined. Writes and reads both went through the resolver, but the resolver produced different paths depending on when it was called.
 
@@ -71,9 +71,25 @@ Issue [#631](https://github.com/ms2sato/agent-console/issues/631). Worker output
 
 The answer at the time was "no" — and that single question surfaces the entire class of bug.
 
+### Example: offset semantic divergence (dynamic coordinate)
+
+Issue [#762](https://github.com/ms2sato/agent-console/issues/762) / [#769](https://github.com/ms2sato/agent-console/issues/769), fixed in PR [#770](https://github.com/ms2sato/agent-console/pull/770). Same path was used by both sides; both sides agreed on the resource. The asymmetry was in the **offset coordinate within the resource**:
+
+- Server's `worker.outputOffset` counted **bytes since the current PTY activation** (cumulative-from-activation, reset to `0` on every revival).
+- Client's IndexedDB cache persisted **file-absolute byte position** (the offset that the server had previously sent at the *previous* activation, before the counter reset).
+
+On revival, the server counter restarted from 0, the client's next `request-history` fed back its persisted file-absolute offset, and the comparison `fromOffset > server.cumulative` triggered the "fresh fetch" path on the server — which line-limited-replayed ~87% of the file as a fake "history" payload. Symptom: the disguised 100% reload on session switch.
+
+The fix aligned both sides on the **file-absolute** semantic at PTY activation time: revival paths seed `worker.outputOffset` from the persisted file size before spawning the PTY (`revived: boolean` flag threaded through `activateAgentWorkerPty` / `activateTerminalWorkerPty`).
+
+**Review question that would have caught it**: *"The `outputOffset` value flows from server PTY output to client cache and back via `request-history`. Does the same numeric value mean the same byte position on both sides, after every PTY (re-)activation?"*
+
+The answer at the time was "no" — and that single question surfaces the same class of bug as #631, just at the dynamic-coordinate layer rather than the static-path layer.
+
 ### Suggested acceptance criterion template
 
 - [ ] For any persistent resource written and read in this change, the address used to write it with identity X matches the address used to read it back for the same X, across server restarts → integration test covering write → restart → read round-trip
+- [ ] If the resource also has an internal coordinate (offset, index, sequence number) shared between sides, the numeric value at write time and read time references the same byte / position / record, across PTY (re-)activations and server restarts → integration test covering activate → write → reactivate → read round-trip
 
 ---
 
