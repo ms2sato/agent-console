@@ -6,38 +6,41 @@
  * adds a header trigger that is hidden in the empty state and visible whenever
  * at least one repository is registered.
  *
- * `useAppWsEvent` is mocked at the module level to avoid setting up a real
- * WebSocket subscription during render. `fetch` is mocked to provide the
- * repositories list (consumed via TanStack Query). All other dependencies are
- * either real (router via `renderWithRouter`) or context-injected (root layout
- * providers).
+ * `useAppWsEvent` is replaced per-test via `spyOn` (NOT `mock.module`, which is
+ * process-global in bun:test and would leak into other test files) to avoid
+ * setting up a real WebSocket subscription during render. `fetch` is mocked to
+ * provide the repositories list (consumed via TanStack Query). All other
+ * dependencies are either real (router via `renderWithRouter`) or
+ * context-injected (root layout providers).
  */
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 
-// --- Mocks (must precede production-code import) ---
-
-// Mock useAppWsEvent / useAppWsState — Dashboard subscribes for activity / repo events,
-// none of which we exercise in these tests. A real subscription would try to open a
-// WebSocket; we replace it with a no-op.
-mock.module('../../hooks/useAppWs', () => ({
-  useAppWsEvent: () => undefined,
-  useAppWsState: () => false,
-}));
-
-// hasVSCode reads from a module-level capability cache populated at app boot.
-// In tests we force a deterministic value.
-mock.module('../../lib/capabilities', () => ({
-  hasVSCode: () => false,
-}));
-
-// Import production code AFTER mock.module calls (bun:test process-global mock pattern)
 import { DashboardPage } from '../index';
 import { SessionDataContext, WorktreeDeletionTasksContext, WorktreeCreationTasksContext } from '../../contexts/root-contexts';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import type { Repository } from '@agent-console/shared';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseWorktreeCreationTasksReturn } from '../../hooks/useWorktreeCreationTasks';
+import * as useAppWsModule from '../../hooks/useAppWs';
+import * as capabilitiesModule from '../../lib/capabilities';
+
+// --- Module-level spies (test-instance scoped via mockRestore in afterEach) ---
+//
+// We use spyOn rather than mock.module() because mock.module() is process-global
+// in bun:test and leaks into other test files (e.g., useAppWs.test.ts) that share
+// the same process, breaking unrelated tests. spyOn is restorable per-test.
+//
+// - useAppWsEvent: Dashboard subscribes for activity / repo events; we replace it
+//   with a no-op so no real WebSocket subscription is attempted during render.
+// - useAppWsState: not currently called by DashboardPage but mirrored from the
+//   original module mock for parity.
+// - hasVSCode: reads from a module-level capability cache populated at app boot;
+//   force a deterministic value during tests.
+
+let useAppWsEventSpy: ReturnType<typeof spyOn>;
+let useAppWsStateSpy: ReturnType<typeof spyOn>;
+let hasVSCodeSpy: ReturnType<typeof spyOn>;
 
 // --- Fetch-level mocking ---
 
@@ -155,10 +158,21 @@ async function renderDashboard(repositories: Repository[]) {
 describe('DashboardPage / Add Repository trigger', () => {
   beforeEach(() => {
     mockFetch.mockClear();
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
+    // useAppWsState<T>(selector) is generic; the cast on the inner function returns
+    // `false` regardless of the requested selector type. DashboardPage does not call
+    // useAppWsState directly today, so the value is never observed by production code.
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+      <T,>() => false as T
+    );
+    hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
   });
 
   afterEach(() => {
     cleanup();
+    useAppWsEventSpy.mockRestore();
+    useAppWsStateSpy.mockRestore();
+    hasVSCodeSpy.mockRestore();
   });
 
   describe('empty state (0 repositories)', () => {
