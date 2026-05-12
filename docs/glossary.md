@@ -44,6 +44,7 @@ A session tied only to a directory path, without repository or worktree manageme
 ### SharedSession
 A session running under a shared account OS identity, accessible to all authenticated users.
 - **Contrast:** [PersonalSession](#personalsession)
+- **Identifier:** `Session.isShared: boolean` (boolean discriminator on the wire, server-derived via `SharedAccountRegistry.isSharedUserId(createdBy)`)
 - **See:** [Terminology in shared-orchestrator-session.md](design/shared-orchestrator-session.md#terminology)
 
 ### WorktreeSession
@@ -108,6 +109,7 @@ The dedicated OS account (typically `agentconsole`) that runs the server process
 ### Shared Account
 A dedicated OS account distinct from service user and individual users, used for shared sessions.
 - **Aliases:** Shared session account, shared service account (historical, briefly used in PR #682 draft)
+- **Capability flag:** `/api/config.sharedAccountsAvailable: boolean` (server exposes this when `AGENT_CONSOLE_SHARED_USERNAME` resolves to a real OS user; gate for client UI affordance)
 - **See:** [Terminology in shared-orchestrator-session.md](design/shared-orchestrator-session.md#terminology)
 
 ## Events & Communication
