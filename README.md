@@ -44,6 +44,8 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 
 - [Bun](https://bun.sh) >= 1.3.5
 
+  `scripts/check-bun-version.mjs` is wired as a `preinstall` hook and hard-fails on older Bun, so the requirement is enforced rather than advisory. The floor is set by two features: `Bun.Terminal` (used by the server, 1.3.5+) and `minimumReleaseAge` (the supply-chain age gate, 1.3.0+); the higher of the two wins. See [Supply Chain Security](#supply-chain-security) for the age gate details.
+
 ## Development
 
 ### Setup
@@ -144,6 +146,26 @@ launchctl kickstart -k "gui/$(id -u)/com.agent-console"
 Available server environment variables are defined in [`packages/server/src/lib/server-config.ts`](packages/server/src/lib/server-config.ts).
 
 > **Note**: Variables set in `.env` override values from the launchd plist. `PORT`, `APP_URL`, `NODE_ENV`, and `PATH` are set in the plist at deploy time; all other variables should be configured via `.env`.
+
+## Supply Chain Security
+
+This repo uses Bun's [`minimumReleaseAge`](https://bun.com/docs/runtime/bunfig#install-minimumReleaseAge) install setting to refuse npm package versions younger than 7 days. Compromised packages are usually detected or unpublished within a few days of release, so a short cool-off window catches the common case while letting routine updates through.
+
+Configuration lives in [`bunfig.toml`](./bunfig.toml) at the repo root. A `preinstall` hook ([`scripts/check-bun-version.mjs`](./scripts/check-bun-version.mjs)) enforces the repo's minimum Bun version, which is at or above the 1.3.0 floor required by `minimumReleaseAge`, so the age gate is never silently ignored.
+
+### Emergency override
+
+When you genuinely need a just-published version (e.g., a CVE patch), bypass the gate for that single command rather than editing `bunfig.toml`:
+
+```bash
+# CLI flag, scoped to one invocation:
+bun add <pkg> --minimum-release-age 0
+
+# Or via environment variable:
+BUN_CONFIG_MINIMUM_RELEASE_AGE=0 bun install
+```
+
+Record the reason (CVE number, advisory link, etc.) in the commit message or PR description so the override is auditable. Do **not** lower `minimumReleaseAge` in `bunfig.toml` — keep the gate intact and override per-command.
 
 ## Standalone Distribution
 
