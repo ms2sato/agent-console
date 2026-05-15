@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.3.5"
   },
   "workspaces": ["packages/*"],
   "scripts": {
@@ -18,6 +18,7 @@
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
     "hooks:install": "bun scripts/install-hooks.mjs",
+    "preinstall": "bun scripts/check-bun-version.mjs",
     "postinstall": "bun scripts/install-hooks.mjs || echo 'hooks:install skipped (likely no git or non-interactive env)'",
     "lint": "bun run lint:structure",
     "lint:structure": "bun run lint:deps && bun run lint:cycles && bun run lint:unused",
