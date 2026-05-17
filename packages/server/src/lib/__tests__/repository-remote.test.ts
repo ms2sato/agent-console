@@ -1,13 +1,8 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import type { Repository } from '@agent-console/shared';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 
-const mockGetRemoteUrl = mock(() => Promise.resolve('https://github.com/test/repo.git' as string | null));
-
-mock.module('../git.js', () => ({
-  getRemoteUrl: mockGetRemoteUrl,
-}));
-
-// Import after mock.module
+// Import after the shared git mock is registered (via mock-git-helper import)
 const { withRepositoryRemote } = await import('../repository-remote.js');
 
 function createTestRepository(overrides?: Partial<Repository>): Repository {
@@ -23,8 +18,12 @@ function createTestRepository(overrides?: Partial<Repository>): Repository {
 }
 
 describe('withRepositoryRemote', () => {
+  beforeEach(() => {
+    resetGitMocks();
+  });
+
   it('should enrich repository with remoteUrl from git remote', async () => {
-    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
+    mockGit.getRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository();
     const enriched = await withRepositoryRemote(repo);
 
@@ -36,7 +35,7 @@ describe('withRepositoryRemote', () => {
   });
 
   it('should set remoteUrl to undefined when no remote exists', async () => {
-    mockGetRemoteUrl.mockResolvedValueOnce(null);
+    mockGit.getRemoteUrl.mockResolvedValueOnce(null);
     const repo = createTestRepository();
     const enriched = await withRepositoryRemote(repo);
 
@@ -44,7 +43,7 @@ describe('withRepositoryRemote', () => {
   });
 
   it('should not mutate the original repository object', async () => {
-    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
+    mockGit.getRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository();
     const enriched = await withRepositoryRemote(repo);
 
@@ -54,7 +53,7 @@ describe('withRepositoryRemote', () => {
   });
 
   it('should preserve all existing repository fields', async () => {
-    mockGetRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
+    mockGit.getRemoteUrl.mockResolvedValueOnce('https://github.com/test/repo.git');
     const repo = createTestRepository({
       description: 'A test repo',
       setupCommand: 'bun install',
