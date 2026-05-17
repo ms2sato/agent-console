@@ -8,6 +8,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
+import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
 // Helper to create mock worktree session
@@ -74,10 +75,12 @@ describe('ActiveSessionsSidebar', () => {
   beforeEach(() => {
     onToggle = mock(() => {});
     onWidthChange = mock(() => {});
+    resetAuth();
   });
 
   afterEach(() => {
     cleanup();
+    resetAuth();
   });
 
   describe('Rendering', () => {
@@ -683,6 +686,123 @@ describe('ActiveSessionsSidebar', () => {
 
       expect(allButton.getAttribute('aria-pressed')).toBe('false');
       expect(mineButton.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('should NOT render "Shared" filter button when sharedAccountsAvailable is false', async () => {
+      const onChange = mock(() => {});
+      setSharedAccountsAvailable(false);
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      expect(screen.getByText('All')).toBeTruthy();
+      expect(screen.getByText('Mine')).toBeTruthy();
+      expect(screen.queryByText('Shared')).toBeNull();
+    });
+
+    it('should render "Shared" filter button when sharedAccountsAvailable is true', async () => {
+      const onChange = mock(() => {});
+      setSharedAccountsAvailable(true);
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      expect(screen.getByText('Shared')).toBeTruthy();
+    });
+
+    it('should call onChange with "shared" when Shared button clicked', async () => {
+      const onChange = mock(() => {});
+      setSharedAccountsAvailable(true);
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'all', onChange }}
+        />
+      );
+
+      fireEvent.click(screen.getByText('Shared'));
+      expect(onChange).toHaveBeenCalledWith('shared');
+    });
+
+    it('should reflect shared mode via aria-pressed', async () => {
+      const onChange = mock(() => {});
+      setSharedAccountsAvailable(true);
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar
+          {...defaultProps()}
+          sessionFilter={{ mode: 'shared', onChange }}
+        />
+      );
+
+      expect(screen.getByText('Shared').getAttribute('aria-pressed')).toBe('true');
+      expect(screen.getByText('All').getAttribute('aria-pressed')).toBe('false');
+    });
+  });
+
+  describe('Shared session badge', () => {
+    it('should render "Shared" badge for sessions with isShared true', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ repositoryName: 'shared-repo', isShared: true }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      expect(screen.getByText('shared-repo')).toBeTruthy();
+      expect(screen.getByText('Shared')).toBeTruthy();
+    });
+
+    it('should NOT render "Shared" badge for sessions with isShared false', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ repositoryName: 'normal-repo', isShared: false }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      expect(screen.getByText('normal-repo')).toBeTruthy();
+      expect(screen.queryByText('Shared')).toBeNull();
+    });
+
+    it('should append [Shared] to tooltip in collapsed mode for shared sessions', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'shared-repo',
+            title: 'shared-branch',
+            isShared: true,
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} collapsed={true} sessions={sessions} />
+      );
+
+      const buttons = screen.getAllByRole('button');
+      const sessionButton = buttons.find(btn =>
+        btn.getAttribute('title')?.includes('shared-repo / shared-branch')
+      );
+      expect(sessionButton?.getAttribute('title')).toContain('[Shared]');
     });
   });
 

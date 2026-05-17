@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
 import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
-import { setAuthMode, setCurrentUser } from './lib/auth';
+import { setAuthMode, setCurrentUser, setSharedAccountsAvailable } from './lib/auth';
 import {
   hasPendingSaves,
   flush as flushSaveManager,
@@ -139,6 +139,7 @@ async function initApp() {
   try {
     const config = await fetchConfig();
     setAuthMode(config.authMode);
+    setSharedAccountsAvailable(config.sharedAccountsAvailable);
 
     if (config.authMode === 'multi-user') {
       // In multi-user mode, check if user is already authenticated.

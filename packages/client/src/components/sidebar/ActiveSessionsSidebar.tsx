@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
 import type { SessionFilterMode } from '../../types/session-filter';
 import { restartAllAgentWorkers } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon } from '../Icons';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -103,7 +104,10 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
   const label = getActivityLabel(activityState);
   const isOrphaned = session.recoveryState === 'orphaned';
-  const orphanedTooltip = isOrphaned ? `${tooltip} (Unrecoverable)` : tooltip;
+  const sharedSuffix = session.isShared ? ' [Shared]' : '';
+  const orphanedTooltip = isOrphaned
+    ? `${tooltip} (Unrecoverable)${sharedSuffix}`
+    : `${tooltip}${sharedSuffix}`;
 
   if (collapsed) {
     return (
@@ -112,7 +116,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
         className={`w-full p-3 flex justify-center hover:bg-slate-800 transition-colors ${
           isActive ? 'bg-slate-800' : ''
         }`}
-        title={isOrphaned ? orphanedTooltip : `${tooltip} (${label})`}
+        title={isOrphaned ? orphanedTooltip : `${tooltip} (${label})${sharedSuffix}`}
       >
         {isOrphaned ? (
           <AlertCircleIcon className="w-3 h-3 text-red-400" />
@@ -138,8 +142,15 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
           <ActivityIndicator state={activityState} className="mt-1.5" />
         )}
         <div className="min-w-0 flex-1">
-          <div className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
-            {primary}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
+              {primary}
+            </span>
+            {session.isShared && (
+              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-900 text-indigo-300">
+                Shared
+              </span>
+            )}
           </div>
           <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-500'}`}>
             {isOrphaned ? 'Unrecoverable' : secondary}
@@ -355,6 +366,7 @@ export function ActiveSessionsSidebar({
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { sharedAccountsAvailable } = useAuth();
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -604,6 +616,19 @@ export function ActiveSessionsSidebar({
           >
             Mine
           </button>
+          {sharedAccountsAvailable && (
+            <button
+              onClick={() => sessionFilter.onChange('shared')}
+              className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                sessionFilter.mode === 'shared'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+              aria-pressed={sessionFilter.mode === 'shared'}
+            >
+              Shared
+            </button>
+          )}
         </div>
       )}
 

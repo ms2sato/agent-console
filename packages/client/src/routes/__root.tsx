@@ -111,7 +111,11 @@ function RootLayout() {
   // Session filtering for multi-user mode
   const { filterMode, setFilterMode, filterSessions } = useSessionFilter();
   const activeSessions = useMemo(() => {
-    if (!isMultiUser || filterMode !== 'mine' || !currentUser) return allActiveSessions;
+    if (!isMultiUser) return allActiveSessions;
+    if (filterMode === 'shared') {
+      return allActiveSessions.filter(s => s.session.isShared);
+    }
+    if (filterMode !== 'mine' || !currentUser) return allActiveSessions;
     return allActiveSessions.filter(s => matchesUserFilter(s.session.createdBy, currentUser.id));
   }, [allActiveSessions, isMultiUser, filterMode, currentUser]);
   const pausedSessions = useMemo(() => filterSessions(sessions.filter(s => s.pausedAt)), [filterSessions, sessions]);
