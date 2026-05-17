@@ -58,6 +58,15 @@ export interface SessionBase {
    * See docs/design/shared-orchestrator-session.md §"Schema Notes".
    */
   initiatedBy?: string;
+  /**
+   * Whether this session is owned by a configured shared account. Derived
+   * server-side from `createdBy` resolving to a registered shared account
+   * via SharedAccountRegistry; clients consume this boolean only and never
+   * see the underlying set of shared-account user-ids. `false` when
+   * `createdBy` is null/undefined (legacy sessions) or refers to a regular
+   * user. See docs/design/shared-orchestrator-session.md §UI.
+   */
+  isShared: boolean;
   /** Session recovery state, surfaced from server. 'healthy' | 'orphaned'. */
   recoveryState: 'healthy' | 'orphaned';
 }

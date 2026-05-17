@@ -39,10 +39,14 @@ function createMockSessionManager(sessions: Map<string, Session>): SessionManage
  */
 function createMockSession(overrides: Partial<Session> & { id: string }): Session {
   return {
+    type: 'quick',
     status: 'active',
+    activationState: 'running',
     locationPath: '/test/path',
     workers: [],
     createdAt: '2026-01-01T00:00:00Z',
+    isShared: false,
+    recoveryState: 'healthy',
     ...overrides,
   };
 }

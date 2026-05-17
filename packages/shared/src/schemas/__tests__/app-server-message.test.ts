@@ -30,6 +30,7 @@ const worktreeSession = {
   repositoryName: 'my-repo',
   worktreeId: 'feature-branch',
   isMainWorktree: false,
+  isShared: false,
   recoveryState: 'healthy' as const,
 };
 
@@ -41,6 +42,7 @@ const quickSession = {
   activationState: 'running' as const,
   createdAt: '2026-01-01T00:00:00Z',
   workers: [],
+  isShared: false,
   recoveryState: 'healthy' as const,
 };
 
@@ -169,6 +171,42 @@ describe('AppServerMessageSchema', () => {
       expectInvalid({
         type: 'session-created',
         session: { ...worktreeSession, initiatedBy: 123 },
+      });
+    });
+
+    it('should accept session with isShared: true', () => {
+      const output = expectValid({
+        type: 'session-created',
+        session: { ...worktreeSession, isShared: true },
+      });
+      if (output.type === 'session-created') {
+        expect(output.session.isShared).toBe(true);
+      }
+    });
+
+    it('should accept session with isShared: false', () => {
+      const output = expectValid({
+        type: 'session-updated',
+        session: { ...quickSession, isShared: false },
+      });
+      if (output.type === 'session-updated') {
+        expect(output.session.isShared).toBe(false);
+      }
+    });
+
+    it('should reject session with non-boolean isShared', () => {
+      expectInvalid({
+        type: 'session-created',
+        session: { ...worktreeSession, isShared: 'true' },
+      });
+    });
+
+    it('should reject session missing isShared (now required)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { isShared: _omit, ...sessionWithoutIsShared } = worktreeSession;
+      expectInvalid({
+        type: 'session-created',
+        session: sessionWithoutIsShared,
       });
     });
 

@@ -30,10 +30,20 @@ export interface RepositoryDisplayLookup {
 }
 
 /**
+ * Minimum view of SharedAccountRegistry needed by the converter to derive
+ * `Session.isShared`. Decoupled as an interface so tests can inject a stub
+ * without instantiating a real registry.
+ */
+export interface SharedAccountLookup {
+  isSharedUserId(userId: string): boolean;
+}
+
+/**
  * Dependencies injected into SessionConverterService.
  */
 export interface SessionConverterDeps {
   repositoryDisplayLookup: RepositoryDisplayLookup;
+  sharedAccountLookup: SharedAccountLookup;
   toPublicWorker: (worker: InternalWorker) => Worker;
   toPersistedWorker: (worker: InternalWorker) => PersistedWorker;
   getServerPid: () => number | null;
@@ -55,6 +65,19 @@ export class SessionConverterService {
    * A session is 'hibernated' if all PTY workers have no PTY (after server restart).
    * Sessions with no PTY workers (only git-diff) are considered 'running'.
    */
+  /**
+   * Derive `Session.isShared` from `createdBy`. Returns `false` (not
+   * undefined / null) for legacy sessions whose `createdBy` is missing,
+   * matching the AC's boundary requirement that the field is always a
+   * concrete boolean on the wire. The set of shared-account user-ids is
+   * never exposed to clients — this method is the only public surface
+   * that consumes the registry's `isSharedUserId` predicate.
+   */
+  private deriveIsShared(createdBy: string | null | undefined): boolean {
+    if (createdBy == null) return false;
+    return this.deps.sharedAccountLookup.isSharedUserId(createdBy);
+  }
+
   computeActivationState(session: InternalSession): SessionActivationState {
     const ptyWorkers = Array.from(session.workers.values()).filter(
       (w): w is InternalAgentWorker | InternalTerminalWorker =>
@@ -129,6 +152,7 @@ export class SessionConverterService {
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
       initiatedBy: session.initiatedBy,
+      isShared: this.deriveIsShared(session.createdBy),
       recoveryState: session.recoveryState ?? 'healthy',
     };
 
@@ -201,6 +225,7 @@ export class SessionConverterService {
       parentWorkerId: p.parentWorkerId,
       createdBy: p.createdBy,
       initiatedBy: p.initiatedBy,
+      isShared: this.deriveIsShared(p.createdBy),
       recoveryState: p.recoveryState ?? 'healthy',
     };
 

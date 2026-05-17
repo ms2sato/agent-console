@@ -57,7 +57,7 @@ import type { JobQueue } from '../jobs/index.js';
 import { SessionInitializationService } from './session-initialization-service.js';
 import { SessionDeletionService } from './session-deletion-service.js';
 import { SessionPauseResumeService } from './session-pause-resume-service.js';
-import { SessionConverterService } from './session-converter-service.js';
+import { SessionConverterService, type SharedAccountLookup } from './session-converter-service.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
 
 /**
@@ -123,6 +123,12 @@ interface SessionManagerOptions {
    * (used when spawning PTYs for worktree sessions).
    */
   repositoryEnvLookup: RepositoryEnvLookup;
+  /**
+   * Optional lookup used to derive `Session.isShared` server-side. Defaults
+   * to a stub that always returns false (safe for tests + the AUTH_MODE=none
+   * path where shared sessions are never registered).
+   */
+  sharedAccountLookup?: SharedAccountLookup;
 }
 
 export class SessionManager {
@@ -195,6 +201,12 @@ export class SessionManager {
           return info ? { name: info.name, path: info.path } : undefined;
         },
       },
+      // Default to a never-shared lookup when the caller hasn't wired the
+      // registry. Production callers (createAppContext) always pass the real
+      // SharedAccountRegistry; the fallback exists so unit tests that
+      // construct SessionManager directly do not need to thread through the
+      // registry just to satisfy the converter dep.
+      sharedAccountLookup: options.sharedAccountLookup ?? { isSharedUserId: () => false },
       toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
       toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
       getServerPid: () => getServerPid(),

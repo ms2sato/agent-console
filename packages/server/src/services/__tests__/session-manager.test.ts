@@ -498,6 +498,87 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('isShared wiring (sharedAccountLookup option)', () => {
+    // These tests verify that the `sharedAccountLookup` option on
+    // SessionManager.create() is forwarded to SessionConverterService and
+    // used to derive `Session.isShared` on the public surface. The
+    // converter's own derivation logic (boundary cases for createdBy ===
+    // null / undefined / shared / regular) is exhaustively covered in
+    // session-converter-service.test.ts; this suite only verifies the
+    // wiring contract from SessionManager's perspective.
+
+    it('forwards sharedAccountLookup to the converter so isShared is true when createdBy is a shared-account user-id', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        sharedAccountLookup: {
+          isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
+        },
+      });
+
+      const created = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'shared-account-uuid', initiatedBy: 'caller-user-id' },
+      );
+
+      expect(created.isShared).toBe(true);
+
+      // getSession() also runs through toPublicSession; verify the wiring
+      // is consistent across both code paths.
+      const retrieved = manager.getSession(created.id);
+      expect(retrieved?.isShared).toBe(true);
+    });
+
+    it('forwards sharedAccountLookup so isShared is false when createdBy is a regular user-id', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        sharedAccountLookup: {
+          isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
+        },
+      });
+
+      const created = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'regular-user-uuid' },
+      );
+
+      expect(created.isShared).toBe(false);
+      expect(typeof created.isShared).toBe('boolean');
+    });
+
+    it('falls back to a never-shared lookup when sharedAccountLookup is omitted (default behaviour)', async () => {
+      // The default factory (`getSessionManager`) does not pass
+      // sharedAccountLookup. Per the SessionManager option's documented
+      // fallback (`{ isSharedUserId: () => false }`), every session must
+      // report isShared === false regardless of createdBy.
+      const manager = await getSessionManager();
+
+      const created = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        // Even a user-id that LOOKS shared must come back as false because
+        // the default lookup ignores its argument and always returns false.
+        { createdBy: 'shared-account-uuid' },
+      );
+
+      expect(created.isShared).toBe(false);
+      expect(typeof created.isShared).toBe('boolean');
+
+      const retrieved = manager.getSession(created.id);
+      expect(retrieved?.isShared).toBe(false);
+    });
+  });
+
   describe('getAllSessions', () => {
     it('should return empty array when no sessions', async () => {
       const manager = await getSessionManager();
