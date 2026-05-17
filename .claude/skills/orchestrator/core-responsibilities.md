@@ -73,6 +73,15 @@
   - **Wait for deployment**: `create_conditional_wakeup({ conditionScript: 'curl -s https://api.service.com/health | jq -r .version | grep -q v1.2.3', onTrueMessage: 'Deployment v1.2.3 is live', intervalSeconds: 30, timeoutSeconds: 900 })`
   Use traditional `create_timer` only for genuinely periodic tasks without a "done" condition (e.g., recurring status updates, periodic cleanup). The conditional wakeup auto-stops after sending exactly one notification.
 - **30% checkpoint**: Include in delegation instructions that the agent must send a progress report at ~30% implementation completion (e.g., after initial structure/approach is decided but before full implementation). This prevents "direction was wrong" discoveries at 100%. The checkpoint message should include: current approach, any concerns or deviations from the plan, and estimated remaining work.
+- **Parallel-worker baseline: 3 concurrent delegations.** Treat **3 parallel coding workers as the default upper bound**, not a target to maximize toward. The bound rests on three numeric rationales:
+  1. **Orchestrator context coherence** — the Orchestrator must hold each worker's scope, Issue AC, and in-flight concerns in working context simultaneously to monitor and course-correct. Beyond 3, per-worker attention degrades and check-ins become shallow ("no change" polling instead of real review).
+  2. **Owner monitor capacity** — the owner reviews acceptance and merge decisions serially. More than 3 concurrent PRs in flight produces a review backlog that erases the latency the parallelism was meant to buy.
+  3. **CodeRabbit both-layer rate-limit risk** — each PR consumes CodeRabbit CLI + GitHub-side bot quota. At 3 concurrent PRs the system tolerated simultaneous both-layer rate-limit and still cleared; the 4th-and-beyond PR has high probability of stalling all reviews behind the rate-limit window with no fallback headroom.
+- **When more than 3 is acceptable.** The 3-bound is driven by the CodeRabbit rationale (3) above; the gating resource is review quota, not raw delegation. Therefore:
+  - **Docs-only / `.claude`-only PRs** (no production code) do not invoke CodeRabbit's heavy review path — **4–5 parallel is acceptable** for batches of pure docs/rule/skill changes.
+  - **Production-code PRs** (any file outside `docs/`, `.claude/skills/`, `.claude/agents/`) — **strict 3**, no exceptions, because each one fully loads the rate-limit-prone review path.
+  - A mixed batch is bounded by its production-code count: if 2 of 5 touch production code, the production cap (3) leaves room, but never exceed 3 production-code PRs concurrently regardless of how many docs-only PRs accompany them.
+- (Lesson: agent-console Sprint 2026-05-03 Wave 1 ran 3 parallel delegations (#765 / #752 / #753) and survived a simultaneous both-layer CodeRabbit rate-limit; conteditor Sprint 26 independently converged on the same "keep it around 3 parallel" baseline. Two projects reaching the same number from independent operation is the rationale for fixing it as the documented default rather than leaving it to per-session Orchestrator judgment.)
 
 ### Multi-PR Delivery (Sub-Issue Pattern)
 
