@@ -26,6 +26,12 @@ describe('useSessionFilter', () => {
       const { result } = renderHook(() => useSessionFilter());
       expect(result.current.filterMode).toBe('all');
     });
+
+    it('should restore stored "shared" value', () => {
+      localStorage.setItem(STORAGE_KEY, 'shared');
+      const { result } = renderHook(() => useSessionFilter());
+      expect(result.current.filterMode).toBe('shared');
+    });
   });
 
   describe('setFilterMode', () => {
@@ -99,6 +105,70 @@ describe('useSessionFilter', () => {
         { id: 's1', createdBy: 'user-1' },
         { id: 's3', createdBy: 'user-1' },
         { id: 's4' }, // legacy session (no createdBy) included
+      ]);
+    });
+
+    it('should filter to only isShared sessions when mode is shared', () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+
+      const sharedSessions = [
+        { id: 's1', createdBy: 'user-1', isShared: true },
+        { id: 's2', createdBy: 'user-2', isShared: false },
+        { id: 's3', createdBy: 'user-1', isShared: true },
+        { id: 's4' }, // no isShared -> not shared
+      ];
+
+      const { result } = renderHook(() => useSessionFilter());
+
+      act(() => {
+        result.current.setFilterMode('shared');
+      });
+
+      const filtered = result.current.filterSessions(sharedSessions);
+      expect(filtered).toEqual([
+        { id: 's1', createdBy: 'user-1', isShared: true },
+        { id: 's3', createdBy: 'user-1', isShared: true },
+      ]);
+    });
+
+    it('should return empty array when shared filter matches no sessions', () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+
+      const { result } = renderHook(() => useSessionFilter());
+
+      act(() => {
+        result.current.setFilterMode('shared');
+      });
+
+      const filtered = result.current.filterSessions([
+        { id: 's1', createdBy: 'user-1', isShared: false },
+      ]);
+      expect(filtered).toEqual([]);
+    });
+
+    it('should not filter by isShared when mode is mine (regression guard)', () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
+
+      const mixed = [
+        { id: 's1', createdBy: 'user-1', isShared: false },
+        { id: 's2', createdBy: 'user-2', isShared: true },
+        { id: 's3', createdBy: 'user-1', isShared: true },
+      ];
+
+      const { result } = renderHook(() => useSessionFilter());
+
+      act(() => {
+        result.current.setFilterMode('mine');
+      });
+
+      const filtered = result.current.filterSessions(mixed);
+      // 'mine' keys off createdBy only, unaffected by isShared
+      expect(filtered).toEqual([
+        { id: 's1', createdBy: 'user-1', isShared: false },
+        { id: 's3', createdBy: 'user-1', isShared: true },
       ]);
     });
 

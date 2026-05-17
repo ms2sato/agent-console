@@ -3,6 +3,7 @@ import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
 import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
 import { FormOverlay } from '../ui/Spinner';
+import { useAuth } from '../../lib/auth';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
 
@@ -34,6 +35,7 @@ export function QuickSessionForm({
     mode: 'onBlur',
   });
 
+  const { sharedAccountsAvailable } = useAuth();
   const agentId = watch('agentId');
   const resolvedAgentId = useResolvedAgentId(agentId);
 
@@ -72,6 +74,16 @@ export function QuickSessionForm({
               className="flex-1"
             />
           </div>
+          {sharedAccountsAvailable && (
+            <label className="flex items-center gap-2 text-sm text-gray-400">
+              <input
+                type="checkbox"
+                {...register('shared')}
+                className="accent-indigo-600"
+              />
+              Create as shared session
+            </label>
+          )}
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
           )}

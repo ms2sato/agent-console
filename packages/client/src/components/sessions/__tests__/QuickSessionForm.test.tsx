@@ -3,6 +3,7 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QuickSessionForm } from '../QuickSessionForm';
+import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -69,6 +70,11 @@ describe('QuickSessionForm', () => {
     mockFetch.mockReset();
     // Default: return agents for AgentSelector
     mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
+    resetAuth();
+  });
+
+  afterEach(() => {
+    resetAuth();
   });
 
   describe('successful submission', () => {
@@ -252,6 +258,83 @@ describe('QuickSessionForm', () => {
       await user.click(cancelButton);
 
       expect(props.onCancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('shared session checkbox', () => {
+    it('should NOT render the checkbox when sharedAccountsAvailable is false', async () => {
+      setSharedAccountsAvailable(false);
+      renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.queryByText('Create as shared session')).toBeNull();
+    });
+
+    it('should render the checkbox when sharedAccountsAvailable is true', async () => {
+      setSharedAccountsAvailable(true);
+      renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.getByText('Create as shared session')).toBeTruthy();
+    });
+
+    it('should submit shared: true when the checkbox is checked', async () => {
+      setSharedAccountsAvailable(true);
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const checkbox = screen.getByRole('checkbox');
+      await user.click(checkbox);
+
+      const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
+      await user.type(pathInput, '/path/to/project');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        type: 'quick',
+        locationPath: '/path/to/project',
+        shared: true,
+      });
+    });
+
+    it('should not submit shared: true when the checkbox is left unchecked', async () => {
+      setSharedAccountsAvailable(true);
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
+      await user.type(pathInput, '/path/to/project');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].shared).not.toBe(true);
     });
   });
 });

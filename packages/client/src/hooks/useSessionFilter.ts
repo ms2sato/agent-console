@@ -26,7 +26,7 @@ export function matchesUserFilter(createdBy: string | undefined, userId: string)
 function readStoredFilterMode(): SessionFilterMode {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'all' || stored === 'mine') {
+    if (stored === 'all' || stored === 'mine' || stored === 'shared') {
       return stored;
     }
   } catch {
@@ -38,7 +38,7 @@ function readStoredFilterMode(): SessionFilterMode {
 export function useSessionFilter(): {
   filterMode: SessionFilterMode;
   setFilterMode: (mode: SessionFilterMode) => void;
-  filterSessions: <T extends { createdBy?: string }>(sessions: T[]) => T[];
+  filterSessions: <T extends { createdBy?: string; isShared?: boolean }>(sessions: T[]) => T[];
 } {
   const { currentUser, isMultiUser } = useAuth();
   const [filterMode, setFilterModeState] = useState<SessionFilterMode>(readStoredFilterMode);
@@ -52,9 +52,12 @@ export function useSessionFilter(): {
     }
   }, []);
 
-  const filterSessions = useCallback(<T extends { createdBy?: string }>(sessions: T[]): T[] => {
+  const filterSessions = useCallback(<T extends { createdBy?: string; isShared?: boolean }>(sessions: T[]): T[] => {
     if (!isMultiUser) {
       return sessions;
+    }
+    if (filterMode === 'shared') {
+      return sessions.filter(s => s.isShared === true);
     }
     if (filterMode !== 'mine') {
       return sessions;

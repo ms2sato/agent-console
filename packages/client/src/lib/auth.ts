@@ -3,6 +3,7 @@ import type { AuthUser, AuthMode } from '@agent-console/shared';
 
 let authMode: AuthMode = 'none';
 let currentUser: AuthUser | null = null;
+let sharedAccountsAvailable = false;
 
 const stateListeners = new Set<() => void>();
 
@@ -32,6 +33,15 @@ export function isMultiUserMode(): boolean {
   return authMode === 'multi-user';
 }
 
+export function getSharedAccountsAvailable(): boolean {
+  return sharedAccountsAvailable;
+}
+
+export function setSharedAccountsAvailable(value: boolean): void {
+  sharedAccountsAvailable = value;
+  notifyListeners();
+}
+
 /**
  * Subscribe to auth state changes (for useSyncExternalStore).
  * @returns Unsubscribe function
@@ -45,15 +55,26 @@ interface AuthState {
   authMode: AuthMode;
   currentUser: AuthUser | null;
   isMultiUser: boolean;
+  sharedAccountsAvailable: boolean;
 }
 
 let cachedSnapshot: AuthState | null = null;
 
 function getAuthSnapshot(): AuthState {
-  if (cachedSnapshot && cachedSnapshot.authMode === authMode && cachedSnapshot.currentUser === currentUser) {
+  if (
+    cachedSnapshot &&
+    cachedSnapshot.authMode === authMode &&
+    cachedSnapshot.currentUser === currentUser &&
+    cachedSnapshot.sharedAccountsAvailable === sharedAccountsAvailable
+  ) {
     return cachedSnapshot;
   }
-  cachedSnapshot = { authMode, currentUser, isMultiUser: authMode === 'multi-user' };
+  cachedSnapshot = {
+    authMode,
+    currentUser,
+    isMultiUser: authMode === 'multi-user',
+    sharedAccountsAvailable,
+  };
   return cachedSnapshot;
 }
 
@@ -72,6 +93,7 @@ export function useAuth(): AuthState {
 export function _reset(): void {
   authMode = 'none';
   currentUser = null;
+  sharedAccountsAvailable = false;
   cachedSnapshot = null;
   stateListeners.clear();
 }

@@ -1,1 +1,1 @@
-export type SessionFilterMode = 'all' | 'mine';
+export type SessionFilterMode = 'all' | 'mine' | 'shared';
