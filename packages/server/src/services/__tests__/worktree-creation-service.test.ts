@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { HookCommandResult, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
 const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
@@ -23,16 +24,6 @@ const mockWorktreeService = {
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
 };
-
-// --- Mock fetchRemote ---
-
-const mockFetchRemote = mock<(branch: string, cwd: string) => Promise<void>>(() =>
-  Promise.resolve(),
-);
-
-mock.module('../../lib/git.js', () => ({
-  fetchRemote: mockFetchRemote,
-}));
 
 // --- Mock logger ---
 mock.module('../../lib/logger.js', () => ({
@@ -89,14 +80,13 @@ const DEFAULT_PARAMS = {
 
 describe('createWorktreeWithSession', () => {
   beforeEach(() => {
+    resetGitMocks();
     mockListWorktrees.mockReset();
     mockCreateWorktree.mockReset();
     mockRemoveWorktree.mockReset();
     mockExecuteHookCommand.mockReset();
-    mockFetchRemote.mockReset();
 
     // Default implementations
-    mockFetchRemote.mockImplementation(() => Promise.resolve());
     mockCreateWorktree.mockImplementation(() =>
       Promise.resolve({ worktreePath: CREATED_PATH, index: 2 }),
     );
@@ -121,7 +111,7 @@ describe('createWorktreeWithSession', () => {
     expect(result.setupCommandResult).toEqual({ success: true, output: 'setup done' });
 
     // Verify fetch was called with remote branch
-    expect(mockFetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo');
+    expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo');
     // Verify createWorktree used origin/ prefix
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main',
@@ -138,7 +128,7 @@ describe('createWorktreeWithSession', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(mockFetchRemote).not.toHaveBeenCalled();
+    expect(mockGit.fetchRemote).not.toHaveBeenCalled();
     // baseBranch is passed as-is (no origin/ prefix)
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/repos/my-repo', 'feature-new', 'repo-1', 'main',
@@ -155,7 +145,7 @@ describe('createWorktreeWithSession', () => {
   });
 
   it('falls back to local branch when fetch fails', async () => {
-    mockFetchRemote.mockImplementation(() => Promise.reject(new Error('network error')));
+    mockGit.fetchRemote.mockImplementation(() => Promise.reject(new Error('network error')));
 
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);

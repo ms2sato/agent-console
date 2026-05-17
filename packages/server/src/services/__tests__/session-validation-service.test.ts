@@ -1,23 +1,18 @@
 import * as path from 'path';
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupTestConfigDir, cleanupTestConfigDir, setupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { SessionValidationResult } from '@agent-console/shared';
-
-// Mock gitRefExists to avoid actual git commands
-let mockGitRefExists: () => Promise<boolean> = () => Promise.resolve(true);
-
-mock.module('../../lib/git.js', () => ({
-  gitRefExists: () => mockGitRefExists(),
-}));
 
 describe('SessionValidationService', () => {
   const TEST_CONFIG_DIR = '/test/config';
   let importCounter = 0;
 
   beforeEach(() => {
-    // Reset the mock
-    mockGitRefExists = () => Promise.resolve(true);
+    // Reset the mock; preserve the original default (gitRefExists -> true)
+    resetGitMocks();
+    mockGit.gitRefExists.mockImplementation(() => Promise.resolve(true));
   });
 
   afterEach(() => {
@@ -123,7 +118,7 @@ describe('SessionValidationService', () => {
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
       // Mock gitRefExists to return false for this test
-      mockGitRefExists = () => Promise.resolve(false);
+      mockGit.gitRefExists.mockImplementation(() => Promise.resolve(false));
 
       const { validationService } = await getServices();
 
@@ -154,7 +149,7 @@ describe('SessionValidationService', () => {
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
       // Mock gitRefExists to return true
-      mockGitRefExists = () => Promise.resolve(true);
+      mockGit.gitRefExists.mockImplementation(() => Promise.resolve(true));
 
       const { validationService } = await getServices();
 
