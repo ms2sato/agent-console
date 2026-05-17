@@ -55,7 +55,20 @@ A task or PR is "done" only when ALL of the following hold. Reporting "ready for
 
 "Implementation complete" without all eight is **not** done. (Lesson: Sprint 2026-04-27 PR #703 — agent reported "Production ready" with no commit / no push / no PR, requiring three rounds of hand-holding before reaching actual mergeable state.)
 
-## CI Failure: Self-Diagnosis Before Assumption
+## Inference vs Verification
+
+When you form a conclusion from a *secondary signal* — a derived, lagging, or proxy indicator — instead of *primary information* — the authoritative source — you are inferring, not verifying. The same failure mode recurs across CI, code review, cross-repo coordination, and runtime observation: a secondary signal is treated as ground truth, the real cause diverges from the inference, and at least one round trip is wasted. Before acting on (or reporting) a conclusion drawn from a secondary signal, read the primary source.
+
+| Domain | Secondary signal (do NOT conclude from this alone) | Primary information (verify here) |
+|---|---|---|
+| CI failure | "infra problem" / "rate-limit" / "external service" intuition; the red X without the log | `gh run view <run_id> --log-failed` |
+| CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message | the PR's 3-layer state (Pre-merge checks / `reviewDecision` / inline comments) re-read at decision time |
+| Cross-repo issue | "this symptom looks like the other repo's known bug / shared pattern" | reproduce in *this* repo's own code path before filing, blaming, or claiming applicability |
+| Runtime observation | a dev-server log line / websocket frame / UI render / channel assumption taken as proof a path ran or a notification arrived | the authoritative store / server-side state / a deterministic probe / per-channel confirmation |
+
+The four sub-patterns below are specializations of this single rule. Each names the inference trap, the verify procedure, and its Lesson source.
+
+### Sub-pattern 1: CI failure self-diagnosis
 
 When CI fails, **read the failure log first** before forming hypotheses. Most CI failures originate in the diff being pushed; "infra problem" / "rate-limit" / "external service" assumptions without log evidence are almost always wrong and waste a round trip.
 
@@ -95,6 +108,44 @@ The reverse failure mode is also real: CI output that locally would mean "broken
 4. **Compare with a known-passing workflow** — if a sibling workflow (`language-lint`, `test`, etc.) passes for the same script invocation, the difference is in the failing workflow's setup, not the script.
 
 (Lesson: Sprint 2026-04-28 PR #716 — `coverage-check` failed with "Found 0 violation(s) ... exit 1". The Orchestrator hypothesized a logic bug in the language-check helper. Real cause: `test-coverage-check.yml` had no `setup-bun` step, so `spawnSync('bun', ...)` returned `result.status === null`, and `null ?? 1` produced exit code 1 with empty stdout. The agent — not the Orchestrator — found the true cause by tracing the spawn ENOENT chain.)
+
+### Sub-pattern 2: CodeRabbit feedback
+
+**Inference trap.** Concluding "CodeRabbit is clean" from a secondary signal: pre-merge checks passing (5/5), the absence of *new* inline comments, or a rate-limit message read as "nothing to address". None of these are the review verdict. A stale `CHANGES_REQUESTED` from an earlier push, or a bot that never actually ran because it was rate-limited, both look identical to "clean" if you only glance at one layer.
+
+**Verify procedure.** Re-read the PR's 3-layer state at decision time, not from memory of an earlier read:
+
+1. **Pre-merge checks** — necessary but not sufficient on their own.
+2. **`reviewDecision`** — `gh pr view <N> --json reviewDecision`. Empty means the bot has not reviewed yet (not "clean"); `CHANGES_REQUESTED` must be resolved, not aged out. The only exception is the documented rate-limit fallback.
+3. **Inline comments** — read the current actionable set, not "no new ones since last time".
+
+When the local CLI or GitHub-side bot is rate-limited or unresponsive, follow the explicit dispositions in the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill rather than inferring the verdict from silence.
+
+(Lesson: Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while `reviewDecision` was `CHANGES_REQUESTED` with 3 actionable issues. The passing pre-merge check was a secondary signal; the review state was the primary information.)
+
+### Sub-pattern 3: Cross-repo issue separation
+
+**Inference trap.** A cross-project knowledge share, or a symptom that resembles a sibling repo's known bug, is treated as proof that *this* repo exhibits the same defect. Filing an Issue, blaming a shared dependency, or claiming a pattern applies — all on resemblance alone — propagates a misdiagnosis across repos and wastes triage in both.
+
+**Verify procedure.** Before filing, blaming, or claiming applicability:
+
+1. **Reproduce in this repo's own code path** — locate the analogous code here and confirm the defect actually manifests, rather than asserting parity from the other repo's description.
+2. **Separate send-side from receive-side** — when relaying a learning to another orchestrator, state what *this* repo verified versus what is inherited from the source. Do not present the source repo's inference as this repo's verified fact.
+3. **Cite the code, not the other repo's doc** — the sibling's design doc describes its intent; this repo's code describes this repo's reality.
+
+(Lesson: Sprint 2026-05-04 CTO room cross-share — conteditor Sprint 26 PR #1387 webhook fix misidentified its root cause four times in one day because each diagnosis inferred from a secondary signal instead of reading primary information. The shared learning is adopted here as a rule precisely so the same inference trap is not re-walked per repo.)
+
+### Sub-pattern 4: Runtime observation
+
+**Inference trap.** A dev-server log line, a websocket frame, a UI render, or an assumption about which notification channel is active is taken as proof that a code path executed or a notification will arrive. Channel behavior in particular is easy to over-generalize from a single observation — concluding "this channel does not work here" from one missed event without testing each channel independently.
+
+**Verify procedure.**
+
+1. **Confirm execution at the authoritative source** — the server-side store / state, or a deterministic single-file probe, not a log line or rendered UI that may lag or come from cache.
+2. **Confirm each channel independently** — webhook routing and `conditional_wakeup` / `create_timer` are separate mechanisms with different reach: webhooks do not route to lightweight `EnterWorktree` worktrees, but `conditional_wakeup` and `create_timer` route to the orchestrator's own session and work regardless of how the worktree was created (see [`core-responsibilities.md`](../skills/orchestrator/core-responsibilities.md) Post-Merge Flow §7f for the same webhook gap). Do not collapse "one channel missed an event" into "all channels fail here".
+3. **State the observation's confidence** — if a conclusion rests on a secondary runtime signal that could not be primary-verified, say so rather than reporting it as established fact.
+
+(Lesson: Sprint 2026-05-02 retro PR #758 / brew PR #759 — the lightweight-worktree notification limitation was first recorded as "webhook AND `conditional_wakeup` both fail", inferred from a single missed-event observation. The owner clarified `conditional_wakeup` works fine; only webhooks fail. One observation was generalized across channels without per-channel verification.)
 
 ## Commands
 
