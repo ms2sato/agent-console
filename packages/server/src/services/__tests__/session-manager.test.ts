@@ -16,6 +16,10 @@ import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SingleUserMode } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
 
+// Bracketed paste delimiters (DEC private mode 2004) — see Issue #792.
+// Injected content/file parts are wrapped so modern TUIs accept them.
+const wrapPaste = (s: string) => `\x1b[200~${s}\x1b[201~`;
+
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -638,8 +642,9 @@ describe('SessionManager', () => {
       const result = manager.injectPtyMessage(session.id, agentWorker.id, 'hello');
 
       expect(result).toBe(true);
-      // injectMessage writes content (CR-converted) then delayed \r via ptyMessageInjectionService
-      expect(ptyFactory.instances[0].writtenData).toContain('hello');
+      // injectMessage writes content wrapped in bracketed paste delimiters,
+      // then a delayed unwrapped \r submit (Issue #792).
+      expect(ptyFactory.instances[0].writtenData).toContain(wrapPaste('hello'));
     });
   });
 
@@ -680,7 +685,7 @@ describe('SessionManager', () => {
 
       const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello world');
       expect(message).not.toBeNull();
-      expect(ptyFactory.instances[0].writtenData).toContain('hello world');
+      expect(ptyFactory.instances[0].writtenData).toContain(wrapPaste('hello world'));
     });
 
     it('should preserve LF newlines as soft newlines in multi-line content (Issue #660)', async () => {
@@ -696,11 +701,12 @@ describe('SessionManager', () => {
       expect(message).not.toBeNull();
       // Content stored in message should retain original newlines
       expect(message!.content).toBe('line1\nline2\nline3');
-      // PTY input must preserve newlines as soft newlines (\n), not submit (\r).
+      // PTY input must preserve newlines as soft newlines (\n), not submit (\r),
+      // inside the bracketed paste envelope (Issue #660 + #792).
       // Converting to \r would split this into 3 separate submissions to the agent.
       const pty = ptyFactory.instances[0];
-      expect(pty.writtenData).toContain('line1\nline2\nline3');
-      expect(pty.writtenData).not.toContain('line1\rline2\rline3');
+      expect(pty.writtenData).toContain(wrapPaste('line1\nline2\nline3'));
+      expect(pty.writtenData).not.toContain(wrapPaste('line1\rline2\rline3'));
     });
 
     it('should normalize CRLF line endings from form submissions to LF', async () => {
@@ -718,10 +724,10 @@ describe('SessionManager', () => {
       expect(message!.content).toBe('line1\r\nline2\r\nline3');
       const pty = ptyFactory.instances[0];
       // \r\n should be normalized to a single \n (soft newline), preserving body
-      // structure without triggering submit. See Issue #660.
-      expect(pty.writtenData).toContain('line1\nline2\nline3');
-      expect(pty.writtenData).not.toContain('\r\r');
-      expect(pty.writtenData).not.toContain('line1\rline2\rline3');
+      // structure without triggering submit, inside the bracketed paste
+      // envelope. See Issue #660 + #792.
+      expect(pty.writtenData).toContain(wrapPaste('line1\nline2\nline3'));
+      expect(pty.writtenData).not.toContain(wrapPaste('line1\rline2\rline3'));
     });
 
     it('should inject content with file paths when files provided', async () => {
@@ -736,14 +742,16 @@ describe('SessionManager', () => {
       const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
       expect(message).not.toBeNull();
 
-      // First part is sent immediately
+      // First part is sent immediately, wrapped in bracketed paste (Issue #792)
       const pty = ptyFactory.instances[0];
-      expect(pty.writtenData).toContain('check these');
+      expect(pty.writtenData).toContain(wrapPaste('check these'));
 
-      // Wait for delayed parts (150ms * 3 = content, file1, file2, enter)
+      // Wait for delayed parts (150ms * 3 = content, file1, file2, enter).
+      // Leading \r submits the previous part (unwrapped); the file path itself
+      // is wrapped.
       await new Promise(resolve => setTimeout(resolve, 700));
-      expect(pty.writtenData).toContain('\r/tmp/file1.txt');
-      expect(pty.writtenData).toContain('\r/tmp/file2.txt');
+      expect(pty.writtenData).toContain(`\r${wrapPaste('/tmp/file1.txt')}`);
+      expect(pty.writtenData).toContain(`\r${wrapPaste('/tmp/file2.txt')}`);
     });
 
     it('should inject files only when content is empty', async () => {
@@ -758,9 +766,9 @@ describe('SessionManager', () => {
       const message = manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
       expect(message).not.toBeNull();
 
-      // First part (file path) is sent immediately
+      // First part (file path) is sent immediately, wrapped (Issue #792)
       const pty = ptyFactory.instances[0];
-      expect(pty.writtenData).toContain('/tmp/file1.txt');
+      expect(pty.writtenData).toContain(wrapPaste('/tmp/file1.txt'));
 
       // Wait for final Enter
       await new Promise(resolve => setTimeout(resolve, 300));
