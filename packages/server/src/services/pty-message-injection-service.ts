@@ -16,6 +16,15 @@ export class PtyMessageInjectionService {
     private readonly isWorkerActive: WorkerActiveChecker,
   ) {}
 
+  /** Bracketed paste mode delimiters (DEC private mode 2004). */
+  private static readonly PASTE_START = '\x1b[200~';
+  private static readonly PASTE_END = '\x1b[201~';
+
+  /** Wrap a single injected part in bracketed paste delimiters. */
+  private wrapPaste(part: string): string {
+    return `${PtyMessageInjectionService.PASTE_START}${part}${PtyMessageInjectionService.PASTE_END}`;
+  }
+
   /**
    * Build message parts from content and file paths, then inject into PTY.
    * Content newlines (CRLF or LF from browser form submissions) are normalized
@@ -23,6 +32,15 @@ export class PtyMessageInjectionService {
    * final delayed CR (\r) acts as the submit keystroke. Remaining parts and
    * a final Enter are queued with delays so TUI agents can process each
    * input sequentially.
+   *
+   * Each injected content/file part is wrapped in bracketed paste delimiters
+   * (`ESC[200~` … `ESC[201~`). Modern TUIs (e.g. recent Claude Code, which
+   * enables `ESC[?2004h`) discard multi-character non-pasted input on the
+   * interactive prompt, so unwrapped raw text was silently dropped and only
+   * the trailing bare `\r` reached the prompt. The normalized LF newlines end
+   * up inside the bracketed paste envelope, where they are literal text and
+   * never submit — the final separate `\r` remains the only submit keystroke.
+   * See Issue #792.
    *
    * See Issue #660: previously this converted \r?\n to \r, which caused any
    * embedded newline to be interpreted as submit and split a single message
@@ -42,7 +60,7 @@ export class PtyMessageInjectionService {
       return false;
     }
 
-    const injected = this.writeInput(sessionId, workerId, parts[0]);
+    const injected = this.writeInput(sessionId, workerId, this.wrapPaste(parts[0]));
     if (!injected) {
       logger.warn({ sessionId, workerId }, 'Failed to inject worker message (PTY inactive)');
       return false;
@@ -54,7 +72,9 @@ export class PtyMessageInjectionService {
 
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i];
-      sendQueue.push(() => this.writeInput(sessionId, workerId, `\r${part}`));
+      // Leading \r submits the *previous* part (unwrapped); only the part
+      // content itself is wrapped in bracketed paste delimiters.
+      sendQueue.push(() => this.writeInput(sessionId, workerId, `\r${this.wrapPaste(part)}`));
     }
     // Final Enter to submit
     sendQueue.push(() => this.writeInput(sessionId, workerId, '\r'));
