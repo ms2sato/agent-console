@@ -148,4 +148,99 @@ describe('PtyMessageInjectionService', () => {
     // isWorkerActive was checked for each delayed callback
     expect(isWorkerActive).toHaveBeenCalledWith('s1', 'w1');
   });
+
+  describe('asking state (Issue #792)', () => {
+    const ESC = '\x1b';
+
+    it('sends ESC first, then the text part, then the final Enter (content only)', () => {
+      const result = service.injectMessage('s1', 'w1', 'hello world', undefined, true);
+
+      expect(result).toBe(true);
+      // Synchronously: ESC only, exactly one write before any timer advances.
+      expect(writeInput).toHaveBeenNthCalledWith(1, 's1', 'w1', ESC);
+      expect(writeInput).toHaveBeenCalledTimes(1);
+
+      // After 150ms: the raw text part (NOT wrapped in any paste markers).
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(2, 's1', 'w1', 'hello world');
+      expect(writeInput).toHaveBeenCalledTimes(2);
+
+      // After 300ms: final Enter to submit.
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(3, 's1', 'w1', '\r');
+      expect(writeInput).toHaveBeenCalledTimes(3);
+    });
+
+    it('sends ESC, then text, then file parts, then final Enter (content + files)', () => {
+      const result = service.injectMessage('s1', 'w1', 'hello', ['/tmp/a.txt'], true);
+
+      expect(result).toBe(true);
+      // Immediate: ESC.
+      expect(writeInput).toHaveBeenNthCalledWith(1, 's1', 'w1', ESC);
+      expect(writeInput).toHaveBeenCalledTimes(1);
+
+      // After 150ms: text part.
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(2, 's1', 'w1', 'hello');
+      expect(writeInput).toHaveBeenCalledTimes(2);
+
+      // After 300ms: first file part (leading \r submits the previous part).
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(3, 's1', 'w1', '\r/tmp/a.txt');
+      expect(writeInput).toHaveBeenCalledTimes(3);
+
+      // After 450ms: final Enter.
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(4, 's1', 'w1', '\r');
+      expect(writeInput).toHaveBeenCalledTimes(4);
+    });
+
+    it('preserves LF newlines in the text part (Issue #660 still holds while asking)', () => {
+      const result = service.injectMessage('s1', 'w1', 'line1\nline2\nline3', undefined, true);
+
+      expect(result).toBe(true);
+      // ESC immediate.
+      expect(writeInput).toHaveBeenNthCalledWith(1, 's1', 'w1', ESC);
+      expect(writeInput).toHaveBeenCalledTimes(1);
+
+      // Text part written verbatim with \n preserved (not split, not converted to \r).
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(2, 's1', 'w1', 'line1\nline2\nline3');
+      expect(writeInput).toHaveBeenCalledTimes(2);
+    });
+
+    it('normalizes CRLF to LF in the text part while asking', () => {
+      service.injectMessage('s1', 'w1', 'a\r\nb', undefined, true);
+
+      // ESC then the normalized text part.
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS);
+      expect(writeInput).toHaveBeenNthCalledWith(1, 's1', 'w1', ESC);
+      expect(writeInput).toHaveBeenNthCalledWith(2, 's1', 'w1', 'a\nb');
+    });
+
+    it('returns false and writes nothing when there is no content or files', () => {
+      const result = service.injectMessage('s1', 'w1', '', undefined, true);
+
+      expect(result).toBe(false);
+      // No ESC written when there is nothing to deliver.
+      expect(writeInput).not.toHaveBeenCalled();
+    });
+
+    it('returns false when the first write (ESC) fails (PTY inactive)', () => {
+      writeInput = mock(() => false);
+      service = new PtyMessageInjectionService(
+        writeInput as (sessionId: string, workerId: string, data: string) => boolean,
+        isWorkerActive as (sessionId: string, workerId: string) => boolean,
+      );
+
+      const result = service.injectMessage('s1', 'w1', 'hello', undefined, true);
+
+      expect(result).toBe(false);
+      // ESC attempted once, then bail out — no queued writes.
+      expect(writeInput).toHaveBeenCalledTimes(1);
+      expect(writeInput).toHaveBeenCalledWith('s1', 'w1', ESC);
+      jest.advanceTimersByTime(PtyMessageInjectionService.DELAY_MS * 3);
+      expect(writeInput).toHaveBeenCalledTimes(1);
+    });
+  });
 });

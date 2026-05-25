@@ -11,6 +11,9 @@ type WorkerActiveChecker = (sessionId: string, workerId: string) => boolean;
 export class PtyMessageInjectionService {
   static readonly DELAY_MS = 150;
 
+  /** ESC keystroke used to cancel an active interactive prompt before delivering text. */
+  private static readonly ESC = '\x1b';
+
   constructor(
     private readonly writeInput: PtyWriter,
     private readonly isWorkerActive: WorkerActiveChecker,
@@ -28,9 +31,24 @@ export class PtyMessageInjectionService {
    * embedded newline to be interpreted as submit and split a single message
    * into multiple submissions.
    *
+   * See Issue #792: when `isAsking` is true the agent is parked at an interactive
+   * prompt (the "asking" activity state). Modern Claude Code CLIs drop text typed
+   * while such a prompt is open — the bare submit CR then confirms the default
+   * option instead of delivering the message. To handle this we send an ESC first
+   * to cancel the active prompt, then deliver the text as a normal composer
+   * message. Older CLIs cancelled the prompt implicitly; modern CLIs dropped that
+   * leniency. ESC is sent only in the asking state — the non-asking path is
+   * unchanged from before.
+   *
    * Returns true if the first part was successfully written, false otherwise.
    */
-  injectMessage(sessionId: string, workerId: string, content: string, filePaths?: string[]): boolean {
+  injectMessage(
+    sessionId: string,
+    workerId: string,
+    content: string,
+    filePaths?: string[],
+    isAsking = false,
+  ): boolean {
     const parts: string[] = [];
     if (content) parts.push(content.replace(/\r?\n/g, '\n'));
     if (filePaths && filePaths.length > 0) {
@@ -42,8 +60,11 @@ export class PtyMessageInjectionService {
       return false;
     }
 
-    const injected = this.writeInput(sessionId, workerId, parts[0]);
-    if (!injected) {
+    // In the asking state, send ESC first (synchronously) to cancel the prompt;
+    // otherwise send the first content part immediately as before.
+    const firstWrite = isAsking ? PtyMessageInjectionService.ESC : parts[0];
+    const ok = this.writeInput(sessionId, workerId, firstWrite);
+    if (!ok) {
       logger.warn({ sessionId, workerId }, 'Failed to inject worker message (PTY inactive)');
       return false;
     }
@@ -51,6 +72,12 @@ export class PtyMessageInjectionService {
     // Queue remaining parts and final Enter with delays
     // Use longer delays to ensure TUI processes each input before the next
     const sendQueue: Array<() => void> = [];
+
+    if (isAsking) {
+      // The first content part runs after the initial delay so the prompt has
+      // time to close after the ESC was sent synchronously above.
+      sendQueue.push(() => this.writeInput(sessionId, workerId, parts[0]));
+    }
 
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i];
