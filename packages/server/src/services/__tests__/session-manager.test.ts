@@ -836,16 +836,16 @@ describe('SessionManager', () => {
     });
 
     it('should use injected PtyMessageInjectionService when provided', async () => {
-      const injectCalls: Array<{ sessionId: string; workerId: string; content: string; filePaths?: string[] }> = [];
+      const injectCalls: Array<{ sessionId: string; workerId: string; content: string; filePaths?: string[]; isAsking?: boolean }> = [];
       const mockInjectionService = new PtyMessageInjectionService(
         () => true,
         () => true,
       );
       // Spy on injectMessage to verify delegation
       const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
-      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths) => {
-        injectCalls.push({ sessionId, workerId, content, filePaths });
-        return originalInject(sessionId, workerId, content, filePaths);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths, isAsking) => {
+        injectCalls.push({ sessionId, workerId, content, filePaths, isAsking });
+        return originalInject(sessionId, workerId, content, filePaths, isAsking);
       };
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
@@ -872,6 +872,85 @@ describe('SessionManager', () => {
       expect(injectCalls[0].content).toBe('hello via DI');
       expect(injectCalls[0].sessionId).toBe(session.id);
       expect(injectCalls[0].workerId).toBe(agentWorker.id);
+    });
+
+    it('should pass isAsking=true to injectMessage when the target worker is in the asking state (Issue #792)', async () => {
+      const injectCalls: Array<{ isAsking?: boolean }> = [];
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths, isAsking) => {
+        injectCalls.push({ isAsking });
+        return originalInject(sessionId, workerId, content, filePaths, isAsking);
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Force the target worker into the asking state.
+      manager.getWorkerActivityState = (sessionId: string, workerId: string) =>
+        sessionId === session.id && workerId === agentWorker.id ? 'asking' : 'idle';
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'answer to prompt');
+      expect(message).not.toBeNull();
+      expect(injectCalls).toHaveLength(1);
+      expect(injectCalls[0].isAsking).toBe(true);
+    });
+
+    it('should pass isAsking=false to injectMessage when the target worker is not asking (Issue #792)', async () => {
+      const injectCalls: Array<{ isAsking?: boolean }> = [];
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths, isAsking) => {
+        injectCalls.push({ isAsking });
+        return originalInject(sessionId, workerId, content, filePaths, isAsking);
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Worker is idle (not asking).
+      manager.getWorkerActivityState = () => 'idle';
+
+      const message = manager.sendMessage(session.id, null, agentWorker.id, 'normal message');
+      expect(message).not.toBeNull();
+      expect(injectCalls).toHaveLength(1);
+      expect(injectCalls[0].isAsking).toBe(false);
     });
 
     it('should return null when injected PtyMessageInjectionService returns false', async () => {
