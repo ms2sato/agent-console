@@ -32,7 +32,7 @@ Invoke with specific implementation tasks:
 2. **Explore Existing Code** - Find related patterns in the codebase
 3. **Plan Changes** - Identify files to modify or create
 4. **Implement** - Write code following backend standards
-5. **Verify** - Run typecheck and tests
+5. **Verify** - Run typecheck and tests; for changes with observable runtime behavior on a reachable path, run a shipping-path E2E by default (see `workflow.md` Testing Requirements "E2E / real-device verification is the default"). Skipping E2E is not a unilateral decision — consult the requester.
 
 ## When Existing Patterns Are Questionable
 

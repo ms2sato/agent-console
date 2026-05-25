@@ -127,7 +127,7 @@ For non-trivial PRs (multi-file, > ~150 LOC, or ambiguous design space), pause a
 3. **Recent decisions seeking confirmation** — design choices you made that the Orchestrator should sanity-check before you build further on them.
 4. **Plan for the next 30%** — concrete next steps, what you expect to deliver before the next checkpoint.
 
-The 80% checkpoint (substantially complete, awaiting verification) follows the same structure plus a Verification block: typecheck / test results in paste form, language check exit code, preflight exit code.
+The 80% checkpoint (substantially complete, awaiting verification) follows the same structure plus a Verification block: typecheck / test results in paste form, language check exit code, preflight exit code. Plus, for changes with observable runtime behaviour on a reachable path, a shipping-path E2E with pre/post observations pasted; if you believe E2E should be skipped, consult the Orchestrator at that point rather than skipping unilaterally.
 
 (Origin: cross-orchestrator knowledge sharing from conteditor CTO Sprint 17 retrospective; agent-console adopted in Sprint 2026-04-28 PR #715 — agent dogfooded both checkpoints, surfacing the existing-workflow path-ignore constraint at 30% and the language-translation scope question at 80%.)
 
