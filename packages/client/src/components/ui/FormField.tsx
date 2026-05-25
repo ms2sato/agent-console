@@ -38,7 +38,7 @@ export function FormField({ label, error, children, fieldId }: FormFieldProps) {
       )}
       {enhancedChildren}
       {error && (
-        <p id={errorId} className="text-sm text-red-400" role="alert">{error.message}</p>
+        <p id={errorId} className="text-sm text-red-400 break-words" role="alert">{error.message}</p>
       )}
     </div>
   );

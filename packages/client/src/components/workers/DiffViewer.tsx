@@ -361,7 +361,7 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
               >
                 <div className="sticky top-0 z-20 bg-slate-800 px-4 py-2 flex items-center gap-3 border-b border-gray-700 opacity-60">
                   <FileStatusBadge status={file.status} />
-                  <span className="text-gray-200 font-medium">{file.path}</span>
+                  <span className="text-gray-200 font-medium min-w-0 break-all">{file.path}</span>
                   <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/40 text-green-400/70 font-medium ml-2">
                     Verified
                   </span>
@@ -387,7 +387,7 @@ export function DiffViewer({ rawDiff, files, scrollToFile, onFileVisible, expand
               {/* File header */}
               <div className="sticky top-0 z-20 bg-slate-800 px-4 py-2 flex items-center gap-3 border-b border-gray-700">
                 <FileStatusBadge status={file.status} />
-                <span className="text-gray-200 font-medium">{file.path}</span>
+                <span className="text-gray-200 font-medium min-w-0 break-all">{file.path}</span>
                 {hasAnnotations && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-amber-800/60 text-amber-300 font-medium ml-2">
                     Review
