@@ -215,7 +215,7 @@ export function WorkerErrorRecovery({
         </div>
         <h2 className="text-red-400 text-xl font-semibold mb-2">{title}</h2>
         <p className="text-gray-300 mb-2">{description}</p>
-        <p className="text-gray-500 text-sm mb-6">{errorMessage}</p>
+        <p className="text-gray-500 text-sm mb-6 break-words">{errorMessage}</p>
         <div className="flex justify-center gap-3">
           {renderActions(primaryAction, { onRetry, onDeleteSession, onGoToDashboard, onRestart, onResumeSession })}
         </div>

@@ -333,5 +333,13 @@ describe('WorkerErrorRecovery', () => {
         expect(screen.getByText('Something specific went wrong')).toBeTruthy();
       });
     }
+
+    it('renders the error message paragraph with break-words so long URLs wrap', () => {
+      const longUrl = `https://example.com/${'a'.repeat(180)}`;
+      renderComponent({ errorMessage: longUrl });
+
+      const messageEl = screen.getByText(longUrl);
+      expect(messageEl.className).toContain('break-words');
+    });
   });
 });

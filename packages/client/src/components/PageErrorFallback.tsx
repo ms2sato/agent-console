@@ -23,7 +23,7 @@ export function PageErrorFallback({
       <PageBreadcrumb items={breadcrumbItems} />
       <div className="card text-center py-10">
         <p className="text-red-400 mb-2">{errorMessage}</p>
-        <p className="text-gray-500 text-sm mb-4">{error.message}</p>
+        <p className="text-gray-500 text-sm mb-4 break-words">{error.message}</p>
         <div className="flex justify-center gap-2">
           <button onClick={reset} className="btn btn-secondary">
             Retry
