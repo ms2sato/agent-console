@@ -39,7 +39,7 @@ import type { AgentManager } from './agent-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { AnnotationService } from './annotation-service.js';
-import { stopWatching, calculateBaseCommit } from './git-diff-service.js';
+import { stopWatching } from './git-diff-service.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
@@ -464,26 +464,26 @@ export class WorkerLifecycleManager {
   }
 
   /**
-   * Update git-diff workers' base commit after a branch rename.
-   * Recalculates the merge-base once and updates all git-diff workers.
-   * Fires onDiffBaseCommitChanged callback for each updated worker.
+   * Re-push git-diff workers' diff after a branch rename.
+   *
+   * In the spec-based model (Issue #800) the persisted base *spec* is
+   * branch-agnostic and re-resolves to the moving fork point on every diff, so
+   * a branch rename does NOT require freezing a new base hash. We keep each
+   * worker's `baseCommit` spec unchanged and fire `onDiffBaseCommitChanged`
+   * (passing the spec) so connected clients receive a freshly re-resolved diff.
+   *
    * Does NOT persist the session - callers are responsible for persistence.
    */
   async updateGitDiffWorkersAfterBranchRename(sessionId: string): Promise<void> {
     const session = this.deps.getSession(sessionId);
     if (!session) return;
 
-    // Calculate base commit once for the session (same locationPath for all workers)
-    const newBaseCommit = await calculateBaseCommit(session.locationPath);
-    const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
-
     for (const worker of session.workers.values()) {
       if (worker.type !== 'git-diff') continue;
 
-      worker.baseCommit = resolvedBaseCommit;
-
+      // Spec stays unchanged; re-push so the diff re-resolves against the new branch.
       this.deps.getSessionLifecycleCallbacks()?.onDiffBaseCommitChanged?.(
-        sessionId, worker.id, resolvedBaseCommit
+        sessionId, worker.id, worker.baseCommit
       );
     }
   }

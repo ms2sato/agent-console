@@ -277,12 +277,11 @@ export async function setupWebSocketRoutes(
   const { sessionManager, notificationManager, agentManager, repositoryManager, annotationService } = appContext;
 
   // Initialize git-diff handlers with injected dependencies
-  const { getDiffData, getFileLines, resolveRef, startWatching, stopWatching } = await import('../services/git-diff-service.js');
-  const { getMergeBaseSafe } = await import('../lib/git.js');
+  const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching, stopWatching } = await import('../services/git-diff-service.js');
   initializeGitDiffHandlers({
     getDiffData,
     resolveRef,
-    getMergeBase: getMergeBaseSafe,
+    resolveBaseSpec,
     startWatching,
     stopWatching,
     getFileLines,

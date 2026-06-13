@@ -186,8 +186,12 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
-    const { getDiffData } = await import('../services/git-diff-service.js');
-    const diffData = await getDiffData(session.locationPath, worker.baseCommit);
+    const { resolveBaseSpec, getDiffData } = await import('../services/git-diff-service.js');
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    if (!resolved) {
+      throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
+    }
+    const diffData = await getDiffData(session.locationPath, resolved);
 
     return c.json(diffData);
   })
@@ -216,8 +220,12 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
-    const { getFileDiff } = await import('../services/git-diff-service.js');
-    const rawDiff = await getFileDiff(session.locationPath, worker.baseCommit, filePath);
+    const { resolveBaseSpec, getFileDiff } = await import('../services/git-diff-service.js');
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    if (!resolved) {
+      throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
+    }
+    const rawDiff = await getFileDiff(session.locationPath, resolved, filePath);
 
     return c.json({ rawDiff });
   });

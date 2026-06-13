@@ -3,8 +3,10 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 
+import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import {
-  calculateBaseCommit,
+  computeDefaultBaseSpec,
+  resolveBaseSpec,
   resolveRef,
   getDiffData,
   getFileDiff,
@@ -16,29 +18,139 @@ describe('GitDiffService', () => {
     resetGitMocks();
   });
 
-  describe('calculateBaseCommit', () => {
-    it('should return merge-base when default branch exists', async () => {
+  describe('computeDefaultBaseSpec', () => {
+    it('returns merge-base:origin/<default> when origin/<default> exists', async () => {
       mockGit.getDefaultBranch.mockResolvedValue('main');
-      mockGit.getMergeBaseSafe.mockResolvedValue('abc123def456');
+      mockGit.gitRefExists.mockImplementation((ref: string) =>
+        Promise.resolve(ref === 'origin/main')
+      );
 
-      const result = await calculateBaseCommit('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path');
 
-      expect(result).toBe('abc123def456');
-      expect(mockGit.getDefaultBranch).toHaveBeenCalledWith('/repo/path');
-      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('main', 'HEAD', '/repo/path');
+      expect(result).toBe('merge-base:origin/main');
+      expect(mockGit.gitRefExists).toHaveBeenCalledWith('origin/main', '/repo/path');
     });
 
-    it('should fallback to first commit when no default branch', async () => {
+    it('returns merge-base:<default> when default branch exists but origin/<default> does not', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue('main');
+      mockGit.gitRefExists.mockResolvedValue(false);
+
+      const result = await computeDefaultBaseSpec('/repo/path');
+
+      expect(result).toBe('merge-base:main');
+    });
+
+    it('returns the first-commit hash when there is no default branch', async () => {
       mockGit.getDefaultBranch.mockResolvedValue(null);
       mockGit.gitSafe.mockResolvedValue('first-commit-hash');
 
-      const result = await calculateBaseCommit('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path');
 
       expect(result).toBe('first-commit-hash');
       expect(mockGit.gitSafe).toHaveBeenCalledWith(
         ['rev-list', '--max-parents=0', 'HEAD'],
         '/repo/path'
       );
+    });
+
+    it('uses only the first root hash when rev-list emits multiple (merged unrelated histories)', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue(null);
+      mockGit.gitSafe.mockResolvedValue('root1hash\nroot2hash');
+
+      const result = await computeDefaultBaseSpec('/repo/path');
+
+      expect(result).toBe('root1hash');
+    });
+
+    it('falls back to HEAD when no default branch and no first commit', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue(null);
+      mockGit.gitSafe.mockResolvedValue(null);
+
+      const result = await computeDefaultBaseSpec('/repo/path');
+
+      expect(result).toBe('HEAD');
+    });
+  });
+
+  describe('resolveBaseSpec', () => {
+    it('resolves DEFAULT_FORK_POINT_SPEC via origin merge-base when origin exists', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue('main');
+      mockGit.gitRefExists.mockImplementation((ref: string) =>
+        Promise.resolve(ref === 'origin/main')
+      );
+      mockGit.getMergeBaseSafe.mockImplementation((ref1: string) =>
+        Promise.resolve(ref1 === 'origin/main' ? 'origin-merge-base' : null)
+      );
+
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+
+      expect(result).toBe('origin-merge-base');
+      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('origin/main', 'HEAD', '/repo/path');
+    });
+
+    it('falls back to local merge-base when origin/<default> is missing', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue('main');
+      mockGit.gitRefExists.mockResolvedValue(false);
+      mockGit.getMergeBaseSafe.mockResolvedValue('local-merge-base');
+
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+
+      expect(result).toBe('local-merge-base');
+      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('main', 'HEAD', '/repo/path');
+    });
+
+    it('falls back to first commit when no default branch (sentinel never hard-fails)', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue(null);
+      mockGit.gitSafe.mockResolvedValue('first-commit-hash');
+
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+
+      expect(result).toBe('first-commit-hash');
+    });
+
+    it('uses only the first root hash when rev-list emits multiple (merged unrelated histories)', async () => {
+      mockGit.getDefaultBranch.mockResolvedValue(null);
+      mockGit.gitSafe.mockResolvedValue('root1hash\nroot2hash');
+
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+
+      expect(result).toBe('root1hash');
+    });
+
+    it('resolves merge-base:<ref> via getMergeBaseSafe', async () => {
+      mockGit.getMergeBaseSafe.mockResolvedValue('mb-hash');
+
+      const result = await resolveBaseSpec('merge-base:foo', '/repo/path');
+
+      expect(result).toBe('mb-hash');
+      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('foo', 'HEAD', '/repo/path');
+    });
+
+    it('returns null when merge-base:<ref> cannot be resolved (unrelated histories / deleted ref)', async () => {
+      mockGit.getMergeBaseSafe.mockResolvedValue(null);
+
+      const result = await resolveBaseSpec('merge-base:foo', '/repo/path');
+
+      expect(result).toBeNull();
+    });
+
+    it('keeps an explicit commit hash pinned (no re-resolution to a different value)', async () => {
+      const hash = '0123456789abcdef0123456789abcdef01234567';
+      mockGit.gitSafe.mockResolvedValue(hash);
+
+      const result = await resolveBaseSpec(hash, '/repo/path');
+
+      expect(result).toBe(hash);
+      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', hash], '/repo/path');
+    });
+
+    it('re-resolves a branch name to its current tip', async () => {
+      mockGit.gitSafe.mockResolvedValue('branch-tip-hash');
+
+      const result = await resolveBaseSpec('feature-branch', '/repo/path');
+
+      expect(result).toBe('branch-tip-hash');
+      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'feature-branch'], '/repo/path');
     });
   });
 

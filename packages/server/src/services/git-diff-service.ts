@@ -9,6 +9,7 @@
  */
 
 import type { GitDiffData, GitDiffSummary, GitDiffFile, GitFileStatus, GitStageState, GitDiffTarget } from '@agent-console/shared';
+import { MERGE_BASE_REF_PREFIX, DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import {
   getDefaultBranch,
   getMergeBaseSafe,
@@ -17,6 +18,7 @@ import {
   getStatusPorcelain,
   getUntrackedFiles,
   gitRaw,
+  gitRefExists,
   gitSafe,
 } from '../lib/git.js';
 import { readFile, stat } from 'fs/promises';
@@ -43,23 +45,111 @@ interface FileStatusInfo {
 // ============================================================
 
 /**
- * Calculate the base commit for diff comparison.
- * Uses merge-base between default branch (main/master) and HEAD.
+ * Resolve the repository's first (root) commit hash. `rev-list --max-parents=0`
+ * can emit multiple root hashes when unrelated histories were merged, so take
+ * only the first line. Returns null when there is no commit.
+ */
+async function getFirstCommit(repoPath: string): Promise<string | null> {
+  const result = await gitSafe(['rev-list', '--max-parents=0', 'HEAD'], repoPath);
+  return result?.split('\n')[0] ?? null;
+}
+
+/**
+ * Resolve the repository's default fork point to a commit hash.
+ *
+ * Resolution chain (the first non-null wins):
+ * 1. merge-base with `origin/<default>` when `origin/<default>` exists
+ * 2. merge-base with the local `<default>` branch when a default branch exists
+ * 3. the repository's first commit (`rev-list --max-parents=0 HEAD`)
+ *
+ * Returns null only when every step fails (e.g. unrelated histories with no
+ * default branch and no first commit).
  *
  * @param repoPath - Path to the git repository
  * @returns Base commit hash, or null if cannot be determined
  */
-export async function calculateBaseCommit(repoPath: string): Promise<string | null> {
+async function resolveDefaultForkPoint(repoPath: string): Promise<string | null> {
   const defaultBranch = await getDefaultBranch(repoPath);
-  if (!defaultBranch) {
-    // If no default branch, fall back to first commit
-    const firstCommit = await gitSafe(['rev-list', '--max-parents=0', 'HEAD'], repoPath);
-    return firstCommit;
+
+  if (defaultBranch) {
+    const originRef = `origin/${defaultBranch}`;
+    if (await gitRefExists(originRef, repoPath)) {
+      const mergeBase = await getMergeBaseSafe(originRef, 'HEAD', repoPath);
+      if (mergeBase) {
+        return mergeBase;
+      }
+    }
+
+    const localMergeBase = await getMergeBaseSafe(defaultBranch, 'HEAD', repoPath);
+    if (localMergeBase) {
+      return localMergeBase;
+    }
   }
 
-  // Get merge-base between default branch and HEAD
-  const mergeBase = await getMergeBaseSafe(defaultBranch, 'HEAD', repoPath);
-  return mergeBase;
+  // No default branch (or merge-base unavailable): fall back to first commit.
+  return getFirstCommit(repoPath);
+}
+
+/**
+ * Compute the concrete default base *spec* at git-diff worker creation time.
+ *
+ * Produces a spec (intent) that is re-resolved on every diff via
+ * {@link resolveBaseSpec} — NOT a frozen commit hash. This keeps the diff base
+ * tracking the moving fork point as the feature branch absorbs upstream commits.
+ *
+ * - `origin/<default>` exists → `merge-base:origin/<default>`
+ * - default branch exists (no origin ref) → `merge-base:<default>`
+ * - no default branch → the repository's first commit hash (an explicit pinned
+ *   hash is correct here since there is no branch to track), or `'HEAD'` when
+ *   even that cannot be resolved.
+ *
+ * @param repoPath - Path to the git repository
+ * @returns A base spec string (never null)
+ */
+export async function computeDefaultBaseSpec(repoPath: string): Promise<string> {
+  const defaultBranch = await getDefaultBranch(repoPath);
+
+  if (defaultBranch) {
+    if (await gitRefExists(`origin/${defaultBranch}`, repoPath)) {
+      return `${MERGE_BASE_REF_PREFIX}origin/${defaultBranch}`;
+    }
+    return `${MERGE_BASE_REF_PREFIX}${defaultBranch}`;
+  }
+
+  // No default branch: pin to the first commit (no branch to track).
+  const firstCommit = await getFirstCommit(repoPath);
+  return firstCommit ?? 'HEAD';
+}
+
+/**
+ * Resolve a persisted base *spec* to a concrete commit hash at diff time.
+ *
+ * Spec kinds:
+ * - `DEFAULT_FORK_POINT_SPEC` sentinel → the default fork-point chain
+ *   (origin merge-base → local merge-base → first commit). Falls back
+ *   gracefully and never hard-fails when a default exists.
+ * - `merge-base:<ref>` → `git merge-base <ref> HEAD`. Returns null on genuine
+ *   failure (unrelated histories / deleted ref) so the caller surfaces an error
+ *   — no silent fallback for an explicit merge-base spec.
+ * - branch name or explicit hash → `git rev-parse`. Branch names re-resolve to
+ *   tip; hashes stay pinned.
+ *
+ * @param spec - The persisted base spec
+ * @param repoPath - Path to the git repository
+ * @returns Resolved commit hash, or null on genuine resolution failure
+ */
+export async function resolveBaseSpec(spec: string, repoPath: string): Promise<string | null> {
+  if (spec === DEFAULT_FORK_POINT_SPEC) {
+    return resolveDefaultForkPoint(repoPath);
+  }
+
+  if (spec.startsWith(MERGE_BASE_REF_PREFIX)) {
+    const ref = spec.slice(MERGE_BASE_REF_PREFIX.length);
+    return getMergeBaseSafe(ref, 'HEAD', repoPath);
+  }
+
+  // Branch name or explicit commit hash.
+  return resolveRef(spec, repoPath);
 }
 
 /**
