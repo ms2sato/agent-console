@@ -212,14 +212,14 @@ describe('SessionMetadataService', () => {
       expect(result.error).toBe('Can only rename branch for worktree sessions');
     });
 
-    it('should update git-diff workers base commit for inactive session', async () => {
+    it('should keep git-diff workers base spec unchanged on branch rename for inactive session (Issue #800)', async () => {
       const persisted = buildPersistedWorktreeSession({
         id: 'session-3',
         worktreeId: 'old-branch',
         locationPath: '/test/path',
         workers: [
           buildPersistedAgentWorker({ id: 'w1', name: 'Claude' }),
-          buildPersistedGitDiffWorker({ id: 'w2', name: 'Diff', baseCommit: 'old-commit' }),
+          buildPersistedGitDiffWorker({ id: 'w2', name: 'Diff', baseCommit: 'merge-base:main' }),
         ],
       });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
@@ -230,46 +230,17 @@ describe('SessionMetadataService', () => {
         }),
       });
       service = new SessionMetadataService(deps);
-      // calculateBaseCommit uses getDefaultBranch + getMergeBaseSafe
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
-      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('new-merge-base'));
 
       const result = await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
 
       expect(result.success).toBe(true);
       const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect((savedSession.workers[1] as PersistedGitDiffWorker).baseCommit).toBe('new-merge-base');
+      // The branch-agnostic spec re-resolves on every diff, so it must NOT be
+      // frozen to a new hash on rename.
+      expect((savedSession.workers[1] as PersistedGitDiffWorker).baseCommit).toBe('merge-base:main');
       // Non-git-diff workers should be unchanged
       expect(savedSession.workers[0].type).toBe('agent');
-    });
-
-    it('should succeed branch rename even when calculateBaseCommit fails for inactive session', async () => {
-      const persisted = buildPersistedWorktreeSession({
-        id: 'session-3',
-        worktreeId: 'old-branch',
-        locationPath: '/test/path',
-        workers: [
-          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'old-commit' }),
-        ],
-      });
-      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-          save: saveMock,
-        }),
-      });
-      service = new SessionMetadataService(deps);
-      // Make calculateBaseCommit fail by having getDefaultBranch throw
-      mockGit.getDefaultBranch.mockImplementation(() => { throw new Error('git error'); });
-
-      const result = await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-      // Workers should preserve original base commit since calculateBaseCommit failed
-      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect((savedSession.workers[0] as PersistedGitDiffWorker).baseCommit).toBe('old-commit');
+      expect(savedSession.worktreeId).toBe('new-branch');
     });
 
     it('should update both title and branch for inactive session in single save', async () => {
@@ -298,13 +269,13 @@ describe('SessionMetadataService', () => {
       expect(savedSession.worktreeId).toBe('new-branch');
     });
 
-    it('should use HEAD as fallback when calculateBaseCommit returns null', async () => {
+    it('should preserve an explicit pinned base spec on branch rename (no re-resolution / freezing)', async () => {
       const persisted = buildPersistedWorktreeSession({
         id: 'session-3',
         worktreeId: 'old-branch',
         locationPath: '/test/path',
         workers: [
-          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'old-commit' }),
+          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'abc1234' }),
         ],
       });
       const saveMock = mock((_session: PersistedSession) => Promise.resolve());
@@ -315,14 +286,11 @@ describe('SessionMetadataService', () => {
         }),
       });
       service = new SessionMetadataService(deps);
-      // Make calculateBaseCommit return null: getDefaultBranch returns null, gitSafe returns null
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
-      mockGit.gitSafe.mockImplementation(() => Promise.resolve(null));
 
       await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
 
       const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect((savedSession.workers[0] as PersistedGitDiffWorker).baseCommit).toBe('HEAD');
+      expect((savedSession.workers[0] as PersistedGitDiffWorker).baseCommit).toBe('abc1234');
     });
   });
 

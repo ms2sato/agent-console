@@ -14,14 +14,13 @@
 
 import type { Session } from '@agent-console/shared';
 import type { InternalSession } from './internal-types.js';
-import type { PersistedSession, PersistedWorker } from './persistence-service.js';
+import type { PersistedSession } from './persistence-service.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
-import { calculateBaseCommit } from './git-diff-service.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('session-metadata');
@@ -144,28 +143,10 @@ export class SessionMetadataService {
       return { success: true, branch: newBranch };
     }
 
-    // Update base commit for git-diff workers
-    let updatedWorkers: typeof metadata.workers | undefined;
-    try {
-      const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
-      const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
-      updatedWorkers = metadata.workers.map(w => {
-        if (w.type === 'git-diff') {
-          return { ...w, baseCommit: resolvedBaseCommit };
-        }
-        return w;
-      });
-    } catch (diffUpdateError) {
-      logger.error(
-        { sessionId, err: diffUpdateError },
-        'Failed to update git-diff workers after branch sync for inactive session'
-      );
-    }
-
+    // Git-diff workers persist a branch-agnostic base *spec* that re-resolves on
+    // every diff (Issue #800), so a branch sync does NOT require recomputing or
+    // freezing a base hash here. Leave each worker's spec unchanged.
     const toSave = { ...metadata, worktreeId: newBranch };
-    if (updatedWorkers !== undefined) {
-      toSave.workers = updatedWorkers;
-    }
     await this.deps.sessionRepository.save(toSave);
 
     logger.info({ sessionId, newBranch }, 'Branch synced from git (inactive session)');
@@ -184,7 +165,6 @@ export class SessionMetadataService {
 
     const result: SessionMetadataUpdateResult = { success: true };
     let updatedTitle: string | undefined;
-    let updatedWorkers: PersistedWorker[] | undefined;
     let updatedWorktreeId: string | undefined;
 
     // Title update
@@ -208,24 +188,10 @@ export class SessionMetadataService {
         return { success: false, error: message };
       }
 
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the branch rename.
-      try {
-        const newBaseCommit = await calculateBaseCommit(metadata.locationPath);
-        const resolvedBaseCommit = newBaseCommit ?? 'HEAD';
-        updatedWorkers = metadata.workers.map(w => {
-          if (w.type === 'git-diff') {
-            return { ...w, baseCommit: resolvedBaseCommit };
-          }
-          return w;
-        });
-      } catch (diffUpdateError) {
-        logger.error(
-          { sessionId, err: diffUpdateError },
-          'Failed to update git-diff workers after branch rename for inactive session'
-        );
-      }
-
+      // Git-diff workers persist a branch-agnostic base *spec* that re-resolves
+      // on every diff (Issue #800), so a branch rename does NOT require
+      // recomputing or freezing a base hash here. Leave each worker's spec
+      // unchanged.
       updatedWorktreeId = updates.branch;
       result.branch = updates.branch;
     }
@@ -238,11 +204,6 @@ export class SessionMetadataService {
       }
       if (updatedWorktreeId !== undefined && toSave.type === 'worktree') {
         toSave.worktreeId = updatedWorktreeId;
-        // If calculateBaseCommit threw, updatedWorkers is undefined and we preserve
-        // the original metadata.workers via the ...metadata spread above.
-        if (updatedWorkers !== undefined) {
-          toSave.workers = updatedWorkers;
-        }
       }
       await this.deps.sessionRepository.save(toSave);
     }

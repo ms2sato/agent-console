@@ -52,7 +52,9 @@ export type GitDiffTarget = 'working-dir' | string;  // 'working-dir' or commit 
 
 /** Diff summary (sent via WebSocket) */
 export interface GitDiffSummary {
-  baseCommit: string;        // Comparison base commit hash
+  // Resolved commit hash actually diffed against (the persisted base *spec* is
+  // re-resolved to this on each diff).
+  baseCommit: string;
   targetRef: GitDiffTarget;  // Target: 'working-dir' or commit hash
   files: GitDiffFile[];
   totalAdditions: number;
@@ -168,6 +170,25 @@ export interface ReviewQueueGroup {
  * the server resolves it via `git merge-base <branch> HEAD` instead of `git rev-parse`.
  */
 export const MERGE_BASE_REF_PREFIX = 'merge-base:';
+
+/**
+ * Sentinel base spec persisted for migrated git-diff workers and used as a
+ * fallback. Means "resolve the repository's default fork point fresh on each
+ * diff": prefer the merge-base with `origin/<default>`, fall back to the
+ * merge-base with the local `<default>` branch, then to the repository's first
+ * commit. Because it re-resolves on every diff, the base tracks the moving
+ * fork point (e.g. after the feature branch absorbs upstream commits), matching
+ * GitHub's three-dot PR view.
+ *
+ * The value lives in the `reserved:` namespace. Git forbids `:` in ref names
+ * (see `git check-ref-format`), so this token can never collide with a real
+ * branch/tag — a repository may legitimately have a ref named
+ * `default-fork-point`, and it must still round-trip through `resolveBaseSpec`
+ * instead of being intercepted as the sentinel. The `reserved:` prefix is
+ * distinct from the `merge-base:` prefix and is matched by exact equality, not
+ * by `startsWith`.
+ */
+export const DEFAULT_FORK_POINT_SPEC = 'reserved:default-fork-point';
 
 // ============================================================
 // WebSocket Messages for GitDiffWorker

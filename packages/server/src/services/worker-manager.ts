@@ -42,7 +42,7 @@ import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import { expandTemplate } from '../lib/template.js';
-import { calculateBaseCommit, resolveRef } from './git-diff-service.js';
+import { computeDefaultBaseSpec } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
@@ -258,27 +258,27 @@ export class WorkerManager {
   }
 
   /**
-   * Initialize a git-diff worker (async for base commit calculation).
+   * Initialize a git-diff worker (async for base spec computation).
+   *
+   * The worker stores a base *spec* (intent), not a frozen commit hash. The
+   * spec is re-resolved to a concrete hash on every diff computation, so the
+   * diff base tracks the moving fork point as the branch absorbs upstream
+   * commits (Issue #800).
    */
   async initializeGitDiffWorker(params: GitDiffWorkerInitParams): Promise<InternalGitDiffWorker> {
     const { id, name, createdAt, locationPath, baseCommit } = params;
 
-    let resolvedBaseCommit: string;
-
-    if (baseCommit) {
-      const resolved = await resolveRef(baseCommit, locationPath);
-      resolvedBaseCommit = resolved ?? 'HEAD';
-    } else {
-      const mergeBase = await calculateBaseCommit(locationPath);
-      resolvedBaseCommit = mergeBase ?? 'HEAD';
-    }
+    // An explicitly-provided baseCommit is treated as a verbatim spec (caller
+    // intent — e.g. a branch name or commit hash), not pre-resolved. Otherwise
+    // compute the default base spec for this repository.
+    const baseSpec = baseCommit ?? (await computeDefaultBaseSpec(locationPath));
 
     const worker: InternalGitDiffWorker = {
       id,
       type: 'git-diff',
       name,
       createdAt,
-      baseCommit: resolvedBaseCommit,
+      baseCommit: baseSpec,
     };
 
     return worker;

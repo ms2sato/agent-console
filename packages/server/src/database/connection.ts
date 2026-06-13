@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
-import { AgentDefinitionSchema } from '@agent-console/shared';
+import { AgentDefinitionSchema, DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
 import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
@@ -307,6 +307,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 20) {
     await migrateToV20(database);
+  }
+
+  if (currentVersion < 21) {
+    await migrateToV21(database);
   }
 }
 
@@ -1266,6 +1270,42 @@ export async function migrateToV20(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 20`.execute(database);
 
   logger.info('Migration to v20 completed');
+}
+
+/**
+ * Migration v21: migrate git-diff workers' frozen base_commit hash to the
+ * `DEFAULT_FORK_POINT_SPEC` sentinel spec (Issue #800).
+ *
+ * Previously each git-diff worker froze a resolved merge-base hash in
+ * `base_commit`. The new model persists a base *spec* that is re-resolved on
+ * every diff so the base tracks the moving fork point. Existing rows hold a
+ * frozen hash, so we reset every git-diff worker's `base_commit` to the
+ * sentinel.
+ *
+ * Limitation: a user-pinned explicit base cannot be distinguished from an
+ * auto-frozen merge-base at the DB layer, so user-pinned bases are also reset
+ * to the default spec. This is acceptable per Issue #800.
+ *
+ * Idempotent: re-applying the UPDATE is a no-op once rows already hold the
+ * sentinel.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV21(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v21: Resetting git-diff workers to default base spec');
+
+  // DEFAULT_FORK_POINT_SPEC sentinel — re-resolves the default fork point fresh
+  // on each diff (see packages/shared/src/types/git-diff.ts).
+  await database
+    .updateTable('workers')
+    .set({ base_commit: DEFAULT_FORK_POINT_SPEC })
+    .where('type', '=', 'git-diff')
+    .where('base_commit', 'is not', null)
+    .execute();
+
+  await sql`PRAGMA user_version = 21`.execute(database);
+
+  logger.info('Migration to v21 completed');
 }
 
 /**

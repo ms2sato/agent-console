@@ -33,7 +33,7 @@ export const mockGit = {
   // Low-level
   git: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   gitRaw: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  gitSafe: mock(() => Promise.resolve(null)) as Mock<AsyncStringNullFn>,
+  gitSafe: mock(() => Promise.resolve(null)) as Mock<(args: string[], cwd: string) => Promise<string | null>>,
   gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string) => Promise<boolean>>,
 
   // Branch operations

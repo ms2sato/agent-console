@@ -36,13 +36,15 @@ export function BaseCommitSelector({
   const shortCommit = currentBaseCommit ? currentBaseCommit.substring(0, 7) : null;
 
   const defaultBranch = branchesData?.defaultBranch ?? null;
-  const mergeBaseRef = defaultBranch ? `${MERGE_BASE_REF_PREFIX}${defaultBranch}` : null;
+  // Local default merge-base spec (e.g. "merge-base:main")
+  const localMergeBaseRef = defaultBranch ? `${MERGE_BASE_REF_PREFIX}${defaultBranch}` : null;
 
   // Build dropdown items based on search state
-  const { mergeBaseVisible, remoteDefault, filteredLocal, filteredRemote, hasItems } = useMemo(() => {
+  const { mergeBaseVisible, originMergeBaseRef, remoteDefault, filteredLocal, filteredRemote, hasItems } = useMemo(() => {
     if (!branchesData) {
       return {
         mergeBaseVisible: false,
+        originMergeBaseRef: null,
         remoteDefault: undefined,
         filteredLocal: [],
         filteredRemote: [],
@@ -58,6 +60,10 @@ export function BaseCommitSelector({
     // Check if the remote default branch actually exists in the branch list
     const remoteDefaultBranch = branchesData.remote.find(b => b === `origin/${defaultBranch}`);
 
+    // Origin merge-base spec (e.g. "merge-base:origin/main") - only when the
+    // remote default branch actually exists. This is the preferred default.
+    const originMb = remoteDefaultBranch ? `${MERGE_BASE_REF_PREFIX}${remoteDefaultBranch}` : null;
+
     // When not searching, exclude defaultBranch from regular lists (it appears in "Default branch" section)
     const localBranches = branchesData.local.filter(b => {
       if (!b.toLowerCase().includes(query)) return false;
@@ -71,13 +77,18 @@ export function BaseCommitSelector({
       return true;
     });
 
+    // Merge-base entries: local variant always shown when default exists,
+    // origin variant additionally shown when origin/<default> exists.
+    const mergeBaseCount = mbVisible ? (originMb ? 2 : 1) : 0;
+
     const defaultBranchCount = defaultBranch && !inputValue
       ? (remoteDefaultBranch ? 1 : 0) + 1 // local default always shown, remote only if it exists
       : 0;
-    const total = (mbVisible ? 1 : 0) + localBranches.length + remoteBranches.length + defaultBranchCount;
+    const total = mergeBaseCount + localBranches.length + remoteBranches.length + defaultBranchCount;
 
     return {
       mergeBaseVisible: mbVisible,
+      originMergeBaseRef: originMb,
       remoteDefault: remoteDefaultBranch,
       filteredLocal: localBranches.slice(0, 10),
       filteredRemote: remoteBranches.slice(0, 10),
@@ -179,19 +190,33 @@ export function BaseCommitSelector({
             ref={dropdownRef}
             className="absolute top-full left-0 mt-1 w-72 max-h-60 overflow-y-auto bg-slate-800 border border-slate-600 rounded shadow-lg z-50"
           >
-            {/* Recommended: merge-base is always visible when defaultBranch exists */}
-            {mergeBaseVisible && mergeBaseRef && (
+            {/* Recommended: merge-base entries are always visible when defaultBranch exists.
+                The origin variant (preferred default) is listed first when it exists. */}
+            {mergeBaseVisible && defaultBranch && (
               <>
                 <SectionHeader label="Recommended" />
-                <button
-                  type="button"
-                  onClick={() => handleSelectBranch(mergeBaseRef)}
-                  className="w-full px-3 py-1.5 text-left text-sm text-blue-300 hover:bg-slate-700 flex items-center gap-2"
-                >
-                  <GitForkIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                  <span>Fork point from {defaultBranch}</span>
-                  <span className="text-xs text-gray-500 ml-auto">(merge-base)</span>
-                </button>
+                {originMergeBaseRef && remoteDefault && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectBranch(originMergeBaseRef)}
+                    className="w-full px-3 py-1.5 text-left text-sm text-blue-300 hover:bg-slate-700 flex items-center gap-2"
+                  >
+                    <GitForkIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    <span>Fork point from {remoteDefault}</span>
+                    <span className="text-xs text-gray-500 ml-auto">(merge-base)</span>
+                  </button>
+                )}
+                {localMergeBaseRef && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectBranch(localMergeBaseRef)}
+                    className="w-full px-3 py-1.5 text-left text-sm text-blue-300 hover:bg-slate-700 flex items-center gap-2"
+                  >
+                    <GitForkIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    <span>Fork point from {defaultBranch} (local)</span>
+                    <span className="text-xs text-gray-500 ml-auto">(merge-base)</span>
+                  </button>
+                )}
               </>
             )}
 

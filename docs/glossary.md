@@ -62,6 +62,22 @@ A worker running an AI agent with activity detection and PTY capabilities.
 A worker running a plain terminal shell.
 - **See:** [Worker types in session-worker-design.md](design/session-worker-design.md#worker-types-current--future)
 
+### GitDiffWorker
+A worker that shows the git diff between a base commit and a target ref for its session's working directory. Has no PTY; computes diffs on demand and watches the working tree for changes.
+- **Aliases:** DiffWorker, git-diff worker
+- **See:** [GitDiffWorker in worker.ts](../packages/shared/src/types/worker.ts)
+
+### Base Spec
+The persisted comparison base of a [GitDiffWorker](#gitdiffworker), stored in `workers.base_commit`. Unlike a frozen commit hash, a base spec records the user's *intent* and is **re-resolved on every diff computation**, so the diff stays aligned with GitHub's merge-base (three-dot) view as the branch absorbs upstream commits. Forms:
+- `merge-base:<ref>` — fork point via `git merge-base <ref> HEAD` (e.g. `merge-base:origin/main`); re-resolves each diff.
+- A branch name — re-resolves to the branch tip each diff.
+- An explicit commit hash — stays pinned (no re-resolution).
+- `reserved:default-fork-point` — sentinel for migrated workers; resolves the repository's default fork point fresh (prefers `origin/<default>`, falls back to local `<default>`, then the first commit). The `reserved:` namespace is illegal in git ref names, so it can never collide with a real branch/tag.
+
+New git-diff workers default to `merge-base:origin/<default>` when the remote default exists, otherwise `merge-base:<default>`.
+- **Aliases:** base commit spec
+- **See:** [MERGE_BASE_REF_PREFIX / DEFAULT_FORK_POINT_SPEC in git-diff.ts](../packages/shared/src/types/git-diff.ts)
+
 ## States
 
 ### AgentActivityState

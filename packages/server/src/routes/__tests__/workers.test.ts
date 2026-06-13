@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
@@ -30,6 +31,7 @@ describe('Workers API', () => {
   beforeEach(async () => {
     await closeDatabase();
 
+    resetGitMocks();
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
@@ -378,6 +380,148 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Worker');
+    });
+  });
+
+  // ===========================================================================
+  // GET /api/sessions/:sessionId/workers/:workerId/diff
+  // Re-resolves the persisted base *spec* to a concrete hash at diff time (#800)
+  // ===========================================================================
+
+  describe('GET /api/sessions/:sessionId/workers/:workerId/diff', () => {
+    it('resolves the base spec to a hash and diffs against the resolved hash', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Create a git-diff worker whose persisted baseCommit is a SPEC (not a hash).
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'git-diff',
+        baseCommit: 'merge-base:origin/main',
+      });
+      expect(worker).not.toBeNull();
+      expect(worker!.type).toBe('git-diff');
+
+      // resolveBaseSpec for a `merge-base:` spec calls getMergeBaseSafe(ref, HEAD).
+      mockGit.getMergeBaseSafe.mockImplementation((ref1: string) =>
+        Promise.resolve(ref1 === 'origin/main' ? 'resolvedbase999' : null),
+      );
+      // getDiffData reads these; defaults are empty, set a numstat so a file appears.
+      mockGit.getDiff.mockImplementation(() => Promise.resolve('diff --git a/foo b/foo\n'));
+      mockGit.getDiffNumstat.mockImplementation(() => Promise.resolve('1\t0\tfoo\n'));
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/diff`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        summary: { baseCommit: string; files: { path: string }[] };
+        rawDiff: string;
+      };
+
+      // The diff must have been computed against the RESOLVED hash, not the raw spec.
+      expect(body.summary.baseCommit).toBe('resolvedbase999');
+      expect(body.summary.baseCommit).not.toBe('merge-base:origin/main');
+      expect(body.summary.files.map((f) => f.path)).toContain('foo');
+      // getDiff was invoked with the resolved hash as its base ref.
+      const getDiffCalls = mockGit.getDiff.mock.calls;
+      expect(getDiffCalls.length).toBeGreaterThan(0);
+      expect(getDiffCalls[0][0]).toBe('resolvedbase999');
+    });
+
+    it('surfaces a 4xx error when the base spec cannot be resolved (no silent empty diff)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'git-diff',
+        baseCommit: 'merge-base:origin/main',
+      });
+      expect(worker).not.toBeNull();
+
+      // Resolution genuinely fails (unrelated histories / deleted ref).
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve(null));
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/diff`,
+      );
+
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Could not resolve diff base');
+      expect(body.error).toContain('merge-base:origin/main');
+    });
+  });
+
+  // ===========================================================================
+  // GET /api/sessions/:sessionId/workers/:workerId/diff/file
+  // ===========================================================================
+
+  describe('GET /api/sessions/:sessionId/workers/:workerId/diff/file', () => {
+    it('resolves the base spec then returns the per-file diff', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'git-diff',
+        baseCommit: 'merge-base:origin/main',
+      });
+      expect(worker).not.toBeNull();
+
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('resolvedbase999'));
+      // getFileDiff uses gitRaw(['diff', baseCommit, '--', filePath]).
+      mockGit.gitRaw.mockImplementation(() =>
+        Promise.resolve('diff --git a/foo b/foo\n+added\n'),
+      );
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/diff/file?path=foo`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { rawDiff: string };
+      expect(body.rawDiff).toContain('diff --git a/foo b/foo');
+      // The per-file diff resolved the spec to a hash before calling git diff.
+      const gitRawCalls = mockGit.gitRaw.mock.calls;
+      const fileDiffCall = gitRawCalls.find((args) => args[0]?.[0] === 'diff');
+      expect(fileDiffCall).toBeDefined();
+      // args[0] is the git arg array: ['diff', <resolvedBase>, '--', 'foo'].
+      expect(fileDiffCall![0][1]).toBe('resolvedbase999');
+    });
+
+    it('surfaces a 4xx error when the base spec cannot be resolved', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'git-diff',
+        baseCommit: 'merge-base:origin/main',
+      });
+      expect(worker).not.toBeNull();
+
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve(null));
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/diff/file?path=foo`,
+      );
+
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Could not resolve diff base');
     });
   });
 });
