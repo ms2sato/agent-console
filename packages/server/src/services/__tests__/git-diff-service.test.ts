@@ -152,6 +152,22 @@ describe('GitDiffService', () => {
       expect(result).toBe('branch-tip-hash');
       expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'feature-branch'], '/repo/path');
     });
+
+    // Namespace fix: the sentinel lives in the reserved: namespace
+    // (DEFAULT_FORK_POINT_SPEC === 'reserved:default-fork-point'). A real ref
+    // literally named 'default-fork-point' (the bare string) must NOT be
+    // intercepted as the sentinel — it must fall through to rev-parse so it
+    // round-trips like any other branch/tag.
+    it('resolves a real ref literally named "default-fork-point" via rev-parse (not the sentinel path)', async () => {
+      mockGit.gitSafe.mockResolvedValue('real-ref-hash');
+
+      const result = await resolveBaseSpec('default-fork-point', '/repo/path');
+
+      expect(result).toBe('real-ref-hash');
+      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'default-fork-point'], '/repo/path');
+      // The sentinel chain (computeDefaultBaseSpec) must not have been invoked.
+      expect(mockGit.getMergeBaseSafe).not.toHaveBeenCalled();
+    });
   });
 
   describe('resolveRef', () => {

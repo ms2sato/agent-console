@@ -8,8 +8,13 @@ import type { BranchesResponse } from '../../../lib/api';
 // Mock fetch at the lowest level; fetchSessionBranches goes through the hono
 // client which ultimately calls globalThis.fetch.
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+const mockFetch = mock(
+  (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+    Promise.resolve(new Response())
+);
+// `typeof fetch` carries React DOM's `preconnect` augmentation; reuse the
+// original implementation so the assigned stub satisfies the full type.
+globalThis.fetch = Object.assign(mockFetch, { preconnect: originalFetch.preconnect });
 
 afterAll(() => {
   globalThis.fetch = originalFetch;
@@ -19,24 +24,22 @@ afterEach(() => {
   cleanup();
 });
 
-function resolveUrl(input: unknown): string {
+function resolveUrl(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.toString();
-  if (input instanceof Request) return input.url;
-  return String(input);
+  return input.url;
 }
 
 function createBranchesResponse(body: BranchesResponse): Response {
-  return {
-    ok: true,
+  return new Response(JSON.stringify(body), {
     status: 200,
-    json: () => Promise.resolve(body),
-  } as unknown as Response;
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 function setupBranchesMock(branches: BranchesResponse) {
-  mockFetch.mockImplementation((...args: unknown[]) => {
-    const url = resolveUrl(args[0]);
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    const url = resolveUrl(input);
     if (url.includes('/branches')) {
       return Promise.resolve(createBranchesResponse(branches));
     }

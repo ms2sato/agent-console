@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import {
   buildInternalGitDiffWorker,
   buildPersistedAgentWorker,
@@ -39,6 +40,7 @@ describe('WorkerManager', () => {
   beforeEach(async () => {
     await closeDatabase();
 
+    resetGitMocks();
     setupMemfs({ [`${TEST_CONFIG_DIR}/.keep`]: '' });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
@@ -136,6 +138,73 @@ describe('WorkerManager', () => {
       expect(worker.outputBuffer).toBe('');
       expect(worker.outputOffset).toBe(0);
       expect(worker.connectionCallbacks.size).toBe(0);
+    });
+  });
+
+  describe('initializeGitDiffWorker', () => {
+    it('stores the computed default base spec (not a resolved hash) when no baseCommit is provided', async () => {
+      // origin/main exists → computeDefaultBaseSpec returns the merge-base spec.
+      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+      mockGit.gitRefExists.mockImplementation((ref: string) =>
+        Promise.resolve(ref === 'origin/main'),
+      );
+      // If the implementation incorrectly resolved the spec to a hash, this would
+      // be the value it stored. The assertion below proves it stores the spec, not this.
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('resolvedhash123'));
+
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-default',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/repo',
+      });
+
+      expect(worker.type).toBe('git-diff');
+      expect(worker.baseCommit).toBe('merge-base:origin/main');
+      // The spec must NOT be pre-resolved to a hash at init time.
+      expect(worker.baseCommit).not.toBe('resolvedhash123');
+    });
+
+    it('falls back to the local merge-base spec when origin/<default> does not exist', async () => {
+      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('develop'));
+      mockGit.gitRefExists.mockImplementation(() => Promise.resolve(false));
+
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-local',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/repo',
+      });
+
+      expect(worker.baseCommit).toBe('merge-base:develop');
+    });
+
+    it('stores an explicitly-provided baseCommit verbatim as the spec, without pre-resolution', async () => {
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-explicit',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/repo',
+        baseCommit: 'merge-base:origin/develop',
+      });
+
+      expect(worker.baseCommit).toBe('merge-base:origin/develop');
+      // A verbatim spec must not trigger any rev-parse / merge-base resolution at init.
+      expect(mockGit.gitSafe).not.toHaveBeenCalled();
+      expect(mockGit.getMergeBaseSafe).not.toHaveBeenCalled();
+    });
+
+    it('stores an explicit commit-hash baseCommit verbatim (stays pinned)', async () => {
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-hash',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/repo',
+        baseCommit: 'deadbeef1234',
+      });
+
+      expect(worker.baseCommit).toBe('deadbeef1234');
+      expect(mockGit.gitSafe).not.toHaveBeenCalled();
     });
   });
 

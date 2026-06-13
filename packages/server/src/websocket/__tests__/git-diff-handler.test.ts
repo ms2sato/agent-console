@@ -255,6 +255,51 @@ describe('GitDiffHandler', () => {
         expect(sentMsg.type).toBe('diff-error');
         expect((sentMsg as { error: string }).error).toContain('Could not resolve diff base: merge-base:nonexistent-branch');
       });
+
+      // Validate-before-replace contract: a failed set-base-commit must NOT
+      // clobber the last good spec. The previous behavior assigned
+      // state.baseSpec before proving the new spec resolved, so a single bad
+      // ref poisoned every later refresh / file-watch send.
+      it('retains the previous base spec when re-resolution fails so later refreshes use the OLD spec', async () => {
+        await connectWorker('old-base');
+
+        // 'invalid-branch' resolves to null in the mock -> send must fail.
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'invalid-branch' }));
+
+        const failMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(failMsg.type).toBe('diff-error');
+        expect((failMsg as { error: string }).error).toContain('Could not resolve diff base: invalid-branch');
+
+        sentMessages = [];
+        mockGetDiffData.mockClear();
+
+        // A subsequent refresh must diff against the OLD good spec, not the bad one.
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('old-base', '/repo/path');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'old-base', 'working-dir');
+
+        const refreshMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(refreshMsg.type).toBe('diff-data');
+      });
+
+      it('commits the new base spec when re-resolution succeeds', async () => {
+        await connectWorker('old-base');
+
+        await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'main' }));
+
+        const setMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+        expect(setMsg.type).toBe('diff-data');
+
+        sentMessages = [];
+        mockGetDiffData.mockClear();
+
+        // A subsequent refresh uses the newly committed spec, not 'old-base'.
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('main', '/repo/path');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
+      });
     });
 
     describe('refresh after set-base-commit', () => {
@@ -480,6 +525,27 @@ describe('GitDiffHandler', () => {
       await sendMessage(JSON.stringify({ type: 'refresh' }));
 
       expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'updated-base', 'working-dir');
+    });
+
+    // Validate-before-replace: a server-pushed spec that fails to resolve must
+    // not clobber the last good spec.
+    it('retains the old base spec when the pushed spec is unresolvable', async () => {
+      await connectWorker('original-base');
+
+      // 'invalid-branch' resolves to null in the mock -> update must fail.
+      await handlers.updateBaseCommit('worker-1', 'invalid-branch');
+
+      const failMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
+      expect(failMsg.type).toBe('diff-error');
+      expect((failMsg as { error: string }).error).toContain('Could not resolve diff base: invalid-branch');
+
+      sentMessages = [];
+      mockGetDiffData.mockClear();
+
+      // A subsequent refresh must diff against the OLD good spec, not the bad one.
+      await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'original-base', 'working-dir');
     });
   });
 });

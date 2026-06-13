@@ -179,8 +179,16 @@ export const MERGE_BASE_REF_PREFIX = 'merge-base:';
  * commit. Because it re-resolves on every diff, the base tracks the moving
  * fork point (e.g. after the feature branch absorbs upstream commits), matching
  * GitHub's three-dot PR view.
+ *
+ * The value lives in the `reserved:` namespace. Git forbids `:` in ref names
+ * (see `git check-ref-format`), so this token can never collide with a real
+ * branch/tag — a repository may legitimately have a ref named
+ * `default-fork-point`, and it must still round-trip through `resolveBaseSpec`
+ * instead of being intercepted as the sentinel. The `reserved:` prefix is
+ * distinct from the `merge-base:` prefix and is matched by exact equality, not
+ * by `startsWith`.
  */
-export const DEFAULT_FORK_POINT_SPEC = 'default-fork-point';
+export const DEFAULT_FORK_POINT_SPEC = 'reserved:default-fork-point';
 
 // ============================================================
 // WebSocket Messages for GitDiffWorker

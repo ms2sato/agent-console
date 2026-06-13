@@ -48,18 +48,24 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
    * The base *spec* is re-resolved to a concrete commit hash on every call, so
    * the diff base tracks the moving fork point (Issue #800). If the spec cannot
    * be resolved, an error is surfaced instead of a silent empty diff.
+   *
+   * Returns `true` when diff data was sent, `false` when an error was surfaced
+   * (resolution failed or getDiffData threw). Callers that mutate
+   * `state.baseSpec` use this signal to commit the new spec only after a
+   * successful send (validate-before-replace), so a single bad spec never
+   * clobbers the last good one.
    */
   async function sendDiffData(
     ws: WSContext,
     locationPath: string,
     baseSpec: string,
     targetRef: GitDiffTarget = 'working-dir'
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const resolved = await resolveBaseSpec(baseSpec, locationPath);
       if (resolved === null) {
         sendError(ws, `Could not resolve diff base: ${baseSpec}`);
-        return;
+        return false;
       }
       const diffData = await getDiffData(locationPath, resolved, targetRef);
       const msg: GitDiffServerMessage = {
@@ -67,9 +73,11 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
         data: diffData,
       };
       ws.send(JSON.stringify(msg));
+      return true;
     } catch (e) {
       const error = e instanceof Error ? e.message : 'Failed to get diff data';
       sendError(ws, error);
+      return false;
     }
   }
 
@@ -164,12 +172,14 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
           break;
 
         case 'set-base-commit': {
-          // Store the raw ref as the connection-local base spec. sendDiffData
-          // re-resolves it (merge-base:, branch name, or hash) and surfaces an
-          // error if resolution fails. This change is connection-local and is
-          // not persisted (matching the prior behavior).
-          state.baseSpec = parsed.ref;
-          await sendDiffData(ws, locationPath, state.baseSpec, currentTargetRef);
+          // Validate-before-replace: re-resolve the raw ref (merge-base:,
+          // branch name, or hash) via sendDiffData and only commit the new spec
+          // when the send succeeds. If resolution fails, sendError is surfaced
+          // and state.baseSpec retains its last good value, so later refreshes
+          // and file-watch sends keep producing the previous diff instead of
+          // reusing a bad spec. This change is connection-local (not persisted).
+          const ok = await sendDiffData(ws, locationPath, parsed.ref, currentTargetRef);
+          if (ok) state.baseSpec = parsed.ref;
           break;
         }
 
@@ -236,6 +246,10 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
   /**
    * Update the base spec for an active connection and send fresh diff data.
    * If no active connection exists for the workerId, silently returns.
+   *
+   * Validate-before-replace: the new spec is committed to `state.baseSpec` only
+   * after a successful send, so a server-pushed spec that points at a
+   * deleted/invalid ref does not clobber the last good spec.
    */
   async function updateBaseCommit(workerId: string, newBaseSpec: string): Promise<void> {
     const state = activeConnections.get(workerId);
@@ -243,8 +257,8 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
       return;
     }
 
-    state.baseSpec = newBaseSpec;
-    await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.targetRef);
+    const ok = await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.targetRef);
+    if (ok) state.baseSpec = newBaseSpec;
   }
 
   /**
