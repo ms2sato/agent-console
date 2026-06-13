@@ -72,7 +72,7 @@ The persisted comparison base of a [GitDiffWorker](#gitdiffworker), stored in `w
 - `merge-base:<ref>` — fork point via `git merge-base <ref> HEAD` (e.g. `merge-base:origin/main`); re-resolves each diff.
 - A branch name — re-resolves to the branch tip each diff.
 - An explicit commit hash — stays pinned (no re-resolution).
-- `default-fork-point` — sentinel for migrated workers; resolves the repository's default fork point fresh (prefers `origin/<default>`, falls back to local `<default>`, then the first commit).
+- `reserved:default-fork-point` — sentinel for migrated workers; resolves the repository's default fork point fresh (prefers `origin/<default>`, falls back to local `<default>`, then the first commit). The `reserved:` namespace is illegal in git ref names, so it can never collide with a real branch/tag.
 
 New git-diff workers default to `merge-base:origin/<default>` when the remote default exists, otherwise `merge-base:<default>`.
 - **Aliases:** base commit spec
