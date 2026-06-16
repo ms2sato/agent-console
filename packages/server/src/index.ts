@@ -8,7 +8,7 @@ import { createWorktreeWithSession } from './services/worktree-creation-service.
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
-import { serverConfig } from './lib/server-config.js';
+import { serverConfig, shouldWarnInsecureAuthCookie } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
@@ -177,6 +177,14 @@ logger.info(
   { port: PORT, env: isProduction ? 'production' : 'development', pid: process.pid },
   'Server starting'
 );
+
+if (shouldWarnInsecureAuthCookie()) {
+  logger.warn(
+    'AUTH_COOKIE_SECURE=false disables the Secure attribute on the auth cookie while NODE_ENV=production. ' +
+    'The session cookie will be transmitted over plain HTTP. Only do this on a trusted private network ' +
+    '(e.g. Cloudflare WARP / VPN); on an untrusted network this enables session hijack.'
+  );
+}
 
 const server = Bun.serve({
   fetch: app.fetch,

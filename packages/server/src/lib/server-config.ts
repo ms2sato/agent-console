@@ -1,3 +1,5 @@
+import { parseOptionalBoolean } from './env-parser.js';
+
 /**
  * Centralized server-specific environment configuration.
  *
@@ -85,7 +87,47 @@ export const serverConfig = {
    * Empty string is treated as unset (operator-friendly).
    */
   AGENT_CONSOLE_SHARED_USERNAME: process.env.AGENT_CONSOLE_SHARED_USERNAME || undefined,
+  /**
+   * Controls the Secure attribute on the auth session cookie. Tri-state:
+   * - unset (undefined or empty string): current behavior, secure = (NODE_ENV === 'production').
+   *   Empty string is treated as unset (operator-friendly).
+   * - 'false': never set Secure. For trusted-network plain-HTTP deployments
+   *   (e.g. Cloudflare WARP / VPN internal networks) where the browser would
+   *   otherwise drop the Secure cookie over HTTP. Disabling on an untrusted
+   *   network enables session hijack.
+   * - 'true': always set Secure.
+   *
+   * Any other non-empty value throws (fail-fast). Case-sensitive.
+   */
+  AUTH_COOKIE_SECURE: (() => {
+    try {
+      return parseOptionalBoolean(process.env.AUTH_COOKIE_SECURE);
+    } catch (e) {
+      throw new Error(`Invalid AUTH_COOKIE_SECURE: ${(e as Error).message}`);
+    }
+  })(),
 } as const;
+
+/**
+ * Resolve whether the auth cookie should carry the Secure attribute.
+ * Unset AUTH_COOKIE_SECURE preserves the historical behavior (Secure in production).
+ */
+export function resolveAuthCookieSecure(
+  config: Pick<ServerConfig, 'AUTH_COOKIE_SECURE' | 'NODE_ENV'> = serverConfig,
+): boolean {
+  return config.AUTH_COOKIE_SECURE ?? config.NODE_ENV === 'production';
+}
+
+/**
+ * Whether to emit the loud startup warning: secure cookies are explicitly
+ * disabled in a production serving context, where the auth cookie would
+ * otherwise be Secure. Fires ONLY in this case to avoid dev-startup noise.
+ */
+export function shouldWarnInsecureAuthCookie(
+  config: Pick<ServerConfig, 'AUTH_COOKIE_SECURE' | 'NODE_ENV'> = serverConfig,
+): boolean {
+  return config.AUTH_COOKIE_SECURE === false && config.NODE_ENV === 'production';
+}
 
 /**
  * Default patterns to ignore when watching for file changes.

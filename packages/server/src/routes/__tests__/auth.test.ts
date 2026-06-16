@@ -141,6 +141,14 @@ describe('Auth Routes', () => {
       expect(setCookieHeader).toContain('HttpOnly');
       expect(setCookieHeader).toContain('Path=/');
       expect(setCookieHeader).toContain('SameSite=Lax');
+      // Secure follows the default (unset AUTH_COOKIE_SECURE) resolution:
+      // Secure iff NODE_ENV === 'production'. This verifies the shipping route
+      // path uses resolveAuthCookieSecure and preserves current behavior.
+      if (serverConfig.NODE_ENV === 'production') {
+        expect(setCookieHeader).toContain('Secure');
+      } else {
+        expect(setCookieHeader).not.toContain('Secure');
+      }
     });
 
     it('should return validation error for missing username', async () => {

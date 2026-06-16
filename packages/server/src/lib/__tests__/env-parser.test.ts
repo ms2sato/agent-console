@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvVars } from '../env-parser.js';
+import { parseEnvVars, parseOptionalBoolean } from '../env-parser.js';
 
 describe('parseEnvVars', () => {
   it('should return empty object for null input', () => {
@@ -141,5 +141,41 @@ API_URL=https://api.example.com/v1?token=xyz # production endpoint`;
       API_KEY: 'abc123def456',
       API_URL: 'https://api.example.com/v1?token=xyz',
     });
+  });
+});
+
+describe('parseOptionalBoolean', () => {
+  it('returns undefined for undefined input', () => {
+    expect(parseOptionalBoolean(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined for empty string', () => {
+    expect(parseOptionalBoolean('')).toBeUndefined();
+  });
+
+  it("returns true for 'true'", () => {
+    expect(parseOptionalBoolean('true')).toBe(true);
+  });
+
+  it("returns false for 'false'", () => {
+    expect(parseOptionalBoolean('false')).toBe(false);
+  });
+
+  it("throws for '1' with the offending value in the message", () => {
+    expect(() => parseOptionalBoolean('1')).toThrow(
+      "Expected 'true', 'false', or unset, got: '1'"
+    );
+  });
+
+  it("throws for 'yes' with the generic message", () => {
+    expect(() => parseOptionalBoolean('yes')).toThrow(
+      "Expected 'true', 'false', or unset, got: 'yes'"
+    );
+  });
+
+  it("throws for 'TRUE' (case-sensitive, uppercase rejected)", () => {
+    expect(() => parseOptionalBoolean('TRUE')).toThrow(
+      "Expected 'true', 'false', or unset, got: 'TRUE'"
+    );
   });
 });

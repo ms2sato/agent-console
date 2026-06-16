@@ -62,3 +62,25 @@ export function parseEnvVars(envVarsText: string | null | undefined): Record<str
 
   return result;
 }
+
+/**
+ * Parse an optional boolean environment variable value.
+ * - undefined or '' -> undefined (unset)
+ * - 'true' -> true
+ * - 'false' -> false
+ * - anything else -> throws (fail-fast) with a generic, variable-name-agnostic message
+ *
+ * Callers that know the variable name should catch and re-throw with that context.
+ */
+export function parseOptionalBoolean(raw: string | undefined): boolean | undefined {
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  if (raw === 'true') {
+    return true;
+  }
+  if (raw === 'false') {
+    return false;
+  }
+  throw new Error(`Expected 'true', 'false', or unset, got: '${raw}'`);
+}
