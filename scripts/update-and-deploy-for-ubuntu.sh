@@ -7,6 +7,9 @@
 #   - The service port defaults to 6000 + (uid % 1000). Known caveat: users whose
 #     UIDs differ by a multiple of 1000 (e.g. 1000 and 2000) collide on the same
 #     port. Set PORT explicitly to override.
+#   - Base 6000 overlaps the X11 TCP range (6000-6063), but impact is low: this
+#     targets headless servers (no X server), and modern X11 defaults to
+#     `-nolisten tcp` (desktops default to Wayland). Override with PORT if needed.
 #   - Enables systemd "lingering" for the current user so the service keeps running
 #     after logout and starts on boot (no login session required).
 #
