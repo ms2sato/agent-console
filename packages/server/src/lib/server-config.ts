@@ -1,3 +1,5 @@
+import { parseOptionalBoolean } from './env-parser.js';
+
 /**
  * Centralized server-specific environment configuration.
  *
@@ -97,32 +99,14 @@ export const serverConfig = {
    *
    * Any other non-empty value throws (fail-fast). Case-sensitive.
    */
-  AUTH_COOKIE_SECURE: parseAuthCookieSecure(process.env.AUTH_COOKIE_SECURE),
+  AUTH_COOKIE_SECURE: (() => {
+    try {
+      return parseOptionalBoolean(process.env.AUTH_COOKIE_SECURE);
+    } catch (e) {
+      throw new Error(`Invalid AUTH_COOKIE_SECURE: ${(e as Error).message}`);
+    }
+  })(),
 } as const;
-
-/**
- * Parse the AUTH_COOKIE_SECURE tri-state env value.
- * - undefined or '' -> undefined (unset)
- * - 'true' -> true
- * - 'false' -> false
- * - anything else -> throws (fail-fast)
- *
- * @internal Exported for testing.
- */
-export function parseAuthCookieSecure(raw: string | undefined): boolean | undefined {
-  if (raw === undefined || raw === '') {
-    return undefined;
-  }
-  if (raw === 'true') {
-    return true;
-  }
-  if (raw === 'false') {
-    return false;
-  }
-  throw new Error(
-    `Invalid AUTH_COOKIE_SECURE: '${raw}'. Must be 'true', 'false', or unset.`
-  );
-}
 
 /**
  * Resolve whether the auth cookie should carry the Secure attribute.

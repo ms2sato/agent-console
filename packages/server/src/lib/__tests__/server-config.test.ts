@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
-  parseAuthCookieSecure,
   resolveAuthCookieSecure,
   shouldWarnInsecureAuthCookie,
 } from '../server-config.js';
@@ -153,43 +152,7 @@ describe('server-config', () => {
       process.env.AUTH_COOKIE_SECURE = '1';
 
       await expect(importServerConfig()).rejects.toThrow(
-        "Invalid AUTH_COOKIE_SECURE: '1'. Must be 'true', 'false', or unset."
-      );
-    });
-  });
-
-  describe('parseAuthCookieSecure', () => {
-    it('returns undefined for undefined input', () => {
-      expect(parseAuthCookieSecure(undefined)).toBeUndefined();
-    });
-
-    it('returns undefined for empty string', () => {
-      expect(parseAuthCookieSecure('')).toBeUndefined();
-    });
-
-    it("returns true for 'true'", () => {
-      expect(parseAuthCookieSecure('true')).toBe(true);
-    });
-
-    it("returns false for 'false'", () => {
-      expect(parseAuthCookieSecure('false')).toBe(false);
-    });
-
-    it("throws for '1'", () => {
-      expect(() => parseAuthCookieSecure('1')).toThrow(
-        "Invalid AUTH_COOKIE_SECURE: '1'. Must be 'true', 'false', or unset."
-      );
-    });
-
-    it("throws for 'yes'", () => {
-      expect(() => parseAuthCookieSecure('yes')).toThrow(
-        "Invalid AUTH_COOKIE_SECURE: 'yes'. Must be 'true', 'false', or unset."
-      );
-    });
-
-    it("throws for 'TRUE' (case-sensitive)", () => {
-      expect(() => parseAuthCookieSecure('TRUE')).toThrow(
-        "Invalid AUTH_COOKIE_SECURE: 'TRUE'. Must be 'true', 'false', or unset."
+        /Invalid AUTH_COOKIE_SECURE: Expected 'true', 'false', or unset, got: '1'/
       );
     });
   });
