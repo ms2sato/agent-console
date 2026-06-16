@@ -72,18 +72,18 @@ exists solely for local verification.
 - **sudoers** — `MultiUserMode.spawnSudoPty()` runs `sudo -u <user> -i sh -c`.
   The `agentconsole` user is granted `NOPASSWD` shell access to any non-root
   user, and nothing else.
-- **`0711` test home directories (default)** — historically the PTY spawn helper
-  `chdir`ed into the session's working directory _as the service user_ before
-  `sudo` switched to the target user, so Debian's default `0700` home denied that
-  `chdir` and the spawn failed with "PTY spawn failed". The root cause was fixed
-  in [#806](https://github.com/ms2sato/agent-console/pull/806) (the pre-exec
-  `chdir` now lands on a neutral `/`; the real `cd` happens in the inner shell
-  that runs as the target user). The image still defaults the test homes to
-  `0711` to mirror the conservative deployment recommendation, but the home mode
-  is now a build arg: pass `--build-arg TEST_HOME_MODE=0700` (or set
-  `TEST_HOME_MODE=0700` in the compose env) to build a `0700`-home image. The CI
-  E2E job ([#808](https://github.com/ms2sato/agent-console/issues/808)) runs both
-  modes so the `0700` path is permanently guarded.
+- **`0700` test home directories** — the test users' homes use the OS default
+  `0700` (private to the owner). Historically the PTY spawn helper `chdir`ed into
+  the session's working directory _as the service user_ before `sudo` switched to
+  the target user, so a `0700` home denied that `chdir` and the spawn failed with
+  "PTY spawn failed". This was fixed in
+  [#806](https://github.com/ms2sato/agent-console/pull/806): the pre-exec `chdir`
+  now lands on a neutral `/`, and the real `cd` happens in the inner shell that
+  runs as the target user — so a default `0700` home spawns successfully with no
+  permission change. Keeping the test homes at `0700` makes this image a
+  permanent regression guard for that fix; the CI E2E job
+  ([#808](https://github.com/ms2sato/agent-console/issues/808)) fails the build
+  if the `0700` path ever breaks again.
 
 ## Building behind a blocked Docker Hub
 

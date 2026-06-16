@@ -80,25 +80,21 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 # --- Test OS users with known passwords (VERIFICATION ONLY) ---
 # Passwords are intentionally well-known; this image must never be exposed.
 #
-# TEST_HOME_MODE controls the permission bits on the test users' home dirs:
-#
-# - 0711 (default) — traversable but not readable by others. This mirrors the
-#   conservative real-deployment recommendation in docs/multi-user-setup-guide.md
-#   ("service user must be able to enter session working directories").
-# - 0700 — Debian's default; private to the owner. Before #806 a 0700 home broke
-#   the PTY spawn: the forked child ran chdir(session cwd) WHILE STILL the
-#   service user (before sudo switched to the target user), and the service user
-#   lacked traverse permission, so the spawn failed with "PTY spawn failed".
-#   #806 fixed this by performing the pre-exec chdir into a neutral, always
-#   traversable cwd (`/`) and deferring the `cd` into the session directory to
-#   the inner shell that runs AS the target user. The CI E2E job builds a second
-#   image with TEST_HOME_MODE=0700 to permanently guard that fix (issue #808).
-ARG TEST_HOME_MODE=0711
+# Home dirs are left at 0700 — the OS default (Debian/Ubuntu HOME_MODE) and the
+# most restrictive, private-to-the-owner mode. This is the permanent regression
+# guard for #806: before that fix the PTY spawn ran chdir(session cwd) WHILE
+# STILL the service user (before sudo switched to the target user), so a 0700
+# home it did not own denied the chdir and the spawn failed with "PTY spawn
+# failed". #806 fixed it by performing the pre-exec chdir into a neutral,
+# always-traversable cwd (`/`) and deferring the `cd` into the session directory
+# to the inner shell that runs AS the target user. Keeping the test homes at the
+# default 0700 means the CI E2E job permanently exercises that fixed path so a
+# regression resurfaces as a failing build (issue #808).
 RUN useradd --create-home --shell /bin/bash alice \
  && useradd --create-home --shell /bin/bash bob \
  && echo 'alice:alice-password' | chpasswd \
  && echo 'bob:bob-password' | chpasswd \
- && chmod "${TEST_HOME_MODE}" /home/alice /home/bob
+ && chmod 0700 /home/alice /home/bob
 
 # --- Application bundle ---
 WORKDIR /app

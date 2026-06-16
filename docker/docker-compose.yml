@@ -11,11 +11,6 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      args:
-        # Permission bits for the test users' home dirs. Default 0711 matches the
-        # conservative deployment recommendation; the CI E2E job sets 0700 to
-        # regression-test the #806 neutral-cwd PTY-spawn fix. See docker/Dockerfile.
-        TEST_HOME_MODE: ${TEST_HOME_MODE:-0711}
     image: agent-console-multiuser-verify
     container_name: agent-console-multiuser-verify
     # Bind to loopback only: this stack ships intentionally known test
