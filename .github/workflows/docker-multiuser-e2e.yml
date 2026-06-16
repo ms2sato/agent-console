@@ -32,6 +32,11 @@ on:
       - 'packages/server/src/routes/auth.ts'
       - '.github/workflows/docker-multiuser-e2e.yml'
 
+# This job only checks out the repo and builds/runs docker locally; it never
+# writes to the repo, comments, or pushes. Least-privilege read-only token.
+permissions:
+  contents: read
+
 concurrency:
   group: docker-multiuser-e2e-${{ github.ref }}
   cancel-in-progress: true
