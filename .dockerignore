@@ -1,0 +1,11 @@
+# Build context exclusions for the multi-user verification image (docker/Dockerfile).
+# Keep the context small and avoid copying host-built artifacts that must be
+# rebuilt inside the Linux container (bun-pty native module in particular).
+**/node_modules
+dist
+**/dist
+.git
+.agent-console*
+*.log
+.DS_Store
+packages/client/src/routeTree.gen.ts

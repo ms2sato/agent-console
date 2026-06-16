@@ -24,8 +24,39 @@ Browser (User: alice) ──> Agent Console Server (agentconsole)
 ## Prerequisites
 
 - Agent Console installed and working in single-user mode first (verify with `AUTH_MODE=none`)
+- [Bun](https://bun.com) **≥ 1.3.5** (required by `Bun.Terminal`; enforced by the repo's preinstall check)
 - Root or sudo access on the server machine (for initial setup only)
 - Linux (Ubuntu/Debian, RHEL/Fedora, etc.) or macOS
+- **Linux only:** the `pamtester` package must be installed (see [Step 0](#step-0-install-pamtester-linux-only)). Without it, **every login returns 401.**
+
+> **Want to try multi-user mode without a Linux machine?** A ready-made Docker
+> verification environment lives in [`docker/`](../docker/README.md). It builds a
+> Debian image (`oven/bun`) with `pamtester`, the service user, sudoers, and two test users,
+> then verifies authentication and per-user PTY isolation with a single command
+> (`scripts/verify-multiuser-docker.sh`). Use it to see the whole setup working
+> before reproducing it on a real host.
+
+## Step 0: Install pamtester (Linux only)
+
+On Linux, Agent Console validates OS credentials by shelling out to
+`pamtester login <user> authenticate`. This binary is **not** part of the OS
+authentication implementation but a hard runtime dependency of it — if it is
+missing, `MultiUserMode` cannot validate any password and **all logins fail with
+401**.
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y pamtester
+
+# RHEL / Fedora (EPEL)
+sudo dnf install -y pamtester
+```
+
+`pamtester` authenticates against the `login` PAM service, so `/etc/pam.d/login`
+must exist (it does on any standard desktop/server install; minimal container
+images may need the `login` / `libpam-modules` packages).
+
+> **macOS** uses `dscl -authonly` instead and does **not** require `pamtester`.
 
 ## Step 1: Create the Service User
 
@@ -35,12 +66,42 @@ The service user (`agentconsole`) runs the server process. It is a system accoun
 
 ```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin agentconsole
+# Required on Linux: let the service user verify other users' passwords (see below)
+sudo usermod -aG shadow agentconsole
 ```
 
 What each flag does:
 - `--system` — Creates a system account (low UID range, hidden from login screen)
 - `--create-home` — Creates `/home/agentconsole` for config and database storage
 - `--shell /usr/sbin/nologin` — Prevents direct SSH or console login
+
+#### Why the `shadow` group is required (Linux)
+
+This is the single most common reason multi-user login fails with **every login
+returning 401 despite correct passwords**, so it is worth understanding.
+
+When the server validates a password it runs `pamtester` as the **non-root**
+service user. `pam_unix` (the module that checks Unix passwords) verifies a
+password one of two ways:
+
+1. **In-process** — if it can read `/etc/shadow` directly. Only `root` and
+   members of the `shadow` group can read `/etc/shadow`.
+2. **Via the `unix_chkpwd` helper** — used when the caller cannot read
+   `/etc/shadow`. For security, `unix_chkpwd` lets a non-root caller verify
+   **only its own** password, and refuses to check any other user's.
+
+So a non-root service user that is **not** in the `shadow` group can never
+validate another user's password — every login fails. Adding `agentconsole` to
+the `shadow` group lets `pam_unix` take path (1) and validate any user's
+password in-process.
+
+> **Security trade-off**: `shadow`-group membership lets the service user read
+> all password hashes. This is inherent to non-root OS authentication on Linux.
+> The alternative is running the server as `root`, which is worse. Keep the
+> service account locked down (`nologin` shell, no other privileges) accordingly.
+
+> **macOS** does not need this — it authenticates via `dscl -authonly`, which
+> does not require reading `/etc/shadow`.
 
 Verify:
 
@@ -169,8 +230,9 @@ User=agentconsole
 Group=agentconsole
 WorkingDirectory=/home/agentconsole/agent-console
 Environment=AUTH_MODE=multi-user
-Environment=PORT=4001
+Environment=PORT=8080
 Environment=HOST=0.0.0.0
+Environment=NODE_ENV=production
 ExecStart=/home/agentconsole/.bun/bin/bun run start
 Restart=on-failure
 RestartSec=5
@@ -179,6 +241,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 ```
+
+> `NODE_ENV=production` enables the web UI and makes the auth cookie `Secure`.
+> The cookie then requires a secure context — HTTPS, or `http://localhost` (e.g.
+> via an SSH tunnel). See
+> [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
 
 Enable and start:
 
@@ -225,7 +292,7 @@ sudo tee /Library/LaunchDaemons/com.agentconsole.server.plist > /dev/null << 'EO
         <key>AUTH_MODE</key>
         <string>multi-user</string>
         <key>PORT</key>
-        <string>4001</string>
+        <string>8080</string>
         <key>HOST</key>
         <string>0.0.0.0</string>
     </dict>
@@ -257,17 +324,48 @@ Users do **not** need:
 
 Their existing environment (`.bashrc`, `.zshrc`, SSH keys, git config, API keys) works automatically because PTY processes run as their user via `sudo -u <user> -i`, which loads their login shell profile.
 
+### The service user must be able to enter session working directories
+
+When the server starts a PTY it spawns `sudo -u <user> -i` with the session's
+working directory as the PTY's `cwd`. The spawn helper performs `chdir(cwd)` in
+the forked child **before** `sudo` switches to the target user — i.e. while the
+process is still the service user. If the service user cannot enter that
+directory, the spawn fails with **"PTY spawn failed"** even though
+authentication succeeded.
+
+This matters when a session's working directory is a user's home directory and
+that home is mode `0700` (the default on Debian/Ubuntu, `HOME_MODE 0700`). The
+service user cannot `chdir` into a `0700` home it does not own.
+
+Ensure the service user has **traverse (execute) permission** on every directory
+used as a session working directory. The least-privilege fix for home
+directories is `0711` (traversable but not readable by others):
+
+```bash
+sudo chmod 0711 /home/alice
+```
+
+`0711` lets the service user enter the directory to launch the PTY without being
+able to list or read its contents; the user's files keep their own permissions.
+Worktree directories created by the server are already owned by the service user
+and need no change.
+
+> `0711` is an **operational** workaround. The underlying cause — the spawn
+> helper passing the target user's private directory as the PTY `cwd` and
+> `chdir`-ing into it as the service user — is tracked for a root-cause fix in
+> [issue #802](https://github.com/ms2sato/agent-console/issues/802).
+
 ## Step 6: Verify the Setup
 
 After starting the server, check the following:
 
 ```bash
 # 1. Server is running
-curl http://localhost:4001/api/config
+curl http://localhost:8080/api/config
 # Should return JSON with "authMode": "multi-user"
 
 # 2. Login works (replace with a real OS user/password)
-curl -X POST http://localhost:4001/api/auth/login \
+curl -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username": "alice", "password": "alice-password"}'
 # Should return user info and set auth cookie
@@ -277,16 +375,114 @@ curl -X POST http://localhost:4001/api/auth/login \
 # Output should be the logged-in user's username, not "agentconsole"
 ```
 
+> For an automated, end-to-end version of these three checks (plus per-user PTY
+> isolation), run the Docker verification: `scripts/verify-multiuser-docker.sh`
+> (see [`docker/README.md`](../docker/README.md)).
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTH_MODE` | `none` | `none` for single-user, `multi-user` for multi-user mode |
-| `PORT` | `4001` | Server port |
-| `HOST` | `localhost` | Bind address (`0.0.0.0` to allow network access) |
-| `AGENT_CONSOLE_HOME` | `~/.agent-console` | Config and database directory |
+| `PORT` | `3457` | Server port. `3457` is the dev fallback; pick any port for production (this guide uses `8080`). |
+| `HOST` | `0.0.0.0` | Bind address. Defaults to all interfaces; set to `127.0.0.1` to restrict to localhost. |
+| `AGENT_CONSOLE_HOME` | `~/.agent-console` | Config and database directory. The SQLite database is `<AGENT_CONSOLE_HOME>/data.db`; the JWT signing secret is `<AGENT_CONSOLE_HOME>/jwt-secret` (auto-generated, mode 0600, on first start). |
+| `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and** marks the auth cookie `Secure` (the two are the same flag). The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
+
+The full list of server variables is defined in
+[`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
+
+## TLS, `NODE_ENV`, and secure contexts
+
+For browser access there are **two independent concerns**. Conflating them leads
+to the wrong conclusion that "a trusted private network means plain HTTP is
+fine" — it is not.
+
+**Concern 1 — confidentiality (don't send passwords in the clear).** OS
+passwords are POSTed to `/api/auth/login`. The transport carrying them must be
+private. This is satisfied by **either** TLS (HTTPS) **or** an already-trusted
+network path: a VPN / zero-trust overlay (e.g. Cloudflare WARP), an SSH tunnel,
+or pure loopback. On such a network, TLS is not required *for confidentiality*.
+
+**Concern 2 — the `Secure` cookie / browser secure context.** A single flag,
+`NODE_ENV=production`, controls two coupled behaviors:
+
+- The auth cookie is issued with the `Secure` attribute (`auth.ts`:
+  `secure: NODE_ENV === 'production'`).
+- The bundled web UI is served only in production (`index.ts` gates static file
+  serving on `isProduction`). With `NODE_ENV` unset the server exposes the
+  API/WebSocket but **not** the login UI.
+
+Because any browser deployment needs `NODE_ENV=production` (for the UI), the
+cookie is always `Secure`, and a browser sends a `Secure` cookie **only to a
+secure context**: an `https://` origin, or `http://localhost` / `http://127.0.0.1`.
+This is decided purely by the URL's scheme and host — **it does not matter how
+safe the network is**. A WARP-protected `http://<internal-host>:<port>` still
+drops the cookie and login fails.
+
+### Decision table
+
+| How the browser reaches the server | Confidentiality | `Secure` cookie sent? | Works? |
+|---|---|---|---|
+| `https://<host>` (TLS terminated anywhere — internal CA, Cloudflare, reverse proxy) | ✅ TLS | ✅ (https origin) | ✅ |
+| `http://localhost:<port>` (directly, or a forward/tunnel that makes the origin appear as localhost) | ✅ loopback/tunnel | ✅ (localhost = secure context) | ✅ |
+| `http://<non-localhost host>:<port>` plain HTTP — **even on WARP/VPN/internal LAN** | ✅ if on a trusted net | ❌ dropped | ❌ login fails |
+
+So on a trusted private network you have two valid options today: terminate TLS
+to get an `https://` origin, **or** have each member reach the server as
+`http://localhost:<port>` (e.g. a per-machine port-forward from the host/VM, or
+`ssh -L <port>:localhost:<port> <host>`). What does **not** work is pointing
+browsers at a plain-HTTP non-localhost URL, regardless of how private the network
+is.
+
+> **Plain HTTP on a trusted network (e.g. Cloudflare WARP) — planned support.**
+> If members access the server directly at `http://<internal-host>:<port>` over a
+> network that is already private, confidentiality is covered but the `Secure`
+> cookie is still dropped, so login fails. Decoupling the cookie's `Secure`
+> attribute from `NODE_ENV` (a planned `AUTH_COOKIE_SECURE`-style setting) is
+> tracked in [issue #805](https://github.com/ms2sato/agent-console/issues/805).
+> Until that lands, use TLS termination (`https://`) or localhost access for
+> browser logins on such a network.
+
+When you do terminate TLS, do it in front of Agent Console (reverse proxy such as
+nginx/Caddy, or a load balancer), forward both the HTTP routes and the WebSocket
+upgrade (`/ws/*`), and set `APP_URL`/`HOST` accordingly.
+
+> **Not empirically verified here.** The Docker verification in this repo uses a
+> non-browser client with `NODE_ENV` unset, so the `NODE_ENV=production` +
+> `Secure` cookie + browser path (whether `https` or `http://localhost`) was not
+> exercised. The above reflects the documented browser secure-context behavior
+> (W3C Secure Contexts treats loopback as potentially trustworthy) — confirm it
+> in your own browser before relying on it for a deployment.
 
 ## Troubleshooting
+
+### Every login returns 401, even with correct passwords (Linux)
+
+Two causes, both on the server side:
+
+1. **`pamtester` is not installed.** The Linux credential check shells out to
+   `pamtester`; if it is missing, `MultiUserMode` cannot validate any password.
+   Install it (see [Step 0](#step-0-install-pamtester-linux-only)) and confirm
+   `/etc/pam.d/login` exists.
+2. **The service user is not in the `shadow` group.** A non-root service user
+   cannot verify other users' passwords without `shadow`-group membership (see
+   [Why the `shadow` group is required](#why-the-shadow-group-is-required-linux)).
+   Fix and restart the service:
+
+   ```bash
+   sudo usermod -aG shadow agentconsole
+   sudo systemctl restart agent-console   # group change applies to a fresh process
+   ```
+
+The server log shows `pamtester: Authentication failure` followed by
+`Login failed: invalid credentials` in both cases.
+
+### "PTY spawn failed" after a successful login
+
+The session's working directory is not enterable by the service user (commonly a
+`0700` home directory). See
+[The service user must be able to enter session working directories](#the-service-user-must-be-able-to-enter-session-working-directories).
 
 ### "This account is currently not available" when testing sudo
 

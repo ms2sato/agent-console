@@ -1,0 +1,7 @@
+# Allow the Agent Console service user to launch login shells as any non-root
+# user, without a password. This is the ONLY sudo privilege the service user
+# gets. The server invokes: sudo -u <user> -i sh -c '...'.
+#
+# Both /bin/* and /usr/bin/* forms are listed because Ubuntu uses the usr-merge
+# layout (/bin -> /usr/bin); sudo matches the resolved command path.
+agentconsole ALL=(ALL,!root) NOPASSWD: /bin/sh, /bin/bash, /usr/bin/sh, /usr/bin/bash
