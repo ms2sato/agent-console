@@ -493,9 +493,13 @@ The server log shows `pamtester: Authentication failure` followed by
 
 ### "PTY spawn failed" after a successful login
 
-The session's working directory is not enterable by the service user (commonly a
-`0700` home directory). See
-[The service user must be able to enter session working directories](#the-service-user-must-be-able-to-enter-session-working-directories).
+This usually points to a PTY spawn-path regression or a sudoers / config
+mismatch — **not** to home-directory permissions. A user's default `0700` home
+is supported and needs no change; see
+[Default `0700` home directories work as-is](#default-0700-home-directories-work-as-is).
+Check that the service user's sudoers entry grants `NOPASSWD` login-shell access
+to the target user and that the server log shows the `sudo -u <user> -i` command
+it attempted.
 
 ### "This account is currently not available" when testing sudo
 
