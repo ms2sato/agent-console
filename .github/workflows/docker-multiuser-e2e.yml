@@ -48,6 +48,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job never pushes; drop the auto-persisted git credentials.
+          persist-credentials: false
 
       # verify-multiuser-docker.sh runs docker/verify-client.ts on the host (the
       # PTY identity probe), so bun must be on PATH. Docker + compose v2 are
