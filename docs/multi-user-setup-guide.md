@@ -394,50 +394,66 @@ The full list of server variables is defined in
 
 ## TLS, `NODE_ENV`, and secure contexts
 
-A single flag, `NODE_ENV=production`, controls two coupled behaviors:
+For browser access there are **two independent concerns**. Conflating them leads
+to the wrong conclusion that "a trusted private network means plain HTTP is
+fine" — it is not.
 
-- The authentication cookie is issued with the `Secure` attribute
-  (`auth.ts`: `secure: NODE_ENV === 'production'`), so browsers send it **only in
-  a secure context**.
+**Concern 1 — confidentiality (don't send passwords in the clear).** OS
+passwords are POSTed to `/api/auth/login`. The transport carrying them must be
+private. This is satisfied by **either** TLS (HTTPS) **or** an already-trusted
+network path: a VPN / zero-trust overlay (e.g. Cloudflare WARP), an SSH tunnel,
+or pure loopback. On such a network, TLS is not required *for confidentiality*.
+
+**Concern 2 — the `Secure` cookie / browser secure context.** A single flag,
+`NODE_ENV=production`, controls two coupled behaviors:
+
+- The auth cookie is issued with the `Secure` attribute (`auth.ts`:
+  `secure: NODE_ENV === 'production'`).
 - The bundled web UI is served only in production (`index.ts` gates static file
   serving on `isProduction`). With `NODE_ENV` unset the server exposes the
   API/WebSocket but **not** the login UI.
 
-So any browser-based deployment needs `NODE_ENV=production` (to get the UI),
-which in turn makes the cookie `Secure`. Whether you also need TLS then depends
-on how the browser reaches the server.
+Because any browser deployment needs `NODE_ENV=production` (for the UI), the
+cookie is always `Secure`, and a browser sends a `Secure` cookie **only to a
+secure context**: an `https://` origin, or `http://localhost` / `http://127.0.0.1`.
+This is decided purely by the URL's scheme and host — **it does not matter how
+safe the network is**. A WARP-protected `http://<internal-host>:<port>` still
+drops the cookie and login fails.
 
-### Network-exposed over plain HTTP → TLS is required
+### Decision table
 
-If users reach the server at `http://<host>` where `<host>` is **not** localhost,
-two things break:
+| How the browser reaches the server | Confidentiality | `Secure` cookie sent? | Works? |
+|---|---|---|---|
+| `https://<host>` (TLS terminated anywhere — internal CA, Cloudflare, reverse proxy) | ✅ TLS | ✅ (https origin) | ✅ |
+| `http://localhost:<port>` (directly, or a forward/tunnel that makes the origin appear as localhost) | ✅ loopback/tunnel | ✅ (localhost = secure context) | ✅ |
+| `http://<non-localhost host>:<port>` plain HTTP — **even on WARP/VPN/internal LAN** | ✅ if on a trusted net | ❌ dropped | ❌ login fails |
 
-1. The `Secure` cookie is dropped (browsers only send `Secure` cookies over
-   HTTPS), so every authenticated request fails.
-2. OS passwords travel in clear text over the network.
+So on a trusted private network you have two valid options today: terminate TLS
+to get an `https://` origin, **or** have each member reach the server as
+`http://localhost:<port>` (e.g. a per-machine port-forward from the host/VM, or
+`ssh -L <port>:localhost:<port> <host>`). What does **not** work is pointing
+browsers at a plain-HTTP non-localhost URL, regardless of how private the network
+is.
 
-Terminate TLS in front of Agent Console (reverse proxy such as nginx/Caddy, or a
-load balancer) and forward both the HTTP routes and the WebSocket upgrade
-(`/ws/*`). Set `APP_URL`/`HOST` accordingly.
+> **Plain HTTP on a trusted network (e.g. Cloudflare WARP) — planned support.**
+> If members access the server directly at `http://<internal-host>:<port>` over a
+> network that is already private, confidentiality is covered but the `Secure`
+> cookie is still dropped, so login fails. Decoupling the cookie's `Secure`
+> attribute from `NODE_ENV` (a planned `AUTH_COOKIE_SECURE`-style setting) is
+> tracked in [issue #805](https://github.com/ms2sato/agent-console/issues/805).
+> Until that lands, use TLS termination (`https://`) or localhost access for
+> browser logins on such a network.
 
-### localhost or SSH port-forward → TLS is not required
-
-If each user reaches the server at `http://localhost:<port>` — directly on the
-machine, or through an SSH tunnel (`ssh -L <port>:localhost:<port> <host>`) — TLS
-is unnecessary:
-
-- An SSH tunnel already encrypts the transport, so passwords are not exposed.
-- Browsers treat `http://localhost` (and `127.0.0.1`) as a **secure context**
-  (the W3C Secure Contexts spec classifies loopback addresses as potentially
-  trustworthy), so the `Secure` cookie is still accepted.
-
-This is a valid low-friction setup for a small or trusted team.
+When you do terminate TLS, do it in front of Agent Console (reverse proxy such as
+nginx/Caddy, or a load balancer), forward both the HTTP routes and the WebSocket
+upgrade (`/ws/*`), and set `APP_URL`/`HOST` accordingly.
 
 > **Not empirically verified here.** The Docker verification in this repo uses a
 > non-browser client with `NODE_ENV` unset, so the `NODE_ENV=production` +
-> `Secure` cookie + `http://localhost` browser path was not exercised. The above
-> reflects the documented browser secure-context behavior — confirm it in your
-> own browser before relying on it for a deployment.
+> `Secure` cookie + browser path (whether `https` or `http://localhost`) was not
+> exercised. The above reflects the documented browser secure-context behavior
+> (W3C Secure Contexts treats loopback as potentially trustworthy) — confirm it
+> in your own browser before relying on it for a deployment.
 
 ## Troubleshooting
 

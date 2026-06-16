@@ -13,8 +13,11 @@ services:
       dockerfile: docker/Dockerfile
     image: agent-console-multiuser-verify
     container_name: agent-console-multiuser-verify
+    # Bind to loopback only: this stack ships intentionally known test
+    # credentials and must never be reachable from the LAN. ${PORT:-8080} keeps
+    # the host port in sync with scripts/verify-multiuser-docker.sh's PORT env.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${PORT:-8080}:8080"
     # Health: /api/config is reachable without auth and reports authMode.
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:8080/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
