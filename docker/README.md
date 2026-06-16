@@ -107,11 +107,15 @@ goes through Docker Hub.
 
 ## Notes / limitations
 
-- **HTTP, not HTTPS.** `NODE_ENV` is left unset on purpose. In production
-  (`NODE_ENV=production`) the auth cookie is marked `secure` and would be
-  dropped over plain HTTP. TLS is mandatory in real deployments.
+- **HTTP, not HTTPS.** `NODE_ENV` is left unset on purpose. With
+  `NODE_ENV=production` the auth cookie is marked `Secure`, which a browser only
+  sends in a secure context (HTTPS, or `http://localhost`). A network-exposed
+  plain-HTTP deployment therefore needs TLS; a localhost / SSH-port-forward
+  deployment does not. See the guide's
+  [TLS, `NODE_ENV`, and secure contexts](../docs/multi-user-setup-guide.md#tls-node_env-and-secure-contexts).
 - **No static UI in this image.** The bundled login UI is only served when
-  `NODE_ENV=production`; verification here is API/WebSocket-driven. To click
-  through the browser UI you need `NODE_ENV=production` + TLS.
+  `NODE_ENV=production` (the same flag that makes the cookie `Secure`);
+  verification here is API/WebSocket-driven. To click through the browser UI you
+  need `NODE_ENV=production` plus a secure context (HTTPS, or `http://localhost`).
 - **arm64/amd64**: the image builds natively for the host architecture; the
   `bun-pty` native module is installed inside the runtime stage to match.

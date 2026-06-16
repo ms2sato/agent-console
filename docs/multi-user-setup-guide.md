@@ -242,8 +242,10 @@ WantedBy=multi-user.target
 EOF
 ```
 
-> `NODE_ENV=production` makes the auth cookie `Secure`. In production this is
-> correct **only behind TLS** (see [TLS is required](#tls-is-required-in-production)).
+> `NODE_ENV=production` enables the web UI and makes the auth cookie `Secure`.
+> The cookie then requires a secure context — HTTPS, or `http://localhost` (e.g.
+> via an SSH tunnel). See
+> [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
 
 Enable and start:
 
@@ -385,23 +387,57 @@ curl -X POST http://localhost:8080/api/auth/login \
 | `PORT` | `3457` | Server port. `3457` is the dev fallback; pick any port for production (this guide uses `8080`). |
 | `HOST` | `0.0.0.0` | Bind address. Defaults to all interfaces; set to `127.0.0.1` to restrict to localhost. |
 | `AGENT_CONSOLE_HOME` | `~/.agent-console` | Config and database directory. The SQLite database is `<AGENT_CONSOLE_HOME>/data.db`; the JWT signing secret is `<AGENT_CONSOLE_HOME>/jwt-secret` (auto-generated, mode 0600, on first start). |
-| `NODE_ENV` | _(unset)_ | Set to `production` in real deployments. This marks the auth cookie `secure`, so it is **only sent over HTTPS** — see [TLS is required](#tls-is-required-in-production). |
+| `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and** marks the auth cookie `Secure` (the two are the same flag). The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
 
-## TLS is required in production
+## TLS, `NODE_ENV`, and secure contexts
 
-When `NODE_ENV=production`, the authentication cookie is issued with the
-`Secure` attribute, meaning browsers send it **only over HTTPS**. Serving
-multi-user mode over plain HTTP in production would cause the cookie to be
-dropped and every authenticated request to fail. Terminate TLS in front of
-Agent Console (reverse proxy such as nginx/Caddy, or a load balancer) and set
-`APP_URL`/`HOST` accordingly.
+A single flag, `NODE_ENV=production`, controls two coupled behaviors:
 
-> The Docker verification environment in [`docker/`](../docker/README.md)
-> deliberately leaves `NODE_ENV` unset so it can be exercised over localhost
-> HTTP. That is a verification convenience, **not** a production pattern.
+- The authentication cookie is issued with the `Secure` attribute
+  (`auth.ts`: `secure: NODE_ENV === 'production'`), so browsers send it **only in
+  a secure context**.
+- The bundled web UI is served only in production (`index.ts` gates static file
+  serving on `isProduction`). With `NODE_ENV` unset the server exposes the
+  API/WebSocket but **not** the login UI.
+
+So any browser-based deployment needs `NODE_ENV=production` (to get the UI),
+which in turn makes the cookie `Secure`. Whether you also need TLS then depends
+on how the browser reaches the server.
+
+### Network-exposed over plain HTTP → TLS is required
+
+If users reach the server at `http://<host>` where `<host>` is **not** localhost,
+two things break:
+
+1. The `Secure` cookie is dropped (browsers only send `Secure` cookies over
+   HTTPS), so every authenticated request fails.
+2. OS passwords travel in clear text over the network.
+
+Terminate TLS in front of Agent Console (reverse proxy such as nginx/Caddy, or a
+load balancer) and forward both the HTTP routes and the WebSocket upgrade
+(`/ws/*`). Set `APP_URL`/`HOST` accordingly.
+
+### localhost or SSH port-forward → TLS is not required
+
+If each user reaches the server at `http://localhost:<port>` — directly on the
+machine, or through an SSH tunnel (`ssh -L <port>:localhost:<port> <host>`) — TLS
+is unnecessary:
+
+- An SSH tunnel already encrypts the transport, so passwords are not exposed.
+- Browsers treat `http://localhost` (and `127.0.0.1`) as a **secure context**
+  (the W3C Secure Contexts spec classifies loopback addresses as potentially
+  trustworthy), so the `Secure` cookie is still accepted.
+
+This is a valid low-friction setup for a small or trusted team.
+
+> **Not empirically verified here.** The Docker verification in this repo uses a
+> non-browser client with `NODE_ENV` unset, so the `NODE_ENV=production` +
+> `Secure` cookie + `http://localhost` browser path was not exercised. The above
+> reflects the documented browser secure-context behavior — confirm it in your
+> own browser before relying on it for a deployment.
 
 ## Troubleshooting
 
