@@ -26,6 +26,20 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('user-mode');
 
+/**
+ * Neutral working directory for the outer `sudo` spawn in MultiUserMode.
+ *
+ * bun-pty applies the outer `cwd` via `chdir()` in the pre-exec child, which
+ * still runs as the service user (before sudo drops privileges to the target
+ * user). If we passed `request.cwd` here and it points inside the target user's
+ * private directory (e.g. a 0700 home), the service user lacks traverse (`x`)
+ * permission and `chdir()` fails with EACCES, aborting the spawn. `/` is always
+ * traversable, so the pre-exec chdir never fails. The actual landing into
+ * `request.cwd` is handled by the inner `cd` in spawnSudoPty(), which runs as
+ * the target user and therefore succeeds even for a 0700 home.
+ */
+const SUDO_NEUTRAL_CWD = '/';
+
 // ========== PtySpawnRequest (Discriminated Union) ==========
 
 /**
@@ -481,7 +495,9 @@ export class MultiUserMode implements UserMode {
         name: 'xterm-256color',
         cols: request.cols,
         rows: request.rows,
-        cwd: request.cwd,
+        // Use a neutral, always-traversable cwd for the pre-exec chdir; the
+        // inner `cd ${request.cwd}` (run as the target user) handles landing.
+        cwd: SUDO_NEUTRAL_CWD,
       },
     );
   }

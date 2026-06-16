@@ -468,6 +468,9 @@ describe('MultiUserMode', () => {
       // Terminal should NOT have AGENT_CONSOLE_* vars
       expect(opts.env!.AGENT_CONSOLE_BASE_URL).toBeUndefined();
       expect(opts.env!.AGENT_CONSOLE_SESSION_ID).toBeUndefined();
+      // Regression (#802): the sudo-skip direct path must keep the real cwd as
+      // the outer spawn cwd — it runs as the target user, so 0700 dirs are fine.
+      expect(opts.cwd).toBe('/workspace/project');
     });
 
     it('should include optional agentConsoleContext fields when provided', async () => {
@@ -796,6 +799,63 @@ describe('MultiUserMode', () => {
       // With no env vars and terminal type, should just cd and exec shell
       expect(innerCommand).toContain("cd '/workspace'");
       expect(innerCommand).toContain('exec $SHELL -l');
+    });
+
+    // Regression: #802 — the outer sudo cwd must be a neutral, always-traversable
+    // directory ('/'), NOT request.cwd. bun-pty applies the outer cwd via chdir()
+    // in the pre-exec child while it still runs as the service user; if request.cwd
+    // is inside the target user's 0700 home the service user lacks traverse (x)
+    // permission and chdir() fails with EACCES, aborting the spawn. Landing into
+    // request.cwd is guaranteed by the inner `cd` (run as the target user).
+    it('should use neutral outer cwd "/" while keeping inner cd to request.cwd (agent)', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'alice',
+        // A target user's private 0700 home; service user cannot traverse it.
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        cols: 120,
+        rows: 30,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args, opts] = getLastSpawnCall();
+      expect(cmd).toBe('sudo');
+      // Outer cwd must be neutral, not the private home dir.
+      expect(opts.cwd).toBe('/');
+      // Inner command must still cd into the actual working dir (landing guarantee).
+      const innerCommand = args[5];
+      expect(innerCommand).toContain("cd '/home/alice'");
+    });
+
+    it('should use neutral outer cwd "/" while keeping inner cd to request.cwd (terminal)', async () => {
+      const mode = await createMode();
+
+      const request: TerminalPtySpawnRequest = {
+        type: 'terminal',
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args, opts] = getLastSpawnCall();
+      expect(cmd).toBe('sudo');
+      expect(opts.cwd).toBe('/');
+      const innerCommand = args[5];
+      expect(innerCommand).toContain("cd '/home/alice'");
     });
   });
 });

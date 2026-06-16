@@ -19,11 +19,34 @@ import type { Kysely } from 'kysely';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SingleUserMode, MultiUserMode } from '../user-mode.js';
-import type { PtyProvider } from '../../lib/pty-provider.js';
+import type { TerminalPtySpawnRequest } from '../user-mode.js';
+import type { PtyProvider, PtySpawnOptions, PtyInstance } from '../../lib/pty-provider.js';
 
 const mockPtyProvider: PtyProvider = {
   spawn: () => { throw new Error('not implemented'); },
 };
+
+/**
+ * A PtyProvider that records the last spawn() call instead of starting a real PTY.
+ */
+function createCapturingPtyProvider(): {
+  provider: PtyProvider;
+  lastCall: () => [string, string[], PtySpawnOptions];
+} {
+  let last: [string, string[], PtySpawnOptions] | undefined;
+  return {
+    provider: {
+      spawn(command, args, options) {
+        last = [command, args, options];
+        return {} as PtyInstance;
+      },
+    },
+    lastCall: () => {
+      if (!last) throw new Error('spawn was not called');
+      return last;
+    },
+  };
+}
 
 describe('SingleUserMode', () => {
   let db: Kysely<any>;
@@ -107,6 +130,33 @@ describe('SingleUserMode', () => {
       const result = await userMode.login('any-user', 'any-password');
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('spawnPty() - direct spawn cwd (#802 regression)', () => {
+    // Single-user mode spawns directly as the server process user (no privilege
+    // drop), so the pre-exec chdir runs as that same user. request.cwd must stay
+    // as the outer cwd here — unlike the privileged sudo path, there is no
+    // service-user traverse problem to avoid. This guards against the #802 fix
+    // accidentally neutralizing the cwd of the unprivileged direct-spawn path.
+    it('should pass request.cwd as the outer spawn cwd', () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
+      const userMode = new SingleUserMode(provider, cachedUser);
+
+      const request: TerminalPtySpawnRequest = {
+        type: 'terminal',
+        username: 'cached',
+        cwd: '/home/cached/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+      };
+
+      userMode.spawnPty(request);
+
+      const [, , opts] = lastCall();
+      expect(opts.cwd).toBe('/home/cached/project');
     });
   });
 });
