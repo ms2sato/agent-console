@@ -107,9 +107,11 @@ RUN mkdir -p "${AGENT_CONSOLE_HOME}" \
  && chown -R agentconsole:agentconsole "${AGENT_CONSOLE_HOME}" /app/dist
 
 # Server configuration.
-# NOTE: NODE_ENV is intentionally left UNSET. In production NODE_ENV=production
-# makes the auth cookie `secure`, which is dropped over plain HTTP — fine behind
-# TLS but it would break the localhost HTTP verification done here.
+# NOTE: NODE_ENV is intentionally left UNSET. NODE_ENV=production makes the auth
+# cookie `secure` by default; AUTH_COOKIE_SECURE, when set, takes precedence over
+# that NODE_ENV fallback. A `secure` cookie is dropped over plain HTTP — fine
+# behind TLS but it would break the localhost HTTP verification done here.
+# AUTH_COOKIE_SECURE is also left unset, so the NODE_ENV fallback applies.
 ENV AUTH_MODE=multi-user \
     PORT=8080 \
     HOST=0.0.0.0 \
