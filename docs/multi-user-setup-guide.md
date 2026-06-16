@@ -387,7 +387,8 @@ curl -X POST http://localhost:8080/api/auth/login \
 | `PORT` | `3457` | Server port. `3457` is the dev fallback; pick any port for production (this guide uses `8080`). |
 | `HOST` | `0.0.0.0` | Bind address. Defaults to all interfaces; set to `127.0.0.1` to restrict to localhost. |
 | `AGENT_CONSOLE_HOME` | `~/.agent-console` | Config and database directory. The SQLite database is `<AGENT_CONSOLE_HOME>/data.db`; the JWT signing secret is `<AGENT_CONSOLE_HOME>/jwt-secret` (auto-generated, mode 0600, on first start). |
-| `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and** marks the auth cookie `Secure` (the two are the same flag). The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
+| `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and**, by default, marks the auth cookie `Secure`. The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
+| `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -407,18 +408,21 @@ or pure loopback. On such a network, TLS is not required *for confidentiality*.
 **Concern 2 — the `Secure` cookie / browser secure context.** A single flag,
 `NODE_ENV=production`, controls two coupled behaviors:
 
-- The auth cookie is issued with the `Secure` attribute (`auth.ts`:
-  `secure: NODE_ENV === 'production'`).
+- The auth cookie is issued with the `Secure` attribute. By default this follows
+  `NODE_ENV === 'production'`, but it can be decoupled with the
+  `AUTH_COOKIE_SECURE` override (see [Plain HTTP on a trusted
+  network](#plain-http-on-a-trusted-network-auth_cookie_secure) below).
 - The bundled web UI is served only in production (`index.ts` gates static file
   serving on `isProduction`). With `NODE_ENV` unset the server exposes the
   API/WebSocket but **not** the login UI.
 
 Because any browser deployment needs `NODE_ENV=production` (for the UI), the
-cookie is always `Secure`, and a browser sends a `Secure` cookie **only to a
+cookie is `Secure` by default, and a browser sends a `Secure` cookie **only to a
 secure context**: an `https://` origin, or `http://localhost` / `http://127.0.0.1`.
 This is decided purely by the URL's scheme and host — **it does not matter how
 safe the network is**. A WARP-protected `http://<internal-host>:<port>` still
-drops the cookie and login fails.
+drops the cookie and login fails — unless you explicitly relax the requirement
+with `AUTH_COOKIE_SECURE=false` (see below).
 
 ### Decision table
 
@@ -427,22 +431,47 @@ drops the cookie and login fails.
 | `https://<host>` (TLS terminated anywhere — internal CA, Cloudflare, reverse proxy) | ✅ TLS | ✅ (https origin) | ✅ |
 | `http://localhost:<port>` (directly, or a forward/tunnel that makes the origin appear as localhost) | ✅ loopback/tunnel | ✅ (localhost = secure context) | ✅ |
 | `http://<non-localhost host>:<port>` plain HTTP — **even on WARP/VPN/internal LAN** | ✅ if on a trusted net | ❌ dropped | ❌ login fails |
+| `http://<non-localhost host>:<port>` plain HTTP **with `AUTH_COOKIE_SECURE=false`** — only on a trusted net | ✅ if on a trusted net | ➖ sent without `Secure` | ✅ |
 
-So on a trusted private network you have two valid options today: terminate TLS
-to get an `https://` origin, **or** have each member reach the server as
+So on a trusted private network you have three valid options: terminate TLS to
+get an `https://` origin; have each member reach the server as
 `http://localhost:<port>` (e.g. a per-machine port-forward from the host/VM, or
-`ssh -L <port>:localhost:<port> <host>`). What does **not** work is pointing
-browsers at a plain-HTTP non-localhost URL, regardless of how private the network
-is.
+`ssh -L <port>:localhost:<port> <host>`); **or**, when the network itself is
+already trusted, set `AUTH_COOKIE_SECURE=false` so the cookie is issued without
+`Secure` and plain-HTTP non-localhost logins work (see below). Without that
+override, pointing browsers at a plain-HTTP non-localhost URL does **not** work,
+regardless of how private the network is.
 
-> **Plain HTTP on a trusted network (e.g. Cloudflare WARP) — planned support.**
-> If members access the server directly at `http://<internal-host>:<port>` over a
-> network that is already private, confidentiality is covered but the `Secure`
-> cookie is still dropped, so login fails. Decoupling the cookie's `Secure`
-> attribute from `NODE_ENV` (a planned `AUTH_COOKIE_SECURE`-style setting) is
-> tracked in [issue #805](https://github.com/ms2sato/agent-console/issues/805).
-> Until that lands, use TLS termination (`https://`) or localhost access for
-> browser logins on such a network.
+### Plain HTTP on a trusted network (`AUTH_COOKIE_SECURE`)
+
+When members access the server directly at `http://<internal-host>:<port>` over a
+network that is already private (e.g. Cloudflare WARP, a VPN, or a zero-trust
+overlay), confidentiality is covered by the network layer, but the browser still
+drops the `Secure` auth cookie, so login never persists. To support this topology,
+set `AUTH_COOKIE_SECURE=false`: the auth cookie is then issued **without** the
+`Secure` attribute, and plain-HTTP logins work.
+
+```bash
+# Trusted private network, plain HTTP, no app-level TLS:
+NODE_ENV=production AUTH_MODE=multi-user AUTH_COOKIE_SECURE=false <start command>
+```
+
+`AUTH_COOKIE_SECURE` is tri-state:
+
+| Value | Effect |
+|---|---|
+| _(unset, default)_ | `Secure` follows `NODE_ENV` — `Secure` in production, not otherwise. No change from historical behavior. |
+| `false` | Cookie issued **without** `Secure`, regardless of `NODE_ENV`. |
+| `true` | Cookie **always** `Secure`, regardless of `NODE_ENV`. |
+
+Any other value fails fast at startup. When `AUTH_COOKIE_SECURE=false` is combined
+with `NODE_ENV=production`, the server emits a loud startup warning naming the risk.
+
+> **⚠️ Only on a genuinely trusted network.** Disabling `Secure` means the session
+> cookie is transmitted over plain HTTP, so any untrusted segment on the path
+> enables session hijacking. Use it only where the network layer (WARP/VPN/overlay)
+> already guarantees confidentiality — never on the public internet or an untrusted
+> LAN.
 
 When you do terminate TLS, do it in front of Agent Console (reverse proxy such as
 nginx/Caddy, or a load balancer), forward both the HTTP routes and the WebSocket
