@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  parseAuthCookieSecure,
+  resolveAuthCookieSecure,
+  shouldWarnInsecureAuthCookie,
+} from '../server-config.js';
 
 describe('server-config', () => {
   const originalEnv = { ...process.env };
@@ -110,6 +115,158 @@ describe('server-config', () => {
       const { serverConfig } = await importServerConfig();
 
       expect(serverConfig.AGENT_CONSOLE_SHARED_USERNAME).toBe('agent-console-shared');
+    });
+
+    it('should default AUTH_COOKIE_SECURE to undefined when not set', async () => {
+      delete process.env.AUTH_COOKIE_SECURE;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_COOKIE_SECURE).toBeUndefined();
+    });
+
+    it('should treat empty AUTH_COOKIE_SECURE as unset', async () => {
+      process.env.AUTH_COOKIE_SECURE = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_COOKIE_SECURE).toBeUndefined();
+    });
+
+    it('should expose AUTH_COOKIE_SECURE=true as boolean true', async () => {
+      process.env.AUTH_COOKIE_SECURE = 'true';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_COOKIE_SECURE).toBe(true);
+    });
+
+    it('should expose AUTH_COOKIE_SECURE=false as boolean false', async () => {
+      process.env.AUTH_COOKIE_SECURE = 'false';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AUTH_COOKIE_SECURE).toBe(false);
+    });
+
+    it('should throw for invalid AUTH_COOKIE_SECURE value', async () => {
+      process.env.AUTH_COOKIE_SECURE = '1';
+
+      await expect(importServerConfig()).rejects.toThrow(
+        "Invalid AUTH_COOKIE_SECURE: '1'. Must be 'true', 'false', or unset."
+      );
+    });
+  });
+
+  describe('parseAuthCookieSecure', () => {
+    it('returns undefined for undefined input', () => {
+      expect(parseAuthCookieSecure(undefined)).toBeUndefined();
+    });
+
+    it('returns undefined for empty string', () => {
+      expect(parseAuthCookieSecure('')).toBeUndefined();
+    });
+
+    it("returns true for 'true'", () => {
+      expect(parseAuthCookieSecure('true')).toBe(true);
+    });
+
+    it("returns false for 'false'", () => {
+      expect(parseAuthCookieSecure('false')).toBe(false);
+    });
+
+    it("throws for '1'", () => {
+      expect(() => parseAuthCookieSecure('1')).toThrow(
+        "Invalid AUTH_COOKIE_SECURE: '1'. Must be 'true', 'false', or unset."
+      );
+    });
+
+    it("throws for 'yes'", () => {
+      expect(() => parseAuthCookieSecure('yes')).toThrow(
+        "Invalid AUTH_COOKIE_SECURE: 'yes'. Must be 'true', 'false', or unset."
+      );
+    });
+
+    it("throws for 'TRUE' (case-sensitive)", () => {
+      expect(() => parseAuthCookieSecure('TRUE')).toThrow(
+        "Invalid AUTH_COOKIE_SECURE: 'TRUE'. Must be 'true', 'false', or unset."
+      );
+    });
+  });
+
+  describe('resolveAuthCookieSecure', () => {
+    it('unset + production -> true (preserves current behavior)', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: 'production' })
+      ).toBe(true);
+    });
+
+    it('unset + development -> false', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: 'development' })
+      ).toBe(false);
+    });
+
+    it('unset + undefined NODE_ENV -> false', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: undefined })
+      ).toBe(false);
+    });
+
+    it('false + production -> false', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: false, NODE_ENV: 'production' })
+      ).toBe(false);
+    });
+
+    it('false + development -> false', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: false, NODE_ENV: 'development' })
+      ).toBe(false);
+    });
+
+    it('true + development -> true', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: true, NODE_ENV: 'development' })
+      ).toBe(true);
+    });
+
+    it('true + production -> true', () => {
+      expect(
+        resolveAuthCookieSecure({ AUTH_COOKIE_SECURE: true, NODE_ENV: 'production' })
+      ).toBe(true);
+    });
+  });
+
+  describe('shouldWarnInsecureAuthCookie', () => {
+    it('false + production -> true (the only true case)', () => {
+      expect(
+        shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: false, NODE_ENV: 'production' })
+      ).toBe(true);
+    });
+
+    it('false + development -> false', () => {
+      expect(
+        shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: false, NODE_ENV: 'development' })
+      ).toBe(false);
+    });
+
+    it('undefined + production -> false', () => {
+      expect(
+        shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: 'production' })
+      ).toBe(false);
+    });
+
+    it('true + production -> false', () => {
+      expect(
+        shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: true, NODE_ENV: 'production' })
+      ).toBe(false);
+    });
+
+    it('undefined + development -> false', () => {
+      expect(
+        shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: 'development' })
+      ).toBe(false);
     });
   });
 

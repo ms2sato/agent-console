@@ -14,7 +14,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { LoginRequestSchema } from '@agent-console/shared';
 import { vValidator } from '../middleware/validation.js';
 import type { AppBindings } from '../app-context.js';
-import { serverConfig } from '../lib/server-config.js';
+import { serverConfig, resolveAuthCookieSecure } from '../lib/server-config.js';
 import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 
 /** Cookie max-age in seconds (7 days, matches JWT expiry) */
@@ -88,7 +88,7 @@ const auth = new Hono<AppBindings>()
     // Set httpOnly cookie with the token
     setCookie(c, AUTH_COOKIE_NAME, result.token, {
       httpOnly: true,
-      secure: serverConfig.NODE_ENV === 'production',
+      secure: resolveAuthCookieSecure(serverConfig),
       sameSite: 'Lax',
       path: '/',
       maxAge: AUTH_COOKIE_MAX_AGE,
