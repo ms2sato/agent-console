@@ -1,10 +1,28 @@
 #!/bin/bash
+#
+# Deploy Agent Console as a per-user systemd service on Ubuntu/Linux.
+#
+# Notes:
+#   - Requires `rsync` (checked below). Install with: sudo apt-get install -y rsync
+#   - The service port defaults to 6000 + (uid % 1000). Known caveat: users whose
+#     UIDs differ by a multiple of 1000 (e.g. 1000 and 2000) collide on the same
+#     port. Set PORT explicitly to override.
+#   - Enables systemd "lingering" for the current user so the service keeps running
+#     after logout and starts on boot (no login session required).
+#
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_DIR"
+
+# Fail early with a clear message if rsync is missing (used during deploy below).
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "Error: rsync is required but was not found." >&2
+    echo "Install it with: sudo apt-get install -y rsync" >&2
+    exit 1
+fi
 
 echo "==> Installing dependencies..."
 bun install
@@ -43,6 +61,19 @@ mkdir -p ~/.agent-console/server
 rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/
 cd ~/.agent-console/server
 bun install --production
+
+echo "==> Enabling lingering (keeps the service running after logout / across reboots)..."
+# Without lingering, a --user service stops at logout and does not start on boot.
+# enable-linger for one's own user may or may not require privileges depending on
+# the system's polkit policy, so do not abort the whole deploy if it fails.
+LINGER_USER="${USER:-$(id -un)}"
+if loginctl enable-linger "$LINGER_USER" 2>/dev/null; then
+    echo "  Lingering enabled for $LINGER_USER"
+else
+    echo "  Warning: could not enable lingering for $LINGER_USER."
+    echo "  The service will stop at logout and not start on boot until you run:"
+    echo "    sudo loginctl enable-linger $LINGER_USER"
+fi
 
 echo "==> Reloading systemd and restarting service..."
 systemctl --user daemon-reload
