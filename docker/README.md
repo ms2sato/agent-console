@@ -72,13 +72,18 @@ exists solely for local verification.
 - **sudoers** — `MultiUserMode.spawnSudoPty()` runs `sudo -u <user> -i sh -c`.
   The `agentconsole` user is granted `NOPASSWD` shell access to any non-root
   user, and nothing else.
-- **`0711` test home directories** — the PTY spawn helper `chdir`s into the
-  session's working directory _as the service user_ before `sudo` switches to
-  the target user. Debian's default `0700` home would deny that `chdir` and the
-  spawn fails with "PTY spawn failed". The image sets the test homes to `0711`
-  (traversable, not readable). This is an operational workaround; the root-cause
-  fix is tracked in
-  [issue #802](https://github.com/ms2sato/agent-console/issues/802).
+- **`0711` test home directories (default)** — historically the PTY spawn helper
+  `chdir`ed into the session's working directory _as the service user_ before
+  `sudo` switched to the target user, so Debian's default `0700` home denied that
+  `chdir` and the spawn failed with "PTY spawn failed". The root cause was fixed
+  in [#806](https://github.com/ms2sato/agent-console/pull/806) (the pre-exec
+  `chdir` now lands on a neutral `/`; the real `cd` happens in the inner shell
+  that runs as the target user). The image still defaults the test homes to
+  `0711` to mirror the conservative deployment recommendation, but the home mode
+  is now a build arg: pass `--build-arg TEST_HOME_MODE=0700` (or set
+  `TEST_HOME_MODE=0700` in the compose env) to build a `0700`-home image. The CI
+  E2E job ([#808](https://github.com/ms2sato/agent-console/issues/808)) runs both
+  modes so the `0700` path is permanently guarded.
 
 ## Building behind a blocked Docker Hub
 

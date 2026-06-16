@@ -1,0 +1,64 @@
+name: Docker Multi-User E2E
+
+# Builds the multi-user verification image (docker/Dockerfile) from its committed
+# default base (oven/bun:1.3.8, no --build-arg override) to prove clean-pull
+# reproducibility, then runs scripts/verify-multiuser-docker.sh end to end:
+# authMode / unauth 401 / wrong+right password / alice+bob PTY whoami isolation
+# (7 checks total). The matrix runs the same checks against both home-permission
+# modes:
+#   - 0711: the image default (conservative deployment recommendation)
+#   - 0700: Debian's default; regression guard for the #806 neutral-cwd PTY-spawn
+#           fix (a 0700 home must still spawn a PTY and resolve whoami).
+#
+# Docker build is heavier than the unit suite, so this is path-filtered to the
+# multi-user surface (the harness, the auth route, and the user-mode service).
+# It is NOT a required check for unrelated PRs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/verify-multiuser-docker.sh'
+      - 'packages/server/src/services/user-mode.ts'
+      - 'packages/server/src/routes/auth.ts'
+      - '.github/workflows/docker-multiuser-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/verify-multiuser-docker.sh'
+      - 'packages/server/src/services/user-mode.ts'
+      - 'packages/server/src/routes/auth.ts'
+      - '.github/workflows/docker-multiuser-e2e.yml'
+
+concurrency:
+  group: docker-multiuser-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (home ${{ matrix.home_mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        home_mode: ['0711', '0700']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # verify-multiuser-docker.sh runs docker/verify-client.ts on the host (the
+      # PTY identity probe), so bun must be on PATH. Docker + compose v2 are
+      # preinstalled on ubuntu-latest.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build image and run multi-user E2E (home ${{ matrix.home_mode }})
+        env:
+          # Consumed by docker-compose.yml's build.args -> Dockerfile ARG.
+          TEST_HOME_MODE: ${{ matrix.home_mode }}
+        run: scripts/verify-multiuser-docker.sh

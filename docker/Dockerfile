@@ -80,20 +80,25 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 # --- Test OS users with known passwords (VERIFICATION ONLY) ---
 # Passwords are intentionally well-known; this image must never be exposed.
 #
-# Home dirs are set to 0711 (traversable but not readable by others). The server
-# spawns `sudo -u <user> -i` with the session's working directory as the PTY
-# cwd, and the forked child performs chdir(cwd) WHILE STILL the service user
-# (before sudo switches to the target user). Debian's default HOME_MODE=0700
-# would deny that chdir and the spawn fails with "PTY spawn failed". 0711 lets
-# the service user enter the directory without exposing its contents. This
-# mirrors the real-deployment requirement documented in
-# docs/multi-user-setup-guide.md ("service user must be able to enter session
-# working directories").
+# TEST_HOME_MODE controls the permission bits on the test users' home dirs:
+#
+# - 0711 (default) — traversable but not readable by others. This mirrors the
+#   conservative real-deployment recommendation in docs/multi-user-setup-guide.md
+#   ("service user must be able to enter session working directories").
+# - 0700 — Debian's default; private to the owner. Before #806 a 0700 home broke
+#   the PTY spawn: the forked child ran chdir(session cwd) WHILE STILL the
+#   service user (before sudo switched to the target user), and the service user
+#   lacked traverse permission, so the spawn failed with "PTY spawn failed".
+#   #806 fixed this by performing the pre-exec chdir into a neutral, always
+#   traversable cwd (`/`) and deferring the `cd` into the session directory to
+#   the inner shell that runs AS the target user. The CI E2E job builds a second
+#   image with TEST_HOME_MODE=0700 to permanently guard that fix (issue #808).
+ARG TEST_HOME_MODE=0711
 RUN useradd --create-home --shell /bin/bash alice \
  && useradd --create-home --shell /bin/bash bob \
  && echo 'alice:alice-password' | chpasswd \
  && echo 'bob:bob-password' | chpasswd \
- && chmod 0711 /home/alice /home/bob
+ && chmod "${TEST_HOME_MODE}" /home/alice /home/bob
 
 # --- Application bundle ---
 WORKDIR /app
