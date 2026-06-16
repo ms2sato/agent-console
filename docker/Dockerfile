@@ -80,20 +80,21 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 # --- Test OS users with known passwords (VERIFICATION ONLY) ---
 # Passwords are intentionally well-known; this image must never be exposed.
 #
-# Home dirs are set to 0711 (traversable but not readable by others). The server
-# spawns `sudo -u <user> -i` with the session's working directory as the PTY
-# cwd, and the forked child performs chdir(cwd) WHILE STILL the service user
-# (before sudo switches to the target user). Debian's default HOME_MODE=0700
-# would deny that chdir and the spawn fails with "PTY spawn failed". 0711 lets
-# the service user enter the directory without exposing its contents. This
-# mirrors the real-deployment requirement documented in
-# docs/multi-user-setup-guide.md ("service user must be able to enter session
-# working directories").
+# Home dirs are left at 0700 — the OS default (Debian/Ubuntu HOME_MODE) and the
+# most restrictive, private-to-the-owner mode. This is the permanent regression
+# guard for #806: before that fix the PTY spawn ran chdir(session cwd) WHILE
+# STILL the service user (before sudo switched to the target user), so a 0700
+# home it did not own denied the chdir and the spawn failed with "PTY spawn
+# failed". #806 fixed it by performing the pre-exec chdir into a neutral,
+# always-traversable cwd (`/`) and deferring the `cd` into the session directory
+# to the inner shell that runs AS the target user. Keeping the test homes at the
+# default 0700 means the CI E2E job permanently exercises that fixed path so a
+# regression resurfaces as a failing build (issue #808).
 RUN useradd --create-home --shell /bin/bash alice \
  && useradd --create-home --shell /bin/bash bob \
  && echo 'alice:alice-password' | chpasswd \
  && echo 'bob:bob-password' | chpasswd \
- && chmod 0711 /home/alice /home/bob
+ && chmod 0700 /home/alice /home/bob
 
 # --- Application bundle ---
 WORKDIR /app

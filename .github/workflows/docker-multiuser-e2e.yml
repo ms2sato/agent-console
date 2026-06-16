@@ -1,0 +1,65 @@
+name: Docker Multi-User E2E
+
+# Builds the multi-user verification image (docker/Dockerfile) from its committed
+# default base (oven/bun:1.3.8, no --build-arg override) to prove clean-pull
+# reproducibility, then runs scripts/verify-multiuser-docker.sh end to end:
+# authMode / unauth 401 / wrong+right password / alice+bob PTY whoami isolation
+# (7 checks total).
+#
+# The test users' home dirs are the OS default 0700 (set in docker/Dockerfile),
+# so this job also permanently guards the #806 neutral-cwd PTY-spawn fix: a 0700
+# home must still spawn a PTY and resolve whoami.
+#
+# Docker build is heavier than the unit suite, so this is path-filtered to the
+# multi-user surface (the harness, the auth route, and the user-mode service).
+# It is NOT a required check for unrelated PRs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/verify-multiuser-docker.sh'
+      - 'packages/server/src/services/user-mode.ts'
+      - 'packages/server/src/routes/auth.ts'
+      - '.github/workflows/docker-multiuser-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/verify-multiuser-docker.sh'
+      - 'packages/server/src/services/user-mode.ts'
+      - 'packages/server/src/routes/auth.ts'
+      - '.github/workflows/docker-multiuser-e2e.yml'
+
+# This job only checks out the repo and builds/runs docker locally; it never
+# writes to the repo, comments, or pushes. Least-privilege read-only token.
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-multiuser-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (home 0700)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job never pushes; drop the auto-persisted git credentials.
+          persist-credentials: false
+
+      # verify-multiuser-docker.sh runs docker/verify-client.ts on the host (the
+      # PTY identity probe), so bun must be on PATH. Docker + compose v2 are
+      # preinstalled on ubuntu-latest.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build image and run multi-user E2E (home 0700)
+        run: scripts/verify-multiuser-docker.sh

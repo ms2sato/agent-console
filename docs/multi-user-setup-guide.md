@@ -324,36 +324,20 @@ Users do **not** need:
 
 Their existing environment (`.bashrc`, `.zshrc`, SSH keys, git config, API keys) works automatically because PTY processes run as their user via `sudo -u <user> -i`, which loads their login shell profile.
 
-### The service user must be able to enter session working directories
+### Default `0700` home directories work as-is
 
-When the server starts a PTY it spawns `sudo -u <user> -i` with the session's
-working directory as the PTY's `cwd`. The spawn helper performs `chdir(cwd)` in
-the forked child **before** `sudo` switches to the target user — i.e. while the
-process is still the service user. If the service user cannot enter that
-directory, the spawn fails with **"PTY spawn failed"** even though
-authentication succeeded.
+User home directories at the OS default mode `0700` (Debian/Ubuntu
+`HOME_MODE 0700`, private to the owner) work with **no permission change**.
 
-This matters when a session's working directory is a user's home directory and
-that home is mode `0700` (the default on Debian/Ubuntu, `HOME_MODE 0700`). The
-service user cannot `chdir` into a `0700` home it does not own.
-
-Ensure the service user has **traverse (execute) permission** on every directory
-used as a session working directory. The least-privilege fix for home
-directories is `0711` (traversable but not readable by others):
-
-```bash
-sudo chmod 0711 /home/alice
-```
-
-`0711` lets the service user enter the directory to launch the PTY without being
-able to list or read its contents; the user's files keep their own permissions.
-Worktree directories created by the server are already owned by the service user
-and need no change.
-
-> `0711` is an **operational** workaround. The underlying cause — the spawn
-> helper passing the target user's private directory as the PTY `cwd` and
-> `chdir`-ing into it as the service user — is tracked for a root-cause fix in
-> [issue #802](https://github.com/ms2sato/agent-console/issues/802).
+When the server starts a PTY it spawns `sudo -u <user> -i` for the session's
+working directory. The privileged spawn performs its pre-exec `chdir` into a
+neutral, always-traversable directory (`/`) while still the service user, and
+the real `cd` into the session's working directory happens in the inner login
+shell that already runs **as the target user**. The service user therefore never
+needs to enter another user's private directory — the target user can always
+enter their own home — so you do not need to loosen home permissions for
+multi-user mode. Worktree directories created by the server are owned by the
+service user and likewise need no change.
 
 ## Step 6: Verify the Setup
 
@@ -509,9 +493,13 @@ The server log shows `pamtester: Authentication failure` followed by
 
 ### "PTY spawn failed" after a successful login
 
-The session's working directory is not enterable by the service user (commonly a
-`0700` home directory). See
-[The service user must be able to enter session working directories](#the-service-user-must-be-able-to-enter-session-working-directories).
+This usually points to a PTY spawn-path regression or a sudoers / config
+mismatch — **not** to home-directory permissions. A user's default `0700` home
+is supported and needs no change; see
+[Default `0700` home directories work as-is](#default-0700-home-directories-work-as-is).
+Check that the service user's sudoers entry grants `NOPASSWD` login-shell access
+to the target user and that the server log shows the `sudo -u <user> -i` command
+it attempted.
 
 ### "This account is currently not available" when testing sudo
 
