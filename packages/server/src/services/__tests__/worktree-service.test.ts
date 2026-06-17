@@ -344,7 +344,12 @@ detached
   });
 
   describe('removeWorktree', () => {
+    // ① Primary repo dir exists + clean: behavior unchanged (normal git path).
+    //   The pre-check stats repoPath against memfs, so the primary must exist in
+    //   the in-memory volume for the normal git path to run.
     it('should remove worktree successfully', async () => {
+      // Primary repo dir must exist for the normal git path (pre-check passes)
+      fs.mkdirSync('/repo', { recursive: true });
       // Pre-populate DB record for the worktree being removed
       mockRepo.records.push({
         id: 'wt-1',
@@ -361,11 +366,18 @@ detached
 
       expect(result.success).toBe(true);
       expect(result.error).toBeUndefined();
+      // Normal git path runs because the primary exists
+      expect(mockGit.removeWorktree).toHaveBeenCalledWith(
+        '/worktrees/feature',
+        '/repo',
+        { force: false }
+      );
       // Verify record was deleted from mock repository
       expect(mockRepo.records.length).toBe(0);
     });
 
     it('should use force flag when specified', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
       // Pre-populate DB record
       mockRepo.records.push({
         id: 'wt-1',
@@ -388,6 +400,7 @@ detached
     });
 
     it('should return error on failure', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
       mockGit.removeWorktree.mockImplementation(() =>
         Promise.reject(new GitError('worktree has changes', 128, 'fatal: worktree has uncommitted changes'))
       );
@@ -399,6 +412,76 @@ detached
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
+    });
+
+    // ② Primary repo dir MISSING + worktree dir present: git-independent recovery.
+    it('should recover orphaned worktree when primary repo dir is missing', async () => {
+      // Primary repo dir does NOT exist (deleted out-of-band).
+      // Worktree dir exists on disk and has a DB record.
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.removeWorktree('/repo-missing', '/worktrees/feature');
+
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+      // DB record removed even though no git ran
+      expect(mockRepo.records.length).toBe(0);
+      // Worktree directory is gone
+      expect(fs.existsSync('/worktrees/feature')).toBe(false);
+      // git was NOT invoked (recovery skips git entirely)
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    // ③ Primary MISSING + worktree dir ALSO already deleted: idempotent recovery.
+    it('should be idempotent when primary missing and worktree dir already gone', async () => {
+      // Neither the primary nor the worktree dir exists.
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/already-gone',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.removeWorktree('/repo-missing', '/worktrees/already-gone');
+
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+      // deleteByPath still ran, record removed
+      expect(mockRepo.records.length).toBe(0);
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    // ④ Orphaned existing row is recoverable when primary missing.
+    it('should remove the orphaned DB row when primary missing', async () => {
+      fs.mkdirSync('/worktrees/orphaned', { recursive: true });
+      mockRepo.records.push({
+        id: 'wt-orphan',
+        repositoryId: 'repo-1',
+        path: '/worktrees/orphaned',
+        indexNumber: 2,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.removeWorktree('/repo-missing', '/worktrees/orphaned');
+
+      expect(mockRepo.records.find((r) => r.path === '/worktrees/orphaned')).toBeUndefined();
     });
   });
 
