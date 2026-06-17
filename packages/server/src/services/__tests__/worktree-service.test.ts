@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
@@ -482,6 +482,42 @@ detached
       await service.removeWorktree('/repo-missing', '/worktrees/orphaned');
 
       expect(mockRepo.records.find((r) => r.path === '/worktrees/orphaned')).toBeUndefined();
+    });
+
+    // ⑤ Non-ENOENT stat error (EACCES/EPERM/IO) on the primary repo dir must NOT
+    //    route to destructive recovery. It should surface as { success: false }
+    //    without running git or deleting the DB row.
+    it('should fail without destructive recovery when stat(repoPath) rejects with EACCES', async () => {
+      // DB record present; must remain present after the failed call.
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Force stat() to reject with a coded permission error (not ENOENT/ENOTDIR).
+      const statSpy = spyOn(fs.promises, 'stat').mockImplementation((() =>
+        Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+      ) as typeof fs.promises.stat);
+
+      try {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        const result = await service.removeWorktree('/repo', '/worktrees/feature');
+
+        // Surfaced as a failure, not a silent destructive recovery.
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+        // Git removal was NOT attempted.
+        expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+        // DB row was NOT deleted (record still present).
+        expect(mockRepo.records.find((r) => r.path === '/worktrees/feature')).toBeDefined();
+      } finally {
+        statSpy.mockRestore();
+      }
     });
   });
 

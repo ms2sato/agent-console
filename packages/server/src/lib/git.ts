@@ -346,7 +346,15 @@ export async function removeWorktree(
         cwdExists = false;
       }
       if (cwdExists) {
-        await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
+        try {
+          await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
+        } catch (pruneError) {
+          const code = (pruneError as NodeJS.ErrnoException | undefined)?.code;
+          // cwd may vanish between stat() and spawn(); cleanup already succeeded.
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            throw pruneError;
+          }
+        }
       }
       return;
     }
