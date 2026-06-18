@@ -5,7 +5,7 @@ import { api } from '../api.js';
 import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
-import type { Repository } from '@agent-console/shared';
+import type { AppServerMessage, Repository } from '@agent-console/shared';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -408,6 +408,46 @@ describe('Worktrees API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('required');
+    });
+
+    it('should broadcast worktree-deletion-failed with empty sessionIds when repository is not found (async path)', async () => {
+      // Async DELETE for a repoId the registry does not know.
+      // The handler must emit exactly one worktree-deletion-failed broadcast
+      // with sessionIds: [] (rather than zero broadcasts, which would leave the
+      // client-side WorktreeDeletionTask stuck on 'deleting' forever).
+      const broadcasts: AppServerMessage[] = [];
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          broadcastToApp: (msg) => { broadcasts.push(msg); },
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const unknownRepoId = 'non-existent-repo-id';
+      const res = await app.request(
+        `/api/repositories/${unknownRepoId}/worktrees/${encodedPath(WORKTREE_PATH)}?taskId=test-not-found-task`,
+        { method: 'DELETE' },
+      );
+
+      // Async path returns 202 immediately even when the repo is missing
+      expect(res.status).toBe(202);
+
+      // Wait for the background fire-and-forget task to complete
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const failedBroadcasts = broadcasts.filter(
+        (b): b is Extract<AppServerMessage, { type: 'worktree-deletion-failed' }> =>
+          b.type === 'worktree-deletion-failed' && b.taskId === 'test-not-found-task',
+      );
+      expect(failedBroadcasts.length).toBe(1);
+      expect(failedBroadcasts[0].sessionIds).toEqual([]);
+      expect(failedBroadcasts[0].error).toContain('Repository not found');
     });
   });
 });
