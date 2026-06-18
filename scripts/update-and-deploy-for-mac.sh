@@ -11,7 +11,14 @@ bun install
 
 echo "==> Installing plist..."
 COMMAND_PATH=$(which bun)
-DEFAULT_PORT=$((6000 + $(id -u) % 1000))
+# UID-based port assignment is only useful when multiple users share the host
+# (AUTH_MODE=multi-user). For the single-user default (AUTH_MODE unset or 'none')
+# fall back to the historical fixed default so existing bookmarks keep working.
+if [ "${AUTH_MODE:-none}" = "multi-user" ]; then
+    DEFAULT_PORT=$((6000 + $(id -u) % 1000))
+else
+    DEFAULT_PORT=6340
+fi
 PORT=${PORT:-$DEFAULT_PORT}
 APP_URL=${APP_URL:-"http://localhost:$PORT"}
 
