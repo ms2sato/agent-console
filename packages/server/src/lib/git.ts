@@ -334,7 +334,28 @@ export async function removeWorktree(
     ) {
       const fs = await import('node:fs/promises');
       await fs.rm(worktreePath, { recursive: true, force: true });
-      await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
+      // Only prune when the primary repo dir (cwd) still exists. If the primary
+      // was deleted out-of-band, `git worktree prune` would run against a dead
+      // cwd and Bun.spawn throws ENOENT. Pruning against an absent common dir is
+      // a no-op anyway, so skipping it is safe.
+      let cwdExists = false;
+      try {
+        await fs.stat(cwd);
+        cwdExists = true;
+      } catch {
+        cwdExists = false;
+      }
+      if (cwdExists) {
+        try {
+          await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
+        } catch (pruneError) {
+          const code = (pruneError as NodeJS.ErrnoException | undefined)?.code;
+          // cwd may vanish between stat() and spawn(); cleanup already succeeded.
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            throw pruneError;
+          }
+        }
+      }
       return;
     }
     throw error;

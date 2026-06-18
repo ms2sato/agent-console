@@ -320,6 +320,43 @@ export class WorktreeService {
     force: boolean = false
   ): Promise<{ success: boolean; error?: string }> {
     try {
+      // Detect the orphaned-worktree case where the primary repo dir was deleted
+      // out-of-band. Every git op in the removal path runs with cwd = repoPath, and
+      // a nonexistent cwd makes Bun.spawn throw ENOENT (not a GitError with parseable
+      // stderr), so the normal git path — including the force fallback's prune — cannot
+      // recover. A real-fs existence pre-check on repoPath is the reliable detector.
+      //
+      // Only ENOENT/ENOTDIR means "missing" — other stat errors (EACCES/EPERM/IO)
+      // must NOT route to destructive recovery; let them surface as a failure via
+      // the outer catch below.
+      let repoExists = false;
+      try {
+        const stat = await fsPromises.stat(repoPath);
+        repoExists = stat.isDirectory();
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          repoExists = false;
+        } else {
+          throw error; // caught by the outer catch → { success: false, error }
+        }
+      }
+
+      if (!repoExists) {
+        // Primary repo is gone: the worktree is already orphaned. Recover without
+        // git, unconditionally (no `force` required) — recovery of an orphaned
+        // worktree is always defensible, and this also satisfies "at minimum force
+        // must work". rm on a missing path and deleteByPath on a missing row are
+        // both no-ops, so this branch is idempotent.
+        await fsPromises.rm(worktreePath, { recursive: true, force: true });
+        await this.worktreeRepository.deleteByPath(worktreePath);
+        logger.warn(
+          { worktreePath, repoPath },
+          'Primary repo dir missing; removed orphaned worktree without git'
+        );
+        return { success: true };
+      }
+
       await gitRemoveWorktree(worktreePath, repoPath, { force });
 
       // Remove DB record
