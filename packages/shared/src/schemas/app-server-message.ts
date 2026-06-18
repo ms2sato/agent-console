@@ -303,7 +303,7 @@ const WorktreeCreationFailedSchema = v.object({
 const WorktreeDeletionCompletedSchema = v.object({
   type: v.literal('worktree-deletion-completed'),
   taskId: v.string(),
-  sessionId: v.string(),
+  sessionIds: v.array(v.string()),
   cleanupCommandResult: v.optional(HookCommandResultSchema),
   killErrors: v.optional(v.array(v.object({
     sessionId: v.string(),
@@ -314,7 +314,7 @@ const WorktreeDeletionCompletedSchema = v.object({
 const WorktreeDeletionFailedSchema = v.object({
   type: v.literal('worktree-deletion-failed'),
   taskId: v.string(),
-  sessionId: v.string(),
+  sessionIds: v.array(v.string()),
   error: v.string(),
   gitStatus: v.optional(v.string()),
 });

@@ -1999,12 +1999,13 @@ describe('API Routes Integration', () => {
           expect(bunSpawnCalls.length).toBe(1);
           expect(bunSpawnCalls[0].args[2]).toBe('docker compose down');
 
-          // No sessions exist for this worktree, so no broadcast should occur
+          // Exactly one broadcast is emitted per task, even when no sessions exist.
           const broadcastSpy = mockBroadcastToApp;
           const completedCalls = broadcastSpy.mock.calls.filter(
             (call: unknown[]) => (call[0] as { type: string }).type === 'worktree-deletion-completed'
           );
-          expect(completedCalls.length).toBe(0);
+          expect(completedCalls.length).toBe(1);
+          expect((completedCalls[0][0] as { sessionIds: string[] }).sessionIds).toEqual([]);
         } finally {
           restoreBunSpawn();
         }
@@ -2224,15 +2225,17 @@ describe('API Routes Integration', () => {
         // Session was NOT deleted (preserved for retry)
         expect(deleteSpy).not.toHaveBeenCalled();
 
-        // broadcastToApp was called with worktree-deletion-failed
+        // broadcastToApp was called exactly once with worktree-deletion-failed
         const broadcastSpy = mockBroadcastToApp;
-        const failedCall = broadcastSpy.mock.calls.find(
+        const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
             return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-task';
           }
         );
-        expect(failedCall).toBeDefined();
+        expect(failedCalls.length).toBe(1);
+        const failedPayload = failedCalls[0][0] as { sessionIds: string[] };
+        expect(Array.isArray(failedPayload.sessionIds)).toBe(true);
 
         // Session still exists
         const sessions = testSessionManager!.getAllSessions();
@@ -2240,7 +2243,7 @@ describe('API Routes Integration', () => {
         expect(sessionStillExists).toBe(true);
       });
 
-      it('should broadcast worktree-deletion-completed for all deleted sessions', async () => {
+      it('should broadcast worktree-deletion-completed exactly once with all deleted session ids', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
@@ -2284,7 +2287,8 @@ describe('API Routes Integration', () => {
         // Wait for background operation to complete
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        // Verify broadcastToApp was called with worktree-deletion-completed for EACH session ID
+        // Verify broadcastToApp was called exactly once with worktree-deletion-completed,
+        // and the payload contains ALL deleted session IDs.
         const broadcastSpy = mockBroadcastToApp;
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
@@ -2292,16 +2296,15 @@ describe('API Routes Integration', () => {
             return message.type === 'worktree-deletion-completed' && message.taskId === 'test-broadcast-all';
           }
         );
-        expect(completedCalls.length).toBe(2);
+        expect(completedCalls.length).toBe(1);
 
-        const broadcastSessionIds = completedCalls.map(
-          (call: unknown[]) => (call[0] as { sessionId: string }).sessionId
-        );
+        const broadcastSessionIds = (completedCalls[0][0] as { sessionIds: string[] }).sessionIds;
         expect(broadcastSessionIds).toContain(session1.id);
         expect(broadcastSessionIds).toContain(session2.id);
+        expect(broadcastSessionIds.length).toBe(2);
       });
 
-      it('should not broadcast worktree-deletion-completed when no sessions exist for deleted worktree', async () => {
+      it('should broadcast worktree-deletion-completed with empty sessionIds when no sessions exist for deleted worktree', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
@@ -2319,7 +2322,8 @@ describe('API Routes Integration', () => {
         // Wait for background operation to complete
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        // Verify broadcastToApp was NOT called with worktree-deletion-completed for this taskId
+        // Verify broadcastToApp WAS called exactly once with worktree-deletion-completed
+        // and sessionIds is an empty array (one-broadcast-per-task contract).
         const broadcastSpy = mockBroadcastToApp;
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
@@ -2327,10 +2331,11 @@ describe('API Routes Integration', () => {
             return message.type === 'worktree-deletion-completed' && message.taskId === 'test-no-sessions';
           }
         );
-        expect(completedCalls.length).toBe(0);
+        expect(completedCalls.length).toBe(1);
+        expect((completedCalls[0][0] as { sessionIds: string[] }).sessionIds).toEqual([]);
       });
 
-      it('should broadcast worktree-deletion-failed for all sessions when deletion fails', async () => {
+      it('should broadcast worktree-deletion-failed exactly once with all session ids when deletion fails', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
@@ -2379,7 +2384,8 @@ describe('API Routes Integration', () => {
         // Wait for background operation to complete
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        // Verify broadcastToApp was called with worktree-deletion-failed for EACH session ID
+        // Verify broadcastToApp was called exactly once with worktree-deletion-failed,
+        // and the payload contains ALL associated session IDs.
         const broadcastSpy = mockBroadcastToApp;
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
@@ -2387,13 +2393,12 @@ describe('API Routes Integration', () => {
             return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-broadcast-all';
           }
         );
-        expect(failedCalls.length).toBe(2);
+        expect(failedCalls.length).toBe(1);
 
-        const broadcastSessionIds = failedCalls.map(
-          (call: unknown[]) => (call[0] as { sessionId: string }).sessionId
-        );
+        const broadcastSessionIds = (failedCalls[0][0] as { sessionIds: string[] }).sessionIds;
         expect(broadcastSessionIds).toContain(session1.id);
         expect(broadcastSessionIds).toContain(session2.id);
+        expect(broadcastSessionIds.length).toBe(2);
       });
 
       it('should block deletion when branch has an open PR (sync path)', async () => {
@@ -2461,6 +2466,37 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(409);
         const body = (await res.json()) as { error: string };
         expect(body.error).toContain('Failed to check for open PRs');
+      });
+
+      it('should broadcast worktree-deletion-failed with empty sessionIds when repository is not found (async path)', async () => {
+        const app = await createApp();
+        // Do NOT register a repository — the route should treat it as not found.
+        const missingRepoId = '00000000-0000-4000-8000-000000000000';
+        const worktreePath = '/test/missing-repo/wt-1';
+
+        const res = await app.request(
+          `/api/repositories/${missingRepoId}/worktrees/${encodeURIComponent(worktreePath)}?taskId=test-missing-repo&force=true`,
+          { method: 'DELETE' }
+        );
+
+        // Async path returns 202 Accepted immediately, even when the repo is missing.
+        expect(res.status).toBe(202);
+
+        // Wait for background operation to complete
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Exactly one worktree-deletion-failed broadcast must be emitted with empty sessionIds
+        const broadcastSpy = mockBroadcastToApp;
+        const failedCalls = broadcastSpy.mock.calls.filter(
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-missing-repo';
+          }
+        );
+        expect(failedCalls.length).toBe(1);
+        const payload = failedCalls[0][0] as { sessionIds: string[]; error: string };
+        expect(payload.sessionIds).toEqual([]);
+        expect(payload.error).toContain('Repository not found');
       });
     });
 

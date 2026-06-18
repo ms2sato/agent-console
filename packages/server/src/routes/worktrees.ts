@@ -326,29 +326,25 @@ const worktrees = new Hono<AppBindings>()
           const sessionIds = result.sessionIds ?? [];
 
           if (!result.success) {
-            for (const sid of sessionIds) {
-              broadcastToApp({
-                type: 'worktree-deletion-failed',
-                taskId,
-                sessionId: sid,
-                error: result.error || 'Failed to remove worktree',
-                gitStatus: result.gitStatus,
-              });
-            }
+            broadcastToApp({
+              type: 'worktree-deletion-failed',
+              taskId,
+              sessionIds,
+              error: result.error || 'Failed to remove worktree',
+              gitStatus: result.gitStatus,
+            });
             logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
             return;
           }
 
-          for (const sid of sessionIds) {
-            broadcastToApp({
-              type: 'worktree-deletion-completed',
-              taskId,
-              sessionId: sid,
-              cleanupCommandResult: result.cleanupCommandResult,
-              killErrors: result.killErrors,
-            });
-          }
-          logger.info({ taskId, repoId, worktreePath, sessionIds: result.sessionIds }, 'Worktree and session deletion completed');
+          broadcastToApp({
+            type: 'worktree-deletion-completed',
+            taskId,
+            sessionIds,
+            cleanupCommandResult: result.cleanupCommandResult,
+            killErrors: result.killErrors,
+          });
+          logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
           logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
@@ -357,7 +353,7 @@ const worktrees = new Hono<AppBindings>()
             broadcastToApp({
               type: 'worktree-deletion-failed',
               taskId,
-              sessionId: '',
+              sessionIds: [],
               error: errorMessage,
             });
           } catch {
