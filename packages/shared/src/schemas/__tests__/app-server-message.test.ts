@@ -389,7 +389,7 @@ describe('AppServerMessageSchema', () => {
       expectValid({
         type: 'worktree-deletion-completed',
         taskId: 'task-1',
-        sessionId: 'session-1',
+        sessionIds: ['session-1'],
       });
     });
 
@@ -397,7 +397,7 @@ describe('AppServerMessageSchema', () => {
       expectValid({
         type: 'worktree-deletion-failed',
         taskId: 'task-1',
-        sessionId: 'session-1',
+        sessionIds: ['session-1'],
         error: 'Uncommitted changes',
         gitStatus: 'M file.ts',
       });

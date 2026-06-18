@@ -42,7 +42,8 @@ export interface WorktreeDeletionTask {
 export interface WorktreeDeletionCompletedPayload {
   /** Client-generated task ID for correlation */
   taskId: string;
-  sessionId: string;
+  /** Sessions that were cleaned up — may be empty. */
+  sessionIds: string[];
   /** Present when cleanup command was executed before deletion */
   cleanupCommandResult?: HookCommandResult;
   /** Per-session PTY kill errors (non-blocking — deletion proceeded despite these) */
@@ -55,7 +56,8 @@ export interface WorktreeDeletionCompletedPayload {
 export interface WorktreeDeletionFailedPayload {
   /** Client-generated task ID for correlation */
   taskId: string;
-  sessionId: string;
+  /** Sessions that were cleaned up — may be empty. */
+  sessionIds: string[];
   error: string;
   /** Git status output to help users understand what files are causing the issue */
   gitStatus?: string;
