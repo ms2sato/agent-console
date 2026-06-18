@@ -26,12 +26,16 @@ const mockExecuteHookCommand = mock<
 const mockIsWorktreeOf = mock<
   (repoPath: string, worktreePath: string, repoId: string) => Promise<boolean>
 >(() => Promise.resolve(true));
+const mockRemoveOrphanedWorktree = mock<(worktreePath: string) => Promise<void>>(
+  () => Promise.resolve(),
+);
 
 const mockWorktreeService = {
   listWorktrees: mockListWorktrees,
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
   isWorktreeOf: mockIsWorktreeOf,
+  removeOrphanedWorktree: mockRemoveOrphanedWorktree,
 };
 
 // --- Mock logger ---
@@ -110,10 +114,12 @@ describe('deleteWorktree', () => {
     mockRemoveWorktree.mockReset();
     mockExecuteHookCommand.mockReset();
     mockIsWorktreeOf.mockReset();
+    mockRemoveOrphanedWorktree.mockReset();
 
     mockRemoveWorktree.mockImplementation(() => Promise.resolve({ success: true }));
     mockExecuteHookCommand.mockImplementation(() => Promise.resolve({ success: true, output: 'ok' }));
     mockIsWorktreeOf.mockImplementation(() => Promise.resolve(true));
+    mockRemoveOrphanedWorktree.mockImplementation(() => Promise.resolve());
     mockListWorktrees.mockImplementation(() =>
       Promise.resolve([
         {
@@ -129,18 +135,153 @@ describe('deleteWorktree', () => {
 
   // --- Repository lookup ---
 
-  it('returns not-found error when repository does not exist', async () => {
-    const deps = createMockDeps({ repo: undefined as unknown as { name: string; path: string } });
+  it('orphan path: succeeds with git-less cleanup when repository row is unregistered (no sessions)', async () => {
+    // Refs #815. When the repository row is missing from the in-memory
+    // registry, the worktree has lost its anchor. Instead of returning
+    // "not-found" (which leaves the orphan stuck in 'deleting'), the
+    // deletion service must perform a git-less fs.rm + DB-row delete.
+    const deps = createMockDeps({ sessions: [] });
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'non-existent', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sessionIds).toEqual([]);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    expect(mockExecuteHookCommand).not.toHaveBeenCalled();
+    expect(deps.sessionManager.killSessionWorkers).not.toHaveBeenCalled();
+    expect(deps.sessionManager.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('orphan path: kills PTYs and deletes sessions when matching sessions exist', async () => {
+    const session2 = buildWorktreeSession({
+      id: 'sess-2',
+      repositoryName: 'my-repo',
+      worktreeId: 'feature-1',
+      locationPath: WORKTREE_PATH,
+    });
+    const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sessionIds).toEqual(['sess-1', 'sess-2']);
+    expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-1');
+    expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-2');
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+    expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-1');
+    expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-2');
+    expect(mockRemoveWorktree).not.toHaveBeenCalled(); // git path not used
+  });
+
+  it('orphan path: idempotent — fs.rm and deleteByPath both no-op on missing artifacts', async () => {
+    // mockRemoveOrphanedWorktree default resolution simulates the no-op
+    // shape of removeOrphanedWorktree: rm with force does not throw on
+    // missing paths, deleteByPath does not throw on missing rows.
+    const deps = createMockDeps({ sessions: [] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it('orphan path: rejects worktreePath outside getRepositoriesDir() (security boundary preserved)', async () => {
+    const deps = createMockDeps({ sessions: [] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: '/outside/path', force: false },
       deps,
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('not-found');
-    expect(result.error).toContain('Repository not found');
+    expect(result.errorType).toBe('validation');
+    expect(result.error).toContain('outside managed directory');
+    expect(mockRemoveOrphanedWorktree).not.toHaveBeenCalled();
+  });
+
+  it('orphan path: rejects when a matching session is the main worktree (invariant preserved)', async () => {
+    const mainSession = buildWorktreeSession({
+      id: 'sess-main',
+      repositoryName: 'my-repo',
+      worktreeId: 'main',
+      locationPath: WORKTREE_PATH,
+      isMainWorktree: true,
+    });
+    const deps = createMockDeps({ sessions: [mainSession] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('validation');
+    expect(result.error).toContain('Cannot remove the main worktree');
+    expect(mockRemoveOrphanedWorktree).not.toHaveBeenCalled();
+  });
+
+  it('orphan path: returns conflict when deletion is already in progress for the same path', async () => {
+    _getDeletionsInProgress().add(WORKTREE_PATH);
+    const deps = createMockDeps({ sessions: [] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('conflict');
+    expect(mockRemoveOrphanedWorktree).not.toHaveBeenCalled();
+  });
+
+  it('orphan path: collects killErrors but still proceeds with cleanup', async () => {
+    const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+    deps.sessionManager.killSessionWorkers.mockImplementation(() =>
+      Promise.reject(new Error('kill failed')),
+    );
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.killErrors).toEqual([{ sessionId: 'sess-1', error: 'kill failed' }]);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledTimes(1);
+    expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('orphan path: collects sessionDeleteError when deleteSession throws but still reports success', async () => {
+    const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
+    (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+    deps.sessionManager.deleteSession.mockImplementation(() =>
+      Promise.reject(new Error('DB error')),
+    );
+
+    const result = await deleteWorktree(
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sessionDeleteError).toBe('sess-1: DB error');
   });
 
   // --- Path validation ---

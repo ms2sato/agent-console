@@ -1751,13 +1751,21 @@ describe('API Routes Integration', () => {
     });
 
     describe('DELETE /api/repositories/:id/worktrees/*', () => {
-      it('should return 404 for non-existent repository', async () => {
+      it('should return 400 when repository is unregistered AND worktreePath is outside managed dir (orphan path, refs #815)', async () => {
+        // Refs #815. The previous "404 not-found" contract for an unknown
+        // repoId was the giving-up-partway pattern: the deletion service
+        // now routes into git-less orphan cleanup when the repo row is
+        // missing from the in-memory registry. The security boundary
+        // check still applies — a worktreePath outside getRepositoriesDir()
+        // returns a validation error (HTTP 400 on the sync path).
         const app = await createApp();
 
         const res = await app.request('/api/repositories/non-existent/worktrees/%2Fsome%2Fpath', {
           method: 'DELETE',
         });
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('outside managed directory');
       });
 
       it('should return 400 when worktree path is invalid for repository', async () => {
@@ -2468,14 +2476,27 @@ describe('API Routes Integration', () => {
         expect(body.error).toContain('Failed to check for open PRs');
       });
 
-      it('should broadcast worktree-deletion-failed with empty sessionIds when repository is not found (async path)', async () => {
+      it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {
+        // Refs #815. When the repository row is missing from the in-memory
+        // registry but a worktree row / dir still references it, the deletion
+        // service routes into git-less orphan cleanup. The route must emit
+        // exactly one worktree-deletion-completed broadcast (NOT failed).
+        //
+        // Replaces an earlier PR #816 regression test which asserted the
+        // worktree-deletion-failed broadcast contract — that contract is
+        // now obsolete: the deletion service no longer gives up partway
+        // when the repo is unregistered.
         const app = await createApp();
-        // Do NOT register a repository — the route should treat it as not found.
+
+        // Do NOT register the repository. Use a worktreePath that resolves
+        // INSIDE getRepositoriesDir() so the orphan path's security
+        // boundary check passes. The path does not need to exist on disk —
+        // fs.rm with force is a no-op on missing paths.
         const missingRepoId = '00000000-0000-4000-8000-000000000000';
-        const worktreePath = '/test/missing-repo/wt-1';
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/orphan-repo/worktrees/wt-1`;
 
         const res = await app.request(
-          `/api/repositories/${missingRepoId}/worktrees/${encodeURIComponent(worktreePath)}?taskId=test-missing-repo&force=true`,
+          `/api/repositories/${missingRepoId}/worktrees/${encodeURIComponent(worktreePath)}?taskId=test-orphan-repo&force=true`,
           { method: 'DELETE' }
         );
 
@@ -2485,18 +2506,27 @@ describe('API Routes Integration', () => {
         // Wait for background operation to complete
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        // Exactly one worktree-deletion-failed broadcast must be emitted with empty sessionIds
         const broadcastSpy = mockBroadcastToApp;
+
+        // Exactly one worktree-deletion-completed broadcast must be emitted with empty sessionIds.
+        const completedCalls = broadcastSpy.mock.calls.filter(
+          (call: unknown[]) => {
+            const message = call[0] as { type: string; taskId?: string };
+            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-orphan-repo';
+          }
+        );
+        expect(completedCalls.length).toBe(1);
+        const payload = completedCalls[0][0] as { sessionIds: string[] };
+        expect(payload.sessionIds).toEqual([]);
+
+        // No failed broadcasts for this task.
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-missing-repo';
+            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-orphan-repo';
           }
         );
-        expect(failedCalls.length).toBe(1);
-        const payload = failedCalls[0][0] as { sessionIds: string[]; error: string };
-        expect(payload.sessionIds).toEqual([]);
-        expect(payload.error).toContain('Repository not found');
+        expect(failedCalls.length).toBe(0);
       });
     });
 
