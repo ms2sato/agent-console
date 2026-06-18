@@ -4,9 +4,11 @@
 #
 # Notes:
 #   - Requires `rsync` (checked below). Install with: sudo apt-get install -y rsync
-#   - The service port defaults to 6000 + (uid % 1000). Known caveat: users whose
-#     UIDs differ by a multiple of 1000 (e.g. 1000 and 2000) collide on the same
-#     port. Set PORT explicitly to override.
+#   - The service port defaults to 6340 in single-user mode (AUTH_MODE unset or
+#     'none'), and to 6000 + (uid % 1000) when AUTH_MODE=multi-user is set, since
+#     UID-based assignment only matters when multiple users share the host.
+#   - Multi-user caveat: users whose UIDs differ by a multiple of 1000 (e.g. 1000
+#     and 2000) collide on the same port. Set PORT explicitly to override.
 #   - Base 6000 overlaps the X11 TCP range (6000-6063), but impact is low: this
 #     targets headless servers (no X server), and modern X11 defaults to
 #     `-nolisten tcp` (desktops default to Wayland). Override with PORT if needed.
@@ -32,7 +34,11 @@ bun install
 
 echo "==> Installing systemd user service..."
 COMMAND_PATH=$(which bun)
-DEFAULT_PORT=$((6000 + $(id -u) % 1000))
+if [ "${AUTH_MODE:-none}" = "multi-user" ]; then
+    DEFAULT_PORT=$((6000 + $(id -u) % 1000))
+else
+    DEFAULT_PORT=6340
+fi
 PORT=${PORT:-$DEFAULT_PORT}
 APP_URL=${APP_URL:-"http://localhost:$PORT"}
 
